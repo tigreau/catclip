@@ -39,7 +39,8 @@ func shortHelpText(version string, colors colorPalette) string {
 	b.WriteString("Usage:  catclip [options] [target ...]\n\n")
 	b.WriteString("Examples:\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "catclip", Right: "Open target picker (TTY) or copy current directory"},
+		{Left: "catclip", Right: "Open the safe-target picker (interactive TTY)"},
+		{Left: "catclip --", Right: "Open the scope-modifier picker (interactive TTY)"},
 		{Left: "catclip src lib", Right: "Copy specific directories"},
 		{Left: "catclip Button.tsx", Right: "Near-instant exact filename lookup across the repo"},
 		{Left: "catclip --include tests", Right: "Authorize an ignored directory for this run"},
@@ -58,13 +59,13 @@ func shortHelpText(version string, colors colorPalette) string {
 		{Left: "--version", Right: "Show version"},
 		{Left: "-v, --verbose", Right: "Show phase timings and debug info, even with -q"},
 		{Left: "-q, --quiet", Right: "Suppress normal stderr output; in non-preview runs this also skips the tree and confirmation prompt"},
-		{Left: "-p, --print", Right: "Output payload to stdout instead of clipboard"},
+		{Left: "-p, --print", Right: "Output payload to stdout instead of clipboard (no output spinner; TTY runs add a separator line)"},
 		{Left: "-y, --yes", Right: "Skip confirmation for large copies (redundant with -q)"},
 		{Left: "-t, --no-tree", Right: "Skip tree preview (redundant with -q in non-preview runs)"},
 		{Left: "--hiss", Right: "Open ignore config in editor"},
 		{Left: "--hiss-reset", Right: "Restore ignore config to defaults"},
 		{Left: "--preview", Right: "Show file tree and token count, skip copying"},
-		{Left: "--include QUERY", Right: "Authorize an exact ignored target or browse ignored files/dirs for this scope"},
+		{Left: "--include VALUE...", Right: "Authorize one or more ignored targets for this scope"},
 	})
 
 	fmt.Fprintf(&b, "\n%s %s for headless stdout output (no prompts, no stderr hints, no clipboard writes)\n", dim("Machine mode:"), cmd("-q -p"))
@@ -73,8 +74,8 @@ func shortHelpText(version string, colors colorPalette) string {
 
 	fmt.Fprintf(&b, "\n%s (apply to the current scope)\n", bold("Scope Modifiers:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "--exclude GLOBS", Right: "Add skip rules this run (comma-separated; trailing / = directory)"},
-		{Left: "--only GLOB", Right: "Filter files matching shell glob within selected targets"},
+		{Left: "--exclude VALUE...", Right: "Add one exclude stage (values OR together; trailing / = directory)"},
+		{Left: "--only VALUE...", Right: "Add one only stage (values OR together within that stage)"},
 		{Left: "--changed", Right: "Only git-modified files"},
 		{Left: "--staged", Right: "Only staged files (git index)"},
 		{Left: "--unstaged", Right: "Only unstaged tracked modifications"},
@@ -109,6 +110,9 @@ func fullHelpText(version string, colors colorPalette) string {
 	fmt.Fprintf(&b, "  %s\n", dim("  Scope 1: src — TypeScript files, skipping tests"))
 	fmt.Fprintf(&b, "  %s\n\n", dim("  Scope 2: features — TSX files only"))
 	fmt.Fprintf(&b, "  %s\n", dim("  Overlapping scopes are allowed; final copied files are deduplicated by path."))
+	fmt.Fprintf(&b, "  %s\n", dim("  A bare --then starts a normal new scope from '.'; it is not a 'remaining files only' operator."))
+	fmt.Fprintf(&b, "  %s\n", dim("  Think of --then as the one-command equivalent of running multiple catclip scope commands and unioning their results."))
+	fmt.Fprintf(&b, "  %s\n", dim("  Within one scope, --only and --exclude are sequential stages: values in one occurrence OR together, and later stages run after earlier ones."))
 	fmt.Fprintf(&b, "  Without %s, all targets share the same modifiers:\n", cmd("--then"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: "catclip src lib", Right: dim("Both use default rules")},
@@ -118,7 +122,7 @@ func fullHelpText(version string, colors colorPalette) string {
 
 	fmt.Fprintf(&b, "%s\n", bold("Target Resolution:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "catclip", Right: "Interactive picker on TTY, then modifier prompt"},
+		{Left: "catclip", Right: "Open the safe-target picker (interactive TTY)"},
 		{Left: "catclip auth", Right: "Directory shorthand; resolves directly when unique, otherwise fzf"},
 		{Left: "catclip Button.tsx", Right: "Near-instant exact basename lookup across safe files"},
 		{Left: "catclip layout/Footer.tsx", Right: "Scoped shorthand; resolves directly when unique"},
@@ -129,8 +133,8 @@ func fullHelpText(version string, colors colorPalette) string {
 	fmt.Fprintf(&b, "  %s\n\n", dim("catclip handles exact targets directly; bundled fzf is only used for shorthand and fuzzy disambiguation when needed."))
 
 	fmt.Fprintf(&b, "%s\n", bold("Safe By Default:"))
-	b.WriteString("  Default discovery stays safe and respects .hiss + .gitignore.\n")
-	b.WriteString("  Ignored files and directories require --include authorization.\n")
+	b.WriteString("  Default discovery stays safe and respects local .gitignore + .hiss.\n")
+	b.WriteString("  Ignored files and directories from either source require --include authorization.\n")
 	b.WriteString("  --only narrows the selected targets; it does not authorize on its own.\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: `catclip --include tests`, Right: "Authorize tests/ for this run"},
@@ -142,10 +146,10 @@ func fullHelpText(version string, colors colorPalette) string {
 
 	fmt.Fprintf(&b, "%s\n", bold("--exclude (add rules):"))
 	b.WriteString("  Adds temporary skip rules for this run only.\n")
-	b.WriteString("  Comma-separated patterns. Trailing / = directory.\n")
+	b.WriteString("  One stage per occurrence. Values in the same occurrence OR together. Trailing / = directory.\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: `--exclude "*.test.*"`, Right: "Skip test files"},
-		{Left: `--exclude "*.test.*,*.snap"`, Right: "Skip tests and snapshots"},
+		{Left: `--exclude "*.test.*" "*.snap"`, Right: "Skip tests and snapshots"},
 		{Left: `--exclude "build/"`, Right: "Skip build directory"},
 	})
 	b.WriteByte('\n')
@@ -160,7 +164,8 @@ func fullHelpText(version string, colors colorPalette) string {
 	fmt.Fprintf(&b, "%s\n", bold("Ignore System:"))
 	fmt.Fprintf(&b, "  Global config: %s (gitignore-inspired syntax)\n", cmd(displayPath(globalHissPath())))
 	fmt.Fprintf(&b, "  First run is still safe: catclip creates the default %s and applies it immediately.\n", cmd(".hiss"))
-	fmt.Fprintf(&b, "  Normal visible discovery combines %s and %s, using bundled ripgrep for Git-visible files and applying %s in Go.\n\n", cmd(".gitignore"), cmd(".hiss"), cmd(".hiss"))
+	fmt.Fprintf(&b, "  Normal visible discovery combines the local project %s and global %s.\n", cmd(".gitignore"), cmd(".hiss"))
+	fmt.Fprintf(&b, "  In git repos, staged/unstaged/untracked filters still come from git state.\n\n")
 
 	fmt.Fprintf(&b, "%s\n", bold("Example .hiss:"))
 	fmt.Fprintf(&b, "  %s\n", dim("# Ignore build output"))
@@ -187,6 +192,8 @@ func fullHelpText(version string, colors colorPalette) string {
 	fmt.Fprintf(&b, "%s\n", bold("--snippet (block extraction):"))
 	b.WriteString("  Requires --contains. Instead of the full file, emits only the semantic blocks\n")
 	b.WriteString("  (blank-line-bounded) surrounding each match. Dramatically reduces token usage.\n")
+	b.WriteString("  If a matched block spans the whole file, snippet output can look identical to\n")
+	b.WriteString("  full-file output for that file even though snippet mode is active.\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: "catclip src --contains TODO --snippet", Right: "Blocks around each TODO"},
 		{Left: `catclip . --contains "useState" --snippet`, Right: "React hook call-sites only"},
@@ -219,11 +226,11 @@ func fullHelpText(version string, colors colorPalette) string {
 
 	fmt.Fprintf(&b, "%s\n", bold("Evaluation Order (per scope):"))
 	for i, line := range []string{
-		"Load .hiss and merge --exclude into this scope's ignore rules",
-		"Resolve targets (--include authorizes ignored ones)",
+		"Load .hiss and resolve scope targets",
+		"Authorize ignored targets through --include when present",
 		"Discover candidate text files in the authorized scope",
-		"Apply git visibility and change selectors",
-		"Apply --contains content filtering",
+		"Apply per-scope stages in order: --only / --exclude are sequential file-set stages",
+		"Apply git selectors and --contains to the staged file set",
 		"Choose output mode (full file, snippet, or diff)",
 		"Binary exclusion and text classification happen during discovery",
 	} {

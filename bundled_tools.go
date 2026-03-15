@@ -12,18 +12,41 @@ import (
 // share/catclip/bin. Env overrides remain available for tests and developer
 // runs, but runtime should not silently fall back to arbitrary PATH copies.
 func bundledToolBinary(envVar, toolName string) (string, bool) {
-	if override := strings.TrimSpace(os.Getenv(envVar)); override != "" {
-		if strings.ContainsRune(override, os.PathSeparator) {
-			if info, err := os.Stat(override); err == nil && !info.IsDir() {
-				return override, true
-			}
-			return "", false
-		}
-		path, err := exec.LookPath(override)
-		return path, err == nil
+	if path, ok := configuredBinaryOverride(envVar); ok {
+		return path, true
 	}
+	return firstExistingBinary(bundledToolCandidates(toolName))
+}
 
-	for _, candidate := range bundledToolCandidates(toolName) {
+func companionBinary(envVar, toolName string) (string, bool) {
+	if path, ok := configuredBinaryOverride(envVar); ok {
+		return path, true
+	}
+	name := platformToolBinaryName(toolName)
+	candidates := make([]string, 0, len(executableCandidateDirs()))
+	for _, dir := range executableCandidateDirs() {
+		candidates = append(candidates, filepath.Join(dir, name))
+	}
+	return firstExistingBinary(dedupePreserveOrder(candidates))
+}
+
+func configuredBinaryOverride(envVar string) (string, bool) {
+	override := strings.TrimSpace(os.Getenv(envVar))
+	if override == "" {
+		return "", false
+	}
+	if strings.ContainsRune(override, os.PathSeparator) {
+		if info, err := os.Stat(override); err == nil && !info.IsDir() {
+			return override, true
+		}
+		return "", false
+	}
+	path, err := exec.LookPath(override)
+	return path, err == nil
+}
+
+func firstExistingBinary(candidates []string) (string, bool) {
+	for _, candidate := range candidates {
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate, true
 		}

@@ -10,7 +10,10 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+
+	"github.com/tigreau/catclip/internal/picker"
 )
 
 var errSelectionCancelled = errors.New("selection cancelled")
@@ -19,6 +22,8 @@ type scopeResolver struct {
 	cfg                  runConfig
 	gitCtx               gitContext
 	matcher              scopeMatcher
+	projectIgnore        scopeMatcher
+	useProjectIgnore     bool
 	allowFileSymlinks    bool
 	textFileCache        map[string]bool
 	useGitIgnore         bool
@@ -41,10 +46,16 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s scope, ba
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
+	projectIgnore, useProjectIgnore, err := buildProjectIgnoreMatcher(cfg.WorkingDir, gitCtx.Enabled)
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
 	resolver := scopeResolver{
 		cfg:               cfg,
 		gitCtx:            gitCtx,
 		matcher:           matcher,
+		projectIgnore:     projectIgnore,
+		useProjectIgnore:  useProjectIgnore,
 		allowFileSymlinks: false,
 		useGitIgnore:      gitCtx.Enabled,
 		includedTargets:   makeIncludedTargetSet(s.IncludedTargets),
@@ -75,23 +86,13 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s scope, ba
 		}
 	}
 
-	if s.Changed {
-		if gitCtx.Enabled {
-			entries, err = filterChangedEntries(gitCtx, s, entries)
-			if err != nil {
-				return nil, diagnostics, notices, hadSelectionCancel, err
-			}
-		} else {
-			diagnostics = append(diagnostics, diagnostic{message: "Warning: --changed/--staged/--unstaged/--untracked require a git repo."})
-		}
+	if s.Changed && !gitCtx.Enabled {
+		diagnostics = append(diagnostics, diagnostic{message: "Warning: --changed/--staged/--unstaged/--untracked require a git repo."})
 	}
 
-	if s.Contains != "" {
-		entries = ensureEntryAbsPaths(entries, cfg.WorkingDir)
-		entries, err = filterEntriesByContent(entries, s.Contains)
-		if err != nil {
-			return nil, diagnostics, notices, hadSelectionCancel, err
-		}
+	entries, err = applyScopeStages(&resolver, gitCtx, s, entries)
+	if err != nil {
+		return nil, diagnostics, notices, hadSelectionCancel, err
 	}
 
 	mode := entryModeFull
@@ -124,6 +125,68 @@ func makeIncludedTargetSet(targets []string) map[string]struct{} {
 		set[target] = struct{}{}
 	}
 	return set
+}
+
+func buildProjectIgnoreMatcher(workingDir string, gitEnabled bool) (scopeMatcher, bool, error) {
+	if gitEnabled {
+		return scopeMatcher{}, false, nil
+	}
+	rules, err := loadProjectGitignoreRules(workingDir)
+	if err != nil {
+		return scopeMatcher{}, false, err
+	}
+	if len(rules) == 0 {
+		return scopeMatcher{}, false, nil
+	}
+	matcher, err := buildScopeMatcher(rules, scope{})
+	if err != nil {
+		return scopeMatcher{}, false, err
+	}
+	return matcher, true, nil
+}
+
+func (r *scopeResolver) ensureProjectIgnoreMatcher() error {
+	if r.useGitIgnore || r.useProjectIgnore {
+		return nil
+	}
+	matcher, ok, err := buildProjectIgnoreMatcher(r.cfg.WorkingDir, false)
+	if err != nil {
+		return err
+	}
+	if ok {
+		r.projectIgnore = matcher
+		r.useProjectIgnore = true
+	}
+	return nil
+}
+
+func (r *scopeResolver) projectDirIgnored(relPath string) (bool, string, error) {
+	if err := r.ensureProjectIgnoreMatcher(); err != nil {
+		return false, "", err
+	}
+	if !r.useProjectIgnore {
+		return false, "", nil
+	}
+	if ignored, rule := r.projectIgnore.dirIgnored(relPath); ignored {
+		return true, rule, nil
+	}
+	return false, "", nil
+}
+
+func (r *scopeResolver) projectFileIgnored(relPath string) (bool, string, error) {
+	if err := r.ensureProjectIgnoreMatcher(); err != nil {
+		return false, "", err
+	}
+	if !r.useProjectIgnore {
+		return false, "", nil
+	}
+	if ignored, rule := r.projectIgnore.fileIgnoredByFileRule(relPath); ignored {
+		return true, rule, nil
+	}
+	if ignored, rule := r.projectIgnore.dirRuleBlockingFile(relPath); ignored {
+		return true, rule, nil
+	}
+	return false, "", nil
 }
 
 func (r *scopeResolver) targetIncluded(target string) bool {
@@ -375,13 +438,15 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 				}
 				return nil, diagnostics, notices, false, err
 			}
-			discovered, handled, diag, err := r.resolveExactTarget(selected, true, colors)
-			if diag != nil {
-				diagnostics = append(diagnostics, *diag)
+			selectedMatches := make([]targetMatch, 0, len(selected))
+			for _, path := range selected {
+				selectedMatches = append(selectedMatches, targetMatch{Path: path, Kind: "file"})
 			}
-			if handled {
-				return discovered, diagnostics, notices, false, err
+			discovered, err := r.resolveTargetMatches(selectedMatches, colors)
+			if err != nil {
+				return nil, diagnostics, notices, false, err
 			}
+			return discovered, diagnostics, notices, false, nil
 		}
 		diagnostics = append(diagnostics, diagnostic{message: targetNotFoundWarning(target, scopeIndex, colors)})
 		return nil, diagnostics, notices, false, nil
@@ -421,7 +486,11 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 				}
 				return nil, diagnostics, notices, false, err
 			}
-			discovered, err := r.resolveTargetMatches([]targetMatch{{Path: selected, Kind: "file"}}, colors)
+			selectedMatches := make([]targetMatch, 0, len(selected))
+			for _, path := range selected {
+				selectedMatches = append(selectedMatches, targetMatch{Path: path, Kind: "file"})
+			}
+			discovered, err := r.resolveTargetMatches(selectedMatches, colors)
 			if err != nil {
 				return nil, diagnostics, notices, false, err
 			}
@@ -478,7 +547,7 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 					}
 					return nil, diagnostics, notices, false, err
 				}
-				discovered, err := r.resolveTargetMatches([]targetMatch{selected}, colors)
+				discovered, err := r.resolveTargetMatches(selected, colors)
 				if err != nil {
 					return nil, diagnostics, notices, false, err
 				}
@@ -520,7 +589,11 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 					}
 					return nil, diagnostics, notices, false, err
 				}
-				discovered, err := r.resolveTargetMatches([]targetMatch{{Path: selected, Kind: "file"}}, colors)
+				selectedMatches := make([]targetMatch, 0, len(selected))
+				for _, path := range selected {
+					selectedMatches = append(selectedMatches, targetMatch{Path: path, Kind: "file"})
+				}
+				discovered, err := r.resolveTargetMatches(selectedMatches, colors)
 				if err != nil {
 					return nil, diagnostics, notices, false, err
 				}
@@ -542,7 +615,11 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 			}
 			return nil, nil, nil, false, err
 		}
-		files, err := r.resolveTargetMatches([]targetMatch{{Path: selected, Kind: "dir"}}, colors)
+		selectedMatches := make([]targetMatch, 0, len(selected))
+		for _, path := range selected {
+			selectedMatches = append(selectedMatches, targetMatch{Path: path, Kind: "dir"})
+		}
+		files, err := r.resolveTargetMatches(selectedMatches, colors)
 		if err != nil {
 			return nil, diagnostics, notices, false, err
 		}
@@ -620,6 +697,17 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: rule, Source: ".hiss"})
 			return withTargetRoot(files, relTarget), true, nil, err
 		}
+		projectIgnored, projectRule, err := r.projectDirIgnored(relTarget)
+		if err != nil {
+			return nil, true, nil, err
+		}
+		if projectIgnored {
+			if !r.targetIncluded(relTarget) {
+				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, projectRule, ".gitignore", colors), isError: true}, nil
+			}
+			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: projectRule, Source: ".gitignore"})
+			return withTargetRoot(files, relTarget), true, nil, err
+		}
 		gitIgnored, err := r.gitIgnored(relTarget)
 		if err != nil {
 			return nil, true, nil, err
@@ -636,9 +724,6 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 	}
 
 	if !info.Mode().IsRegular() {
-		return nil, true, nil, nil
-	}
-	if len(r.matcher.only) > 0 && !r.matcher.matchesOnly(relTarget) {
 		return nil, true, nil, nil
 	}
 	if excludedTextLikeAsset(relTarget) {
@@ -665,22 +750,36 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 		}
 		entry = withBypass(entry, "direct", blockInfo{Rule: rule, Source: ".hiss"})
 	} else {
-		gitIgnored, err := r.gitIgnored(relTarget)
+		projectIgnored, projectRule, err := r.projectFileIgnored(relTarget)
 		if err != nil {
 			return nil, true, nil, err
 		}
-		if gitIgnored {
+		if projectIgnored {
 			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, ".gitignore", ".gitignore", fromChained, colors), isError: true}, nil
+				return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, projectRule, ".gitignore", fromChained, colors), isError: true}, nil
 			}
-			entry = withBypass(entry, "direct", blockInfo{Rule: ".gitignore", Source: ".gitignore"})
+			entry = withBypass(entry, "direct", blockInfo{Rule: projectRule, Source: ".gitignore"})
+		} else {
+			gitIgnored, err := r.gitIgnored(relTarget)
+			if err != nil {
+				return nil, true, nil, err
+			}
+			if gitIgnored {
+				if !r.targetIncluded(relTarget) {
+					return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, ".gitignore", ".gitignore", fromChained, colors), isError: true}, nil
+				}
+				entry = withBypass(entry, "direct", blockInfo{Rule: ".gitignore", Source: ".gitignore"})
+			}
 		}
 	}
 	return []fileEntry{entry}, true, nil, nil
 }
 
 func (r *scopeResolver) gitIgnored(relPath string) (bool, error) {
-	if !r.useGitIgnore || relPath == "." || relPath == "" {
+	if relPath == "." || relPath == "" {
+		return false, nil
+	}
+	if !r.useGitIgnore {
 		return false, nil
 	}
 	lines, err := runGitLines(r.gitCtx.Root, []string{r.gitCtx.toRepoPath(relPath)}, "check-ignore", "--stdin")
@@ -718,6 +817,11 @@ func (r *scopeResolver) blockInfoForDir(relPath string) (*blockInfo, error) {
 	}
 	if ignored, rule := r.matcher.dirIgnored(relPath); ignored {
 		return &blockInfo{Rule: rule, Source: ".hiss"}, nil
+	}
+	if ignored, rule, err := r.projectDirIgnored(relPath); err != nil {
+		return nil, err
+	} else if ignored {
+		return &blockInfo{Rule: rule, Source: ".gitignore"}, nil
 	}
 	gitIgnored, err := r.gitIgnored(relPath)
 	if err != nil {
@@ -771,7 +875,10 @@ func (r *scopeResolver) resolveChainedDir(relPath string, stderr io.Writer, colo
 			if err != nil {
 				return "", err
 			}
-			currentRel = selected
+			if len(selected) == 0 {
+				return "", errSelectionCancelled
+			}
+			currentRel = selected[0]
 		}
 		currentAbs = filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(currentRel))
 	}
@@ -944,7 +1051,7 @@ func (r *scopeResolver) chooseRootTargetMatches(query, prompt string, includeCop
 			return ignored, nil
 		}
 
-		result, err := chooseManyWithFzfControl(path, currentQuery, prompt, "1,2", safeTargetPickerHeader(), labels, "ctrl-o")
+		result, err := chooseManyTargetMatchesWithFzfControl(path, currentQuery, prompt, "1,2", safeTargetPickerHeader(), labels, false, "ctrl-o")
 		if err != nil {
 			return nil, err
 		}
@@ -955,8 +1062,8 @@ func (r *scopeResolver) chooseRootTargetMatches(query, prompt string, includeCop
 		}
 
 		selected := make([]targetMatch, 0, len(result.Matches))
-		for _, label := range result.Matches {
-			match, ok := index[label]
+		for _, key := range result.Matches {
+			match, ok := index[key]
 			if ok {
 				if match.Kind == "all" {
 					return []targetMatch{match}, nil
@@ -995,14 +1102,14 @@ func (r *scopeResolver) chooseIgnoredTargetMatches(query, prompt string, selecte
 		return nil, err
 	}
 	labels, index := targetMatchLabels(options)
-	selectedLabels, err := chooseManyWithFzfHeader(path, query, prompt, ignoredTargetPickerHeader(), labels)
+	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, ignoredTargetPickerHeader(), labels, true)
 	if err != nil {
 		return nil, err
 	}
 
 	selected := make([]targetMatch, 0, len(selectedLabels))
-	for _, label := range selectedLabels {
-		match, ok := index[label]
+	for _, key := range selectedLabels {
+		match, ok := index[key]
 		if ok {
 			selected = append(selected, match)
 		}
@@ -1030,6 +1137,17 @@ func (r *scopeResolver) resolveInteractiveIncludeTargets(query string, selectedP
 		return nil, err
 	}
 	return targetMatchPaths(matches), nil
+}
+
+func targetMatchPaths(matches []targetMatch) []string {
+	paths := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if match.Kind == "done" {
+			continue
+		}
+		paths = append(paths, match.Path)
+	}
+	return paths
 }
 
 func exactInteractiveTargetMatch(options []targetMatch, query string) (targetMatch, bool) {
@@ -1125,10 +1243,10 @@ func (r *scopeResolver) allVisibleTargets() ([]targetMatch, error) {
 
 	targets := make([]targetMatch, 0, len(r.visibleDirs.dirs)+len(r.visibleFileList))
 	for _, rel := range r.visibleDirs.dirs {
-		targets = append(targets, targetMatch{Path: rel, Kind: "dir"})
+		targets = append(targets, targetMatch{Path: rel, Kind: "dir", State: treeTargetStateOK})
 	}
 	for _, entry := range r.visibleFileList {
-		targets = append(targets, targetMatch{Path: entry.RelPath, Kind: "file"})
+		targets = append(targets, targetMatch{Path: entry.RelPath, Kind: "file", State: treeTargetStateText})
 	}
 
 	r.interactiveTargets = targets
@@ -1140,9 +1258,14 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 	if r.ignoredTargetsOk {
 		return append([]targetMatch(nil), r.ignoredTargets...), nil
 	}
+	if err := r.ensureProjectIgnoreMatcher(); err != nil {
+		return nil, err
+	}
 
 	dirPaths := make([]string, 0, 256)
 	filePaths := make([]string, 0, 512)
+	dirHasChild := make(map[string]bool, 256)
+	dirHasText := make(map[string]bool, 256)
 	err := filepath.WalkDir(r.cfg.WorkingDir, func(current string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
@@ -1159,6 +1282,10 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 			return err
 		}
 		rel = normalizeRelPath(rel)
+		parent := normalizeRelPath(path.Dir(rel))
+		if parent != "" && parent != "." {
+			dirHasChild[parent] = true
+		}
 
 		if d.IsDir() {
 			dirPaths = append(dirPaths, rel)
@@ -1178,6 +1305,9 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 		}
 		if text {
 			filePaths = append(filePaths, rel)
+			for dir := normalizeRelPath(path.Dir(rel)); dir != "" && dir != "."; dir = normalizeRelPath(path.Dir(dir)) {
+				dirHasText[dir] = true
+			}
 		}
 		return nil
 	})
@@ -1199,24 +1329,39 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 
 	targets := make([]targetMatch, 0, len(dirPaths)+len(filePaths))
 	for _, rel := range dirPaths {
-		match := targetMatch{Path: rel, Kind: "dir"}
+		match := targetMatch{Path: rel, Kind: "dir", State: treeTargetStateOK}
 		if ignored, _ := r.matcher.dirIgnored(rel); ignored {
 			match.Ignored = true
 			match.IgnoreSource = ".hiss"
 		} else if _, ok := gitIgnored[rel]; ok {
 			match.Ignored = true
 			match.IgnoreSource = ".gitignore"
+		} else if ignored, _, err := r.projectDirIgnored(rel); err != nil {
+			return nil, err
+		} else if ignored {
+			match.Ignored = true
+			match.IgnoreSource = ".gitignore"
+		}
+		if !dirHasChild[rel] {
+			match.State = treeTargetStateEmpty
+		} else if !dirHasText[rel] {
+			match.State = treeTargetStateNoTextChildren
 		}
 		if match.Ignored {
 			targets = append(targets, match)
 		}
 	}
 	for _, rel := range filePaths {
-		match := targetMatch{Path: rel, Kind: "file"}
+		match := targetMatch{Path: rel, Kind: "file", State: treeTargetStateText}
 		if ignored, _ := r.matcher.fileIgnored(rel); ignored {
 			match.Ignored = true
 			match.IgnoreSource = ".hiss"
 		} else if _, ok := gitIgnored[rel]; ok {
+			match.Ignored = true
+			match.IgnoreSource = ".gitignore"
+		} else if ignored, _, err := r.projectFileIgnored(rel); err != nil {
+			return nil, err
+		} else if ignored {
 			match.Ignored = true
 			match.IgnoreSource = ".gitignore"
 		}
@@ -1262,6 +1407,11 @@ func (r *scopeResolver) dirVisible(relPath string) (bool, error) {
 		return true, nil
 	}
 	if ignored, _ := r.matcher.dirIgnored(relPath); ignored {
+		return false, nil
+	}
+	if ignored, _, err := r.projectDirIgnored(relPath); err != nil {
+		return false, err
+	} else if ignored {
 		return false, nil
 	}
 	if !r.useGitIgnore {
@@ -1313,6 +1463,9 @@ func (r *scopeResolver) buildVisibleFileIndex() error {
 	if r.visibleFilesReady {
 		return nil
 	}
+	if err := r.ensureProjectIgnoreMatcher(); err != nil {
+		return err
+	}
 	if len(r.wantedBasenames) == 0 {
 		r.visibleFiles = visibleFileIndex{
 			byBase:        map[string][]fileEntry{},
@@ -1358,6 +1511,17 @@ func (r *scopeResolver) buildVisibleFileIndex() error {
 			})
 			continue
 		}
+		if r.useProjectIgnore {
+			if ignored, rule := r.projectIgnore.dirRuleBlockingFile(entry.RelPath); ignored {
+				skippedByBase[base] = append(skippedByBase[base], skippedMatch{
+					RelPath:     entry.RelPath,
+					BlockRule:   rule,
+					BlockSource: ".gitignore",
+					BlockKind:   "directory",
+				})
+				continue
+			}
+		}
 		if gitMatch, ok := gitIgnored[entry.RelPath]; ok && gitMatch.DirRule {
 			skippedByBase[base] = append(skippedByBase[base], skippedMatch{
 				RelPath:     entry.RelPath,
@@ -1375,6 +1539,17 @@ func (r *scopeResolver) buildVisibleFileIndex() error {
 				BlockKind:   "file",
 			})
 			continue
+		}
+		if r.useProjectIgnore {
+			if ignored, rule := r.projectIgnore.fileIgnoredByFileRule(entry.RelPath); ignored {
+				skippedByBase[base] = append(skippedByBase[base], skippedMatch{
+					RelPath:     entry.RelPath,
+					BlockRule:   rule,
+					BlockSource: ".gitignore",
+					BlockKind:   "file",
+				})
+				continue
+			}
 		}
 		if gitMatch, ok := gitIgnored[entry.RelPath]; ok {
 			skippedByBase[base] = append(skippedByBase[base], skippedMatch{
@@ -1419,6 +1594,9 @@ func (r *scopeResolver) buildVisibleFileList() error {
 }
 
 func (r *scopeResolver) textEntriesFromRipgrepPaths(relPaths []string, applyIgnore bool) ([]fileEntry, error) {
+	if err := r.ensureProjectIgnoreMatcher(); err != nil {
+		return nil, err
+	}
 	entries := make([]fileEntry, 0, len(relPaths))
 	for _, rel := range relPaths {
 		rel = normalizeRelPath(rel)
@@ -1429,9 +1607,11 @@ func (r *scopeResolver) textEntriesFromRipgrepPaths(relPaths []string, applyIgno
 			if ignored, _ := r.matcher.fileIgnored(rel); ignored {
 				continue
 			}
-		}
-		if len(r.matcher.only) > 0 && !r.matcher.matchesOnly(rel) {
-			continue
+			if r.useProjectIgnore {
+				if ignored, _ := r.projectIgnore.fileIgnored(rel); ignored {
+					continue
+				}
+			}
 		}
 		if excludedTextLikeAsset(rel) {
 			continue
@@ -1686,59 +1866,69 @@ func (r *scopeResolver) fuzzySearchFilesUnder(baseRel, needle string, rootBypass
 	return fuzzyFilterCandidates(needle, candidates)
 }
 
-func chooseDirectoryMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) (string, error) {
+func chooseDirectoryMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
 	if cfg.HeadlessStdoutMode() || !canPromptInteractively() {
 		if currentRel == "." {
-			return "", fmt.Errorf("Error: Multiple directories match %s.\n  Use a more specific path segment to disambiguate.", singleQuoted(needle))
+			return nil, fmt.Errorf("Error: Multiple directories match %s.\n  Use a more specific path segment to disambiguate.", singleQuoted(needle))
 		}
-		return "", fmt.Errorf("Error: Multiple directories match %s in %s.\n  Use a more specific path segment to disambiguate.", singleQuoted(needle), currentRel)
+		return nil, fmt.Errorf("Error: Multiple directories match %s in %s.\n  Use a more specific path segment to disambiguate.", singleQuoted(needle), currentRel)
 	}
 
 	path, err := fuzzyResolverBinary()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return chooseWithFzf(path, needle, "dir> ", matches)
+	return chooseManyWithTypedFzf(path, needle, "dir> ", matches, treeTargetKindDir, treeTargetStateOK)
 }
 
-func chooseFileMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) (string, error) {
+func chooseFileMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
 	if cfg.HeadlessStdoutMode() || !canPromptInteractively() {
 		if currentRel == "." {
-			return "", fmt.Errorf("Error: Multiple files match %s.\n  Use a more specific name or path to disambiguate.", singleQuoted(needle))
+			return nil, fmt.Errorf("Error: Multiple files match %s.\n  Use a more specific name or path to disambiguate.", singleQuoted(needle))
 		}
-		return "", fmt.Errorf("Error: Multiple files match %s in %s.\n  Use a more specific name or path to disambiguate.", singleQuoted(needle), currentRel)
+		return nil, fmt.Errorf("Error: Multiple files match %s in %s.\n  Use a more specific name or path to disambiguate.", singleQuoted(needle), currentRel)
 	}
 
 	path, err := fuzzyResolverBinary()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return chooseWithFzf(path, needle, "file> ", matches)
+	return chooseManyWithTypedFzf(path, needle, "file> ", matches, treeTargetKindFile, treeTargetStateText)
 }
 
-func chooseTargetMatch(cfg runConfig, needle string, matches []targetMatch, stderr io.Writer, colors colorPalette) (targetMatch, error) {
+func chooseTargetMatch(cfg runConfig, needle string, matches []targetMatch, stderr io.Writer, colors colorPalette) ([]targetMatch, error) {
 	if cfg.HeadlessStdoutMode() || !canPromptInteractively() {
-		return targetMatch{}, fmt.Errorf("Error: Multiple files and directories match %s.\n  Use a more specific name or path to disambiguate.", singleQuoted(needle))
+		return nil, fmt.Errorf("Error: Multiple files and directories match %s.\n  Use a more specific name or path to disambiguate.", singleQuoted(needle))
 	}
 
 	path, err := fuzzyResolverBinary()
 	if err != nil {
-		return targetMatch{}, err
+		return nil, err
 	}
 	labels, index := targetMatchLabels(matches)
-	selected, err := chooseWithFzf(path, needle, "target> ", labels)
+	selectedKeys, err := chooseManyTargetMatchesWithFzf(path, needle, "target> ", labels, false)
 	if err != nil {
-		return targetMatch{}, err
+		return nil, err
 	}
-	match, ok := index[selected]
-	if !ok {
-		return targetMatch{}, errSelectionCancelled
+	selected := make([]targetMatch, 0, len(selectedKeys))
+	for _, key := range selectedKeys {
+		match, ok := index[key]
+		if ok {
+			selected = append(selected, match)
+		}
 	}
-	return match, nil
+	if len(selected) == 0 {
+		return nil, errSelectionCancelled
+	}
+	return selected, nil
 }
 
 func fzfBinary() (string, bool) {
 	return bundledToolBinary("CATCLIP_FZF", "fzf")
+}
+
+func treePreviewBinary() (string, bool) {
+	return companionBinary("CATCLIP_TREE", "catclip-tree")
 }
 
 func fuzzyResolverBinary() (string, error) {
@@ -1761,54 +1951,112 @@ func fuzzyFilterCandidates(query string, candidates []string) ([]string, error) 
 }
 
 func runFzfFilter(bin, query string, candidates []string) ([]string, error) {
-	cmd := exec.Command(bin, "--delimiter", "\t", "--nth", "1,2", "--filter", query)
-	cmd.Stdin = strings.NewReader(strings.Join(formatFzfCandidates(candidates), "\n") + "\n")
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil, nil
-		}
-		return nil, err
-	}
-	text := strings.TrimSpace(string(out))
-	if text == "" {
-		return nil, nil
-	}
-	return parseFzfMatches(text), nil
+	return runFzfFilterLines(bin, query, formatFzfCandidates(candidates, "", ""))
 }
 
-func chooseWithFzf(bin, query, prompt string, candidates []string) (string, error) {
-	cmd := exec.Command(bin, "--ansi", "--layout=default", "--info=inline-right", "--delimiter", "\t", "--with-nth", "1,2", "--query", query, "--prompt", prompt)
-	cmd.Stdin = strings.NewReader(strings.Join(formatFzfCandidates(candidates), "\n") + "\n")
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+func runFzfFilterLines(bin, query string, lines []string) ([]string, error) {
+	return picker.Filter(bin, query, lines)
+}
+
+func chooseWithFzf(bin, query, prompt string, candidates []string, kind, state string) (string, error) {
+	return chooseWithFzfLines(bin, query, prompt, "1,2", fzfPreviewCommand(false), formatFzfCandidates(candidates, kind, state))
+}
+
+func chooseSingleFzfLine(query, prompt, withNth string, lines []string) (string, error) {
+	bin, err := fuzzyResolverBinary()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 130) {
-			return "", errSelectionCancelled
-		}
 		return "", err
 	}
-	selected := strings.TrimSpace(string(out))
-	if selected == "" {
+	return chooseWithFzfLines(bin, query, prompt, withNth, "", lines)
+}
+
+func chooseTargetWithFzf(bin, query, prompt string, candidates []string, includeTarget bool) (string, error) {
+	return chooseWithFzfLines(bin, query, prompt, "1", fzfPreviewCommand(includeTarget), candidates)
+}
+
+func chooseWithFzfLines(bin, query, prompt, withNth, previewCommand string, lines []string) (string, error) {
+	stopActiveSpinner()
+	result, err := picker.Run(bin, picker.Request{
+		Query:          query,
+		Prompt:         prompt,
+		WithNth:        withNth,
+		PreviewCommand: previewCommand,
+		Lines:          lines,
+	})
+	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return "", errSelectionCancelled
 	}
-	lines := parseFzfMatches(selected)
-	if len(lines) == 0 {
+	if err != nil {
+		return "", err
+	}
+	if len(result.Matches) == 0 {
 		return "", errSelectionCancelled
 	}
-	return lines[0], nil
+	return result.Matches[0], nil
 }
 
 func chooseManyWithFzf(bin, query, prompt string, candidates []string) ([]string, error) {
 	return chooseManyWithFzfNth(bin, query, prompt, "1,2", candidates)
 }
 
-func chooseManyWithFzfNth(bin, query, prompt, nth string, candidates []string) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, nth, "", candidates)
+func chooseManyFilePathsWithFzf(query, prompt, header string, candidates []string) ([]string, error) {
+	bin, err := fuzzyResolverBinary()
+	if err != nil {
+		return nil, err
+	}
+	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", header, fzfPreviewCommand(false), formatFzfCandidates(candidates, treeTargetKindFile, treeTargetStateText))
 }
 
-func chooseManyWithFzfHeader(bin, query, prompt, header string, candidates []string) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", header, candidates)
+func chooseContainsMatchesWithFzf(query string, currentArgs []string) (fzfChooseResult, error) {
+	bin, err := fuzzyResolverBinary()
+	if err != nil {
+		return fzfChooseResult{}, err
+	}
+
+	command := fzfContainsListCommand(currentArgs)
+	if command == "" {
+		return fzfChooseResult{}, errSelectionCancelled
+	}
+
+	stopActiveSpinner()
+	result, err := picker.Run(bin, picker.Request{
+		Query:          query,
+		Prompt:         "regex> ",
+		WithNth:        "1,2",
+		Nth:            "1,2",
+		Header:         containsPickerHeader(),
+		PreviewCommand: fzfContainsPreviewCommand(),
+		Disabled:       true,
+		Multi:          true,
+		PrintQuery:     true,
+		Bindings:       append([]string{"start:reload:" + command, "change:reload:" + command}, multiSelectPickerBindings()...),
+	})
+	if errors.Is(err, picker.ErrSelectionCancelled) {
+		return fzfChooseResult{}, errSelectionCancelled
+	}
+	if err != nil {
+		return fzfChooseResult{}, err
+	}
+	if strings.TrimSpace(result.Query) == "" && result.Key == "" && len(result.Matches) == 0 {
+		return fzfChooseResult{}, errSelectionCancelled
+	}
+	return fzfChooseResult{Query: result.Query, Key: result.Key, Matches: result.Matches}, nil
+}
+
+func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind, state string) ([]string, error) {
+	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", fzfPreviewCommand(false), formatFzfCandidates(candidates, kind, state))
+}
+
+func chooseManyWithFzfNth(bin, query, prompt, nth string, candidates []string) ([]string, error) {
+	return chooseManyWithFzfOptions(bin, query, prompt, nth, "1,2", "", fzfPreviewCommand(false), formatFzfCandidates(candidates, "", ""))
+}
+
+func chooseManyTargetMatchesWithFzfHeader(bin, query, prompt, header string, candidates []string, includeTarget bool) ([]string, error) {
+	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1", header, fzfPreviewCommand(includeTarget), candidates)
+}
+
+func chooseManyTargetMatchesWithFzf(bin, query, prompt string, candidates []string, includeTarget bool) ([]string, error) {
+	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1", "", fzfPreviewCommand(includeTarget), candidates)
 }
 
 type fzfChooseResult struct {
@@ -1817,115 +2065,156 @@ type fzfChooseResult struct {
 	Matches []string
 }
 
-func chooseManyWithFzfControl(bin, query, prompt, nth, header string, candidates []string, expectedKeys ...string) (fzfChooseResult, error) {
-	cmd := exec.Command(bin, "--ansi", "--layout=default", "--info=inline-right", "--multi", "--delimiter", "\t", "--with-nth", "1,2", "--query", query, "--prompt", prompt, "--print-query")
-	if nth != "" {
-		cmd.Args = append(cmd.Args, "--nth", nth)
+func chooseManyTargetMatchesWithFzfControl(bin, query, prompt, nth, header string, candidates []string, includeTarget bool, expectedKeys ...string) (fzfChooseResult, error) {
+	stopActiveSpinner()
+	result, err := picker.Run(bin, picker.Request{
+		Query:          query,
+		Prompt:         prompt,
+		WithNth:        "1",
+		Nth:            nth,
+		Header:         header,
+		PreviewCommand: fzfPreviewCommand(includeTarget),
+		Multi:          true,
+		PrintQuery:     true,
+		ExpectKeys:     expectedKeys,
+		Bindings:       multiSelectPickerBindings(),
+		Lines:          candidates,
+	})
+	if errors.Is(err, picker.ErrSelectionCancelled) {
+		return fzfChooseResult{}, errSelectionCancelled
 	}
-	if header != "" {
-		cmd.Args = append(cmd.Args, "--header", header, "--header-border=rounded")
-	}
-	if len(expectedKeys) > 0 {
-		cmd.Args = append(cmd.Args, "--expect", strings.Join(expectedKeys, ","))
-	}
-	cmd.Stdin = strings.NewReader(strings.Join(formatFzfCandidates(candidates), "\n") + "\n")
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 130) {
-			return fzfChooseResult{}, errSelectionCancelled
-		}
 		return fzfChooseResult{}, err
 	}
-	result := parseFzfChooseResult(string(out), expectedKeys)
 	if result.Key == "" && len(result.Matches) == 0 {
 		return fzfChooseResult{}, errSelectionCancelled
 	}
-	return result, nil
+	return fzfChooseResult{Query: result.Query, Key: result.Key, Matches: result.Matches}, nil
 }
 
-func chooseManyWithFzfOptions(bin, query, prompt, nth, header string, candidates []string) ([]string, error) {
-	cmd := exec.Command(bin, "--ansi", "--layout=default", "--info=inline-right", "--multi", "--delimiter", "\t", "--with-nth", "1,2", "--query", query, "--prompt", prompt)
-	if nth != "" {
-		cmd.Args = append(cmd.Args, "--nth", nth)
+func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, previewCommand string, candidates []string) ([]string, error) {
+	stopActiveSpinner()
+	result, err := picker.Run(bin, picker.Request{
+		Query:          query,
+		Prompt:         prompt,
+		WithNth:        withNth,
+		Nth:            nth,
+		Header:         header,
+		PreviewCommand: previewCommand,
+		Multi:          true,
+		Bindings:       multiSelectPickerBindings(),
+		Lines:          candidates,
+	})
+	if errors.Is(err, picker.ErrSelectionCancelled) {
+		return nil, errSelectionCancelled
 	}
-	if header != "" {
-		cmd.Args = append(cmd.Args, "--header", header, "--header-border=rounded")
-	}
-	cmd.Stdin = strings.NewReader(strings.Join(formatFzfCandidates(candidates), "\n") + "\n")
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 130) {
-			return nil, errSelectionCancelled
-		}
 		return nil, err
 	}
-	selected := strings.TrimSpace(string(out))
-	if selected == "" {
+	if len(result.Matches) == 0 {
 		return nil, errSelectionCancelled
 	}
-	lines := parseFzfMatches(selected)
-	if len(lines) == 0 {
-		return nil, errSelectionCancelled
-	}
-	return lines, nil
+	return result.Matches, nil
 }
 
-func parseFzfChooseResult(text string, expectedKeys []string) fzfChooseResult {
-	text = strings.TrimRight(text, "\n")
-	if text == "" {
-		return fzfChooseResult{}
+func fzfPreviewCommand(includeTarget bool) string {
+	treeBin, ok := treePreviewBinary()
+	if !ok {
+		return ""
 	}
 
-	lines := strings.Split(text, "\n")
-	result := fzfChooseResult{Query: lines[0]}
-	lines = lines[1:]
-	if len(lines) == 0 {
-		return result
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return ""
 	}
 
-	keySet := make(map[string]struct{}, len(expectedKeys))
-	for _, key := range expectedKeys {
-		keySet[key] = struct{}{}
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload"}
+	if includeTarget {
+		parts = append(parts, "--include", "{2}")
 	}
-	if _, ok := keySet[lines[0]]; ok {
-		result.Key = lines[0]
-		lines = lines[1:]
-	}
-	if len(lines) > 0 && lines[0] == "" {
-		lines = lines[1:]
-	}
-	if len(lines) == 0 {
-		return result
-	}
-	result.Matches = parseFzfMatches(strings.Join(lines, "\n"))
-	return result
+	parts = append(parts,
+		"--internal-tree-target", "{2}",
+		"--internal-tree-kind", "{3}",
+		"--internal-tree-state", "{4}",
+		"{2}",
+		"|", shellQuoteArg(treeBin), "--bare", "--color", "always")
+	return strings.Join(parts, " ")
 }
 
-func formatFzfCandidates(candidates []string) []string {
+func fzfContainsPreviewCommand() string {
+	treeBin, ok := treePreviewBinary()
+	if !ok {
+		return ""
+	}
+
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return ""
+	}
+
+	parts := []string{
+		shellQuoteArg(self),
+		"--quiet",
+		"--internal-file-preview",
+		"--internal-file-path", "{2}",
+		"--contains", "{q}",
+		"|", shellQuoteArg(treeBin), "--bare", "--color", "always",
+	}
+	return strings.Join(parts, " ")
+}
+
+func fzfContainsListCommand(currentArgs []string) string {
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return ""
+	}
+
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-contains-list"}
+	for _, arg := range currentArgs {
+		parts = append(parts, shellQuoteArg(arg))
+	}
+	parts = append(parts, "--contains", "{q}")
+	return strings.Join(parts, " ")
+}
+
+func containsPickerHeader() string {
+	return pickerHeader(
+		"Regex matches file contents, not file names.",
+		"Enter continues with the current selection.",
+		"Tab marks files; Alt-A toggles all current matches.",
+		"Use Up/Down to move, Esc to cancel.",
+	)
+}
+
+func multiSelectPickerBindings() []string {
+	return []string{
+		"tab:toggle+down",
+		"btab:toggle+up",
+		"alt-a:toggle-all",
+	}
+}
+
+func shellQuoteArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(arg, " \t\n\"'\\*?[]{}()$&;|<>") {
+		return arg
+	}
+	return strconv.Quote(arg)
+}
+
+func formatFzfCandidates(candidates []string, kind, state string) []string {
 	lines := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		lines = append(lines, path.Base(candidate)+"\t"+candidate)
+		lines = append(lines, strings.Join([]string{
+			path.Base(candidate),
+			candidate,
+			kind,
+			state,
+		}, "\t"))
 	}
 	return lines
-}
-
-func parseFzfMatches(text string) []string {
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	out := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) == 2 {
-			out = append(out, parts[1])
-			continue
-		}
-		out = append(out, line)
-	}
-	return out
 }
 
 func rankTargetMatches(query string, dirs, files []string) ([]targetMatch, error) {
@@ -1944,13 +2233,13 @@ func rankTargetMatches(query string, dirs, files []string) ([]targetMatch, error
 		return nil, err
 	}
 	labels, index := targetMatchLabels(matches)
-	filtered, err := runFzfFilter(path, query, labels)
+	filtered, err := runFzfFilterLines(path, query, labels)
 	if err != nil {
 		return nil, err
 	}
 	ranked := make([]targetMatch, 0, len(filtered))
-	for _, label := range filtered {
-		match, ok := index[label]
+	for _, key := range filtered {
+		match, ok := index[key]
 		if ok {
 			ranked = append(ranked, match)
 		}
@@ -1966,7 +2255,6 @@ func targetMatchLabels(matches []targetMatch) ([]string, map[string]targetMatch)
 		if match.Kind == "all" {
 			plain := "[copy all files]"
 			label = "\x1b[1m" + plain + "\x1b[0m"
-			index[plain] = match
 		} else if match.Ignored {
 			source := strings.TrimSpace(match.IgnoreSource)
 			if source == "" {
@@ -1974,10 +2262,40 @@ func targetMatchLabels(matches []targetMatch) ([]string, map[string]targetMatch)
 			}
 			label = fmt.Sprintf("[ignored %s %s] %s", match.Kind, source, match.Path)
 		}
-		labels = append(labels, label)
-		index[label] = match
+		labels = append(labels, strings.Join([]string{
+			label,
+			match.Path,
+			targetMatchPreviewKind(match),
+			targetMatchPreviewState(match),
+		}, "\t"))
+		index[match.Path] = match
 	}
 	return labels, index
+}
+
+func targetMatchPreviewKind(match targetMatch) string {
+	switch match.Kind {
+	case "all", treeTargetKindDir:
+		return treeTargetKindDir
+	case treeTargetKindFile:
+		return treeTargetKindFile
+	default:
+		return normalizeTreeTargetKind(match.Kind)
+	}
+}
+
+func targetMatchPreviewState(match targetMatch) string {
+	if state := normalizeTreeTargetState(match.State); state != "" {
+		return state
+	}
+	switch targetMatchPreviewKind(match) {
+	case treeTargetKindDir:
+		return treeTargetStateOK
+	case treeTargetKindFile:
+		return treeTargetStateText
+	default:
+		return ""
+	}
 }
 
 func targetMatchKey(match targetMatch) string {
@@ -1985,11 +2303,31 @@ func targetMatchKey(match targetMatch) string {
 }
 
 func safeTargetPickerHeader() string {
-	return "Type part of a directory or file name to filter the list.\nUse Up/Down arrow keys to move, Enter to confirm, Tab to multi-select, Ctrl-O to browse ignored targets."
+	return pickerHeader(
+		"Type part of a directory or file name to filter the list.",
+		"Enter confirms the current selection.",
+		"Tab multi-selects; Ctrl-O browses ignored targets.",
+		"Use Up/Down arrow keys to move, Esc to cancel.",
+	)
 }
 
 func ignoredTargetPickerHeader() string {
-	return "Type part of an ignored directory or file name to filter the list.\nUse Up/Down arrow keys to move, Enter to add as --include, Tab to multi-select, Esc to cancel."
+	return pickerHeader(
+		"Matches authorize ignored paths from .gitignore or .hiss.",
+		"Enter continues with the current selection as --include.",
+		"Tab marks paths; Alt-A toggles all visible matches.",
+		"Use Up/Down arrow keys to move, Esc to cancel.",
+	)
+}
+
+func pickerHeader(lines ...string) string {
+	if len(lines) > 4 {
+		lines = lines[:4]
+	}
+	for len(lines) < 4 {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func targetNotFoundWarning(target string, scopeIndex int, colors colorPalette) string {

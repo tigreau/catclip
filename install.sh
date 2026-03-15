@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 # install.sh prefers a local source build when run from a cloned checkout and
 # otherwise falls back to installing a prebuilt release bundle. Packaged
@@ -7,6 +7,7 @@ set -euo pipefail
 # does not fall back to user PATH copies.
 
 PROGRAM_NAME="catclip"
+TREE_PROGRAM_NAME="catclip-tree"
 RELEASE_BASE_URL="${CATCLIP_RELEASE_BASE_URL:-https://github.com/tigreau/catclip/releases}"
 INSTALL_VERSION="${CATCLIP_INSTALL_VERSION:-latest}"
 PREFIX="${PREFIX:-/usr/local}"
@@ -35,8 +36,47 @@ die() {
   exit 1
 }
 
+on_unexpected_error() {
+  local exit_code="$1"
+  local line_no="$2"
+  local cmd="$3"
+
+  trap - ERR
+  if [[ "$exit_code" -eq 0 ]]; then
+    return 0
+  fi
+
+  if [[ "${CATCLIP_INSTALL_DEBUG:-0}" == "1" ]]; then
+    printf '%sError:%s install.sh failed at line %s while running: %s\n' \
+      "$RED" "$RESET" "$line_no" "$cmd" >&2
+  else
+    printf '%sError:%s installation failed.\n' "$RED" "$RESET" >&2
+    printf '  Re-run with %sCATCLIP_INSTALL_DEBUG=1%s for more details.\n' \
+      "$CYAN" "$RESET" >&2
+  fi
+  exit "$exit_code"
+}
+
+install_err_trap() {
+  trap 'on_unexpected_error $? $LINENO "$BASH_COMMAND"' ERR
+}
+
+install_err_trap
+
 note() {
   printf '%sNote:%s %s\n' "$YELLOW" "$RESET" "$*"
+}
+
+run_expected_failure_ok() {
+  local status
+
+  trap - ERR
+  set +e
+  "$@"
+  status=$?
+  set -e
+  install_err_trap
+  return "$status"
 }
 
 need_cmd() {
@@ -147,12 +187,22 @@ download_file() {
   local dest="$2"
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$dest"
-    return
+    if run_expected_failure_ok curl -fsSL "$url" -o "$dest"; then
+      return
+    fi
+    rm -f "$dest"
+    die "failed to download $url
+  The requested catclip release bundle may not be published yet.
+  Try again later, or install from a cloned checkout with ./install.sh."
   fi
   if command -v wget >/dev/null 2>&1; then
-    wget -qO "$dest" "$url"
-    return
+    if run_expected_failure_ok wget -qO "$dest" "$url"; then
+      return
+    fi
+    rm -f "$dest"
+    die "failed to download $url
+  The requested catclip release bundle may not be published yet.
+  Try again later, or install from a cloned checkout with ./install.sh."
   fi
   die "curl or wget is required to download catclip"
 }
@@ -162,12 +212,18 @@ try_download_file() {
   local dest="$2"
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$url" -o "$dest"
-    return
+    if run_expected_failure_ok curl -fsSL "$url" -o "$dest"; then
+      return
+    fi
+    rm -f "$dest"
+    return 1
   fi
   if command -v wget >/dev/null 2>&1; then
-    wget -qO "$dest" "$url"
-    return
+    if run_expected_failure_ok wget -qO "$dest" "$url"; then
+      return
+    fi
+    rm -f "$dest"
+    return 1
   fi
   return 1
 }
@@ -264,6 +320,7 @@ if SOURCE_DIR="$(find_local_source_dir)"; then
 
   VERSION_FILE="$SOURCE_DIR/VERSION"
   BINARY_FILE="$TMP_ROOT/$PROGRAM_NAME"
+  TREE_BINARY_FILE="$TMP_ROOT/$TREE_PROGRAM_NAME"
   RG_FILE="$TMP_ROOT/rg"
   FZF_FILE="$TMP_ROOT/fzf"
   VERSION="$(tr -d '\r' < "$VERSION_FILE" | head -n 1)"
@@ -275,6 +332,9 @@ if SOURCE_DIR="$(find_local_source_dir)"; then
   (
     cd "$SOURCE_DIR"
     go build -trimpath -o "$BINARY_FILE" ./cmd/catclip
+    if [[ -f "./cmd/catclip-tree/main.go" ]]; then
+      go build -trimpath -o "$TREE_BINARY_FILE" ./cmd/catclip-tree
+    fi
   )
 else
   ARCHIVE_PATH="$TMP_ROOT/$ASSET_NAME"
@@ -289,7 +349,7 @@ else
       printf 'Verifying checksum...\n'
       verify_checksum "$ASSET_NAME" "$ARCHIVE_PATH" "$CHECKSUMS_PATH"
     else
-      printf '%sWarning:%s failed to download checksums; skipping verification.\n' "$YELLOW" "$RESET" >&2
+      printf '%sWarning:%s failed to download %s; skipping verification.\n' "$YELLOW" "$RESET" "$(build_release_url "$CHECKSUMS_NAME")" >&2
     fi
   fi
 
@@ -297,6 +357,7 @@ else
 
   VERSION_FILE="$TMP_ROOT/VERSION"
   BINARY_FILE="$TMP_ROOT/$PROGRAM_NAME"
+  TREE_BINARY_FILE="$TMP_ROOT/$TREE_PROGRAM_NAME"
   RG_FILE="$TMP_ROOT/bin/rg"
   FZF_FILE="$TMP_ROOT/bin/fzf"
   [[ -f "$VERSION_FILE" ]] || die "release archive is missing VERSION"
@@ -309,12 +370,18 @@ else
 fi
 
 install_file 755 "$BINARY_FILE" "$BIN_DIR/$PROGRAM_NAME"
+if [[ -f "$TREE_BINARY_FILE" ]]; then
+  install_file 755 "$TREE_BINARY_FILE" "$BIN_DIR/$TREE_PROGRAM_NAME"
+fi
 install_file 644 "$VERSION_FILE" "$SHARE_DIR/VERSION"
 install_file 755 "$RG_FILE" "$TOOLS_DIR/rg"
 install_file 755 "$FZF_FILE" "$TOOLS_DIR/fzf"
 
 printf '%sDone.%s\n' "$GREEN" "$RESET"
 printf '  Binary:  %s%s%s\n' "$CYAN" "$BIN_DIR/$PROGRAM_NAME" "$RESET"
+if [[ -f "$TREE_BINARY_FILE" ]]; then
+  printf '  Tree:    %s%s%s\n' "$CYAN" "$BIN_DIR/$TREE_PROGRAM_NAME" "$RESET"
+fi
 printf '  Version: %s%s%s\n' "$CYAN" "$VERSION" "$RESET"
 printf '  rg:      %s%s%s\n' "$CYAN" "$TOOLS_DIR/rg" "$RESET"
 printf '  fzf:     %s%s%s\n' "$CYAN" "$TOOLS_DIR/fzf" "$RESET"

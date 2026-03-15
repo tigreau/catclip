@@ -9,6 +9,7 @@ BIN_DIR="$PREFIX/bin"
 SHARE_DIR="$PREFIX/share/catclip"
 TOOLS_DIR="$SHARE_DIR/bin"
 TARGET="$BIN_DIR/catclip"
+TREE_TARGET="$BIN_DIR/catclip-tree"
 VERSION_FILE="$SHARE_DIR/VERSION"
 RG_FILE="$TOOLS_DIR/rg"
 FZF_FILE="$TOOLS_DIR/fzf"
@@ -92,6 +93,11 @@ if [[ -e "$TARGET" ]]; then
   remove_path "$TARGET"
 else
   printf '%sNotice:%s %s not found\n' "$YELLOW" "$RESET" "$TARGET"
+fi
+
+if [[ -e "$TREE_TARGET" ]]; then
+  printf 'Removing %s%s%s\n' "$CYAN" "$TREE_TARGET" "$RESET"
+  remove_path "$TREE_TARGET"
 fi
 
 if [[ -e "$VERSION_FILE" ]]; then

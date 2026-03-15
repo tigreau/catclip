@@ -54,10 +54,6 @@ func discoverFilesUnder(workingDir, rootAbs, rootRel string, matcher scopeMatche
 				return nil
 			}
 		}
-		if len(matcher.only) > 0 && !matcher.matchesOnly(rel) {
-			return nil
-		}
-
 		if rootBypass != nil {
 			entry = withBypass(entry, "direct", *rootBypass)
 		}
@@ -120,9 +116,6 @@ func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string,
 			if ignored, _ := matcher.fileIgnored(rel); ignored {
 				return nil
 			}
-		}
-		if len(matcher.only) > 0 && !matcher.matchesOnly(rel) {
-			return nil
 		}
 		if excludedTextLikeAsset(rel) {
 			return nil

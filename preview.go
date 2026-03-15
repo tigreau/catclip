@@ -5,10 +5,11 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	treepkg "github.com/tigreau/catclip/internal/tree"
 )
 
 func buildOutputReport(cfg runConfig, gitCtx gitContext, entries []fileEntry, notices []string) (outputReport, error) {
@@ -30,10 +31,9 @@ func buildOutputReport(cfg runConfig, gitCtx gitContext, entries []fileEntry, no
 			}
 		}
 		report.modeTags = buildPreviewModeTags(entries, report.statuses)
-		report.landmarks = detectLandmarkDirs(entries)
 	}
 
-	report.humanSize, report.tokens = formatSizeAndTokens(totalBytes, len(entries))
+	report.humanSize, report.tokens = treepkg.FormatSizeAndTokens(totalBytes, len(entries))
 	report.fileWord = "files"
 	if len(entries) == 1 {
 		report.fileWord = "file"
@@ -44,6 +44,9 @@ func buildOutputReport(cfg runConfig, gitCtx gitContext, entries []fileEntry, no
 func needsTreeRender(cfg runConfig) bool {
 	if cfg.NoTree {
 		return false
+	}
+	if cfg.TreePayload {
+		return true
 	}
 	if cfg.Preview {
 		return true
@@ -64,7 +67,7 @@ func renderPreview(cfg runConfig, gitCtx gitContext, entries []fileEntry, report
 	}
 
 	if !cfg.NoTree {
-		if err := printPreviewTree(stdout, entries, report.sizes, report.statuses, report.modeTags, report.landmarks, colors); err != nil {
+		if err := printPreviewTree(stdout, entries, report.sizes, report.statuses, report.modeTags, colors); err != nil {
 			return err
 		}
 	}
@@ -81,7 +84,7 @@ func writeNormalDiagnostics(cfg runConfig, gitCtx gitContext, entries []fileEntr
 			return false, err
 		}
 		if !cfg.NoTree {
-			if err := printPreviewTree(stderr, entries, report.sizes, report.statuses, report.modeTags, report.landmarks, colors); err != nil {
+			if err := printPreviewTree(stderr, entries, report.sizes, report.statuses, report.modeTags, colors); err != nil {
 				return false, err
 			}
 		}
@@ -165,14 +168,10 @@ func buildBypassNotices(entries []fileEntry) []string {
 }
 
 func writeSummary(w io.Writer, report outputReport, colors colorPalette) error {
-	if _, err := fmt.Fprintf(w, "\n  %s%-8s%s %s%d %s%s\n", colors.Label, "Count:", colors.Reset, colors.Value, len(report.sizes), report.fileWord, colors.Reset); err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(w, "  %s%-8s%s %s%s%s\n", colors.Label, "Size:", colors.Reset, colors.Value, report.humanSize, colors.Reset); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(w, "  %s%-8s%s %s~%d%s\n", colors.Label, "Tokens:", colors.Reset, colors.Value, report.tokens, colors.Reset)
-	return err
+	return renderTreeSummarySection(w, buildTreeSummaryFromReport(report), treeRenderOptions{
+		ShowSummary: true,
+		ShowTokens:  true,
+	}, colors)
 }
 
 func writeClipboardSuccess(w io.Writer, entries []fileEntry, colors colorPalette) error {
@@ -342,42 +341,6 @@ func previewGitStatusPathspecs(gitCtx gitContext, entries []fileEntry) []string 
 	return pathspecs
 }
 
-func detectLandmarkDirs(entries []fileEntry) map[string]bool {
-	nameCounts := map[string]map[string]struct{}{}
-	for _, entry := range entries {
-		dir := path.Dir(entry.RelPath)
-		if dir == "." {
-			continue
-		}
-		accum := ""
-		for _, segment := range strings.Split(dir, "/") {
-			if segment == "" || segment == "." {
-				continue
-			}
-			if accum == "" {
-				accum = segment
-			} else {
-				accum = accum + "/" + segment
-			}
-			if nameCounts[segment] == nil {
-				nameCounts[segment] = map[string]struct{}{}
-			}
-			nameCounts[segment][accum] = struct{}{}
-		}
-	}
-
-	landmarks := map[string]bool{}
-	for _, paths := range nameCounts {
-		if len(paths) <= 1 {
-			continue
-		}
-		for full := range paths {
-			landmarks[full] = true
-		}
-	}
-	return landmarks
-}
-
 func buildPreviewModeTags(entries []fileEntry, statuses map[string]string) map[string]string {
 	tags := make(map[string]string)
 	for _, entry := range entries {
@@ -396,169 +359,41 @@ func buildPreviewModeTags(entries []fileEntry, statuses map[string]string) map[s
 
 // printPreviewTree renders the compact directory tree shown before clipboard or
 // stdout emission, including bypass coloring and target path hints.
-func printPreviewTree(w io.Writer, entries []fileEntry, sizes map[string]int64, statuses map[string]string, modeTags map[string]string, landmarks map[string]bool, colors colorPalette) error {
-	lastParts := []string{}
-	lineCount := 0
+func printPreviewTree(w io.Writer, entries []fileEntry, sizes map[string]int64, statuses map[string]string, modeTags map[string]string, colors colorPalette) error {
+	docEntries := make([]treeDocumentEntry, 0, len(entries))
 	for _, entry := range entries {
-		parts := strings.Split(entry.RelPath, "/")
-		fileIndex := len(parts) - 1
-
-		common := 0
-		for common < fileIndex && common < len(lastParts) && lastParts[common] == parts[common] {
-			common++
+		treeEntry := treeDocumentEntry{
+			Path:        entry.RelPath,
+			GitStatus:   statuses[entry.RelPath],
+			ModeTag:     modeTags[entry.RelPath],
+			TargetRoot:  entry.TargetRoot,
+			Bypassed:    entry.Bypassed,
+			BlockRule:   entry.BlockRule,
+			BlockSource: entry.BlockSource,
 		}
-
-		accum := ""
-		for i := 0; i < fileIndex; i++ {
-			if accum == "" {
-				accum = parts[i]
-			} else {
-				accum += "/" + parts[i]
-			}
-			if i < common {
-				continue
-			}
-
-			prefix := treeIndent(i, colors)
-			label := parts[i] + "/"
-			targetHint := shouldShowTargetPathHint(entry.TargetRoot, accum)
-			if i > 0 && (targetHint || landmarks[accum] || lineCount >= 24) {
-				label += " " + colors.Dim + "(" + accum + "/)" + colors.Reset
-				lineCount = 0
-			}
-			dirColor := colors.Dir
-			if bypassesDirectoryLabel(entry, accum) {
-				dirColor = colors.Err
-			}
-			if _, err := fmt.Fprintf(w, "%s%s%s%s\n", prefix, dirColor, label, colors.Reset); err != nil {
-				return err
-			}
-			lineCount++
-		}
-
-		filePrefix := treeIndent(fileIndex, colors)
-		if fileIndex == 0 {
-			filePrefix = colors.Tree + "├── " + colors.Reset
-		}
-		nameColor := ""
-		nameReset := ""
-		if entry.Bypassed {
-			nameColor = colors.Err
-			nameReset = colors.Reset
-		}
-		fileLine := filePrefix + nameColor + parts[fileIndex] + nameReset
 		if size, ok := sizes[entry.RelPath]; ok {
-			if entry.Bypassed {
-				fileLine += " " + colors.Err + "(" + formatInlineSize(size) + ")" + colors.Reset
-			} else {
-				fileLine += " " + styleSize(formatInlineSize(size), size, colors)
-			}
+			sizeCopy := size
+			treeEntry.Size = &sizeCopy
 		}
-		if status := statuses[entry.RelPath]; status != "" {
-			fileLine += " " + styleStatus(status, colors)
-		}
-		if tag := modeTags[entry.RelPath]; tag != "" {
-			fileLine += " " + colors.Git + "[" + tag + "]" + colors.Reset
-		}
-		if _, err := fmt.Fprintln(w, fileLine); err != nil {
-			return err
-		}
-		lineCount++
-		lastParts = parts[:fileIndex]
+		docEntries = append(docEntries, treeEntry)
 	}
-	return nil
-}
-
-func shouldShowTargetPathHint(targetRoot, accum string) bool {
-	targetRoot = normalizeRelPath(targetRoot)
-	if targetRoot == "." || targetRoot == "" {
-		return false
-	}
-	if !strings.Contains(targetRoot, "/") {
-		return false
-	}
-	return targetRoot == accum
+	return renderTreeDocument(w, treeDocument{
+		Mode:    treeDocumentModeTree,
+		Entries: docEntries,
+	}, treeRenderOptions{
+		ShowSizes:     true,
+		ShowGitStatus: true,
+		ShowSummary:   false,
+		ShowTokens:    false,
+	}, colors)
 }
 
 func bypassesDirectoryLabel(entry fileEntry, relDir string) bool {
-	if !entry.Bypassed {
-		return false
-	}
-	targetRoot := normalizeRelPath(entry.TargetRoot)
-	if targetRoot != "" && targetRoot != "." && targetRoot != entry.RelPath {
-		if relDir == targetRoot || strings.HasPrefix(relDir, targetRoot+"/") {
-			return true
-		}
-	}
-	if entry.BlockRule == "" || !strings.HasSuffix(entry.BlockRule, "/") {
-		return false
-	}
-	ruleName := path.Base(strings.TrimSuffix(entry.BlockRule, "/"))
-	return path.Base(relDir) == ruleName
-}
-
-func treeIndent(depth int, colors colorPalette) string {
-	if depth <= 0 {
-		return ""
-	}
-	return strings.Repeat(colors.Tree+"│   "+colors.Reset, depth) + colors.Tree + "├── " + colors.Reset
-}
-
-func styleSize(label string, size int64, colors colorPalette) string {
-	switch {
-	case size < 40000:
-		return colors.Dim + "(" + label + ")" + colors.Reset
-	case size < 200000:
-		return colors.Warn + "(" + label + ")" + colors.Reset
-	default:
-		return colors.Err + "(" + label + ")" + colors.Reset
-	}
-}
-
-func styleStatus(status string, colors colorPalette) string {
-	switch status {
-	case "SM":
-		return colors.Warn + "[SM]" + colors.Reset
-	case "M":
-		return colors.Warn + "[M]" + colors.Reset
-	case "S":
-		return colors.OK + "[S]" + colors.Reset
-	case "?":
-		return colors.Git + "[?]" + colors.Reset
-	default:
-		return "[" + status + "]"
-	}
-}
-
-func formatInlineSize(bytes int64) string {
-	switch {
-	case bytes < 1024:
-		return fmt.Sprintf("%dB", bytes)
-	case bytes < 1024*1024:
-		return fmt.Sprintf("%.1fKB", float64(bytes)/1024)
-	default:
-		return fmt.Sprintf("%.1fMB", float64(bytes)/(1024*1024))
-	}
-}
-
-func formatSizeAndTokens(totalBytes int64, fileCount int) (string, int64) {
-	const (
-		kb = 1024
-		mb = 1024 * kb
-		gb = 1024 * mb
-	)
-
-	totalBytes += int64(fileCount) * 30
-	tokens := totalBytes / 4
-
-	switch {
-	case totalBytes < kb:
-		return fmt.Sprintf("%.2fB", float64(totalBytes)), tokens
-	case totalBytes < mb:
-		return fmt.Sprintf("%.2fKB", float64(totalBytes)/kb), tokens
-	case totalBytes < gb:
-		return fmt.Sprintf("%.2fMB", float64(totalBytes)/mb), tokens
-	default:
-		return fmt.Sprintf("%.2fGB", float64(totalBytes)/gb), tokens
-	}
+	return bypassesTreeDirectoryLabel(treeDocumentEntry{
+		Path:        entry.RelPath,
+		TargetRoot:  entry.TargetRoot,
+		Bypassed:    entry.Bypassed,
+		BlockRule:   entry.BlockRule,
+		BlockSource: entry.BlockSource,
+	}, relDir)
 }

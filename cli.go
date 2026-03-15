@@ -41,6 +41,12 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		if err := validateImplementedFeatureSet(cfg); err != nil {
 			return err
 		}
+		if cfg.FilePreview {
+			return runInternalFilePreview(cfg, stdout)
+		}
+		if cfg.ContainsList {
+			return runInternalContainsList(cfg, stdout)
+		}
 
 		colors := activeColorPalette()
 		started := time.Now()
@@ -88,6 +94,38 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		}
 		discoverySpinnerStop()
 		allEntries = dedupeEntriesByPath(allEntries)
+		if cfg.TreePayload {
+			hadErrorDiagnostic := false
+			for _, diag := range diagnostics {
+				if !diag.isError {
+					continue
+				}
+				hadErrorDiagnostic = true
+				fmt.Fprintln(stderr, diag.message)
+			}
+			if hadErrorDiagnostic {
+				return newExitError(1, "")
+			}
+			if len(allEntries) == 0 {
+				doc, ok := buildEmptyTreeDocument(cfg)
+				if !ok {
+					if err := writeNoFilesMatchedMessage(cfg, stderr, colors, hadSelectionCancel); err != nil {
+						return err
+					}
+					return newExitError(1, "")
+				}
+				return encodeTreePayload(stdout, doc)
+			}
+			reportStarted := time.Now()
+			report, err := buildOutputReport(cfg, gitCtx, allEntries, dedupePreserveOrder(notices))
+			if err != nil {
+				return err
+			}
+			if cfg.Verbose {
+				fmt.Fprintf(stderr, "[verbose] report: %s\n", formatDuration(time.Since(reportStarted)))
+			}
+			return encodeTreePayload(stdout, buildTreeDocumentFromPreview(cfg, allEntries, report))
+		}
 		for _, diag := range diagnostics {
 			if diag.isError || !cfg.Quiet {
 				fmt.Fprintln(stderr, diag.message)
@@ -140,8 +178,11 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			return err
 		}
 		outputSpinnerStop := func() {}
-		if !cfg.Quiet {
+		if !cfg.Quiet && cfg.OutputMode == outputModeClipboard {
 			outputSpinnerStop = startLoadingSpinner(spinnerOutputFile(stderr), outputSpinnerMessage(cfg))
+		}
+		if shouldSeparateStdoutPayload(cfg, stdout, stderr) {
+			fmt.Fprintln(stderr)
 		}
 		outputStarted := time.Now()
 		emitStats, err := emitFullOutput(cfg, gitCtx, allEntries, stdout, colors)
@@ -168,6 +209,20 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown action %q", cfg.Action)
 	}
+}
+
+func shouldSeparateStdoutPayload(cfg runConfig, stdout, stderr io.Writer) bool {
+	if cfg.OutputMode != outputModeStdout || cfg.Quiet {
+		return false
+	}
+	stdoutFile := spinnerOutputFile(stdout)
+	if stdoutFile == nil || !isTerminalFile(stdoutFile) {
+		return false
+	}
+	if stderrFile := spinnerOutputFile(stderr); stderrFile != nil && !isTerminalFile(stderrFile) {
+		return false
+	}
+	return true
 }
 
 func collectVerboseOutputMetrics(verbose bool, gitCtx gitContext, entries []fileEntry) (verboseOutputMetrics, error) {
@@ -303,6 +358,10 @@ func activeColorPaletteForWriter(w io.Writer) colorPalette {
 	if !ok || os.Getenv("NO_COLOR") != "" || !isTerminalFile(file) {
 		return colorPalette{}
 	}
+	return ansiColorPalette()
+}
+
+func ansiColorPalette() colorPalette {
 	return colorPalette{
 		Reset:  "\033[0m",
 		Bold:   "\033[1m",
@@ -588,6 +647,7 @@ func parseArgs(args []string) (runConfig, error) {
 	}
 
 	var current scopeBuilder
+	inModifierMode := false
 
 	finalize := func() error {
 		if !current.hasContent() {
@@ -619,6 +679,7 @@ func parseArgs(args []string) (runConfig, error) {
 
 		cfg.Scopes = append(cfg.Scopes, s)
 		current = scopeBuilder{}
+		inModifierMode = false
 		return nil
 	}
 
@@ -652,51 +713,113 @@ func parseArgs(args []string) (runConfig, error) {
 			cfg.NoTree = true
 		case "--preview":
 			cfg.Preview = true
+		case "--internal-tree-payload":
+			cfg.TreePayload = true
+			cfg.Print = true
+			cfg.Quiet = true
+			cfg.OutputMode = outputModeStdout
+		case "--internal-tree-target":
+			if i+1 >= len(args) {
+				return runConfig{}, newUsageError("Error: --internal-tree-target requires a path.")
+			}
+			i++
+			cfg.TreeTarget = args[i]
+		case "--internal-tree-kind":
+			if i+1 >= len(args) {
+				return runConfig{}, newUsageError("Error: --internal-tree-kind requires a value.")
+			}
+			i++
+			cfg.TreeKind = args[i]
+		case "--internal-tree-state":
+			if i+1 >= len(args) {
+				return runConfig{}, newUsageError("Error: --internal-tree-state requires a value.")
+			}
+			i++
+			cfg.TreeState = args[i]
+		case "--internal-file-preview":
+			cfg.FilePreview = true
+			cfg.Print = true
+			cfg.Quiet = true
+			cfg.OutputMode = outputModeStdout
+		case "--internal-file-path":
+			if i+1 >= len(args) {
+				return runConfig{}, newUsageError("Error: --internal-file-path requires a path.")
+			}
+			i++
+			cfg.FilePath = args[i]
+		case "--internal-contains-list":
+			cfg.ContainsList = true
+			cfg.Print = true
+			cfg.Quiet = true
+			cfg.OutputMode = outputModeStdout
 		case "--changed":
+			inModifierMode = true
 			current.explicitChanged = true
 			current.Changed = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageChanged})
 		case "--staged":
+			inModifierMode = true
 			current.Staged = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageStaged})
 		case "--unstaged":
+			inModifierMode = true
 			current.Unstaged = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageUnstaged})
 		case "--untracked":
+			inModifierMode = true
 			current.Untracked = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageUntracked})
 		case "--diff":
+			inModifierMode = true
 			current.Diff = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageDiff})
 		case "--snippet":
+			inModifierMode = true
 			current.Snippet = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageSnippet})
 		case "--then":
 			if err := finalize(); err != nil {
 				return runConfig{}, err
 			}
 		case "--":
 			current.Targets = append(current.Targets, args[i+1:]...)
+			current.explicitTargets += len(args[i+1:])
 			i = len(args)
 		case "--only":
-			if i+1 >= len(args) {
+			inModifierMode = true
+			values, next := consumeModifierValues(args, i+1)
+			if len(values) == 0 {
 				return runConfig{}, newUsageError("Error: --only requires a pattern.\n  Example: catclip src --only '*.ts'")
 			}
-			i++
-			current.Only = append(current.Only, args[i])
+			current.Only = append(current.Only, values...)
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageOnly, Values: append([]string(nil), values...)})
+			i = next - 1
 		case "--include":
-			if i+1 >= len(args) {
+			inModifierMode = true
+			values, next := consumeModifierValues(args, i+1)
+			if len(values) == 0 {
 				return runConfig{}, newUsageError("Error: --include requires a target query.\n  Example: catclip --include node_modules\n  Example: catclip src --include .env")
 			}
-			i++
-			current.Targets = append(current.Targets, args[i])
-			current.IncludedTargets = append(current.IncludedTargets, args[i])
+			current.IncludedTargets = append(current.IncludedTargets, values...)
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageInclude, Values: append([]string(nil), values...)})
+			i = next - 1
 		case "--exclude":
-			if i+1 >= len(args) {
+			inModifierMode = true
+			values, next := consumeModifierValues(args, i+1)
+			if len(values) == 0 {
 				return runConfig{}, newUsageError("Error: --exclude requires a pattern.\n  Example: catclip src --exclude '*.test.*'")
 			}
-			i++
-			current.Exclude = append(current.Exclude, splitCommaPatterns(args[i])...)
+			current.Exclude = append(current.Exclude, values...)
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageExclude, Values: append([]string(nil), values...)})
+			i = next - 1
 		case "--contains":
+			inModifierMode = true
 			if i+1 >= len(args) {
 				return runConfig{}, newUsageError("Error: --contains requires a regex pattern.\n  Example: catclip src --contains 'TODO'")
 			}
 			i++
 			current.Contains = args[i]
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageContains, Values: []string{args[i]}})
 			if looksLikeGlobConfusion(current.Contains) {
 				cfg.Warnings = append(cfg.Warnings, "Warning: --contains uses regex, not globs. Did you mean '.*' instead of '*'?\n  Example: --contains 'use.*Context' (not 'use*Context')")
 			}
@@ -709,7 +832,11 @@ func parseArgs(args []string) (runConfig, error) {
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
 				return runConfig{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
 			default:
+				if inModifierMode {
+					return runConfig{}, newUsageError("Error: positional targets must come before modifiers.\n  Add targets first, use --include, or use --then for a new scope.")
+				}
 				current.Targets = append(current.Targets, arg)
+				current.explicitTargets++
 			}
 		}
 	}
@@ -726,7 +853,8 @@ func parseArgs(args []string) (runConfig, error) {
 }
 
 func (b scopeBuilder) hasContent() bool {
-	return len(b.Targets) > 0 || len(b.Only) > 0 || len(b.Exclude) > 0 ||
+	return len(b.Targets) > 0 || len(b.IncludedTargets) > 0 || len(b.Only) > 0 || len(b.Exclude) > 0 ||
+		len(b.Stages) > 0 ||
 		b.Contains != "" || b.Snippet || b.Changed || b.Staged || b.Unstaged ||
 		b.Untracked || b.Diff || b.explicitChanged
 }
@@ -741,6 +869,33 @@ func splitCommaPatterns(value string) []string {
 		out = append(out, part)
 	}
 	return out
+}
+
+func consumeModifierValues(args []string, start int) ([]string, int) {
+	values := make([]string, 0, len(args)-start)
+	i := start
+	for i < len(args) {
+		if isModifierBoundaryToken(args[i]) {
+			break
+		}
+		values = append(values, args[i])
+		i++
+	}
+	return values, i
+}
+
+func isModifierBoundaryToken(arg string) bool {
+	if arg == "--then" || arg == "--" {
+		return true
+	}
+	switch arg {
+	case "--include", "--only", "--exclude", "--contains",
+		"--changed", "--staged", "--unstaged", "--untracked", "--diff", "--snippet",
+		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-t", "--no-tree",
+		"--preview", "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
+		return true
+	}
+	return strings.HasPrefix(arg, "--")
 }
 
 func warnDirectoryPatternSemantics(cfg runConfig, baseRules []ignoreRule, stderr io.Writer, colors colorPalette) (bool, error) {

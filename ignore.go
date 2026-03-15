@@ -118,6 +118,18 @@ func loadIgnoreRules() ([]ignoreRule, error) {
 	return parseHiss(string(data))
 }
 
+func loadProjectGitignoreRules(workingDir string) ([]ignoreRule, error) {
+	path := filepath.Join(workingDir, ".gitignore")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return parseProjectGitignore(string(data))
+}
+
 func ensureGlobalHiss() (string, error) {
 	path := globalHissPath()
 	if _, err := os.Stat(path); err == nil {
@@ -174,15 +186,36 @@ func parseHiss(contents string) ([]ignoreRule, error) {
 	return rules, nil
 }
 
-// buildScopeMatcher compiles global ignore rules plus per-scope modifiers into
-// the matcher used during discovery and direct-target checks.
-func buildScopeMatcher(baseRules []ignoreRule, s scope) (scopeMatcher, error) {
-	// Match the current flow: start from global .hiss rules, then append
-	// additional rules from --exclude for this scope.
-	rules := append([]ignoreRule(nil), baseRules...)
-	for _, exclude := range s.Exclude {
-		rules = append(rules, makeIgnoreRule(exclude))
+func parseProjectGitignore(contents string) ([]ignoreRule, error) {
+	lines := strings.Split(contents, "\n")
+	rules := make([]ignoreRule, 0, len(lines))
+	for _, line := range lines {
+		if idx := strings.Index(line, "#"); idx >= 0 {
+			line = line[:idx]
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "!") {
+			// The local non-git fallback intentionally ignores negate rules for
+			// now. catclip only needs a conservative ignored-target model here.
+			continue
+		}
+		line = strings.TrimPrefix(line, "/")
+		if line == "" {
+			continue
+		}
+		rules = append(rules, makeIgnoreRule(line))
 	}
+	return rules, nil
+}
+
+// buildScopeMatcher compiles global ignore rules into the matcher used during
+// discovery and direct-target checks. Scope-level modifier stages are applied
+// later in evaluation order, not baked into discovery.
+func buildScopeMatcher(baseRules []ignoreRule, s scope) (scopeMatcher, error) {
+	rules := append([]ignoreRule(nil), baseRules...)
 
 	matcher := scopeMatcher{}
 	for _, rule := range rules {
@@ -201,13 +234,6 @@ func buildScopeMatcher(baseRules []ignoreRule, s scope) (scopeMatcher, error) {
 			compiled.raw = rule.Raw
 			matcher.ignoreDirs = append(matcher.ignoreDirs, compiled)
 		}
-	}
-	for _, only := range s.Only {
-		compiled, err := compileGlob(only)
-		if err != nil {
-			return scopeMatcher{}, newUsageError("Error: invalid --only glob %q.", only)
-		}
-		matcher.only = append(matcher.only, compiledGlob{raw: only, re: compiled})
 	}
 	return matcher, nil
 }
@@ -328,16 +354,6 @@ func matchDirRule(relPath string, rule compiledDirRule) bool {
 	return false
 }
 
-func (m scopeMatcher) fileAllowed(relPath string) bool {
-	if m.matchesOnly(relPath) {
-		return true
-	}
-	if ignored, _ := m.fileIgnored(relPath); ignored {
-		return false
-	}
-	return len(m.only) == 0
-}
-
 func (m scopeMatcher) fileIgnoredByFileRule(relPath string) (bool, string) {
 	basename := path.Base(relPath)
 	for _, rule := range m.ignoreFiles {
@@ -381,17 +397,4 @@ func (m scopeMatcher) dirIgnored(relPath string) (bool, string) {
 		}
 	}
 	return false, ""
-}
-
-func (m scopeMatcher) matchesOnly(relPath string) bool {
-	if len(m.only) == 0 {
-		return false
-	}
-	basename := path.Base(relPath)
-	for _, rule := range m.only {
-		if rule.re.MatchString(basename) || rule.re.MatchString(relPath) {
-			return true
-		}
-	}
-	return false
 }

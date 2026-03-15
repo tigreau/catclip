@@ -18,8 +18,8 @@ Don't worry about accidentally copying that `package-lock.json` or creating a `.
 - 🧩 **Multiple targets** - `catclip README.md src docs` in one run
 - 🧾 **File headers in output** - each file is wrapped in `<file path="path/to/file">` tags
 - 🌳 **Visual preview** - Tree view with file count, size, and token estimate before copying
-- 🙈 **Git-aware** - Respects `.gitignore`, filters by staged/unstaged/untracked, and can output diffs instead of full files
-- 🎛️ **Flexible ignores** - `--exclude "*.css"` to skip, `--include` to authorize blocked files or directories, `--only` to narrow authorized targets safely
+- 🙈 **Git-aware** - Respects safe discovery rules from `.gitignore` and `.hiss`, filters by staged/unstaged/untracked in git repos, and can output diffs instead of full files
+- 🎛️ **Flexible ignores** - `--exclude "*.css"` to skip, `--include` to authorize blocked files or directories from `.gitignore` or `.hiss`, `--only` to narrow authorized targets safely
 - 🛡️ **Secret protection** - Blocks `.env`, keys, credentials
 
 ---
@@ -69,6 +69,7 @@ SHARE_DIR="$PREFIX/share/catclip"
 mkdir -p "$BIN_DIR" "$SHARE_DIR"
 tar -xzf catclip_linux_amd64.tar.gz
 install -m 755 catclip "$BIN_DIR/catclip"
+install -m 755 catclip-tree "$BIN_DIR/catclip-tree"
 install -m 644 VERSION "$SHARE_DIR/VERSION"
 install -d "$SHARE_DIR/bin"
 install -m 755 bin/rg "$SHARE_DIR/bin/rg"
@@ -112,6 +113,7 @@ brew uninstall catclip
 
 # Manual binary install
 rm -f "$HOME/.local/bin/catclip" \
+      "$HOME/.local/bin/catclip-tree" \
       "$HOME/.local/share/catclip/VERSION" \
       "$HOME/.local/share/catclip/bin/rg" \
       "$HOME/.local/share/catclip/bin/fzf"
@@ -120,8 +122,11 @@ rm -f "$HOME/.local/bin/catclip" \
 
 ## Quick Start
 ```bash
-# Interactive target picking:
-catclip                     # Pick targets, then type modifiers like --only "*.ts"
+# Open the safe picker (interactive TTY):
+catclip
+
+# Open the modifier picker (interactive TTY):
+catclip --
 
 # Copy source directory:
 catclip src
@@ -162,7 +167,7 @@ catclip --include .env.production
 catclip --include coverage --only "*.json"
 
 # Output to screen (stdout) instead of clipboard:
-catclip --print src
+catclip src --print
 
 # Preview what would be copied (fast dry-run):
 catclip src --preview
@@ -219,6 +224,9 @@ With `--contains`, extract only the blank-line-bounded blocks around each match 
 catclip src --contains "TODO" --snippet        # Blocks around each TODO
 catclip . --contains "useState" --snippet      # React hook call-sites only
 ```
+If a match's blank-line-bounded block spans the whole file, `--snippet` can
+look identical to full-file output for that file even though snippet mode is
+active.
 
 ## Scopes
 Use `--then` to apply different modifiers to different targets:
@@ -228,20 +236,51 @@ catclip src --only "*.ts" --then tests --only "*.test.ts"
 #   Scope 2: tests — only test files
 ```
 Overlapping scopes are allowed; final copied files are deduplicated by path.
+A bare `--then` starts a normal new scope from `.`; it is not a "remaining
+files only" operator. Think of `--then` as the one-command equivalent of
+running multiple `catclip` scope commands and unioning their results.
 Without `--then`, all targets share the same modifiers:
 ```bash
 catclip src lib --only "*.ts"   # Both filtered to .ts files
 ```
 
+Within one scope, modifier stages are sequential.
+
+That means:
+
+- each `--only ...` occurrence is one narrowing stage
+- each `--exclude ...` occurrence is one removing stage
+- values inside one occurrence OR together
+- later stages run after earlier ones
+
+Example:
+
+```bash
+catclip src \
+  --only "*.ts" "*.tsx" \
+  --exclude "*.test.tsx" "*.stories.tsx" \
+  --only "*Auth*" "*Login*"
+```
+
+Meaning:
+
+1. start from `src`
+2. keep TypeScript files
+3. remove test and story files
+4. narrow again to files whose names match `*Auth*` or `*Login*`
+
+`--include` is intentionally different: it is an additive authorization stage,
+not a normal sequential filter stage like `--only` / `--exclude`.
+
 ---
 
 ## Configuration
 
-catclip uses `~/.config/catclip/.hiss` (gitignore-inspired syntax, created on first run) plus `.gitignore` in Git repos.
+catclip uses `~/.config/catclip/.hiss` (gitignore-inspired syntax, created on first run) plus the local project `.gitignore` as its safe discovery baseline.
 
 On first run, catclip creates the default `.hiss` and applies it immediately, so discovery is still safe from the start.
 
-That means you usually do not need to explain ignores every run: `.hiss` already blocks things like `.env.*`, `credentials.json`, `.idea/`, `.vscode/`, `tests/`, `fixtures/`, `coverage/`, and lockfiles such as `package-lock.json`, `Cargo.lock`, and `go.sum`.
+That means you usually do not need to explain ignores every run: `.hiss` plus local `.gitignore` already block things like `.env.*`, `credentials.json`, `.idea/`, `.vscode/`, `tests/`, `fixtures/`, `coverage/`, and lockfiles such as `package-lock.json`, `Cargo.lock`, and `go.sum`.
 
 ```
 # Example .hiss file (trailing / = directory)
@@ -261,7 +300,7 @@ For this run only:
 catclip src --exclude "*.test.*"           # skip test files
 catclip --include tests                    # authorize ignored tests/
 catclip --include .env.production          # authorize a blocked file
-catclip --include coverage --only "*.json" # authorize via include, then narrow
+catclip --include coverage --only "*.json" # authorize ignored coverage/, then narrow
 ```
 
 ---
@@ -274,12 +313,12 @@ catclip --include coverage --only "*.json" # authorize via include, then narrow
 | `-y`, `--yes` | Skip confirmation |
 | `-q`, `--quiet` | Suppress normal stderr output; in non-preview runs this also skips tree rendering and confirmation |
 | `-v`, `--verbose` | Show phase timings and debug info |
-| `--exclude GLOBS` | Add skip rules this run (comma-separated; trailing `/` = directory) |
-| `-p`, `--print` | Output to screen (stdout) instead of clipboard |
+| `--exclude VALUE...` | Add one exclude stage (values OR together; trailing `/` = directory) |
+| `-p`, `--print` | Output to screen (stdout) instead of clipboard; output spinner stays off so stdout remains clean, and interactive TTY runs add a stderr separator line before payload output |
 | `--hiss` | Open ignore config in editor |
 | `-t`, `--no-tree` | Skip tree rendering |
 | `--hiss-reset` | Restore default ignore config |
-| `--only GLOB` | Include only files matching shell glob (OR across repeats) |
+| `--only VALUE...` | Add one only stage (values OR together within that stage) |
 | `--changed` | All modified files: staged + unstaged + untracked (requires Git) |
 | `--staged` | Only staged files (git index) |
 | `--unstaged` | Only unstaged tracked modifications |
@@ -289,9 +328,16 @@ catclip --include coverage --only "*.json" # authorize via include, then narrow
 | `--snippet` | With `--contains`: emit only matched blocks (blank-line bounded) |
 | `--then` | Start a new scope (separate targets with different modifiers) |
 | `--preview` | Show file tree and token count without copying |
-| `--include QUERY` | Authorize an exact ignored target or browse ignored files/dirs for this scope |
+| `--include VALUE...` | Authorize one or more ignored targets for this scope |
 
 Full docs: `catclip --help`
+
+Stage semantics:
+
+- `--only` and `--exclude` are sequential stages within a scope
+- repeating them later starts another stage, not a global merged set
+- `--include` is additive and special: it authorizes ignored targets into the
+  current scope before later stages run
 
 ---
 
@@ -311,7 +357,7 @@ sudo dnf install xclip # or wl-clipboard for Wayland
 # Arch
 sudo pacman -S xclip # or wl-clipboard for Wayland
 ```
-Or output to screen (stdout): `catclip --print src > code.txt`
+Or output to screen (stdout): `catclip src --print > code.txt`
 
 </details>
 

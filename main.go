@@ -29,40 +29,45 @@ package catclip
 //      heuristics
 //   6. One Scope, One Meaning:
 //      targets come first, modifiers apply to that scope, and `--then` starts
-//      a new scope; scope grammar must stay deterministic, and coverage is
-//      path-subtree based rather than "conceptually related" (for example,
-//      selecting `src/vs` does not imply that later selecting `src` is
-//      redundant)
-//   7. Single Writer Integrity:
+//      a new scope; treat `--then` like starting a brand new catclip command
+//      on the same line and unioning the results; scope grammar must stay
+//      deterministic, and coverage is path-subtree based rather than
+//      "conceptually related" (for example, selecting `src/vs` does not imply
+//      that later selecting `src` is redundant)
+//   7. Stage Order Is Semantic:
+//      within one scope, `--only` and `--exclude` are sequential stages, not a
+//      globally merged rule set; values inside one occurrence OR together, and
+//      later occurrences run after earlier ones
+//   8. Single Writer Integrity:
 //      output order must stay deterministic, with one sink writer and loud
 //      failure on read/write errors
-//   8. Safe Path Is Fast Path:
+//   9. Safe Path Is Fast Path:
 //      normal visible discovery should stay on the optimized `.gitignore` +
 //      `.hiss` path, using rg for Git-visible files and applying `.hiss` in
 //      Go; slower ignored/bypass flows are acceptable off the hot path
-//   9. Interactive Is a Convenience Layer:
+//   10. Interactive Is a Convenience Layer:
 //      catclip is both a scripting CLI and an interactive tool, so complete
-//      deterministic commands must remain directly executable; the builder only
-//      helps resolve ambiguity or unfinished human input
-//  10. Classification Is Product Policy:
+//      deterministic commands must remain directly executable; startup `fzf`
+//      only helps resolve ambiguity or unfinished human input
+//  11. Classification Is Product Policy:
 //      known text/binary allowlists are intentional behavior, not incidental
 //      heuristics
-//  11. No Silent Skips:
+//  12. No Silent Skips:
 //      if catclip excludes or bypasses something significant, the user should
 //      get a visible reason unless they explicitly asked for quiet behavior
-//  12. Warnings Must Be Actionable:
+//  13. Warnings Must Be Actionable:
 //      diagnostics should tell the user what to do next, not only what went
 //      wrong
-//  13. Quiet Means Minimal UX, Not Different Semantics:
+//  14. Quiet Means Minimal UX, Not Different Semantics:
 //      `-q` may suppress presentation, prompts, and tree output, but it should
 //      not change what files are selected
-//  14. Builder State Must Be Reversible:
+//  15. Interactive Recovery State Must Be Reversible:
 //      invalid interactive input must never poison the current scope state or
 //      silently mutate the command being built
-//  15. Same Payload, Different Sink:
+//  16. Same Payload, Different Sink:
 //      stdout and clipboard modes may differ in transport cost, but they
 //      should emit the same payload bytes for the same resolved selection
-//  16. Bundled Tooling Is Part of the Product:
+//  17. Bundled Tooling Is Part of the Product:
 //      packaged installs must carry private fzf + ripgrep binaries; runtime
 //      should not silently fall back to arbitrary PATH copies, because PATH
 //      fallback reintroduces version drift, machine-specific behavior, weaker
@@ -78,7 +83,7 @@ package catclip
 //
 // CURRENT FILE GROUPS:
 //   - cli/help:       arg parsing, entry flow, prompts, help/version output
-//   - interactive:    picker-driven command builder
+//   - startup_picker: startup fzf recovery, modifier chaining, resolved-command echo
 //   - resolver:       target resolution and fzf integration
 //   - discovery:      walking, visibility indexes, file classification
 //   - content/ripgrep: content filtering and rg-backed helpers
@@ -130,7 +135,10 @@ package catclip
 //      - picker/index candidates are stored with RelPath first
 //      - AbsPath is materialized only when a file survives to real work
 //        like --contains, preview sizing, snippets/diffs, or final emission
-//   8. Apply git selectors and content selectors
+//   8. Apply scope stages in order:
+//      - `--include` adds authorized ignored targets into the working set
+//      - `--only` / `--exclude` run as sequential file-set stages
+//      - git selectors and `--contains` then filter the resulting set
 //   9. Build preview metadata and render the tree/summary when needed:
 //      - normal `-q` runs skip tree rendering and confirmation entirely
 //      - `-q` therefore makes `-y` and `-t` redundant in normal non-preview
@@ -205,7 +213,8 @@ package catclip
 //     visible-file discovery
 
 // PATH / PICKER RULES:
-//   - `catclip` with no args is the explicit interactive entrypoint
+//   - in an interactive TTY, bare `catclip` opens the safe-target picker with
+//     `[copy all files]` first; non-interactive runs still default to `.`
 //   - exact existing targets like `.`, `src`, or `dir/file` should run
 //     directly instead of opening fzf
 //   - slashless shorthand like `common`, `btn`, or `node` is picker territory
@@ -213,14 +222,12 @@ package catclip
 //     overloading `dir/` as "directories only" or treating `src/`
 //     differently from `src` was a bad plan and is intentionally rejected;
 //     we also rejected the idea that `dir/` should scope the picker to "all
-//     files under that dir" as a special interactive mode; exact paths should
+//     files under that dir" as a special mode; exact paths should
 //     stay exact, scoped path targets like `layout/Footer.tsx` still use
 //     normal resolution, and fuzzy file/directory discovery should be handled
 //     by fzf rather than by slash punctuation; if directory-only or
 //     directory-first picker modes return later, they should use explicit
 //     flags or picker toggles instead of path punctuation
-//   - startup `--then` continuation stays in the interactive builder; it
-//     should behave like the builder flow, not fall back to the normal CLI path
 //   - the normal picker is visible-only
 //   - ignored targets require explicit `--include` authorization; in the picker
 //     flow they are reached through the ignored-target path rather than mixed
@@ -238,32 +245,33 @@ package catclip
 //     scope is already covered by an earlier one; final payload is still
 //     deduped by path, but the command should keep the user's literal scope
 //     structure
+//   - `--then` is a true fresh scope boundary:
+//     treat it like starting a brand new catclip command on the same line, then
+//     unioning the final file sets; interactive recovery must not turn it into
+//     "remaining files only"
 //   - current interactive continuation exclusion is target-based, not
-//     result-set-based:
-//     later pickers exclude previously selected target paths/subtrees, but do
-//     not evaluate prior-scope modifiers like `--only`, `--exclude`,
-//     `--contains`, `--changed`, `--snippet`, or `--diff` before deciding what
-//     counts as "already covered"
-//   - consequence of that simplification:
-//     `src --only "*.ts"` still makes later picker logic treat all of `src` as
-//     covered, and prior `.` still means "all safe targets are covered" for
-//     continuation purposes, even if that scope would later be narrowed by
-//     modifiers
-//   - the old same-scope `[done] use selected targets` continuation picker was
-//     removed; same-scope multi-targeting now belongs to the builder flow
-//   - deferred interaction design decision:
-//     the product direction above is not fully implemented yet: the current
-//     builder still treats incomplete value-taking modifiers like `--only`,
-//     `--exclude`, and `--contains` as hard errors instead of interactive
-//     continuation points; keep that strict behavior for now unless the builder
-//     is deliberately expanded, and do not mistake the current simplification
-//     for the intended long-term UX; likewise, target-based continuation
-//     exclusion is a deliberate temporary simplification, not the ideal final
-//     interactive model
+//     result-set-based, within the current scope:
+//     later pickers in the same scope exclude previously selected target
+//     paths/subtrees, but do not evaluate prior modifiers like `--only`,
+//     `--exclude`, `--contains`, `--changed`, `--snippet`, or `--diff` before
+//     deciding what counts as "already covered"
+//   - consequence of that simplification within one scope:
+//     `src --only "*.ts"` still makes later same-scope picker logic treat all
+//     of `src` as covered, and prior `.` still means "all safe targets are
+//     covered" for same-scope continuation purposes, even if that scope would
+//     later be narrowed by modifiers
+//   - bare value-taking modifiers can recover interactively in a TTY:
+//     `--include`, `--only`, `--exclude`, `--contains`, and bare `--`
+//   - repeated bare `--` placeholders are allowed and each inserts one more
+//     modifier stage
+//   - git selectors chosen from startup recovery may open follow-up file-set
+//     pickers, but the canonical resolved command still compiles back to normal
+//     CLI syntax
 //
 // NOTES FOR FUTURE CODEX/CLAUDE PASSES:
 //   - preserve user-facing semantics over "cleaner" abstractions; if a refactor
-//     changes target meaning, preview truthfulness, or builder behavior, it is
+//     changes target meaning, preview truthfulness, or startup recovery
+//     behavior, it is
 //     probably the wrong refactor
 //   - only extract an internal package when it can own a small API without
 //     exporting half the app's internals; if a split mainly moves files around,
@@ -288,17 +296,19 @@ package catclip
 //     backend wait; large macOS runs were dominated by `pbcopy` wait, not by
 //     catclip's own payload generation
 //   - interactive input must be validated on a candidate copy before mutating
-//     builder state; invalid lines should surface an in-panel error without
+//     startup state; invalid choices should surface a clear error without
 //     poisoning the current scope or command
-//   - incomplete modifier commands may eventually grow specialized builder
-//     dialogs/continuations instead of hard errors, but only if they preserve
-//     deterministic CLI semantics and keep interactive state reversible
+//   - if startup recovery grows further, preserve deterministic CLI semantics,
+//     file-set stage ordering, and the rule that `--then` behaves like a fresh
+//     command boundary rather than a subtraction operator
 // =============================================================================
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"regexp"
+	"strings"
 )
 
 // =============================================================================
@@ -330,12 +340,19 @@ type runConfig struct {
 	WorkingDir string
 	OutputMode outputMode
 
-	Verbose bool
-	Quiet   bool
-	Yes     bool
-	Print   bool
-	Preview bool
-	NoTree  bool
+	Verbose      bool
+	Quiet        bool
+	Yes          bool
+	Print        bool
+	Preview      bool
+	NoTree       bool
+	TreePayload  bool
+	TreeTarget   string
+	TreeKind     string
+	TreeState    string
+	FilePreview  bool
+	FilePath     string
+	ContainsList bool
 
 	Scopes   []scope
 	Warnings []string
@@ -347,6 +364,7 @@ type scope struct {
 	Only            []string
 	Exclude         []string
 	Contains        string
+	Stages          []scopeStage
 	Snippet         bool
 	Changed         bool
 	Staged          bool
@@ -358,6 +376,7 @@ type scope struct {
 type scopeBuilder struct {
 	scope
 	explicitChanged bool
+	explicitTargets int
 }
 
 type ignoreRuleKind string
@@ -386,7 +405,26 @@ type compiledDirRule struct {
 type scopeMatcher struct {
 	ignoreFiles []compiledGlob
 	ignoreDirs  []compiledDirRule
-	only        []compiledGlob
+}
+
+type scopeStageKind string
+
+const (
+	scopeStageInclude   scopeStageKind = "include"
+	scopeStageOnly      scopeStageKind = "only"
+	scopeStageExclude   scopeStageKind = "exclude"
+	scopeStageContains  scopeStageKind = "contains"
+	scopeStageChanged   scopeStageKind = "changed"
+	scopeStageStaged    scopeStageKind = "staged"
+	scopeStageUnstaged  scopeStageKind = "unstaged"
+	scopeStageUntracked scopeStageKind = "untracked"
+	scopeStageDiff      scopeStageKind = "diff"
+	scopeStageSnippet   scopeStageKind = "snippet"
+)
+
+type scopeStage struct {
+	Kind   scopeStageKind
+	Values []string
 }
 
 type fileEntry struct {
@@ -430,7 +468,6 @@ type outputReport struct {
 	sizes     map[string]int64
 	statuses  map[string]string
 	modeTags  map[string]string
-	landmarks map[string]bool
 	humanSize string
 	tokens    int64
 	fileWord  string
@@ -468,6 +505,7 @@ type gitIgnoreMatch struct {
 type targetMatch struct {
 	Path         string
 	Kind         string
+	State        string
 	Ignored      bool
 	IgnoreSource string
 }
@@ -519,15 +557,18 @@ func newExitError(code int, message string) error {
 // Main entrypoint
 // =============================================================================
 
-// Main routes into the interactive builder when appropriate, otherwise parses
-// the CLI normally and runs the selected action.
+// Main parses the CLI and runs the selected action.
 func Main() {
 	args := os.Args[1:]
-	if handled, err := maybeRunInteractiveBuilder(args, os.Stdout, os.Stderr); handled {
-		if err != nil {
-			exitWithError(err, os.Stderr)
-		}
+	startupResult, handled, err := maybeResolveStartupPickerArgs(args)
+	if err != nil {
+		exitWithError(err, os.Stderr)
 		return
+	} else if handled {
+		if startupResult.Args == nil {
+			return
+		}
+		args = startupResult.Args
 	}
 
 	cfg, err := parseArgs(args)
@@ -535,8 +576,31 @@ func Main() {
 		exitWithError(err, os.Stderr)
 		return
 	}
+	if startupResult.UsedFzf && !cfg.Quiet {
+		if err := writeResolvedStartupCommand(os.Stderr, args); err != nil {
+			exitWithError(err, os.Stderr)
+			return
+		}
+	}
 
 	if err := run(cfg, os.Stdout, os.Stderr); err != nil {
 		exitWithError(err, os.Stderr)
 	}
+}
+
+func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "Resolved command:\n  %s\n", formatResolvedStartupCommand(args))
+	return err
+}
+
+func formatResolvedStartupCommand(args []string) string {
+	parts := make([]string, 0, len(args)+1)
+	parts = append(parts, "catclip")
+	for _, arg := range args {
+		parts = append(parts, shellQuoteArg(arg))
+	}
+	return strings.Join(parts, " ")
 }
