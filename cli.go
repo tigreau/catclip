@@ -661,7 +661,7 @@ func parseArgs(args []string) (runConfig, error) {
 		if s.Diff && s.Untracked && !current.explicitChanged && !s.Staged && !s.Unstaged {
 			return newUsageError("Error: --untracked --diff doesn't make sense (untracked files have no diff).\n  Try: catclip --changed --diff    (includes untracked as full content)\n  Try: catclip --staged --diff     (only staged patches)")
 		}
-		if s.Snippet && s.Contains == "" {
+		if s.Snippet && s.Contains == "" && !cfg.FilePreview {
 			return newUsageError("Error: --snippet requires --contains (it extracts blocks around content matches).\n  Example: catclip src --contains 'TODO' --snippet")
 		}
 		if s.Snippet && s.Diff {
@@ -884,65 +884,7 @@ func consumeModifierValues(args []string, start int) ([]string, int) {
 	return values, i
 }
 
-func isModifierBoundaryToken(arg string) bool {
-	if arg == "--then" || arg == "--" {
-		return true
-	}
-	switch arg {
-	case "--include", "--only", "--exclude", "--contains",
-		"--changed", "--staged", "--unstaged", "--untracked", "--diff", "--snippet",
-		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-t", "--no-tree",
-		"--preview", "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
-		return true
-	}
-	return strings.HasPrefix(arg, "--")
-}
-
 func warnDirectoryPatternSemantics(cfg runConfig, baseRules []ignoreRule, stderr io.Writer, colors colorPalette) (bool, error) {
-	if cfg.Quiet {
-		return true, nil
-	}
-
-	ignoredDirs := make(map[string]struct{})
-	for _, rule := range baseRules {
-		if rule.Kind == ignoreRuleDir && !hasGlobChars(rule.Pattern) {
-			ignoredDirs[rule.Pattern] = struct{}{}
-		}
-	}
-
-	warned := make(map[string]struct{})
-	for _, s := range cfg.Scopes {
-		for _, pat := range s.Exclude {
-			if !looksLikeDirectoryPattern(cfg.WorkingDir, pat, ignoredDirs) {
-				continue
-			}
-			key := "--exclude:" + pat
-			if _, ok := warned[key]; ok {
-				continue
-			}
-			warned[key] = struct{}{}
-
-			if _, err := fmt.Fprintf(stderr, "%sWarning:%s --exclude pattern %s looks like a directory name.\n", colors.Warn, colors.Reset, singleQuoted(pat)); err != nil {
-				return false, err
-			}
-			if _, err := fmt.Fprintf(stderr, "  %sDirectory rules require a trailing slash:%s %s%s/%s\n", colors.Dim, colors.Reset, colors.OK, pat, colors.Reset); err != nil {
-				return false, err
-			}
-			if _, err := fmt.Fprintf(stderr, "  %sWithout '/', it is treated as a file pattern.%s\n", colors.Dim, colors.Reset); err != nil {
-				return false, err
-			}
-
-			if cfg.Yes || cfg.HeadlessStdoutMode() || !canPromptInteractively() {
-				continue
-			}
-			if !promptYesNo(colors.Prompt+"Continue with file-pattern semantics? [y/N]"+colors.Reset, false, stderr) {
-				if _, err := fmt.Fprintf(stderr, "%sAborted.%s\n", colors.Warn, colors.Reset); err != nil {
-					return false, err
-				}
-				return false, nil
-			}
-		}
-	}
 	return true, nil
 }
 

@@ -58,10 +58,12 @@ type DocumentEntry struct {
 
 // FilePreview holds the text payload for file-preview mode.
 type FilePreview struct {
-	Path         string
-	Content      string
-	MatchPattern string
-	Truncated    bool
+	Path          string
+	HighlightPath string
+	FocusLines    []int
+	Content       string
+	MatchPattern  string
+	Truncated     bool
 }
 
 // DocumentSummary contains the aggregate footer metadata for a payload.

@@ -65,8 +65,17 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s scope, ba
 	var diagnostics []diagnostic
 	var notices []string
 	var entries []fileEntry
+	selectedPaths := make([]string, 0, len(s.Targets))
 	hadSelectionCancel := false
 	for _, target := range s.Targets {
+		covered, err := resolver.interactiveQueryCoveredBySelection(target, selectedPaths)
+		if err != nil {
+			return nil, diagnostics, notices, hadSelectionCancel, err
+		}
+		if covered {
+			continue
+		}
+
 		discovered, targetDiagnostics, targetNotices, selectionCancelled, err := resolver.resolveAndDiscoverTarget(scopeIndex, target, stderr, colors)
 		if err != nil {
 			return nil, diagnostics, notices, hadSelectionCancel, err
@@ -74,6 +83,19 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s scope, ba
 		diagnostics = append(diagnostics, targetDiagnostics...)
 		notices = append(notices, targetNotices...)
 		entries = append(entries, discovered...)
+		if len(discovered) > 0 {
+			normalized := normalizeRelPath(target)
+			if normalized == "" {
+				normalized = "."
+			}
+			exists, err := resolver.targetPathExists(normalized)
+			if err != nil {
+				return nil, diagnostics, notices, hadSelectionCancel, err
+			}
+			if exists {
+				selectedPaths = append(selectedPaths, normalized)
+			}
+		}
 		hadSelectionCancel = hadSelectionCancel || selectionCancelled
 	}
 
@@ -1192,6 +1214,60 @@ func normalizeInteractivePickerQuery(query string) string {
 	return query
 }
 
+func (r *scopeResolver) interactiveQueryCoveredBySelection(query string, selectedPaths []string) (bool, error) {
+	query = normalizeInteractivePickerQuery(query)
+	if query == "" || len(selectedPaths) == 0 {
+		return false, nil
+	}
+	if selectionContainsAll(selectedPaths) {
+		return true, nil
+	}
+
+	normalized := normalizeRelPath(query)
+	if normalized != "" && normalized != "." {
+		exists, err := r.targetPathExists(normalized)
+		if err != nil {
+			return false, err
+		}
+		if exists && coveredBySelection(normalized, selectedPaths) {
+			return true, nil
+		}
+	}
+	if strings.Contains(normalized, "/") {
+		return false, nil
+	}
+
+	sawMatch := false
+
+	if err := r.buildVisibleDirIndex(); err != nil {
+		return false, err
+	}
+	for _, rel := range r.visibleDirs.dirs {
+		if path.Base(rel) != normalized {
+			continue
+		}
+		sawMatch = true
+		if !coveredBySelection(rel, selectedPaths) {
+			return false, nil
+		}
+	}
+
+	if err := r.buildVisibleFileList(); err != nil {
+		return false, err
+	}
+	for _, entry := range r.visibleFileList {
+		base := path.Base(entry.RelPath)
+		if base != normalized && strings.TrimSuffix(base, path.Ext(base)) != normalized {
+			continue
+		}
+		sawMatch = true
+		if !coveredBySelection(entry.RelPath, selectedPaths) {
+			return false, nil
+		}
+	}
+	return sawMatch, nil
+}
+
 func filterRedundantTargetMatches(candidates []targetMatch, selectedPaths []string) []targetMatch {
 	if len(selectedPaths) == 0 {
 		return candidates
@@ -2007,7 +2083,60 @@ func chooseManyFilePathsWithFzf(query, prompt, header string, candidates []strin
 	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", header, fzfPreviewCommand(false), formatFzfCandidates(candidates, treeTargetKindFile, treeTargetStateText))
 }
 
-func chooseContainsMatchesWithFzf(query string, currentArgs []string) (fzfChooseResult, error) {
+func fzfFileSetPreviewCommand() string {
+	treeBin, ok := treePreviewBinary()
+	if !ok {
+		return ""
+	}
+
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return ""
+	}
+
+	commandParts := []string{
+		shellQuoteArg(self),
+		"--quiet",
+		"--internal-tree-payload",
+		"--internal-tree-target", `"$preview_target"`,
+		"--internal-tree-kind", "{4}",
+		"--internal-tree-state", "{5}",
+		`"$preview_target"`,
+		"|", shellQuoteArg(treeBin), "--bare", "--color", "always",
+	}
+	return `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; ` + strings.Join(commandParts, " ")
+}
+
+func fzfDiffFilePreviewCommand(stageFlag string) string {
+	switch stageFlag {
+	case "--changed", "--staged", "--unstaged":
+	default:
+		return ""
+	}
+
+	treeBin, ok := treePreviewBinary()
+	if !ok {
+		return ""
+	}
+
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return ""
+	}
+
+	commandParts := []string{
+		shellQuoteArg(self),
+		"--quiet",
+		"--internal-file-preview",
+		"--internal-file-path", `"$preview_target"`,
+		stageFlag,
+		"--diff",
+		"|", shellQuoteArg(treeBin), "--bare", "--color", "always",
+	}
+	return `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; ` + strings.Join(commandParts, " ")
+}
+
+func chooseContainsMatchesWithFzf(query string, currentArgs []string, snippet bool) (fzfChooseResult, error) {
 	bin, err := fuzzyResolverBinary()
 	if err != nil {
 		return fzfChooseResult{}, err
@@ -2025,7 +2154,7 @@ func chooseContainsMatchesWithFzf(query string, currentArgs []string) (fzfChoose
 		WithNth:        "1,2",
 		Nth:            "1,2",
 		Header:         containsPickerHeader(),
-		PreviewCommand: fzfContainsPreviewCommand(),
+		PreviewCommand: fzfContainsPreviewCommand(snippet),
 		Disabled:       true,
 		Multi:          true,
 		PrintQuery:     true,
@@ -2141,7 +2270,7 @@ func fzfPreviewCommand(includeTarget bool) string {
 	return strings.Join(parts, " ")
 }
 
-func fzfContainsPreviewCommand() string {
+func fzfContainsPreviewCommand(snippet bool) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
 		return ""
@@ -2159,6 +2288,9 @@ func fzfContainsPreviewCommand() string {
 		"--internal-file-path", "{2}",
 		"--contains", "{q}",
 		"|", shellQuoteArg(treeBin), "--bare", "--color", "always",
+	}
+	if snippet {
+		parts = append(parts[:5], append([]string{"--snippet"}, parts[5:]...)...)
 	}
 	return strings.Join(parts, " ")
 }

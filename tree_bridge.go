@@ -101,14 +101,16 @@ func buildEmptyTreeDocument(cfg runConfig) (treeDocument, bool) {
 	}, true
 }
 
-func buildTreeFilePreviewDocument(relPath, content, matchPattern string, truncated bool) treeDocument {
+func buildTreeFilePreviewDocument(relPath, highlightPath, content, matchPattern string, truncated bool, focusLines []int) treeDocument {
 	return treeDocument{
 		Mode: treeDocumentModeFile,
 		File: &treeFilePreview{
-			Path:         normalizeRelPath(relPath),
-			Content:      content,
-			MatchPattern: matchPattern,
-			Truncated:    truncated,
+			Path:          normalizeRelPath(relPath),
+			HighlightPath: highlightPath,
+			FocusLines:    focusLines,
+			Content:       content,
+			MatchPattern:  matchPattern,
+			Truncated:     truncated,
 		},
 	}
 }

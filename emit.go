@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -324,6 +325,13 @@ func extractSnippetRanges(absPath, pattern string) ([]snippetRange, []string, er
 	if err != nil {
 		return nil, nil, err
 	}
+	return extractSnippetRangesFromContent(data, re)
+}
+
+func extractSnippetRangesFromContent(data []byte, re *regexp.Regexp) ([]snippetRange, []string, error) {
+	if re == nil {
+		return nil, nil, nil
+	}
 	lines := splitLogicalLines(data)
 	if len(lines) == 0 {
 		return nil, lines, nil
@@ -368,19 +376,33 @@ func extractSnippetRanges(absPath, pattern string) ([]snippetRange, []string, er
 // emitDiffEntry emits git patches for tracked files and falls back to full
 // content for untracked files, matching the shell tool's diff UX.
 func emitDiffEntry(w io.Writer, gitCtx gitContext, entry fileEntry) error {
-	if !gitCtx.Enabled {
+	diffOutput, diffType, tracked, err := diffEntryOutput(gitCtx, entry)
+	if err != nil {
+		return err
+	}
+	if !tracked {
+		// Untracked files have no unified diff. The shell falls back to full file
+		// content tagged as type="untracked", and the rewrite preserves that UX.
 		return emitFileFromDisk(w, entry.RelPath, "untracked", entry.AbsPath)
+	}
+	if strings.TrimSpace(diffOutput) == "" {
+		return nil
+	}
+	return emitWrappedFile(w, entry.RelPath, diffType, []byte(diffOutput))
+}
+
+func diffEntryOutput(gitCtx gitContext, entry fileEntry) (string, string, bool, error) {
+	if !gitCtx.Enabled {
+		return "", "", false, nil
 	}
 
 	repoPath := gitCtx.toRepoPath(entry.RelPath)
 	trackedOutput, err := runGitCapture(gitCtx.Root, "ls-files", "--", repoPath)
 	if err != nil {
-		return err
+		return "", "", false, err
 	}
 	if strings.TrimSpace(trackedOutput) == "" {
-		// Untracked files have no unified diff. The shell falls back to full file
-		// content tagged as type="untracked", and the rewrite preserves that UX.
-		return emitFileFromDisk(w, entry.RelPath, "untracked", entry.AbsPath)
+		return "", "", false, nil
 	}
 
 	var diffOutput string
@@ -397,12 +419,9 @@ func emitDiffEntry(w io.Writer, gitCtx gitContext, entry fileEntry) error {
 		diffType = "diff"
 	}
 	if err != nil {
-		return err
+		return "", "", true, err
 	}
-	if strings.TrimSpace(diffOutput) == "" {
-		return nil
-	}
-	return emitWrappedFile(w, entry.RelPath, diffType, []byte(diffOutput))
+	return diffOutput, diffType, true, nil
 }
 
 func withPayloadWriter(cfg runConfig, stdout io.Writer, colors colorPalette, fn func(io.Writer) error) (emitStats, error) {
@@ -456,7 +475,7 @@ func withPayloadWriter(cfg runConfig, stdout io.Writer, colors colorPalette, fn 
 	closeErr := stdin.Close()
 	finalizeDuration := time.Since(finalizeStarted)
 	waitStarted := time.Now()
-	waitErr := cmd.Wait()
+	waitErr := waitClipboardCommand(cmd, cfg.Platform)
 	waitDuration := time.Since(waitStarted)
 
 	if writeErr != nil {
@@ -482,6 +501,58 @@ func withPayloadWriter(cfg runConfig, stdout io.Writer, colors colorPalette, fn 
 		ClipboardWaitDuration: waitDuration,
 		SinkName:              filepath.Base(cmd.Path),
 	}, nil
+}
+
+func waitClipboardCommand(cmd *exec.Cmd, platform string) error {
+	if !clipboardCommandMayStayResident(cmd, platform) {
+		return cmd.Wait()
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- cmd.Wait()
+	}()
+
+	timeout := clipboardWaitTimeout()
+	if timeout <= 0 {
+		return <-errCh
+	}
+
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(timeout):
+		if cmd.Process != nil {
+			_ = cmd.Process.Release()
+		}
+		return nil
+	}
+}
+
+func clipboardCommandMayStayResident(cmd *exec.Cmd, platform string) bool {
+	if platform == "macos" || platform == "wsl" {
+		return false
+	}
+	switch filepath.Base(cmd.Path) {
+	case "wl-copy", "xclip", "xsel":
+		return true
+	default:
+		return false
+	}
+}
+
+func clipboardWaitTimeout() time.Duration {
+	const defaultWait = 250 * time.Millisecond
+
+	raw := strings.TrimSpace(os.Getenv("CATCLIP_CLIPBOARD_WAIT_MS"))
+	if raw == "" {
+		return defaultWait
+	}
+	ms, err := strconv.Atoi(raw)
+	if err != nil || ms < 0 {
+		return defaultWait
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func outputBufferSize() int {

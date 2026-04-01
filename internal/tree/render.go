@@ -252,11 +252,16 @@ func renderFilePreview(w io.Writer, file *FilePreview, opts RenderOptions, color
 	content := file.Content
 	rawLines := splitPreviewLines(file.Content)
 	if shouldHighlightFilePreview(colors) {
-		content = highlightFilePreview(file.Path, file.Content)
+		highlightPath := file.HighlightPath
+		if strings.TrimSpace(highlightPath) == "" {
+			highlightPath = file.Path
+		}
+		content = highlightFilePreview(highlightPath, file.Content)
 	}
 
 	lines := splitPreviewLines(content)
 	lines = overlayPreviewMatchHighlights(lines, rawLines, file.MatchPattern)
+	lines = overlayPreviewFocusLineHighlights(lines, file.FocusLines)
 	truncated := file.Truncated
 	if opts.MaxLines > 0 && len(lines) > opts.MaxLines {
 		lines = lines[:opts.MaxLines]
@@ -288,8 +293,14 @@ func highlightFilePreview(relPath, content string) string {
 	if strings.TrimSpace(content) == "" {
 		return content
 	}
+	if strings.TrimSpace(relPath) == "diff" {
+		return highlightUnifiedDiffPreview(content)
+	}
 
 	lexer := lexers.Match(relPath)
+	if lexer == nil {
+		lexer = lexers.Get(strings.TrimSpace(relPath))
+	}
 	if lexer == nil {
 		lexer = lexers.Analyse(content)
 	}
@@ -313,6 +324,36 @@ func highlightFilePreview(relPath, content string) string {
 		return content
 	}
 	return buf.String()
+}
+
+func highlightUnifiedDiffPreview(content string) string {
+	lines := strings.SplitAfter(content, "\n")
+	if len(lines) == 0 {
+		return content
+	}
+
+	var b strings.Builder
+	for _, line := range lines {
+		style := ""
+		switch {
+		case strings.HasPrefix(line, "diff --git "), strings.HasPrefix(line, "index "), strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
+			style = "\x1b[1;36m"
+		case strings.HasPrefix(line, "@@"):
+			style = "\x1b[35m"
+		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++ "):
+			style = "\x1b[32m"
+		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "--- "):
+			style = "\x1b[31m"
+		}
+		if style == "" {
+			b.WriteString(line)
+			continue
+		}
+		b.WriteString(style)
+		b.WriteString(line)
+		b.WriteString("\x1b[0m")
+	}
+	return b.String()
 }
 
 func splitPreviewLines(content string) []string {
@@ -347,6 +388,53 @@ func overlayPreviewMatchHighlights(lines, rawLines []string, pattern string) []s
 		lines[i] = highlightMatchLineANSI(lines[i], rawLines[i], re)
 	}
 	return lines
+}
+
+func overlayPreviewFocusLineHighlights(lines []string, focusLines []int) []string {
+	if len(lines) == 0 || len(focusLines) == 0 {
+		return lines
+	}
+
+	for _, lineNo := range focusLines {
+		if lineNo < 1 || lineNo > len(lines) {
+			continue
+		}
+		lines[lineNo-1] = highlightWholeLineANSI(lines[lineNo-1])
+	}
+	return lines
+}
+
+func highlightWholeLineANSI(ansiLine string) string {
+	if ansiLine == "" {
+		return ansiLine
+	}
+
+	var b strings.Builder
+	b.Grow(len(ansiLine) + len(previewMatchStart) + len(previewMatchEnd))
+	b.WriteString(previewMatchStart)
+
+	for i := 0; i < len(ansiLine); {
+		if ansiLine[i] == '\x1b' {
+			end := ansiSequenceEnd(ansiLine, i)
+			seq := ansiLine[i:end]
+			b.WriteString(seq)
+			if isANSIResetSequence(seq) {
+				b.WriteString(previewMatchStart)
+			}
+			i = end
+			continue
+		}
+
+		_, size := utf8.DecodeRuneInString(ansiLine[i:])
+		if size <= 0 {
+			break
+		}
+		b.WriteString(ansiLine[i : i+size])
+		i += size
+	}
+
+	b.WriteString(previewMatchEnd)
+	return b.String()
 }
 
 func highlightMatchLineANSI(ansiLine, rawLine string, re *regexp.Regexp) string {

@@ -69,3 +69,43 @@ func TestEncodeDecodePayloadRoundTrip(t *testing.T) {
 		t.Fatalf("decoded summary = %#v, want tokens 19123", decoded.Summary)
 	}
 }
+
+func TestEncodeDecodeFilePreviewPayloadRoundTrip(t *testing.T) {
+	original := Document{
+		Mode: DocumentModeFile,
+		File: &FilePreview{
+			Path:          "src/main.ts",
+			HighlightPath: "diff",
+			FocusLines:    []int{2, 3},
+			Content:       "diff --git a/src/main.ts b/src/main.ts\n@@ -1 +1 @@\n-old\n+new\n",
+			MatchPattern:  "TODO",
+			Truncated:     true,
+		},
+	}
+
+	var payload bytes.Buffer
+	if err := EncodePayload(&payload, original); err != nil {
+		t.Fatalf("EncodePayload returned error: %v", err)
+	}
+
+	decoded, err := DecodePayload(&payload)
+	if err != nil {
+		t.Fatalf("DecodePayload returned error: %v", err)
+	}
+
+	if decoded.Mode != DocumentModeFile {
+		t.Fatalf("decoded mode = %q, want file", decoded.Mode)
+	}
+	if decoded.File == nil {
+		t.Fatal("expected decoded file preview payload")
+	}
+	if decoded.File.HighlightPath != "diff" {
+		t.Fatalf("decoded highlight path = %q, want diff", decoded.File.HighlightPath)
+	}
+	if len(decoded.File.FocusLines) != 2 || decoded.File.FocusLines[0] != 2 || decoded.File.FocusLines[1] != 3 {
+		t.Fatalf("decoded focus lines = %v, want [2 3]", decoded.File.FocusLines)
+	}
+	if !decoded.File.Truncated {
+		t.Fatal("expected truncated file preview flag")
+	}
+}

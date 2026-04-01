@@ -3,7 +3,25 @@ package catclip
 import (
 	"io"
 	"path"
+	"strings"
 )
+
+type stageValueMatchKind string
+
+const (
+	stageValueMatchGlob     stageValueMatchKind = "glob"
+	stageValueMatchSubtree  stageValueMatchKind = "subtree"
+	stageValueMatchAnchored stageValueMatchKind = "anchored"
+	stageValueMatchBare     stageValueMatchKind = "bare"
+)
+
+type stageValueMatcher struct {
+	kind    stageValueMatchKind
+	value   string
+	glob    compiledGlob
+	dirOnly bool
+	hasGlob bool
+}
 
 func applyScopeStages(resolver *scopeResolver, gitCtx gitContext, s scope, entries []fileEntry) ([]fileEntry, error) {
 	for _, stage := range s.Stages {
@@ -72,18 +90,18 @@ func filterEntriesByStagePatterns(entries []fileEntry, patterns []string, keepMa
 		return entries, nil
 	}
 
-	compiled := make([]compiledGlob, 0, len(patterns))
+	matchers := make([]stageValueMatcher, 0, len(patterns))
 	for _, pattern := range patterns {
-		re, err := compileGlob(pattern)
+		matcher, err := classifyStageValue(pattern)
 		if err != nil {
 			return nil, newUsageError("Error: invalid pattern %q.", pattern)
 		}
-		compiled = append(compiled, compiledGlob{raw: pattern, re: re})
+		matchers = append(matchers, matcher)
 	}
 
 	out := make([]fileEntry, 0, len(entries))
 	for _, entry := range entries {
-		matched := matchesCompiledGlobs(entry.RelPath, compiled)
+		matched := matchesStageValues(entry.RelPath, matchers)
 		if keepMatches {
 			if matched {
 				out = append(out, entry)
@@ -97,10 +115,107 @@ func filterEntriesByStagePatterns(entries []fileEntry, patterns []string, keepMa
 	return out, nil
 }
 
-func matchesCompiledGlobs(relPath string, globs []compiledGlob) bool {
+func classifyStageValue(value string) (stageValueMatcher, error) {
+	if hasGlobChars(value) {
+		normalized := normalizeGlobStageValue(value)
+		re, err := compileGlob(normalized)
+		if err != nil {
+			return stageValueMatcher{}, err
+		}
+		return stageValueMatcher{
+			kind:    stageValueMatchGlob,
+			value:   normalized,
+			hasGlob: true,
+			glob: compiledGlob{
+				raw: value,
+				re:  re,
+			},
+		}, nil
+	}
+
+	normalized, dirOnly := normalizeStageValue(value)
+	switch {
+	case dirOnly:
+		return stageValueMatcher{kind: stageValueMatchSubtree, value: normalized, dirOnly: true}, nil
+	case strings.Contains(normalized, "/"):
+		return stageValueMatcher{kind: stageValueMatchAnchored, value: normalized}, nil
+	default:
+		return stageValueMatcher{kind: stageValueMatchBare, value: normalized}, nil
+	}
+}
+
+func normalizeStageValue(value string) (string, bool) {
+	value = strings.ReplaceAll(value, "\\", "/")
+	dirOnly := strings.HasSuffix(value, "/")
+	normalized := normalizeRelPath(value)
+	if normalized == "" {
+		return "", dirOnly
+	}
+	return normalized, dirOnly
+}
+
+func normalizeGlobStageValue(value string) string {
+	value = strings.ReplaceAll(value, "\\", "/")
+	for strings.HasPrefix(value, "./") {
+		value = strings.TrimPrefix(value, "./")
+	}
+	for strings.Contains(value, "//") {
+		value = strings.ReplaceAll(value, "//", "/")
+	}
+	return value
+}
+
+func matchesStageValues(relPath string, matchers []stageValueMatcher) bool {
+	for _, matcher := range matchers {
+		if matchesStageValue(relPath, matcher) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesStageValue(relPath string, matcher stageValueMatcher) bool {
 	basename := path.Base(relPath)
-	for _, rule := range globs {
-		if rule.re.MatchString(basename) || rule.re.MatchString(relPath) {
+	switch matcher.kind {
+	case stageValueMatchGlob:
+		if matcher.glob.re.MatchString(basename) || matcher.glob.re.MatchString(relPath) {
+			return true
+		}
+	case stageValueMatchSubtree:
+		return matchesStageSubtree(relPath, matcher.value)
+	case stageValueMatchAnchored:
+		return relPath == matcher.value || strings.HasPrefix(relPath, matcher.value+"/")
+	case stageValueMatchBare:
+		if basename == matcher.value {
+			return true
+		}
+		return relPathHasDirSegment(relPath, matcher.value)
+	}
+	return false
+}
+
+func matchesStageSubtree(relPath, subtree string) bool {
+	if subtree == "." {
+		return relPath != "" && relPath != "."
+	}
+	prefix := subtree + "/"
+	if strings.Contains(subtree, "/") {
+		return strings.HasPrefix(relPath, prefix)
+	}
+	return strings.HasPrefix(relPath, prefix) || strings.Contains(relPath, "/"+prefix)
+}
+
+func relPathHasDirSegment(relPath, want string) bool {
+	if want == "" || want == "." {
+		return false
+	}
+
+	dir := path.Dir(relPath)
+	if dir == "." || dir == "" {
+		return false
+	}
+	for _, segment := range strings.Split(dir, "/") {
+		if segment == want {
 			return true
 		}
 	}

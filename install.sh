@@ -32,6 +32,7 @@ else
 fi
 
 die() {
+  trap - ERR
   printf '%sError:%s %s\n' "$RED" "$RESET" "$*" >&2
   exit 1
 }
@@ -84,31 +85,130 @@ need_cmd() {
 }
 
 need_go_for_source_build() {
-  command -v go >/dev/null 2>&1 && return 0
-  die "Go is required when installing from a source checkout. Use Homebrew or the release installer if you do not want to build locally."
+  command -v go >/dev/null 2>&1 || die "Go is required when installing from a source checkout.
+  If Go is installed only in your user environment, run ./install.sh without sudo and let the script use sudo only for the final file copy.
+  Use Homebrew or the release installer if you do not want to build locally."
+
+  local source_dir="$1"
+  local required found
+
+  required="$(required_go_version_from_source "$source_dir")"
+  [[ -n "$required" ]] || return 0
+
+  found="$(go env GOVERSION 2>/dev/null || true)"
+  found="${found#go}"
+  [[ -n "$found" ]] || return 0
+
+  if ! go_version_gte "$found" "$required"; then
+    die "Go $required or newer is required to build this checkout.
+  Found Go $found.
+  Upgrade Go, or use the published release installer instead of building from source."
+  fi
 }
 
-resolve_bundled_tool_source() {
-  local env_var="$1"
-  local tool_name="$2"
+required_go_version_from_source() {
+  local source_dir="$1"
+  local version_line
+
+  version_line="$(awk '/^go[[:space:]]+/ { print $2; exit }' "$source_dir/go.mod" 2>/dev/null || true)"
+  printf '%s\n' "$version_line"
+}
+
+go_version_gte() {
+  local found="$1"
+  local required="$2"
+  local found_major found_minor required_major required_minor
+
+  found="${found%%[^0-9.]*}"
+  required="${required%%[^0-9.]*}"
+
+  found_major="${found%%.*}"
+  found_minor="${found#*.}"
+  found_minor="${found_minor%%.*}"
+  required_major="${required%%.*}"
+  required_minor="${required#*.}"
+  required_minor="${required_minor%%.*}"
+
+  [[ -n "$found_major" && -n "$found_minor" && -n "$required_major" && -n "$required_minor" ]] || return 0
+
+  if (( found_major > required_major )); then
+    return 0
+  fi
+  if (( found_major < required_major )); then
+    return 1
+  fi
+  (( found_minor >= required_minor ))
+}
+
+build_from_source_checkout() {
+  local source_dir="$1"
+  local binary_file="$2"
+  local tree_binary_file="$3"
+
+  (
+    cd "$source_dir"
+    go build -trimpath -o "$binary_file" ./cmd/catclip
+    if [[ -f "./cmd/catclip-tree/main.go" ]]; then
+      go build -trimpath -o "$tree_binary_file" ./cmd/catclip-tree
+    fi
+  )
+}
+
+ensure_source_fzf_is_compatible() {
+  local fzf_bin="$1"
+
+  if ! printf 'a\n' | "$fzf_bin" --info=inline-right --filter a >/dev/null 2>&1; then
+    die "Your local fzf is too old for catclip source installs.
+  catclip's current picker UI requires an fzf build that supports --info=inline-right.
+  Upgrade fzf, or use the published release installer instead of building from source."
+  fi
+}
+
+ensure_source_rg_is_compatible() {
+  local rg_bin="$1"
+  local source_dir="$2"
+  local tmp_file
+
+  if ! "$rg_bin" --files --hidden -0 "$source_dir" >/dev/null 2>&1; then
+    die "Your local ripgrep is too old for catclip source installs.
+  catclip's current file discovery requires an rg build that supports --files with -0 output.
+  Upgrade ripgrep, or use the published release installer instead of building from source."
+  fi
+
+  tmp_file="$(mktemp)"
+  printf 'catclip-rg-check\n' >"$tmp_file"
+  if ! "$rg_bin" --color=never --no-messages --files-with-matches -0 -m 1 -e 'catclip-rg-check' -- "$tmp_file" >/dev/null 2>&1; then
+    rm -f "$tmp_file"
+    die "Your local ripgrep is too old for catclip source installs.
+  catclip's current content filtering requires an rg build that supports --files-with-matches with -0 output.
+  Upgrade ripgrep, or use the published release installer instead of building from source."
+  fi
+  rm -f "$tmp_file"
+}
+
+resolve_bundled_tool_source_into() {
+  local out_var="$1"
+  local env_var="$2"
+  local tool_name="$3"
   local override resolved
 
   override="${!env_var:-}"
   if [[ -n "$override" ]]; then
     if [[ "$override" == *"/"* ]]; then
       [[ -x "$override" ]] || die "$tool_name override at $override is not executable"
-      printf '%s\n' "$override"
+      printf -v "$out_var" '%s' "$override"
       return 0
     fi
     resolved="$(command -v "$override" || true)"
     [[ -n "$resolved" ]] || die "$tool_name override '$override' not found"
-    printf '%s\n' "$resolved"
+    printf -v "$out_var" '%s' "$resolved"
     return 0
   fi
 
   resolved="$(command -v "$tool_name" || true)"
-  [[ -n "$resolved" ]] || die "'$tool_name' is required because catclip packages a private bundled copy with every install"
-  printf '%s\n' "$resolved"
+  [[ -n "$resolved" ]] || die "'$tool_name' is required for local source installs because catclip packages a private bundled copy with every install.
+  Install $tool_name first, or set $env_var to an executable path."
+  printf -v "$out_var" '%s' "$resolved"
 }
 
 homebrew_manages_catclip() {
@@ -312,11 +412,12 @@ warn_existing_target_install "$BIN_DIR/$PROGRAM_NAME" "$SHARE_DIR/VERSION"
 TMP_ROOT="$(mktemp -d)"
 
 if SOURCE_DIR="$(find_local_source_dir)"; then
-  need_go_for_source_build
+  need_go_for_source_build "$SOURCE_DIR"
 
   printf 'Source:   %s%s%s\n' "$CYAN" "$SOURCE_DIR" "$RESET"
   note "Building from your local checkout so the installed binary matches the code you have checked out."
   note "This avoids replacing your in-progress source tree with the latest published release."
+  note "Source installs require local Go, rg, and fzf once at install time so catclip can bundle private copies into the final install."
 
   VERSION_FILE="$SOURCE_DIR/VERSION"
   BINARY_FILE="$TMP_ROOT/$PROGRAM_NAME"
@@ -325,17 +426,20 @@ if SOURCE_DIR="$(find_local_source_dir)"; then
   FZF_FILE="$TMP_ROOT/fzf"
   VERSION="$(tr -d '\r' < "$VERSION_FILE" | head -n 1)"
   [[ -n "$VERSION" ]] || die "VERSION file is empty"
-  install -m 755 "$(resolve_bundled_tool_source CATCLIP_RG rg)" "$RG_FILE"
-  install -m 755 "$(resolve_bundled_tool_source CATCLIP_FZF fzf)" "$FZF_FILE"
+  RG_SOURCE=''
+  FZF_SOURCE=''
+  resolve_bundled_tool_source_into RG_SOURCE CATCLIP_RG rg
+  resolve_bundled_tool_source_into FZF_SOURCE CATCLIP_FZF fzf
+  ensure_source_rg_is_compatible "$RG_SOURCE" "$SOURCE_DIR"
+  ensure_source_fzf_is_compatible "$FZF_SOURCE"
+  install -m 755 "$RG_SOURCE" "$RG_FILE"
+  install -m 755 "$FZF_SOURCE" "$FZF_FILE"
 
   printf 'Building %s%s%s from source\n' "$CYAN" "$PROGRAM_NAME" "$RESET"
-  (
-    cd "$SOURCE_DIR"
-    go build -trimpath -o "$BINARY_FILE" ./cmd/catclip
-    if [[ -f "./cmd/catclip-tree/main.go" ]]; then
-      go build -trimpath -o "$TREE_BINARY_FILE" ./cmd/catclip-tree
-    fi
-  )
+  if ! run_expected_failure_ok build_from_source_checkout "$SOURCE_DIR" "$BINARY_FILE" "$TREE_BINARY_FILE"; then
+    die "failed to build catclip from the local source checkout.
+  Ensure Go $(required_go_version_from_source "$SOURCE_DIR") or newer is installed, then try again."
+  fi
 else
   ARCHIVE_PATH="$TMP_ROOT/$ASSET_NAME"
   CHECKSUMS_PATH="$TMP_ROOT/$CHECKSUMS_NAME"

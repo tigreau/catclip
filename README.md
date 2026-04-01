@@ -90,8 +90,10 @@ cd catclip
 ```
 
 When run from a cloned checkout, `./install.sh` builds the checked-out source instead of downloading a release bundle.
-Go is only required for this source-install path.
-The source install also copies your current `rg` and `fzf` into the installed package under `share/catclip/bin/`.
+Go is only required for this source-install path, and it must satisfy the version declared in `go.mod`.
+`rg` and `fzf` are also required once at install time for source installs, because `./install.sh` copies your current local binaries into the packaged install under `share/catclip/bin/`.
+The local `rg` and `fzf` must also be new enough for catclip's current feature set; older distro builds may be rejected during install even if the binaries themselves are present.
+Published release installs do not need local Go / rg / fzf because the release archive already contains the bundled copies.
 
 Manual local build (developer-only, not a full packaged install):
 ```bash
@@ -215,7 +217,9 @@ catclip --changed --diff       # All modified files as patches
 catclip --staged --diff        # Staged changes only — ideal for commit review
 catclip --unstaged --diff      # WIP edits — what you're actively changing
 ```
-Untracked files have no diff and are included with their full content.
+`--untracked --diff` is rejected because untracked files have no patch.
+With `--changed --diff`, tracked files emit patches and untracked files are still
+included with their full content.
 The tree preview shows `[diff only]` or `[snippet only]` on files with partial output.
 
 ### Snippet extraction
@@ -227,6 +231,19 @@ catclip . --contains "useState" --snippet      # React hook call-sites only
 If a match's blank-line-bounded block spans the whole file, `--snippet` can
 look identical to full-file output for that file even though snippet mode is
 active.
+
+### Patterns stay in `--only` / `--exclude`
+Pattern filtering is canonical only inside stage modifiers:
+```bash
+catclip src --only "*.ts"      # canonical pattern filter
+catclip src --exclude "*.snap" # canonical exclude filter
+catclip "*.ts"                 # errors with a fix-it to --only
+catclip .tsx                   # errors with a fix-it to --only "*.tsx"
+catclip "*Button*"             # target query; normalizes to Button
+```
+Quoted wrapper-star target queries still normalize because target lookup is
+already fuzzy by default. True patterns and bare extensions are taught back as
+explicit `--only` syntax instead of being treated as positional targets.
 
 ## Scopes
 Use `--then` to apply different modifiers to different targets:
@@ -252,6 +269,11 @@ That means:
 - each `--exclude ...` occurrence is one removing stage
 - values inside one occurrence OR together
 - later stages run after earlier ones
+- stage values use four syntax forms:
+  - `*.ts` = glob
+  - `utils` = bare name (basename `utils` or directory segment `utils`)
+  - `src/utils` = anchored path (exact file or subtree)
+  - `utils/` or `src/utils/` = subtree filter
 
 Example:
 
@@ -313,17 +335,17 @@ catclip --include coverage --only "*.json" # authorize ignored coverage/, then n
 | `-y`, `--yes` | Skip confirmation |
 | `-q`, `--quiet` | Suppress normal stderr output; in non-preview runs this also skips tree rendering and confirmation |
 | `-v`, `--verbose` | Show phase timings and debug info |
-| `--exclude VALUE...` | Add one exclude stage (values OR together; trailing `/` = directory) |
+| `--exclude VALUE...` | Add one exclude stage (glob, bare name, anchored path, or trailing `/` subtree) |
 | `-p`, `--print` | Output to screen (stdout) instead of clipboard; output spinner stays off so stdout remains clean, and interactive TTY runs add a stderr separator line before payload output |
 | `--hiss` | Open ignore config in editor |
 | `-t`, `--no-tree` | Skip tree rendering |
 | `--hiss-reset` | Restore default ignore config |
-| `--only VALUE...` | Add one only stage (values OR together within that stage) |
+| `--only VALUE...` | Add one only stage (glob, bare name, anchored path, or trailing `/` subtree) |
 | `--changed` | All modified files: staged + unstaged + untracked (requires Git) |
 | `--staged` | Only staged files (git index) |
 | `--unstaged` | Only unstaged tracked modifications |
 | `--untracked` | Only new untracked files |
-| `--diff` | Emit unified diff instead of full file (requires a change-selection flag) |
+| `--diff` | Emit unified diff instead of full file (requires `--changed`, `--staged`, or `--unstaged`; `--changed` may still include untracked files as full content) |
 | `--contains PATTERN` | Only files whose contents match regex pattern |
 | `--snippet` | With `--contains`: emit only matched blocks (blank-line bounded) |
 | `--then` | Start a new scope (separate targets with different modifiers) |

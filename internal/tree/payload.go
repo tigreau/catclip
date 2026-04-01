@@ -30,6 +30,8 @@ type payloadRecord struct {
 	BlockRule   string `json:"block_rule,omitempty"`
 	BlockSource string `json:"block_source,omitempty"`
 	Content     string `json:"content,omitempty"`
+	Highlight   string `json:"highlight,omitempty"`
+	Focus       []int  `json:"focus,omitempty"`
 	Pattern     string `json:"pattern,omitempty"`
 	Truncated   bool   `json:"truncated,omitempty"`
 	Count       *int   `json:"count,omitempty"`
@@ -73,6 +75,8 @@ func EncodePayload(w io.Writer, doc Document) error {
 				Type:      "file",
 				Path:      doc.File.Path,
 				Content:   doc.File.Content,
+				Highlight: doc.File.HighlightPath,
+				Focus:     doc.File.FocusLines,
 				Pattern:   doc.File.MatchPattern,
 				Truncated: doc.File.Truncated,
 			}); err != nil {
@@ -206,10 +210,12 @@ func DecodePayload(r io.Reader) (Document, error) {
 		case "file":
 			doc.Mode = DocumentModeFile
 			doc.File = &FilePreview{
-				Path:         normalizeRelPath(record.Path),
-				Content:      record.Content,
-				MatchPattern: record.Pattern,
-				Truncated:    record.Truncated,
+				Path:          normalizeRelPath(record.Path),
+				HighlightPath: record.Highlight,
+				FocusLines:    record.Focus,
+				Content:       record.Content,
+				MatchPattern:  record.Pattern,
+				Truncated:     record.Truncated,
 			}
 		default:
 			return Document{}, fmt.Errorf("unknown tree payload record type %q on line %d", record.Type, lineNo)

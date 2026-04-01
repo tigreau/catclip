@@ -560,7 +560,15 @@ func newExitError(code int, message string) error {
 // Main parses the CLI and runs the selected action.
 func Main() {
 	args := os.Args[1:]
-	startupResult, handled, err := maybeResolveStartupPickerArgs(args)
+	normResult, err := normalizePositionalGlobArgs(args, positionalGlobArgsQuiet(args))
+	if err != nil {
+		exitWithError(err, os.Stderr)
+		return
+	}
+	args = normResult.Args
+	startupResult := startupPickerResult{Args: args}
+	handled := false
+	startupResult, handled, err = maybeResolveStartupPickerArgs(args)
 	if err != nil {
 		exitWithError(err, os.Stderr)
 		return
@@ -575,6 +583,14 @@ func Main() {
 	if err != nil {
 		exitWithError(err, os.Stderr)
 		return
+	}
+	if !cfg.Quiet {
+		for _, hint := range normResult.Hints {
+			if _, err := fmt.Fprintln(os.Stderr, hint); err != nil {
+				exitWithError(err, os.Stderr)
+				return
+			}
+		}
 	}
 	if startupResult.UsedFzf && !cfg.Quiet {
 		if err := writeResolvedStartupCommand(os.Stderr, args); err != nil {
