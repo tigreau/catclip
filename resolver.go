@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -761,6 +762,7 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 	entry := fileEntry{
 		AbsPath:    absTarget,
 		RelPath:    relTarget,
+		ModTime:    info.ModTime(),
 		GitVisible: true,
 	}
 	if dir := normalizeRelPath(path.Dir(relTarget)); dir != "." {
@@ -1982,7 +1984,7 @@ func chooseTargetMatch(cfg runConfig, needle string, matches []targetMatch, stde
 		return nil, err
 	}
 	labels, index := targetMatchLabels(matches)
-	selectedKeys, err := chooseManyTargetMatchesWithFzf(path, needle, "target> ", labels, false)
+	selectedKeys, err := chooseManyTargetMatchesWithFzf(path, needle, "select> ", labels, false)
 	if err != nil {
 		return nil, err
 	}
@@ -2052,13 +2054,13 @@ func chooseTargetWithFzf(bin, query, prompt string, candidates []string, include
 
 func chooseWithFzfLines(bin, query, prompt, withNth, previewCommand string, lines []string) (string, error) {
 	stopActiveSpinner()
-	result, err := picker.Run(bin, picker.Request{
+	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
 		Query:          query,
 		Prompt:         prompt,
 		WithNth:        withNth,
 		PreviewCommand: previewCommand,
 		Lines:          lines,
-	})
+	}))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return "", errSelectionCancelled
 	}
@@ -2102,8 +2104,9 @@ func fzfFileSetPreviewCommand() string {
 		"--internal-tree-kind", "{4}",
 		"--internal-tree-state", "{5}",
 		`"$preview_target"`,
-		"|", shellQuoteArg(treeBin), "--bare", "--color", "always",
 	}
+	commandParts = append(commandParts, "|", shellQuoteArg(treeBin))
+	commandParts = append(commandParts, fzfTreeRenderArgs()...)
 	return `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; ` + strings.Join(commandParts, " ")
 }
 
@@ -2131,8 +2134,9 @@ func fzfDiffFilePreviewCommand(stageFlag string) string {
 		"--internal-file-path", `"$preview_target"`,
 		stageFlag,
 		"--diff",
-		"|", shellQuoteArg(treeBin), "--bare", "--color", "always",
 	}
+	commandParts = append(commandParts, "|", shellQuoteArg(treeBin))
+	commandParts = append(commandParts, fzfTreeRenderArgs()...)
 	return `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; ` + strings.Join(commandParts, " ")
 }
 
@@ -2148,7 +2152,7 @@ func chooseContainsMatchesWithFzf(query string, currentArgs []string, snippet bo
 	}
 
 	stopActiveSpinner()
-	result, err := picker.Run(bin, picker.Request{
+	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
 		Query:          query,
 		Prompt:         "regex> ",
 		WithNth:        "1,2",
@@ -2159,7 +2163,7 @@ func chooseContainsMatchesWithFzf(query string, currentArgs []string, snippet bo
 		Multi:          true,
 		PrintQuery:     true,
 		Bindings:       append([]string{"start:reload:" + command, "change:reload:" + command}, multiSelectPickerBindings()...),
-	})
+	}))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return fzfChooseResult{}, errSelectionCancelled
 	}
@@ -2196,7 +2200,7 @@ type fzfChooseResult struct {
 
 func chooseManyTargetMatchesWithFzfControl(bin, query, prompt, nth, header string, candidates []string, includeTarget bool, expectedKeys ...string) (fzfChooseResult, error) {
 	stopActiveSpinner()
-	result, err := picker.Run(bin, picker.Request{
+	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
 		Query:          query,
 		Prompt:         prompt,
 		WithNth:        "1",
@@ -2208,7 +2212,7 @@ func chooseManyTargetMatchesWithFzfControl(bin, query, prompt, nth, header strin
 		ExpectKeys:     expectedKeys,
 		Bindings:       multiSelectPickerBindings(),
 		Lines:          candidates,
-	})
+	}))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return fzfChooseResult{}, errSelectionCancelled
 	}
@@ -2223,7 +2227,7 @@ func chooseManyTargetMatchesWithFzfControl(bin, query, prompt, nth, header strin
 
 func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, previewCommand string, candidates []string) ([]string, error) {
 	stopActiveSpinner()
-	result, err := picker.Run(bin, picker.Request{
+	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
 		Query:          query,
 		Prompt:         prompt,
 		WithNth:        withNth,
@@ -2233,7 +2237,7 @@ func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, previewC
 		Multi:          true,
 		Bindings:       multiSelectPickerBindings(),
 		Lines:          candidates,
-	})
+	}))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return nil, errSelectionCancelled
 	}
@@ -2257,16 +2261,22 @@ func fzfPreviewCommand(includeTarget bool) string {
 		return ""
 	}
 
-	parts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload"}
+	parts := []string{shellQuoteArg(self), "--quiet"}
 	if includeTarget {
-		parts = append(parts, "--include", "{2}")
+		parts = append(parts, "{2}")
 	}
-	parts = append(parts,
+	parts = append(parts, "--internal-tree-payload",
 		"--internal-tree-target", "{2}",
 		"--internal-tree-kind", "{3}",
 		"--internal-tree-state", "{4}",
-		"{2}",
-		"|", shellQuoteArg(treeBin), "--bare", "--color", "always")
+	)
+	if includeTarget {
+		parts = append(parts, "--include", "{2}")
+	} else {
+		parts = append(parts, "{2}")
+	}
+	parts = append(parts, "|", shellQuoteArg(treeBin))
+	parts = append(parts, fzfTreeRenderArgs()...)
 	return strings.Join(parts, " ")
 }
 
@@ -2281,18 +2291,20 @@ func fzfContainsPreviewCommand(snippet bool) string {
 		return ""
 	}
 
+	commandPrefix := `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; `
 	parts := []string{
 		shellQuoteArg(self),
 		"--quiet",
 		"--internal-file-preview",
-		"--internal-file-path", "{2}",
+		"--internal-file-path", `"$preview_target"`,
 		"--contains", "{q}",
-		"|", shellQuoteArg(treeBin), "--bare", "--color", "always",
 	}
 	if snippet {
 		parts = append(parts[:5], append([]string{"--snippet"}, parts[5:]...)...)
 	}
-	return strings.Join(parts, " ")
+	parts = append(parts, "|", shellQuoteArg(treeBin))
+	parts = append(parts, fzfTreeRenderArgs()...)
+	return commandPrefix + strings.Join(parts, " ")
 }
 
 func fzfContainsListCommand(currentArgs []string) string {
@@ -2312,8 +2324,8 @@ func fzfContainsListCommand(currentArgs []string) string {
 func containsPickerHeader() string {
 	return pickerHeader(
 		"Regex matches file contents, not file names.",
-		"Enter continues with the current selection.",
-		"Tab marks files; Alt-A toggles all current matches.",
+		"Select [all current matches] to keep plain --contains.",
+		fmt.Sprintf("Tab marks files; %s toggles all current matches.", multiSelectToggleAllKey()),
 		"Use Up/Down to move, Esc to cancel.",
 	)
 }
@@ -2322,8 +2334,30 @@ func multiSelectPickerBindings() []string {
 	return []string{
 		"tab:toggle+down",
 		"btab:toggle+up",
-		"alt-a:toggle-all",
+		multiSelectToggleAllBinding(),
 	}
+}
+
+func multiSelectToggleAllBinding() string {
+	return multiSelectToggleAllBindingForGOOS(runtime.GOOS)
+}
+
+func multiSelectToggleAllBindingForGOOS(goos string) string {
+	if goos == "darwin" {
+		return "ctrl-a:toggle-all"
+	}
+	return "alt-a:toggle-all"
+}
+
+func multiSelectToggleAllKey() string {
+	return multiSelectToggleAllKeyForGOOS(runtime.GOOS)
+}
+
+func multiSelectToggleAllKeyForGOOS(goos string) string {
+	if goos == "darwin" {
+		return "Ctrl-A"
+	}
+	return "Alt-A"
 }
 
 func shellQuoteArg(arg string) string {
@@ -2385,7 +2419,7 @@ func targetMatchLabels(matches []targetMatch) ([]string, map[string]targetMatch)
 	for _, match := range matches {
 		label := fmt.Sprintf("[%s] %s", match.Kind, match.Path)
 		if match.Kind == "all" {
-			plain := "[copy all files]"
+			plain := "[select all files]"
 			label = "\x1b[1m" + plain + "\x1b[0m"
 		} else if match.Ignored {
 			source := strings.TrimSpace(match.IgnoreSource)
@@ -2445,9 +2479,9 @@ func safeTargetPickerHeader() string {
 
 func ignoredTargetPickerHeader() string {
 	return pickerHeader(
-		"Matches authorize ignored paths from .gitignore or .hiss.",
+		"Matches come from ignored paths in .gitignore or .hiss.",
 		"Enter continues with the current selection as --include.",
-		"Tab marks paths; Alt-A toggles all visible matches.",
+		fmt.Sprintf("Tab marks paths; %s toggles all visible matches.", multiSelectToggleAllKey()),
 		"Use Up/Down arrow keys to move, Esc to cancel.",
 	)
 }
@@ -2464,14 +2498,14 @@ func pickerHeader(lines ...string) string {
 
 func targetNotFoundWarning(target string, scopeIndex int, colors colorPalette) string {
 	if strings.Contains(target, "/") {
-		return fmt.Sprintf("%sWarning:%s Target %s not found (scope %d).\n\n  %sIf the parent directory is ignored, use --include to authorize it first.%s\n  %sExample:%s %scatclip --include %s --only %s%s",
+		return fmt.Sprintf("%sWarning:%s Target %s not found (scope %d).\n\n  %sIf the parent directory is ignored, use --include to allow it first.%s\n  %sExample:%s %scatclip --include %s --only %s%s",
 			colors.Warn, colors.Reset, singleQuoted(target), scopeIndex+1,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.OK, singleQuoted(path.Dir(target)), singleQuoted(path.Base(target)), colors.Reset)
 	}
 	if prefersDirectFileLookup(target) {
-		return fmt.Sprintf("%sWarning:%s No file named %s found (scope %d).\n\n  %sDirect file targets use exact basenames first. Non-exact file shorthand is resolved by fzf across safe directories.%s\n\n  %sIf an ignored rule is hiding it, use --include to authorize the blocked file or directory first.%s",
+		return fmt.Sprintf("%sWarning:%s No file named %s found (scope %d).\n\n  %sDirect file targets use exact basenames first. Non-exact file shorthand is resolved by fzf across safe directories.%s\n\n  %sIf an ignored rule is hiding it, use --include to allow that blocked file or directory first.%s",
 			colors.Warn, colors.Reset, singleQuoted(target), scopeIndex+1,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset)
@@ -2483,7 +2517,7 @@ func targetNotFoundWarning(target string, scopeIndex int, colors colorPalette) s
 }
 
 func ignoredDirMessage(relTarget, rule, source string, colors colorPalette) string {
-	return fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sUse --include to authorize it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+	return fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
 		colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
@@ -2492,7 +2526,7 @@ func ignoredDirMessage(relTarget, rule, source string, colors colorPalette) stri
 }
 
 func ignoredFileMessage(relTarget, rule, source string, fromChained bool, colors colorPalette) string {
-	message := fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sUse --include to authorize it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
+	message := fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
 		colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset)
@@ -2505,7 +2539,7 @@ func ignoredFileMessage(relTarget, rule, source string, fromChained bool, colors
 
 func ignoredTargetNeedsIncludeMessage(resolvedPath, query string, colors colorPalette) string {
 	if normalizeRelPath(query) == normalizeRelPath(resolvedPath) {
-		return fmt.Sprintf("\n%sError: %s is ignored.%s\n\n  %sUse --include to authorize it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
+		return fmt.Sprintf("\n%sError: %s is ignored.%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
 			colors.Err, singleQuoted(resolvedPath), colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset, colors.OK, singleQuoted(resolvedPath), colors.Reset)
@@ -2659,7 +2693,7 @@ func writeNoFilesMatchedMessage(cfg runConfig, stderr io.Writer, colors colorPal
 		default:
 			_, _ = fmt.Fprintf(stderr, "  %sYour working tree may be clean, or the target has no modifications.%s\n", colors.Dim, colors.Reset)
 		}
-		_, err := fmt.Fprintf(stderr, "  %sRun without %s to copy all files.%s\n", colors.Dim, flags, colors.Reset)
+		_, err := fmt.Fprintf(stderr, "  %sRun without %s to select all files.%s\n", colors.Dim, flags, colors.Reset)
 		return err
 	}
 

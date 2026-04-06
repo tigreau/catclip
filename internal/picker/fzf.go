@@ -19,9 +19,11 @@ type Request struct {
 	Nth            string
 	Header         string
 	PreviewCommand string
+	ColorSpecs     []string
 	Disabled       bool
 	Multi          bool
 	NoSort         bool
+	Exact          bool
 	PrintQuery     bool
 	ExpectKeys     []string
 	Bindings       []string
@@ -34,6 +36,11 @@ type Result struct {
 	Key     string
 	Matches []string
 }
+
+const (
+	defaultPreviewWindow = "right:55%:wrap:border-left"
+	defaultPreviewLabel  = "preview"
+)
 
 // Filter runs fzf in --filter mode and returns the matched keys from the
 // provided tab-delimited lines without opening an interactive picker.
@@ -56,37 +63,7 @@ func Filter(bin, query string, lines []string) ([]string, error) {
 
 // Run executes an interactive fzf picker and returns the parsed selection.
 func Run(bin string, req Request) (Result, error) {
-	args := []string{"--ansi", "--layout=default", "--info=inline-right", "--delimiter", "\t", "--with-nth", req.WithNth, "--query", req.Query, "--prompt", req.Prompt}
-	if req.Disabled {
-		args = append(args, "--disabled")
-	}
-	if req.Multi {
-		args = append(args, "--multi")
-	}
-	if req.NoSort {
-		args = append(args, "--no-sort")
-	}
-	if req.PrintQuery {
-		args = append(args, "--print-query")
-	}
-	if len(req.Bindings) > 0 {
-		for _, binding := range req.Bindings {
-			args = append(args, "--bind", binding)
-		}
-	}
-	if req.Nth != "" {
-		args = append(args, "--nth", req.Nth)
-	}
-	if req.Header != "" {
-		args = append(args, "--header", req.Header, "--header-border=rounded")
-	}
-	if req.PreviewCommand != "" {
-		args = append(args, "--preview", req.PreviewCommand, "--preview-window", "right:45%:wrap")
-	}
-	if len(req.ExpectKeys) > 0 {
-		args = append(args, "--expect", strings.Join(req.ExpectKeys, ","))
-	}
-
+	args := buildArgs(req)
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin = strings.NewReader(strings.Join(req.Lines, "\n") + "\n")
 	cmd.Stderr = os.Stderr
@@ -116,6 +93,48 @@ func Run(bin string, req Request) (Result, error) {
 		return Result{}, ErrSelectionCancelled
 	}
 	return result, nil
+}
+
+func buildArgs(req Request) []string {
+	args := []string{"--ansi", "--layout=default", "--info=inline-right", "--delimiter", "\t", "--with-nth", req.WithNth, "--query", req.Query, "--prompt", req.Prompt}
+	if req.Disabled {
+		args = append(args, "--disabled")
+	}
+	if req.Multi {
+		args = append(args, "--multi")
+	}
+	if req.NoSort {
+		args = append(args, "--no-sort")
+	}
+	if req.Exact {
+		args = append(args, "--exact")
+	}
+	if req.PrintQuery {
+		args = append(args, "--print-query")
+	}
+	if len(req.Bindings) > 0 {
+		for _, binding := range req.Bindings {
+			args = append(args, "--bind", binding)
+		}
+	}
+	if req.Nth != "" {
+		args = append(args, "--nth", req.Nth)
+	}
+	if req.Header != "" {
+		args = append(args, "--header", req.Header, "--header-border=rounded")
+	}
+	if req.PreviewCommand != "" {
+		args = append(args, "--preview", req.PreviewCommand, "--preview-window", defaultPreviewWindow, "--preview-label", defaultPreviewLabel)
+	}
+	if len(req.ColorSpecs) > 0 {
+		for _, spec := range req.ColorSpecs {
+			args = append(args, "--color", spec)
+		}
+	}
+	if len(req.ExpectKeys) > 0 {
+		args = append(args, "--expect", strings.Join(req.ExpectKeys, ","))
+	}
+	return args
 }
 
 func parseChooseResult(text string, expectedKeys []string) Result {
@@ -157,8 +176,12 @@ func parseMatches(text string) []string {
 			continue
 		}
 		parts := strings.Split(line, "\t")
-		if len(parts) >= 2 {
+		if len(parts) >= 2 && parts[1] != "" {
 			out = append(out, parts[1])
+			continue
+		}
+		if len(parts) >= 1 && parts[0] != "" {
+			out = append(out, parts[0])
 			continue
 		}
 		out = append(out, line)

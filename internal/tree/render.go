@@ -16,7 +16,11 @@ import (
 	"github.com/alecthomas/chroma/v2/styles"
 )
 
-const defaultChromaStyle = "xcode"
+const (
+	defaultChromaStyle  = "xcode"
+	fzfDarkPreviewStyle = "xcode-dark"
+	previewThemeFzfDark = "fzf-dark"
+)
 
 const (
 	previewMatchStart = "\033[7m"
@@ -256,7 +260,7 @@ func renderFilePreview(w io.Writer, file *FilePreview, opts RenderOptions, color
 		if strings.TrimSpace(highlightPath) == "" {
 			highlightPath = file.Path
 		}
-		content = highlightFilePreview(highlightPath, file.Content)
+		content = highlightFilePreview(highlightPath, file.Content, opts)
 	}
 
 	lines := splitPreviewLines(content)
@@ -272,8 +276,9 @@ func renderFilePreview(w io.Writer, file *FilePreview, opts RenderOptions, color
 	if width < 1 {
 		width = 1
 	}
+	lineNumberColor := previewLineNumberColor(opts, colors)
 	for i, line := range lines {
-		if _, err := fmt.Fprintf(w, "%s%*d%s %s│%s %s\n", colors.Label, width, i+1, colors.Reset, colors.Tree, colors.Reset, line); err != nil {
+		if _, err := fmt.Fprintf(w, "%s%*d%s %s│%s %s\n", lineNumberColor, width, i+1, colors.Reset, colors.Tree, colors.Reset, line); err != nil {
 			return err
 		}
 	}
@@ -289,7 +294,14 @@ func shouldHighlightFilePreview(colors Palette) bool {
 	return colors.Reset != "" || colors.Tree != "" || colors.Label != ""
 }
 
-func highlightFilePreview(relPath, content string) string {
+func previewLineNumberColor(opts RenderOptions, colors Palette) string {
+	if normalizePreviewTheme(opts.PreviewTheme) == previewThemeFzfDark {
+		return "\033[37m"
+	}
+	return colors.Label
+}
+
+func highlightFilePreview(relPath, content string, opts RenderOptions) string {
 	if strings.TrimSpace(content) == "" {
 		return content
 	}
@@ -314,16 +326,51 @@ func highlightFilePreview(relPath, content string) string {
 		return content
 	}
 
-	style := styles.Get(defaultChromaStyle)
-	if style == nil {
-		style = styles.Fallback
-	}
+	style := previewChromaStyle(opts)
 
 	var buf bytes.Buffer
 	if err := formatters.TTY256.Format(&buf, style, iterator); err != nil {
 		return content
 	}
 	return buf.String()
+}
+
+func chromaStyleForPreview(opts RenderOptions) string {
+	if normalizePreviewTheme(opts.PreviewTheme) == previewThemeFzfDark {
+		return fzfDarkPreviewStyle
+	}
+	return defaultChromaStyle
+}
+
+func previewChromaStyle(opts RenderOptions) *chroma.Style {
+	style := styles.Get(chromaStyleForPreview(opts))
+	if style == nil {
+		style = styles.Fallback
+	}
+	if normalizePreviewTheme(opts.PreviewTheme) == previewThemeFzfDark {
+		return clearChromaBackground(style)
+	}
+	return style
+}
+
+func normalizePreviewTheme(theme string) string {
+	return strings.ToLower(strings.TrimSpace(theme))
+}
+
+func clearChromaBackground(style *chroma.Style) *chroma.Style {
+	if style == nil {
+		return nil
+	}
+	builder := style.Builder()
+	bg := builder.Get(chroma.Background)
+	bg.Background = 0
+	bg.NoInherit = true
+	builder.AddEntry(chroma.Background, bg)
+	cleared, err := builder.Build()
+	if err != nil {
+		return style
+	}
+	return cleared
 }
 
 func highlightUnifiedDiffPreview(content string) string {

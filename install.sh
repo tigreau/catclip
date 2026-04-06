@@ -5,6 +5,10 @@ set -Eeuo pipefail
 # otherwise falls back to installing a prebuilt release bundle. Packaged
 # installs always carry private rg/fzf binaries under share/catclip/bin; runtime
 # does not fall back to user PATH copies.
+# Native Windows installs use install.ps1 instead of stretching this Bash
+# entrypoint across shells.
+# Published Linux release bundles are expected to target an Ubuntu LTS baseline
+# so catclip, catclip-tree, rg, and fzf keep broad glibc compatibility.
 
 PROGRAM_NAME="catclip"
 TREE_PROGRAM_NAME="catclip-tree"
@@ -332,6 +336,7 @@ normalize_os() {
   case "$(uname -s)" in
     Darwin) printf '%s\n' "darwin" ;;
     Linux) printf '%s\n' "linux" ;;
+    MINGW*|MSYS*|CYGWIN*) die "native Windows installs use install.ps1; run the PowerShell installer instead." ;;
     *) die "unsupported operating system: $(uname -s)" ;;
   esac
 }

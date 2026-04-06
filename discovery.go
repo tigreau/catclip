@@ -47,6 +47,7 @@ func discoverFilesUnder(workingDir, rootAbs, rootRel string, matcher scopeMatche
 		entry := fileEntry{
 			AbsPath: current,
 			RelPath: rel,
+			ModTime: info.ModTime(),
 		}
 
 		if rootBypass == nil {
@@ -132,6 +133,7 @@ func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string,
 		entry := fileEntry{
 			AbsPath: current,
 			RelPath: rel,
+			ModTime: info.ModTime(),
 		}
 		if rootBypass != nil {
 			entry = withBypass(entry, "direct", *rootBypass)
@@ -282,28 +284,57 @@ func dedupeEntriesByPath(entries []fileEntry) []fileEntry {
 			out = append(out, entry)
 			continue
 		}
-		if entryModePriority(entry.Mode) > entryModePriority(last.Mode) {
-			*last = entry
-			continue
-		}
-		if entry.Mode == entryModeDiff && last.Mode == entryModeDiff {
-			last.DiffWantStaged = last.DiffWantStaged || entry.DiffWantStaged
-			last.DiffWantUnstaged = last.DiffWantUnstaged || entry.DiffWantUnstaged
-		}
-		if entry.GitVisible && !last.GitVisible {
-			last.GitVisible = true
-		}
-		if entry.Bypassed && !last.Bypassed {
-			last.Bypassed = true
-			last.BypassKind = entry.BypassKind
-			last.BlockRule = entry.BlockRule
-			last.BlockSource = entry.BlockSource
-		}
-		if last.TargetRoot == "" && entry.TargetRoot != "" {
-			last.TargetRoot = entry.TargetRoot
-		}
+		mergeFileEntry(last, entry)
 	}
 	return out
+}
+
+func dedupeEntriesByPathPreserveOrder(entries []fileEntry) []fileEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+
+	out := make([]fileEntry, 0, len(entries))
+	indexByPath := make(map[string]int, len(entries))
+	for _, entry := range entries {
+		idx, ok := indexByPath[entry.RelPath]
+		if !ok {
+			indexByPath[entry.RelPath] = len(out)
+			out = append(out, entry)
+			continue
+		}
+		mergeFileEntry(&out[idx], entry)
+	}
+	return out
+}
+
+func mergeFileEntry(dst *fileEntry, incoming fileEntry) {
+	if entryModePriority(incoming.Mode) > entryModePriority(dst.Mode) {
+		*dst = incoming
+		return
+	}
+	if incoming.Mode == entryModeDiff && dst.Mode == entryModeDiff {
+		dst.DiffWantStaged = dst.DiffWantStaged || incoming.DiffWantStaged
+		dst.DiffWantUnstaged = dst.DiffWantUnstaged || incoming.DiffWantUnstaged
+	}
+	if incoming.GitVisible && !dst.GitVisible {
+		dst.GitVisible = true
+	}
+	if incoming.Bypassed && !dst.Bypassed {
+		dst.Bypassed = true
+		dst.BypassKind = incoming.BypassKind
+		dst.BlockRule = incoming.BlockRule
+		dst.BlockSource = incoming.BlockSource
+	}
+	if dst.TargetRoot == "" && incoming.TargetRoot != "" {
+		dst.TargetRoot = incoming.TargetRoot
+	}
+	if dst.AbsPath == "" && incoming.AbsPath != "" {
+		dst.AbsPath = incoming.AbsPath
+	}
+	if dst.ModTime.IsZero() && !incoming.ModTime.IsZero() {
+		dst.ModTime = incoming.ModTime
+	}
 }
 
 func dedupePreserveOrder(values []string) []string {

@@ -83,6 +83,7 @@ type RenderOptions struct {
 	ShowSummary   bool
 	ShowTokens    bool
 	MaxLines      int
+	PreviewTheme  string
 }
 
 // Palette provides the ANSI fragments used by the tree renderer.

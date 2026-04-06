@@ -618,7 +618,7 @@ func clipboardCommand(platform string, colors colorPalette) (*exec.Cmd, error) {
 			return nil, fmt.Errorf("Error: No clipboard tool found.\n%s", clipboardInstallHint(platform, colors))
 		}
 		return exec.Command("pbcopy"), nil
-	case "wsl":
+	case "windows", "wsl":
 		if path, err := exec.LookPath("clip.exe"); err == nil {
 			return exec.Command(path), nil
 		}
@@ -650,8 +650,10 @@ func clipboardInstallHint(platform string, colors colorPalette) string {
 	switch platform {
 	case "macos":
 		return fmt.Sprintf("  %sEnsure pbcopy is in PATH (ships with macOS).%s", colors.Dim, colors.Reset)
+	case "windows":
+		return fmt.Sprintf("  %sEnsure clip.exe is available (ships with Windows).%s", colors.Dim, colors.Reset)
 	case "wsl":
-		return fmt.Sprintf("  %sEnsure clip.exe is available (ships with WSL).%s", colors.Dim, colors.Reset)
+		return fmt.Sprintf("  %sEnsure clip.exe is reachable through WSL interop from the Windows host.%s", colors.Dim, colors.Reset)
 	default:
 		if isWaylandSession() {
 			return fmt.Sprintf("  Wayland detected. Install wl-clipboard:\n    sudo apt install wl-clipboard    %s# Debian/Ubuntu%s\n    sudo pacman -S wl-clipboard      %s# Arch%s",

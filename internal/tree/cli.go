@@ -33,14 +33,15 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 	}
 
 	var (
-		bare      bool
-		showSizes bool
-		showGit   bool
-		showSum   bool
-		showTok   bool
-		colorMode string
-		maxLines  int
-		showVer   bool
+		bare         bool
+		showSizes    bool
+		showGit      bool
+		showSum      bool
+		showTok      bool
+		colorMode    string
+		previewTheme string
+		maxLines     int
+		showVer      bool
 	)
 
 	fs := flag.NewFlagSet("catclip-tree", flag.ContinueOnError)
@@ -51,6 +52,7 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 	fs.BoolVar(&showSum, "summary", false, "show summary section if present in the payload")
 	fs.BoolVar(&showTok, "tokens", false, "show token estimate in the summary")
 	fs.StringVar(&colorMode, "color", "auto", "color mode: auto, always, or never")
+	fs.StringVar(&previewTheme, "preview-theme", "", "internal preview theme")
 	fs.IntVar(&maxLines, "max-lines", 400, "maximum rendered lines for file preview mode (0 = unlimited)")
 	fs.BoolVar(&showVer, "version", false, "show version")
 	fs.Usage = func() {
@@ -73,6 +75,12 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 
 	opts := DefaultRenderOptions()
 	opts.MaxLines = maxLines
+	opts.PreviewTheme = normalizePreviewTheme(previewTheme)
+	switch opts.PreviewTheme {
+	case "", previewThemeFzfDark:
+	default:
+		return usageErrorf("Error: invalid preview theme %s\n  Use one of: %s", singleQuoted(previewTheme), singleQuoted(previewThemeFzfDark))
+	}
 	if bare {
 		opts.Bare = true
 		opts.ShowSizes = false

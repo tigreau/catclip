@@ -22,12 +22,7 @@ func companionBinary(envVar, toolName string) (string, bool) {
 	if path, ok := configuredBinaryOverride(envVar); ok {
 		return path, true
 	}
-	name := platformToolBinaryName(toolName)
-	candidates := make([]string, 0, len(executableCandidateDirs()))
-	for _, dir := range executableCandidateDirs() {
-		candidates = append(candidates, filepath.Join(dir, name))
-	}
-	return firstExistingBinary(dedupePreserveOrder(candidates))
+	return firstExistingBinary(companionBinaryCandidatesForGOOS(runtime.GOOS, toolName, executableCandidateDirs()))
 }
 
 func configuredBinaryOverride(envVar string) (string, bool) {
@@ -55,14 +50,27 @@ func firstExistingBinary(candidates []string) (string, bool) {
 }
 
 func bundledToolCandidates(toolName string) []string {
-	name := platformToolBinaryName(toolName)
+	return bundledToolCandidatesForGOOS(runtime.GOOS, toolName, executableCandidateDirs())
+}
+
+func bundledToolCandidatesForGOOS(goos, toolName string, dirs []string) []string {
+	name := platformToolBinaryNameForGOOS(goos, toolName)
 	var candidates []string
-	for _, dir := range executableCandidateDirs() {
+	for _, dir := range dirs {
 		candidates = append(candidates,
 			filepath.Join(dir, name),
 			filepath.Join(dir, "bin", name),
 			filepath.Join(dir, "..", "share", "catclip", "bin", name),
 		)
+	}
+	return dedupePreserveOrder(candidates)
+}
+
+func companionBinaryCandidatesForGOOS(goos, toolName string, dirs []string) []string {
+	name := platformToolBinaryNameForGOOS(goos, toolName)
+	candidates := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		candidates = append(candidates, filepath.Join(dir, name))
 	}
 	return dedupePreserveOrder(candidates)
 }
@@ -79,7 +87,11 @@ func executableCandidateDirs() []string {
 }
 
 func platformToolBinaryName(toolName string) string {
-	if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(toolName), ".exe") {
+	return platformToolBinaryNameForGOOS(runtime.GOOS, toolName)
+}
+
+func platformToolBinaryNameForGOOS(goos, toolName string) string {
+	if goos == "windows" && !strings.HasSuffix(strings.ToLower(toolName), ".exe") {
 		return toolName + ".exe"
 	}
 	return toolName

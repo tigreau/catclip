@@ -9,9 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
-	"unsafe"
 )
 
 type verboseOutputMetrics struct {
@@ -46,6 +44,9 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		}
 		if cfg.ContainsList {
 			return runInternalContainsList(cfg, stdout)
+		}
+		if cfg.RecentPreview {
+			return runInternalRecentPreview(cfg, stdout)
 		}
 
 		colors := activeColorPalette()
@@ -93,7 +94,11 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			hadSelectionCancel = hadSelectionCancel || scopeSelectionCancel
 		}
 		discoverySpinnerStop()
-		allEntries = dedupeEntriesByPath(allEntries)
+		if scopesUseRecentStage(cfg.Scopes) {
+			allEntries = dedupeEntriesByPathPreserveOrder(allEntries)
+		} else {
+			allEntries = dedupeEntriesByPath(allEntries)
+		}
 		if cfg.TreePayload {
 			hadErrorDiagnostic := false
 			for _, diag := range diagnostics {
@@ -436,33 +441,7 @@ type editorCommand struct {
 }
 
 func resolveEditorCommand() (editorCommand, error) {
-	editor := os.Getenv("VISUAL")
-	if editor == "" {
-		editor = os.Getenv("EDITOR")
-	}
-	if editor == "" {
-		editor = "nano"
-	}
-
-	parts := strings.Fields(editor)
-	if len(parts) == 0 {
-		parts = []string{"nano"}
-	}
-
-	path, err := exec.LookPath(parts[0])
-	if err != nil {
-		if parts[0] != "nano" {
-			if nanoPath, nanoErr := exec.LookPath("nano"); nanoErr == nil {
-				return editorCommand{Path: nanoPath}, nil
-			}
-		}
-		return editorCommand{}, errors.New("Error: no editor found. Set $EDITOR or install nano.")
-	}
-
-	return editorCommand{
-		Path: path,
-		Args: parts[1:],
-	}, nil
+	return resolveEditorCommandForGOOS(runtime.GOOS, os.Getenv("VISUAL"), os.Getenv("EDITOR"), exec.LookPath)
 }
 
 func promptYesNo(prompt string, defaultYes bool, stderr io.Writer) bool {
@@ -485,11 +464,11 @@ func canPromptInteractively() bool {
 	if isTerminalFile(os.Stdin) {
 		return true
 	}
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	ttyIn, ttyOut, err := openPromptTTY()
 	if err != nil {
 		return false
 	}
-	tty.Close()
+	closePromptTTY(ttyIn, ttyOut)
 	return true
 }
 
@@ -498,13 +477,13 @@ func readPromptResponse(prompt string, stderr io.Writer) (string, bool) {
 		return readPromptKey(os.Stdin, stderr, prompt)
 	}
 
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	ttyIn, ttyOut, err := openPromptTTY()
 	if err != nil {
 		return "", false
 	}
-	defer tty.Close()
+	defer closePromptTTY(ttyIn, ttyOut)
 
-	return readPromptKey(tty, tty, prompt)
+	return readPromptKey(ttyIn, ttyOut, prompt)
 }
 
 func readLineResponse(prompt string, stderr io.Writer) (string, bool) {
@@ -512,13 +491,13 @@ func readLineResponse(prompt string, stderr io.Writer) (string, bool) {
 		return readPromptLine(os.Stdin, stderr, prompt)
 	}
 
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	ttyIn, ttyOut, err := openPromptTTY()
 	if err != nil {
 		return "", false
 	}
-	defer tty.Close()
+	defer closePromptTTY(ttyIn, ttyOut)
 
-	return readPromptLine(tty, tty, prompt)
+	return readPromptLine(ttyIn, ttyOut, prompt)
 }
 
 func readPromptKey(input *os.File, output io.Writer, prompt string) (string, bool) {
@@ -526,40 +505,6 @@ func readPromptKey(input *os.File, output io.Writer, prompt string) (string, boo
 		return response, true
 	}
 	return readPromptLine(input, output, prompt)
-}
-
-func readPromptByte(input *os.File, output io.Writer, prompt string) (string, bool) {
-	state, err := getTerminalState(input)
-	if err != nil {
-		return "", false
-	}
-	raw := *state
-	raw.Lflag &^= syscall.ICANON | syscall.ECHO
-	raw.Cc[syscall.VMIN] = 1
-	raw.Cc[syscall.VTIME] = 0
-
-	if _, err := fmt.Fprintf(output, "%s ", prompt); err != nil {
-		return "", false
-	}
-	if err := setTerminalState(input, &raw); err != nil {
-		return "", false
-	}
-	defer func() {
-		_ = setTerminalState(input, state)
-	}()
-
-	var buf [1]byte
-	n, readErr := input.Read(buf[:])
-	if _, err := fmt.Fprint(output, "\n"); err != nil {
-		return "", false
-	}
-	if readErr != nil && !errors.Is(readErr, io.EOF) {
-		return "", false
-	}
-	if n == 0 {
-		return "", true
-	}
-	return string(buf[:n]), true
 }
 
 func readPromptLine(input *os.File, output io.Writer, prompt string) (string, bool) {
@@ -575,50 +520,6 @@ func readPromptLine(input *os.File, output io.Writer, prompt string) (string, bo
 		return "", true
 	}
 	return response, true
-}
-
-func isTerminalFile(f *os.File) bool {
-	if f == nil {
-		return false
-	}
-	_, err := getTerminalState(f)
-	return err == nil
-}
-
-func getTerminalState(f *os.File) (*syscall.Termios, error) {
-	reqGet, _, ok := terminalIOCTLRequests()
-	if !ok {
-		return nil, syscall.ENOTTY
-	}
-	state := &syscall.Termios{}
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), reqGet, uintptr(unsafe.Pointer(state)))
-	if errno != 0 {
-		return nil, errno
-	}
-	return state, nil
-}
-
-func setTerminalState(f *os.File, state *syscall.Termios) error {
-	_, reqSet, ok := terminalIOCTLRequests()
-	if !ok {
-		return syscall.ENOTTY
-	}
-	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), reqSet, uintptr(unsafe.Pointer(state)))
-	if errno != 0 {
-		return errno
-	}
-	return nil
-}
-
-func terminalIOCTLRequests() (uintptr, uintptr, bool) {
-	switch runtime.GOOS {
-	case "darwin":
-		return 0x40487413, 0x80487414, true
-	case "linux":
-		return 0x5401, 0x5402, true
-	default:
-		return 0, 0, false
-	}
 }
 
 func formatDuration(d time.Duration) string {
@@ -674,6 +575,9 @@ func parseArgs(args []string) (runConfig, error) {
 			s.Changed = true
 		}
 		if len(s.Targets) == 0 {
+			if cfg.TreePayload {
+				return newUsageError("Error: --internal-tree-payload requires an explicit target.\n  Use: catclip TARGET --internal-tree-payload")
+			}
 			s.Targets = []string{"."}
 		}
 
@@ -752,6 +656,23 @@ func parseArgs(args []string) (runConfig, error) {
 			cfg.Print = true
 			cfg.Quiet = true
 			cfg.OutputMode = outputModeStdout
+		case "--internal-recent-preview":
+			cfg.RecentPreview = true
+			cfg.Print = true
+			cfg.Quiet = true
+			cfg.OutputMode = outputModeStdout
+		case "--internal-recent-data":
+			if i+1 >= len(args) {
+				return runConfig{}, newUsageError("Error: --internal-recent-data requires a path.")
+			}
+			i++
+			cfg.RecentData = args[i]
+		case "--internal-recent-selection":
+			if i+1 >= len(args) {
+				return runConfig{}, newUsageError("Error: --internal-recent-selection requires a value.")
+			}
+			i++
+			cfg.RecentSelect = args[i]
 		case "--changed":
 			inModifierMode = true
 			current.explicitChanged = true
@@ -812,6 +733,14 @@ func parseArgs(args []string) (runConfig, error) {
 			current.Exclude = append(current.Exclude, values...)
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageExclude, Values: append([]string(nil), values...)})
 			i = next - 1
+		case "--recent":
+			inModifierMode = true
+			limit, next, err := consumeOptionalRecentLimit(args, i+1)
+			if err != nil {
+				return runConfig{}, err
+			}
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageRecent, Limit: limit})
+			i = next - 1
 		case "--contains":
 			inModifierMode = true
 			if i+1 >= len(args) {
@@ -827,6 +756,8 @@ func parseArgs(args []string) (runConfig, error) {
 			switch {
 			case strings.HasPrefix(arg, "--contains="):
 				return runConfig{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
+			case strings.HasPrefix(arg, "--recent="):
+				return runConfig{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
 			case strings.HasPrefix(arg, "--"):
 				return runConfig{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
@@ -846,6 +777,9 @@ func parseArgs(args []string) (runConfig, error) {
 	}
 
 	if len(cfg.Scopes) == 0 {
+		if cfg.TreePayload {
+			return runConfig{}, newUsageError("Error: --internal-tree-payload requires an explicit target.\n  Use: catclip TARGET --internal-tree-payload")
+		}
 		cfg.Scopes = append(cfg.Scopes, scope{Targets: []string{"."}})
 	}
 
@@ -955,5 +889,26 @@ func formatScopeSummary(s scope) string {
 	if s.Diff {
 		parts = append(parts, "diff=true")
 	}
+	for _, stage := range s.Stages {
+		if stage.Kind != scopeStageRecent {
+			continue
+		}
+		if stage.Limit == nil {
+			parts = append(parts, "recent=true")
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("recent=%d", *stage.Limit))
+	}
 	return strings.Join(parts, " ")
+}
+
+func scopesUseRecentStage(scopes []scope) bool {
+	for _, s := range scopes {
+		for _, stage := range s.Stages {
+			if stage.Kind == scopeStageRecent {
+				return true
+			}
+		}
+	}
+	return false
 }

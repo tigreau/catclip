@@ -1,8 +1,11 @@
 package catclip
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func testStageEntries(paths ...string) []fileEntry {
@@ -183,5 +186,75 @@ func TestClassifyStageValueNormalizesDirectorySyntax(t *testing.T) {
 		if matcher.kind != stageValueMatchSubtree || matcher.value != "tests" {
 			t.Fatalf("expected %q to normalize to subtree tests, got kind=%q value=%q", value, matcher.kind, matcher.value)
 		}
+	}
+}
+
+func TestApplyRecentStageSortsByNewestThenPath(t *testing.T) {
+	now := time.Now()
+	entries := []fileEntry{
+		{RelPath: "src/c.ts", ModTime: now.Add(-1 * time.Hour)},
+		{RelPath: "src/a.ts", ModTime: now},
+		{RelPath: "src/b.ts", ModTime: now},
+	}
+
+	filtered, err := applyRecentStage(entries, "", nil)
+	if err != nil {
+		t.Fatalf("applyRecentStage returned error: %v", err)
+	}
+
+	if got, want := testStageRelPaths(filtered), []string{"src/a.ts", "src/b.ts", "src/c.ts"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected newest-first path-tiebroken order %v, got %v", want, got)
+	}
+}
+
+func TestApplyRecentStageAppliesLimit(t *testing.T) {
+	now := time.Now()
+	limit := 2
+	entries := []fileEntry{
+		{RelPath: "src/a.ts", ModTime: now.Add(-3 * time.Hour)},
+		{RelPath: "src/b.ts", ModTime: now.Add(-1 * time.Hour)},
+		{RelPath: "src/c.ts", ModTime: now.Add(-2 * time.Hour)},
+	}
+
+	filtered, err := applyRecentStage(entries, "", &limit)
+	if err != nil {
+		t.Fatalf("applyRecentStage returned error: %v", err)
+	}
+
+	if got, want := testStageRelPaths(filtered), []string{"src/b.ts", "src/c.ts"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected limited newest-first order %v, got %v", want, got)
+	}
+}
+
+func TestApplyRecentStageBackfillsModTimesFromDisk(t *testing.T) {
+	project := t.TempDir()
+	now := time.Now()
+	for relPath, modTime := range map[string]time.Time{
+		"a.txt": now.Add(-2 * time.Hour),
+		"b.txt": now.Add(-1 * time.Hour),
+	} {
+		absPath := filepath.Join(project, relPath)
+		if err := os.WriteFile(absPath, []byte(relPath+"\n"), 0o644); err != nil {
+			t.Fatalf("write %s failed: %v", relPath, err)
+		}
+		if err := os.Chtimes(absPath, modTime, modTime); err != nil {
+			t.Fatalf("chtimes %s failed: %v", relPath, err)
+		}
+	}
+
+	resolver := &scopeResolver{cfg: runConfig{WorkingDir: project}}
+	entries := []fileEntry{{RelPath: "a.txt"}, {RelPath: "b.txt"}}
+	scope := scope{Stages: []scopeStage{{Kind: scopeStageRecent}}}
+
+	filtered, err := applyScopeStages(resolver, gitContext{}, scope, entries)
+	if err != nil {
+		t.Fatalf("applyScopeStages returned error: %v", err)
+	}
+
+	if got, want := testStageRelPaths(filtered), []string{"b.txt", "a.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected disk-backed recent order %v, got %v", want, got)
+	}
+	if filtered[0].ModTime.IsZero() || filtered[1].ModTime.IsZero() {
+		t.Fatalf("expected mod times to be populated, got %+v", filtered)
 	}
 }

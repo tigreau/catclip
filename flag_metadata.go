@@ -22,6 +22,7 @@ func isModifierBoundaryToken(arg string) bool {
 	}
 	switch arg {
 	case "--changed", "--staged", "--unstaged", "--untracked", "--diff", "--snippet",
+		"--recent",
 		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-t", "--no-tree",
 		"--preview", "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
 		return true

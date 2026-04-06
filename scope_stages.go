@@ -33,6 +33,8 @@ func applyScopeStages(resolver *scopeResolver, gitCtx gitContext, s scope, entri
 			entries, err = filterEntriesByStagePatterns(entries, stage.Values, true)
 		case scopeStageExclude:
 			entries, err = filterEntriesByStagePatterns(entries, stage.Values, false)
+		case scopeStageRecent:
+			entries, err = applyRecentStage(entries, resolver.cfg.WorkingDir, stage.Limit)
 		case scopeStageContains:
 			if len(stage.Values) == 0 {
 				continue
@@ -82,7 +84,7 @@ func applyIncludeStage(resolver *scopeResolver, entries []fileEntry, targets []s
 		}
 		out = append(out, included...)
 	}
-	return dedupeEntriesByPath(out), nil
+	return dedupeEntriesByPathPreserveOrder(out), nil
 }
 
 func filterEntriesByStagePatterns(entries []fileEntry, patterns []string, keepMatches bool) ([]fileEntry, error) {

@@ -102,7 +102,7 @@ package catclip
 //      - an exact file
 //      - an exact directory subtree
 //      - an fzf-backed fuzzy selection
-//      - an --include-authorized ignored target
+//      - an --include-allowed ignored target
 //   4. Discover files for resolved targets:
 //      - rg is the primary engine for visible file enumeration
 //      - exact visible directory targets also use rg-backed subtree discovery
@@ -136,7 +136,7 @@ package catclip
 //      - AbsPath is materialized only when a file survives to real work
 //        like --contains, preview sizing, snippets/diffs, or final emission
 //   8. Apply scope stages in order:
-//      - `--include` adds authorized ignored targets into the working set
+//      - `--include` adds allowed ignored targets into the working set
 //      - `--only` / `--exclude` run as sequential file-set stages
 //      - git selectors and `--contains` then filter the resulting set
 //   9. Build preview metadata and render the tree/summary when needed:
@@ -213,8 +213,8 @@ package catclip
 //     visible-file discovery
 
 // PATH / PICKER RULES:
-//   - in an interactive TTY, bare `catclip` opens the safe-target picker with
-//     `[copy all files]` first; non-interactive runs still default to `.`
+//   - in an interactive TTY, bare `catclip` opens the target selector with
+//     `[select all files]` first; non-interactive runs still default to `.`
 //   - exact existing targets like `.`, `src`, or `dir/file` should run
 //     directly instead of opening fzf
 //   - slashless shorthand like `common`, `btn`, or `node` is picker territory
@@ -309,6 +309,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // =============================================================================
@@ -340,19 +341,22 @@ type runConfig struct {
 	WorkingDir string
 	OutputMode outputMode
 
-	Verbose      bool
-	Quiet        bool
-	Yes          bool
-	Print        bool
-	Preview      bool
-	NoTree       bool
-	TreePayload  bool
-	TreeTarget   string
-	TreeKind     string
-	TreeState    string
-	FilePreview  bool
-	FilePath     string
-	ContainsList bool
+	Verbose       bool
+	Quiet         bool
+	Yes           bool
+	Print         bool
+	Preview       bool
+	NoTree        bool
+	TreePayload   bool
+	TreeTarget    string
+	TreeKind      string
+	TreeState     string
+	FilePreview   bool
+	FilePath      string
+	ContainsList  bool
+	RecentPreview bool
+	RecentData    string
+	RecentSelect  string
 
 	Scopes   []scope
 	Warnings []string
@@ -413,6 +417,7 @@ const (
 	scopeStageInclude   scopeStageKind = "include"
 	scopeStageOnly      scopeStageKind = "only"
 	scopeStageExclude   scopeStageKind = "exclude"
+	scopeStageRecent    scopeStageKind = "recent"
 	scopeStageContains  scopeStageKind = "contains"
 	scopeStageChanged   scopeStageKind = "changed"
 	scopeStageStaged    scopeStageKind = "staged"
@@ -425,11 +430,13 @@ const (
 type scopeStage struct {
 	Kind   scopeStageKind
 	Values []string
+	Limit  *int
 }
 
 type fileEntry struct {
 	AbsPath          string
 	RelPath          string
+	ModTime          time.Time
 	TargetRoot       string
 	GitVisible       bool
 	Mode             entryMode

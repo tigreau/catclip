@@ -30,6 +30,9 @@ func TestIsModifierBoundaryTokenUsesSharedValueTakingFlags(t *testing.T) {
 	if !isModifierBoundaryToken("--internal-file-path") {
 		t.Fatal("expected --internal-file-path to be a modifier boundary")
 	}
+	if !isModifierBoundaryToken("--recent") {
+		t.Fatal("expected --recent to be a modifier boundary")
+	}
 	if isModifierBoundaryToken("Button.tsx") {
 		t.Fatal("did not expect plain target to be a modifier boundary")
 	}

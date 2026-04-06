@@ -95,6 +95,16 @@ func TestParseArgsAppliesModifierOnlyScopeToDot(t *testing.T) {
 	}
 }
 
+func TestParseArgsInternalTreePayloadRequiresExplicitTarget(t *testing.T) {
+	_, err := parseArgs([]string{"--internal-tree-payload"})
+	if err == nil {
+		t.Fatal("expected error for bare --internal-tree-payload")
+	}
+	if !strings.Contains(err.Error(), "--internal-tree-payload requires an explicit target") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestParseArgsConsumesMultiValueExcludeStage(t *testing.T) {
 	cfg, err := parseArgs([]string{"src", "--exclude", "*.snap", "build/"})
 	if err != nil {
@@ -107,7 +117,69 @@ func TestParseArgsConsumesMultiValueExcludeStage(t *testing.T) {
 	}
 }
 
-func TestParseArgsTreatsIncludeAsAuthorizedTargetSelection(t *testing.T) {
+func TestParseArgsAcceptsBareRecentStage(t *testing.T) {
+	cfg, err := parseArgs([]string{"src", "--recent"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+
+	scope := cfg.Scopes[0]
+	if got, want := len(scope.Stages), 1; got != want {
+		t.Fatalf("expected %d stage, got %d", want, got)
+	}
+	if scope.Stages[0].Kind != scopeStageRecent {
+		t.Fatalf("expected recent stage, got %q", scope.Stages[0].Kind)
+	}
+	if scope.Stages[0].Limit != nil {
+		t.Fatalf("expected bare --recent to have no limit, got %v", *scope.Stages[0].Limit)
+	}
+}
+
+func TestParseArgsAcceptsRecentLimitAndKeepsStageBoundaries(t *testing.T) {
+	cfg, err := parseArgs([]string{"src", "--only", "*.ts", "--recent", "5"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+
+	scope := cfg.Scopes[0]
+	if got, want := len(scope.Only), 1; got != want {
+		t.Fatalf("expected %d only pattern, got %d", want, got)
+	}
+	if got, want := len(scope.Stages), 2; got != want {
+		t.Fatalf("expected %d stages, got %d", want, got)
+	}
+	if scope.Stages[0].Kind != scopeStageOnly {
+		t.Fatalf("expected first stage to be only, got %q", scope.Stages[0].Kind)
+	}
+	if scope.Stages[1].Kind != scopeStageRecent {
+		t.Fatalf("expected second stage to be recent, got %q", scope.Stages[1].Kind)
+	}
+	if scope.Stages[1].Limit == nil || *scope.Stages[1].Limit != 5 {
+		t.Fatalf("expected recent limit 5, got %+v", scope.Stages[1].Limit)
+	}
+}
+
+func TestParseArgsRejectsInvalidRecentValue(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--recent", "later"})
+	if err == nil {
+		t.Fatal("expected error for invalid --recent value")
+	}
+	if !strings.Contains(err.Error(), "--recent takes an optional positive integer") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsRejectsRecentEqualsForm(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--recent=5"})
+	if err == nil {
+		t.Fatal("expected error for --recent=5")
+	}
+	if !strings.Contains(err.Error(), "--recent requires a space before the value") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsTreatsIncludeAsAllowedTargetSelection(t *testing.T) {
 	cfg, err := parseArgs([]string{".", "--include", "node_modules", "coverage"})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
@@ -323,6 +395,167 @@ func TestRunTreatsRepeatedOnlyAsSequentialStages(t *testing.T) {
 	}
 }
 
+func TestRunRecentReordersOutputByNewestFirst(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"alpha.txt": "alpha\n",
+		"beta.txt":  "beta\n",
+		"gamma.txt": "gamma\n",
+	})
+
+	now := time.Now()
+	for relPath, modTime := range map[string]time.Time{
+		"alpha.txt": now.Add(-3 * time.Hour),
+		"beta.txt":  now.Add(-1 * time.Hour),
+		"gamma.txt": now.Add(-2 * time.Hour),
+	} {
+		absPath := filepath.Join(project, relPath)
+		if err := os.Chtimes(absPath, modTime, modTime); err != nil {
+			t.Fatalf("chtimes %s failed: %v", relPath, err)
+		}
+	}
+
+	cfg := parseInProject(t, project, []string{"-q", "-p", ".", "--only", "*.txt", "--recent"})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	out := stdout.String()
+	positions := []int{
+		strings.Index(out, `<file path="beta.txt">`),
+		strings.Index(out, `<file path="gamma.txt">`),
+		strings.Index(out, `<file path="alpha.txt">`),
+	}
+	for i, pos := range positions {
+		if pos < 0 {
+			t.Fatalf("expected file marker %d in output, got:\n%s", i, out)
+		}
+	}
+	if !(positions[0] < positions[1] && positions[1] < positions[2]) {
+		t.Fatalf("expected newest-first output order beta, gamma, alpha; got:\n%s", out)
+	}
+}
+
+func TestRunThenRecentPreservesPerScopeOrder(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a.txt": "a\n",
+		"src/b.txt": "b\n",
+		"src/c.txt": "c\n",
+		"src/d.txt": "d\n",
+		"lib/w.txt": "w\n",
+		"lib/x.txt": "x\n",
+		"lib/y.txt": "y\n",
+		"lib/z.txt": "z\n",
+	})
+
+	now := time.Now()
+	for relPath, modTime := range map[string]time.Time{
+		"src/b.txt": now.Add(-1 * time.Hour),
+		"src/c.txt": now.Add(-2 * time.Hour),
+		"src/a.txt": now.Add(-3 * time.Hour),
+		"src/d.txt": now.Add(-4 * time.Hour),
+		"lib/y.txt": now.Add(-5 * time.Hour),
+		"lib/z.txt": now.Add(-6 * time.Hour),
+		"lib/x.txt": now.Add(-7 * time.Hour),
+		"lib/w.txt": now.Add(-8 * time.Hour),
+	} {
+		absPath := filepath.Join(project, relPath)
+		if err := os.Chtimes(absPath, modTime, modTime); err != nil {
+			t.Fatalf("chtimes %s failed: %v", relPath, err)
+		}
+	}
+
+	cfg := parseInProject(t, project, []string{
+		"-q", "-p",
+		"src", "--only", "*.txt", "--recent", "3",
+		"--then",
+		"lib", "--only", "*.txt", "--recent", "3",
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	assertFileMarkerOrder(t, stdout.String(), []string{
+		"src/b.txt",
+		"src/c.txt",
+		"src/a.txt",
+		"lib/y.txt",
+		"lib/z.txt",
+		"lib/x.txt",
+	})
+}
+
+func TestRunThenRecentOverlapKeepsFirstScopePosition(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"top.txt":        "top\n",
+		"second.txt":     "second\n",
+		"lib/shared.txt": "shared\n",
+		"lib/older.txt":  "older\n",
+		"lib/oldest.txt": "oldest\n",
+	})
+
+	now := time.Now()
+	for relPath, modTime := range map[string]time.Time{
+		"top.txt":        now.Add(-1 * time.Hour),
+		"lib/shared.txt": now.Add(-2 * time.Hour),
+		"second.txt":     now.Add(-3 * time.Hour),
+		"lib/older.txt":  now.Add(-4 * time.Hour),
+		"lib/oldest.txt": now.Add(-5 * time.Hour),
+	} {
+		absPath := filepath.Join(project, relPath)
+		if err := os.Chtimes(absPath, modTime, modTime); err != nil {
+			t.Fatalf("chtimes %s failed: %v", relPath, err)
+		}
+	}
+
+	cfg := parseInProject(t, project, []string{
+		"-q", "-p",
+		".", "--only", "*.txt", "--recent", "3",
+		"--then",
+		"lib", "--only", "*.txt", "--recent", "3",
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	out := stdout.String()
+	if got := strings.Count(out, `<file path="lib/shared.txt">`); got != 1 {
+		t.Fatalf("expected lib/shared.txt once after overlap dedupe, got %d copies:\n%s", got, out)
+	}
+	assertFileMarkerOrder(t, out, []string{
+		"top.txt",
+		"lib/shared.txt",
+		"second.txt",
+		"lib/older.txt",
+		"lib/oldest.txt",
+	})
+}
+
+func assertFileMarkerOrder(t *testing.T, out string, paths []string) {
+	t.Helper()
+
+	last := -1
+	for _, relPath := range paths {
+		marker := `<file path="` + relPath + `">`
+		pos := strings.Index(out, marker)
+		if pos < 0 {
+			t.Fatalf("expected %s in output, got:\n%s", relPath, out)
+		}
+		if pos <= last {
+			t.Fatalf("expected %s after previous marker, got:\n%s", relPath, out)
+		}
+		last = pos
+	}
+}
+
 func TestRunIncludeSupportsGitignoreOutsideGitRepo(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		".gitignore":   "blocked/\n",
@@ -527,12 +760,12 @@ func TestRunBlockedDirectoryRequiresInclude(t *testing.T) {
 	if strings.Contains(stdout.String(), "tests/main.ts") {
 		t.Fatalf("expected blocked directory to stay excluded, got:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Use --include to authorize it for this run") {
+	if !strings.Contains(stderr.String(), "Use --include to allow it for this run") {
 		t.Fatalf("expected --include guidance, got:\n%s", stderr.String())
 	}
 }
 
-func TestRunIncludeAuthorizesBlockedDirectory(t *testing.T) {
+func TestRunIncludeAllowsBlockedDirectory(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":   "console.log('ok')\n",
 		"tests/main.ts": "console.log('test')\n",
@@ -546,7 +779,7 @@ func TestRunIncludeAuthorizesBlockedDirectory(t *testing.T) {
 	}
 
 	if !strings.Contains(stdout.String(), "tests/main.ts") {
-		t.Fatalf("expected --include to authorize tests/, got:\n%s", stdout.String())
+		t.Fatalf("expected --include to allow tests/, got:\n%s", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "bypassing ignore rule 'tests/'") {
 		t.Fatalf("expected bypass warning, got:\n%s", stderr.String())
@@ -852,7 +1085,7 @@ func TestTargetMatchLabelsMapsPlainCopyAllSelection(t *testing.T) {
 	if len(labels) != 1 {
 		t.Fatalf("expected one label, got %d", len(labels))
 	}
-	if labels[0] != "\x1b[1m[copy all files]\x1b[0m\t.\tdir\tok" {
+	if labels[0] != "\x1b[1m[select all files]\x1b[0m\t.\tdir\tok" {
 		t.Fatalf("unexpected copy-all label: %q", labels[0])
 	}
 	match, ok := index["."]
@@ -900,8 +1133,8 @@ func TestFzfPreviewCommandUsesCatclipTreeRenderer(t *testing.T) {
 	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-tree-payload --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} {2}") {
 		t.Fatalf("expected preview command to invoke catclip payload producer, got %q", command)
 	}
-	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --color always") {
-		t.Fatalf("expected preview command to pipe into catclip-tree --bare --color always, got %q", command)
+	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
+		t.Fatalf("expected preview command to pipe into themed catclip-tree preview renderer, got %q", command)
 	}
 }
 
@@ -913,8 +1146,12 @@ func TestFzfPreviewCommandIncludesIgnoredTargetAuthorization(t *testing.T) {
 	t.Setenv("CATCLIP_TREE", treeBin)
 
 	command := fzfPreviewCommand(true)
-	if !strings.Contains(command, "--include {2} --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} {2}") {
-		t.Fatalf("expected ignored target preview to authorize the hovered path, got %q", command)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable returned error: %v", err)
+	}
+	if !strings.Contains(command, shellQuoteArg(self)+" --quiet {2} --internal-tree-payload --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} --include {2}") {
+		t.Fatalf("expected ignored target preview to allow the hovered path, got %q", command)
 	}
 }
 
@@ -931,11 +1168,11 @@ func TestFzfContainsPreviewCommandUsesFilePreviewPayload(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path {2} --contains {q}") {
+	if !strings.Contains(command, `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; `+shellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path "$preview_target" --contains {q}`) {
 		t.Fatalf("expected contains preview to invoke file preview payload producer, got %q", command)
 	}
-	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --color always") {
-		t.Fatalf("expected contains preview command to pipe into catclip-tree --bare --color always, got %q", command)
+	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
+		t.Fatalf("expected contains preview command to pipe into themed catclip-tree preview renderer, got %q", command)
 	}
 }
 
@@ -952,7 +1189,7 @@ func TestFzfContainsSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path {2} --snippet --contains {q}") {
+	if !strings.Contains(command, `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; `+shellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path "$preview_target" --snippet --contains {q}`) {
 		t.Fatalf("expected snippet contains preview to forward --snippet, got %q", command)
 	}
 }
@@ -973,8 +1210,8 @@ func TestFzfDiffFilePreviewCommandUsesFilePreviewPayload(t *testing.T) {
 	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path \"$preview_target\" --changed --diff") {
 		t.Fatalf("expected diff file preview command to invoke internal file preview payload producer, got %q", command)
 	}
-	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --color always") {
-		t.Fatalf("expected diff file preview command to pipe into catclip-tree --bare --color always, got %q", command)
+	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
+		t.Fatalf("expected diff file preview command to pipe into themed catclip-tree preview renderer, got %q", command)
 	}
 }
 
@@ -1216,7 +1453,7 @@ func TestRunMissingFileTargetShowsDirectFilenameGuidance(t *testing.T) {
 	if !strings.Contains(stderr.String(), "Direct file targets use exact basenames first. Non-exact file shorthand is resolved by fzf across safe directories.") {
 		t.Fatalf("expected updated direct filename guidance, got:\n%s", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "use --include to authorize the blocked file or directory first") {
+	if !strings.Contains(stderr.String(), "use --include to allow that blocked file or directory first") {
 		t.Fatalf("expected blocked-directory guidance, got:\n%s", stderr.String())
 	}
 }
@@ -1407,6 +1644,27 @@ func TestRunHeadlessAmbiguousTargetFailsWithGuidance(t *testing.T) {
 	}
 }
 
+func TestRunInternalTreePayloadAmbiguousTargetFailsWithGuidance(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/common/a.ts": "export const a = 1\n",
+		"lib/common/b.ts": "export const b = 2\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--internal-tree-payload", "common"})
+
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected ambiguous target error")
+	}
+	if !strings.Contains(err.Error(), `Multiple directories match 'common'`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Use a more specific path segment") {
+		t.Fatalf("expected disambiguation guidance, got: %v", err)
+	}
+}
+
 func TestRunFuzzySearchUsesVisibleDirectoryIndex(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -1456,12 +1714,12 @@ func TestRunGitIgnoredDirectoryRequiresInclude(t *testing.T) {
 	if strings.Contains(stdout.String(), `ignored/common/ok.ts`) {
 		t.Fatalf("expected gitignored directory to stay hidden, got:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Use --include to authorize it for this run") {
+	if !strings.Contains(stderr.String(), "Use --include to allow it for this run") {
 		t.Fatalf("expected --include guidance, got:\n%s", stderr.String())
 	}
 }
 
-func TestRunIncludeAuthorizesGitIgnoredDirectory(t *testing.T) {
+func TestRunIncludeAllowsGitIgnoredDirectory(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -1476,7 +1734,7 @@ func TestRunIncludeAuthorizesGitIgnoredDirectory(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
-		t.Fatalf("expected --include to authorize gitignored directory, got: %v", err)
+		t.Fatalf("expected --include to allow gitignored directory, got: %v", err)
 	}
 
 	if !strings.Contains(stdout.String(), `<file path="ignored/common/ok.ts">`) {
@@ -1818,12 +2076,12 @@ func TestRunGitIgnoredFileRequiresInclude(t *testing.T) {
 	if strings.Contains(stdout.String(), "ignored/secret.ts") {
 		t.Fatalf("expected gitignored file to stay excluded, got:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Use --include to authorize it for this run") {
+	if !strings.Contains(stderr.String(), "Use --include to allow it for this run") {
 		t.Fatalf("expected --include guidance, got:\n%s", stderr.String())
 	}
 }
 
-func TestRunIncludeAuthorizesGitIgnoredFile(t *testing.T) {
+func TestRunIncludeAllowsGitIgnoredFile(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -2366,12 +2624,12 @@ func TestHelpTextIncludesShellParitySections(t *testing.T) {
 	help := shortHelpText("0.2.1", colorPalette{})
 	full := fullHelpText("0.2.1", colorPalette{})
 
-	for _, want := range []string{"Machine mode:", "Scope Modifiers:", "Patterns use shell glob syntax", "Run 'catclip --help-all' for the full manual."} {
+	for _, want := range []string{"Quick Start:", "Don't remember the flags? Use menus:", "Filtering:", "Git Filters (requires a git repo):", "More examples and advanced flags: see --help-all"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("expected short help to contain %q, got:\n%s", want, help)
 		}
 	}
-	for _, want := range []string{"━━━ Full Manual ━━━", "Scope System:", "Evaluation Order (per scope):", displayPath(globalHissPath())} {
+	for _, want := range []string{"━━━ Full Manual ━━━", "Scope System:", "Evaluation Order:", "Per scope:", "After all scopes:", displayPath(globalHissPath())} {
 		if !strings.Contains(full, want) {
 			t.Fatalf("expected full help to contain %q, got:\n%s", want, full)
 		}
@@ -2475,7 +2733,7 @@ emit_query() {
 }
 
 	case "$prompt" in
-	"pick> ")
+	"select> ")
 		if [ "$expect" = "ctrl-o" ] && [ "$query" = "node" ]; then
 			emit_query
 			printf '%s\n' "ctrl-o"
@@ -2495,7 +2753,7 @@ emit_query() {
 		case "$query" in
 			"")
 				emit_query
-				printf '%s\n' "$input" | grep -F "copy all files"
+				printf '%s\n' "$input" | grep -F "select all files"
 				exit 0
 				;;
 			common)
@@ -2843,7 +3101,7 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "include> " ] && [ -z "$query" ]; then
-	printf '%s\n' "$header" | grep -F "authorize ignored paths from .gitignore or .hiss" >/dev/null || {
+	printf '%s\n' "$header" | grep -F "come from ignored paths in .gitignore or .hiss" >/dev/null || {
 		echo "missing include header" >&2
 		exit 91
 	}
@@ -2917,13 +3175,13 @@ emit_query() {
 	fi
 }
 
-if [ "$prompt" = "pick> " ] && [ "$query" = "sr" ]; then
+if [ "$prompt" = "select> " ] && [ "$query" = "sr" ]; then
 	emit_query
 	printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
 	exit 0
 fi
 
-if [ "$prompt" = "pick> " ] && [ "$query" = "s" ]; then
+if [ "$prompt" = "select> " ] && [ "$query" = "s" ]; then
 	if printf '%s\n' "$input" | grep -E '\tsrc($|/)' >/dev/null; then
 		echo "src subtree leaked into second picker" >&2
 		exit 91
@@ -2990,7 +3248,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' "$input" | grep -F -- "--include" | head -n 1
 	exit 0
 fi
@@ -3050,7 +3308,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' "$input" | grep -F $'\tchanged' | head -n 1
 	exit 0
 fi
@@ -3105,7 +3363,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' "$input" | grep -F -- "--changed --diff" | head -n 1
 	exit 0
 fi
@@ -3161,7 +3419,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' "$input" | grep -F $'\tchanged' | head -n 1
 	exit 0
 fi
@@ -3171,10 +3429,14 @@ if [ "$prompt" = "changed> " ]; then
 		echo "missing changed header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Selecting every file keeps plain --changed." >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Select [all changed files] to keep plain --changed." >/dev/null || {
 		echo "missing changed all-files help" >&2
 		exit 91
 	}
+	if ! printf '%s\n' "$input" | grep -F "[all changed files]" >/dev/null; then
+		echo "expected changed picker to include all-files row" >&2
+		exit 91
+	fi
 	if ! printf '%s\n' "$input" | grep -F "src/main.ts" >/dev/null; then
 		echo "expected changed picker to include src/main.ts" >&2
 		exit 91
@@ -3201,6 +3463,58 @@ exit 91
 		t.Fatalf("resolveBareStartupModifierArgs returned error: %v", err)
 	}
 	if got, want := strings.Join(args, "\n"), "--changed\n--only\nsrc/main.ts"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupGitScopeArgsAllRowKeepsPlainChanged(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('main')\n",
+	})
+	initGitRepo(t, project)
+	writeProjectFile(t, project, "src/main.ts", "console.log('changed')\n")
+	writeProjectFile(t, project, "src/new.ts", "console.log('new')\n")
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "changed> " ]; then
+	printf '%s\n' "$input" | grep -F "[all changed files]" | head -n 1
+	printf '%s\n' "$input" | grep -F "src/main.ts" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, err := resolveStartupGitScopeArgs(resolver, []string{"--changed"}, "changed> ", nil, true, false)
+	if err != nil {
+		t.Fatalf("resolveStartupGitScopeArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "--changed"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -3238,7 +3552,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' "$input" | grep -F $'\tchanged-diff' | head -n 1
 	exit 0
 fi
@@ -3298,7 +3612,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' "$input" | grep -F $'\tchanged' | head -n 1
 	exit 0
 fi
@@ -3321,6 +3635,50 @@ exit 91
 	}
 }
 
+func TestResolveStartupModifierArgsReturnsThenModifier(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "filter> " ]; then
+	printf '%s\n' "$input" | grep -F $'\tthen' | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, err := resolveStartupModifierArgs(resolver, []string{"src"}, []string{"src"})
+	if err != nil {
+		t.Fatalf("resolveStartupModifierArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--then"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
 func TestStartupCommandCanRunDirectlyRejectsTrailingModifierMenu(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('src')\n",
@@ -3338,6 +3696,661 @@ func TestStartupCommandCanRunDirectlyRejectsTrailingModifierMenu(t *testing.T) {
 	}
 	if direct {
 		t.Fatal("expected trailing modifier menu sentinel not to be treated as direct")
+	}
+}
+
+func TestStartupCommandCanRunDirectlyRejectsLeadingChangedWithoutExplicitTarget(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	direct, err := startupCommandCanRunDirectly(resolver, []string{"--changed"})
+	if err != nil {
+		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
+	}
+	if direct {
+		t.Fatal("expected leading --changed without explicit target not to be treated as direct")
+	}
+}
+
+func TestStartupCommandCanRunDirectlyRejectsLeadingRecentLimitWithoutExplicitTarget(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	direct, err := startupCommandCanRunDirectly(resolver, []string{"--recent", "5"})
+	if err != nil {
+		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
+	}
+	if direct {
+		t.Fatal("expected leading --recent 5 without explicit target not to be treated as direct")
+	}
+}
+
+func TestStartupCommandCanRunDirectlyRejectsBarePreviewWithoutExplicitTarget(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	direct, err := startupCommandCanRunDirectly(resolver, []string{"--preview"})
+	if err != nil {
+		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
+	}
+	if direct {
+		t.Fatal("expected bare --preview without explicit target not to be treated as direct")
+	}
+}
+
+func TestStartupCommandCanRunDirectlyRejectsBareThenWithoutExplicitTarget(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	direct, err := startupCommandCanRunDirectly(resolver, []string{"--then"})
+	if err != nil {
+		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
+	}
+	if direct {
+		t.Fatal("expected bare --then without explicit targets not to be treated as direct")
+	}
+}
+
+func TestMaybeResolveStartupPickerArgsBareModifierMenuPicksTargetsFirst(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "picker-order")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "select> " ]; then
+	printf 'pick\n' > %q
+	printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	exit 0
+fi
+
+if [ "$prompt" = "filter> " ]; then
+	[ -f %q ] || {
+		echo "modifier picker opened before target picker" >&2
+		exit 91
+	}
+	printf '%%s\n' "$input" | grep -F $'\tchanged' | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`, stateFile, stateFile))
+
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"--"})
+	if err != nil {
+		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected bare modifier menu to be handled by startup picker")
+	}
+	if !result.UsedFzf {
+		t.Fatal("expected bare modifier menu flow to use fzf")
+	}
+	if got, want := strings.Join(result.Args, "\n"), "src\n--changed"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestMaybeResolveStartupPickerArgsLeadingOnlyPicksTargetsFirst(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "picker-order-only")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "select> " ]; then
+	printf 'pick\n' > %q
+	printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	exit 0
+fi
+
+if [ "$prompt" = "only> " ]; then
+	[ -f %q ] || {
+		echo "only picker opened before target picker" >&2
+		exit 91
+	}
+	if printf '%%s\n' "$input" | grep -F "shared/util.ts" >/dev/null; then
+		echo "only picker should stay scoped to src" >&2
+		exit 91
+	fi
+	printf '%%s\n' "$input" | grep -F "src/main.ts" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`, stateFile, stateFile))
+
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"--only"})
+	if err != nil {
+		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected leading --only to be handled by startup picker")
+	}
+	if !result.UsedFzf {
+		t.Fatal("expected leading --only flow to use fzf")
+	}
+	if got, want := strings.Join(result.Args, "\n"), "src\n--only\nsrc/main.ts"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestMaybeResolveStartupPickerArgsLeadingRecentLimitPicksTargetsFirst(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "picker-order-recent")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+query=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--query)
+			query="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "select> " ]; then
+	printf 'pick\n' > %q
+	printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	exit 0
+fi
+
+if [ "$prompt" = "recent> " ]; then
+	[ -f %q ] || {
+		echo "recent picker opened before target picker" >&2
+		exit 91
+	}
+	[ "$query" = "5" ] || {
+		echo "expected recent picker query 5, got $query" >&2
+		exit 91
+	}
+	printf '%%s\n' "$input" | grep -F $'5\t5\tup to ' | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`, stateFile, stateFile))
+
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"--recent", "5"})
+	if err != nil {
+		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected leading --recent 5 to be handled by startup picker")
+	}
+	if !result.UsedFzf {
+		t.Fatal("expected leading --recent 5 flow to use fzf")
+	}
+	if got, want := strings.Join(result.Args, "\n"), "src\n--recent\n5"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestMaybeResolveStartupPickerArgsBarePreviewPicksTargetsFirst(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "select> " ]; then
+	printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"--preview"})
+	if err != nil {
+		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected bare --preview to be handled by startup picker")
+	}
+	if !result.UsedFzf {
+		t.Fatal("expected bare --preview flow to use fzf")
+	}
+	if got, want := strings.Join(result.Args, "\n"), "--preview\nsrc"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestMaybeResolveStartupPickerArgsBareGlobalRunFlagsPickTargetsFirst(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	tests := []struct {
+		name string
+		arg  string
+		want string
+	}{
+		{name: "quiet", arg: "-q", want: "src\n-q"},
+		{name: "print", arg: "-p", want: "src\n-p"},
+		{name: "no-tree", arg: "-t", want: "src\n-t"},
+		{name: "yes", arg: "-y", want: "src\n-y"},
+		{name: "verbose", arg: "-v", want: "src\n-v"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			project := setupTestProject(t, map[string]string{
+				"src/main.ts":    "console.log('src')\n",
+				"shared/util.ts": "console.log('shared')\n",
+			})
+			_ = parseInProject(t, project, []string{"."})
+			installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "select> " ]; then
+	printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+			result, handled, err := maybeResolveStartupPickerArgs([]string{tt.arg})
+			if err != nil {
+				t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+			}
+			if !handled {
+				t.Fatal("expected bare global flag to be handled by startup picker")
+			}
+			if !result.UsedFzf {
+				t.Fatal("expected bare global flag flow to use fzf")
+			}
+			if got := strings.Join(result.Args, "\n"); got != tt.want {
+				t.Fatalf("expected resolved args %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestMaybeResolveStartupPickerArgsBareThenPicksBothScopes(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "picker-order-then")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+count=0
+if [ -f %q ]; then
+	count="$(cat %q)"
+fi
+
+if [ "$prompt" = "select> " ]; then
+	case "$count" in
+		0)
+			printf '1' > %q
+			printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+			exit 0
+			;;
+		1)
+			printf '2' > %q
+			printf '%%s\n' "$input" | grep -F "[dir] shared" | head -n 1
+			exit 0
+			;;
+		*)
+			echo "unexpected pick prompt count: $count" >&2
+			exit 91
+			;;
+	esac
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`, stateFile, stateFile, stateFile, stateFile))
+
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"--then"})
+	if err != nil {
+		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected bare --then to be handled by startup picker")
+	}
+	if !result.UsedFzf {
+		t.Fatal("expected bare --then flow to use fzf")
+	}
+	if got, want := strings.Join(result.Args, "\n"), "src\n--then\nshared"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestMaybeResolveStartupPickerArgsBareThenPreviewPicksBothScopes(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "picker-order-then-preview")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+count=0
+if [ -f %q ]; then
+	count="$(cat %q)"
+fi
+
+if [ "$prompt" = "select> " ]; then
+	case "$count" in
+		0)
+			printf '1' > %q
+			printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+			exit 0
+			;;
+		1)
+			printf '2' > %q
+			printf '%%s\n' "$input" | grep -F "[dir] shared" | head -n 1
+			exit 0
+			;;
+		*)
+			echo "unexpected pick prompt count: $count" >&2
+			exit 91
+			;;
+	esac
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`, stateFile, stateFile, stateFile, stateFile))
+
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"--then", "--preview"})
+	if err != nil {
+		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected bare --then --preview to be handled by startup picker")
+	}
+	if !result.UsedFzf {
+		t.Fatal("expected bare --then --preview flow to use fzf")
+	}
+	if got, want := strings.Join(result.Args, "\n"), "src\n--then\nshared\n--preview"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestMaybeResolveStartupPickerArgsResolvedThenPreviewPicksSecondScopeFirst(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "select> " ]; then
+	printf '%s\n' "$input" | grep -F "[dir] shared" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"src", "--then", "--preview"})
+	if err != nil {
+		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected src --then --preview to be handled by startup picker")
+	}
+	if !result.UsedFzf {
+		t.Fatal("expected src --then --preview flow to use fzf")
+	}
+	if got, want := strings.Join(result.Args, "\n"), "src\n--then\nshared\n--preview"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestMaybeResolveStartupPickerArgsDoubleModifierMenuPicksTargetsFirst(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "picker-order-double")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+count=0
+if [ -f %q ]; then
+	count="$(cat %q)"
+fi
+
+if [ "$prompt" = "select> " ]; then
+	printf '1' > %q
+	printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	exit 0
+fi
+
+if [ "$prompt" = "filter> " ]; then
+	case "$count" in
+		1)
+			printf '2' > %q
+			printf '%%s\n' "$input" | grep -F $'\tchanged' | head -n 1
+			exit 0
+			;;
+		2)
+			printf '3' > %q
+			printf '%%s\n' "$input" | grep -F $'\tchanged-diff' | head -n 1
+			exit 0
+			;;
+		*)
+			echo "unexpected modifier prompt count: $count" >&2
+			exit 91
+			;;
+	esac
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`, stateFile, stateFile, stateFile, stateFile, stateFile))
+
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"--", "--"})
+	if err != nil {
+		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+	}
+	if !handled {
+		t.Fatal("expected leading modifier menus to be handled by startup picker")
+	}
+	if !result.UsedFzf {
+		t.Fatal("expected leading modifier menus to use fzf")
+	}
+	if got, want := strings.Join(result.Args, "\n"), "src\n--changed\n--changed\n--diff"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
 
@@ -3402,7 +4415,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' "$input" | grep -F $'\tchanged' | head -n 1
 	exit 0
 fi
@@ -3453,7 +4466,8 @@ func TestMaybeResolveStartupPickerArgsTrailingOnlyAfterResolvedTargets(t *testin
 		"scripts/build.ts": "console.log('scripts')\n",
 	})
 	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
+	expectedBinding := multiSelectToggleAllBinding()
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
 prompt=""
 bindings=""
 header=""
@@ -3481,33 +4495,33 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "only> " ]; then
-	printf '%s\n' "$bindings" | grep -F -- "alt-a:toggle-all" >/dev/null || {
-		echo "missing alt-a toggle-all binding" >&2
+	printf '%%s\n' "$bindings" | grep -F -- %q >/dev/null || {
+		echo "missing toggle-all binding" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "keep only those files in the current scope" >/dev/null || {
+	printf '%%s\n' "$header" | grep -F "keep only those files in the current scope" >/dev/null || {
 		echo "missing only header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Enter continues with the current selection as --only." >/dev/null || {
+	printf '%%s\n' "$header" | grep -F "Enter continues with the current selection as --only." >/dev/null || {
 		echo "missing only enter help" >&2
 		exit 91
 	}
-	if ! printf '%s\n' "$input" | grep -F "src/main.ts" >/dev/null; then
+	if ! printf '%%s\n' "$input" | grep -F "src/main.ts" >/dev/null; then
 		echo "expected src/main.ts in only picker" >&2
 		exit 91
 	fi
-	if ! printf '%s\n' "$input" | grep -F "shared/util.ts" >/dev/null; then
+	if ! printf '%%s\n' "$input" | grep -F "shared/util.ts" >/dev/null; then
 		echo "expected shared/util.ts in only picker" >&2
 		exit 91
 	fi
-	printf '%s\n' "$input" | grep -F "shared/util.ts" | head -n 1
+	printf '%%s\n' "$input" | grep -F "shared/util.ts" | head -n 1
 	exit 0
 fi
 
 	echo "unexpected prompt: $prompt" >&2
 exit 91
-`)
+`, expectedBinding))
 
 	args, _, err := resolveStartupScopeFileSetArgs([]string{"src", "shared"}, "--only", "only> ")
 	if err != nil {
@@ -3684,6 +4698,105 @@ exit 91
 	}
 }
 
+func TestResolveStartupScopeFileSetArgsExcludeOffersExtensionPatternRows(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":      "console.log('ts')\n",
+		"src/button.tsx":   "console.log('tsx')\n",
+		"src/reset.css":    "body {}\n",
+		"src/readme.md":    "# readme\n",
+		"shared/util.ts":   "console.log('shared')\n",
+		"scripts/build.ts": "console.log('scripts')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "exclude> " ]; then
+	if ! printf '%s\n' "$input" | grep -F $'\t*.css\t' >/dev/null; then
+		echo "expected *.css synthetic row in exclude picker" >&2
+		exit 91
+	fi
+	if ! printf '%s\n' "$input" | grep -F $'\t*.ts\t' >/dev/null; then
+		echo "expected *.ts synthetic row in exclude picker" >&2
+		exit 91
+	fi
+	if ! printf '%s\n' "$input" | grep -F $'\t*.tsx\t' >/dev/null; then
+		echo "expected *.tsx synthetic row in exclude picker" >&2
+		exit 91
+	fi
+	printf '%s\n' "$input" | grep -F $'\t*.ts\t' | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	args, _, err := resolveStartupScopeFileSetArgs([]string{"src"}, "--exclude", "exclude> ")
+	if err != nil {
+		t.Fatalf("resolveStartupScopeFileSetArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--exclude\n*.ts"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupScopeFileSetArgsExcludeAllowsSelectingMultipleExtensionRows(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('ts')\n",
+		"src/button.tsx": "console.log('tsx')\n",
+		"src/reset.css":  "body {}\n",
+		"src/readme.md":  "# readme\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "exclude> " ]; then
+	printf '%s\n' "$input" | grep -F $'\t*.ts\t' | head -n 1
+	printf '%s\n' "$input" | grep -F $'\t*.tsx\t' | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	args, _, err := resolveStartupScopeFileSetArgs([]string{"src"}, "--exclude", "exclude> ")
+	if err != nil {
+		t.Fatalf("resolveStartupScopeFileSetArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--exclude\n*.ts\n*.tsx"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
 func TestResolveStartupTrailingActionArgsConsumesBareModifierSentinel(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":    "console.log('src')\n",
@@ -3773,7 +4886,7 @@ emit_query() {
 	fi
 }
 
-if [ "$prompt" = "pick> " ] && [ "$query" = "sr" ]; then
+if [ "$prompt" = "select> " ] && [ "$query" = "sr" ]; then
 	emit_query
 	printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
 	exit 0
@@ -3922,7 +5035,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "pick> " ] && [ "$query" = "Button.tsx" ]; then
+if [ "$prompt" = "select> " ] && [ "$query" = "Button.tsx" ]; then
 	if ! printf '%s\n' "$input" | grep -F "src/components/Button.tsx" >/dev/null; then
 		echo "expected Button.tsx to be selectable after --then" >&2
 		exit 91
@@ -4005,7 +5118,7 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "pick> " ]; then
+if [ "$prompt" = "select> " ]; then
 	first_line="$(head -n 1)"
 	if [ "$print_query" -eq 1 ]; then
 		printf '\n%s\n' "$first_line"
@@ -4041,7 +5154,9 @@ func TestResolveBareStartupModifierArgsContainsOpensLiveRegexPicker(t *testing.T
 		"src/todo.ts": "TODO: wire this up\n",
 	})
 	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
+	expectedBinding := multiSelectToggleAllBinding()
+	expectedKey := multiSelectToggleAllKey()
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
 prompt=""
 header=""
 expect=""
@@ -4078,35 +5193,35 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
-	printf '%s\n' "$input" | grep -F -- "--contains" | head -n 1
+if [ "$prompt" = "filter> " ]; then
+	printf '%%s\n' "$input" | grep -F -- "--contains" | head -n 1
 	exit 0
 fi
 
 if [ "$prompt" = "regex> " ]; then
 	[ "$disabled" -eq 1 ] || { echo "contains picker must use --disabled" >&2; exit 91; }
 	[ -z "$expect" ] || { echo "unexpected --expect: $expect" >&2; exit 91; }
-	printf '%s\n' "$header" | grep -F "Regex matches file contents, not file names." >/dev/null || {
+	printf '%%s\n' "$header" | grep -F "Regex matches file contents, not file names." >/dev/null || {
 		echo "missing regex header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Enter continues with the current selection." >/dev/null || {
-		echo "missing Enter header" >&2
+	printf '%%s\n' "$header" | grep -F "Select [all current matches] to keep plain --contains." >/dev/null || {
+		echo "missing all-matches header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Alt-A toggles all current matches." >/dev/null || {
-		echo "missing Alt-A header" >&2
+	printf '%%s\n' "$header" | grep -F %q >/dev/null || {
+		echo "missing toggle-all header" >&2
 		exit 91
 	}
-	printf '%s\n' "$bindings" | grep -F -- "start:reload:" >/dev/null || {
+	printf '%%s\n' "$bindings" | grep -F -- "start:reload:" >/dev/null || {
 		echo "missing start reload binding" >&2
 		exit 91
 	}
-	printf '%s\n' "$bindings" | grep -F -- "alt-a:toggle-all" >/dev/null || {
-		echo "missing alt-a toggle-all binding" >&2
+	printf '%%s\n' "$bindings" | grep -F -- %q >/dev/null || {
+		echo "missing toggle-all binding" >&2
 		exit 91
 	}
-	printf '%s\n' "$bindings" | grep -F -- "--internal-contains-list" >/dev/null || {
+	printf '%%s\n' "$bindings" | grep -F -- "--internal-contains-list" >/dev/null || {
 		echo "missing internal contains list command" >&2
 		exit 91
 	}
@@ -4117,7 +5232,7 @@ fi
 
 echo "unexpected prompt: $prompt" >&2
 exit 91
-`)
+`, expectedKey+" toggles all current matches.", expectedBinding))
 
 	resolver, err := newStartupPickerResolver()
 	if err != nil {
@@ -4128,7 +5243,7 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveBareStartupModifierArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(args, "\n"), "--contains\nTODO\n--only\nsrc/todo.ts"; got != want {
+	if got, want := strings.Join(args, "\n"), "--contains\nTODO"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -4152,7 +5267,7 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' 'selected	contains-snippet'
 	exit 0
 fi
@@ -4176,7 +5291,7 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveBareStartupModifierArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(args, "\n"), "--contains\nTODO\n--only\nsrc/todo.ts\n--snippet"; got != want {
+	if got, want := strings.Join(args, "\n"), "--contains\nTODO\n--snippet"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -4210,13 +5325,17 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' 'selected	contains-snippet'
 	exit 0
 fi
 
 if [ "$prompt" = "regex> " ]; then
-	printf '%s\n' "$preview" | grep -F -- "--internal-file-preview --internal-file-path {2} --snippet --contains {q}" >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- 'preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi;' >/dev/null || {
+		echo "missing snippet preview guard: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-preview --internal-file-path "$preview_target" --snippet --contains {q}' >/dev/null || {
 		echo "missing snippet preview command: $preview" >&2
 		exit 91
 	}
@@ -4249,6 +5368,8 @@ prompt=""
 header=""
 bindings=""
 no_sort=0
+nth=""
+print_query=0
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--prompt)
@@ -4268,6 +5389,14 @@ $2"
 			no_sort=1
 			shift
 			;;
+		--nth)
+			nth="$2"
+			shift 2
+			;;
+		--print-query)
+			print_query=1
+			shift
+			;;
 		*)
 			shift
 			;;
@@ -4276,7 +5405,13 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
+emit_query() {
+	if [ "$print_query" -eq 1 ]; then
+		printf '%s\n' ""
+	fi
+}
+
+if [ "$prompt" = "filter> " ]; then
 	[ "$(printf '%s\n' "$header" | wc -l | tr -d ' ')" = "4" ] || {
 		echo "expected 4-line modifier header" >&2
 		exit 91
@@ -4285,40 +5420,57 @@ if [ "$prompt" = "modifier> " ]; then
 		echo "expected modifier picker to disable sorting" >&2
 		exit 91
 	}
+	[ "$nth" = "1" ] || {
+		echo "expected modifier picker to search only the label column, got nth=$nth" >&2
+		exit 91
+	}
 	[ -z "$bindings" ] || {
 		echo "unexpected modifier bindings: $bindings" >&2
 		exit 91
 	}
 	first="$(printf '%s\n' "$input" | head -n 1)"
 	last="$(printf '%s\n' "$input" | tail -n 1)"
+	first_label="$(printf '%s\n' "$first" | cut -f1)"
 	first_key="$(printf '%s\n' "$first" | cut -f2)"
 	last_key="$(printf '%s\n' "$last" | cut -f2)"
+	last_label="$(printf '%s\n' "$last" | cut -f1)"
+	last_desc="$(printf '%s\n' "$last" | cut -f3)"
 	[ "$first_key" = "only" ] || {
 		echo "unexpected first modifier row: $first" >&2
 		exit 91
 	}
-	[ "$last_key" = "unstaged-diff" ] || {
+	[ "$last_key" = "then" ] || {
 		echo "unexpected last modifier row: $last" >&2
 		exit 91
 	}
-	printf '%s\n' "$first" | grep -F -- "--only" >/dev/null || {
-		echo "missing --only label in first row: $first" >&2
+	printf '%s\n' "$last_label" | grep -F -- "--then" >/dev/null || {
+		echo "missing --then label in last row: $last_label" >&2
 		exit 91
 	}
-	printf '%s\n' "$first" | grep -F -- "Keep only matching files from the current scope" >/dev/null || {
-		echo "missing --only description in first row: $first" >&2
+	printf '%s\n' "$last_label" | grep -F -- "Add another catclip command after this one, with its own targets and filters" >/dev/null && {
+		echo "label column should not contain description text: $last_label" >&2
+		exit 91
+	}
+	printf '%s\n' "$last_desc" | grep -F -- "Add another catclip command after this one, with its own targets and filters" >/dev/null || {
+		echo "missing --then description in description column: $last_desc" >&2
 		exit 91
 	}
 	printf '%s\n' "$input" | grep -F $'\tcontains-snippet' >/dev/null || {
 		echo "missing contains-snippet modifier row" >&2
 		exit 91
 	}
-	printf '%s\n' "$first"
+	printf '%s\n' 'only'
+	exit 0
+fi
+
+if [ "$prompt" = "select> " ]; then
+	emit_query
+	printf '%s\n' 'src'
 	exit 0
 fi
 
 if [ "$prompt" = "only> " ]; then
-	printf '%s\n' "$input" | grep -F "src/todo.ts" | head -n 1
+	printf '%s\n' 'src/todo.ts'
 	exit 0
 fi
 
@@ -4377,7 +5529,92 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveStartupContainsArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO\n--only\nsrc/main.ts\nsrc/util.ts"; got != want {
+	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupContainsArgsAllRowKeepsPlainContains(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: one\n",
+		"src/util.ts": "TODO: two\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "regex> " ]; then
+	{
+		printf 'TODO\n'
+		printf '[all current matches]\t\t\t\t\n'
+		printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
+	}
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	args, _, err := resolveStartupContainsArgs([]string{"src"}, false)
+	if err != nil {
+		t.Fatalf("resolveStartupContainsArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupContainsArgsSubsetStillUsesOnly(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: one\n",
+		"src/util.ts": "TODO: two\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+if [ "$prompt" = "regex> " ]; then
+	{
+		printf 'TODO\n'
+		printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
+	}
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	args, _, err := resolveStartupContainsArgs([]string{"src"}, false)
+	if err != nil {
+		t.Fatalf("resolveStartupContainsArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO\n--only\nsrc/main.ts"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -4402,7 +5639,7 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' 'selected	only'
 	exit 0
 fi
@@ -4421,6 +5658,128 @@ exit 91
 		t.Fatalf("resolveStartupArgs returned error: %v", err)
 	}
 	if got, want := strings.Join(args, "\n"), "--only\nsrc/main.ts\nsrc/util.ts"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupArgsModifierMenuThenOnlyStartsNewScope(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":   "console.log('main')\n",
+		"src/util.ts":   "console.log('util')\n",
+		"shared/app.ts": "console.log('shared')\n",
+		"shared/lib.ts": "console.log('lib')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	selectStateFile := filepath.Join(t.TempDir(), "modifier-then-select-count")
+	modifierStateFile := filepath.Join(t.TempDir(), "modifier-then-modifier-count")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+query=""
+print_query=0
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--query)
+			query="$2"
+			shift 2
+			;;
+		--print-query)
+			print_query=1
+			shift
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+emit_query() {
+	if [ "$print_query" -eq 1 ]; then
+		printf '%%s\n' "$query"
+	fi
+}
+
+if [ "$prompt" = "select> " ]; then
+	count=0
+	if [ -f %q ]; then
+		count="$(cat %q)"
+	fi
+	count=$((count + 1))
+	printf '%%s' "$count" > %q
+	case "$count" in
+		1)
+			emit_query
+			printf '%%s\n' 'src'
+			;;
+		2)
+			emit_query
+			printf '%%s\n' 'shared'
+			;;
+		*)
+			echo "unexpected select count: $count" >&2
+			exit 91
+			;;
+	esac
+	exit 0
+fi
+
+if [ "$prompt" = "filter> " ]; then
+	count=0
+	if [ -f %q ]; then
+		count="$(cat %q)"
+	fi
+	count=$((count + 1))
+	printf '%%s' "$count" > %q
+	case "$count" in
+		1)
+			printf '%%s\n' 'only'
+			;;
+		2)
+			printf '%%s\n' 'then'
+			;;
+		3)
+			printf '%%s\n' 'only'
+			;;
+		*)
+			echo "unexpected modifier count: $count" >&2
+			exit 91
+			;;
+	esac
+	exit 0
+fi
+
+if [ "$prompt" = "only> " ]; then
+	if printf '%%s\n' "$input" | grep -F "shared/" >/dev/null; then
+		printf '%%s\n' "$input" | grep -F "shared/app.ts" | head -n 1
+		exit 0
+	fi
+	if printf '%%s\n' "$input" | grep -F "src/" >/dev/null; then
+		printf '%%s\n' "$input" | grep -F "src/main.ts" | head -n 1
+		exit 0
+	fi
+	echo "unexpected only scope" >&2
+	exit 91
+fi
+
+echo "unexpected prompt: $prompt query=$query" >&2
+exit 91
+`, selectStateFile, selectStateFile, selectStateFile, modifierStateFile, modifierStateFile, modifierStateFile))
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, _, err := resolveInteractiveStartupArgs(resolver, []string{"--", "--", "--"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--only\nsrc/main.ts\n--then\nshared\n--only\nshared/app.ts"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -4449,7 +5808,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	count=0
 	if [ -f %q ]; then
 		count="$(cat %q)"
@@ -4529,7 +5888,7 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' '--contains	contains'
 	exit 0
 fi
@@ -4571,7 +5930,7 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "modifier> " ]; then
+if [ "$prompt" = "filter> " ]; then
 	printf '%s\n' 'selected	changed'
 	exit 0
 fi
@@ -4658,7 +6017,7 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveStartupTrailingActionArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO\n--only\nsrc/main.ts"; got != want {
+	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -4698,6 +6057,9 @@ func TestRunInternalContainsListOutputsCurrentScopeMatches(t *testing.T) {
 	}
 
 	out := stdout.String()
+	if !strings.Contains(out, containsAllMatchesLabel) {
+		t.Fatalf("expected all-matches row in internal contains list output, got %q", out)
+	}
 	if !strings.Contains(out, "\tsrc/main.ts\tfile\ttext") {
 		t.Fatalf("expected src/main.ts in internal contains list output, got %q", out)
 	}
