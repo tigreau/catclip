@@ -6,36 +6,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 
 	treepkg "github.com/tigreau/catclip/internal/tree"
 )
 
-func buildOutputReport(cfg runConfig, gitCtx gitContext, entries []fileEntry, notices []string) (outputReport, error) {
-	sizes, totalBytes, err := collectFileSizes(entries)
-	if err != nil {
-		return outputReport{}, err
-	}
-
+func buildOutputReportForPlan(cfg runConfig, gitCtx gitContext, plan outputPlan, notices []string) (outputReport, error) {
+	sizes, totalBytes := plan.BodySizes()
 	report := outputReport{
 		sizes:   sizes,
-		notices: append(buildBypassNotices(entries), notices...),
+		notices: append([]string(nil), notices...),
 	}
 
 	if needsTreeRender(cfg) {
 		if gitCtx.Enabled {
-			report.statuses, err = collectGitStatusMap(gitCtx, entries)
+			statuses, err := collectGitStatusMapForPlan(gitCtx, plan)
 			if err != nil {
 				return outputReport{}, err
 			}
+			report.statuses = statuses
 		}
-		report.modeTags = buildPreviewModeTags(entries, report.statuses)
+		report.modeTags = plan.PreviewModeTags(report.statuses)
 	}
 
-	report.humanSize, report.tokens = treepkg.FormatSizeAndTokens(totalBytes, len(entries))
+	report.humanSize, report.tokens = treepkg.FormatSizeAndTokens(totalBytes, len(plan.items))
 	report.fileWord = "files"
-	if len(entries) == 1 {
+	if len(plan.items) == 1 {
 		report.fileWord = "file"
 	}
 	return report, nil
@@ -56,7 +52,7 @@ func needsTreeRender(cfg runConfig) bool {
 
 // renderPreview writes the user-facing preview path: filter summary, notices,
 // optional tree, and the final size/token summary.
-func renderPreview(cfg runConfig, gitCtx gitContext, entries []fileEntry, report outputReport, stdout, stderr io.Writer, colors colorPalette) error {
+func renderPreview(cfg runConfig, gitCtx gitContext, plan outputPlan, report outputReport, stdout, stderr io.Writer, colors colorPalette) error {
 	if !cfg.Quiet {
 		if err := writeFilterSummary(stderr, cfg, gitCtx, colors); err != nil {
 			return err
@@ -67,7 +63,7 @@ func renderPreview(cfg runConfig, gitCtx gitContext, entries []fileEntry, report
 	}
 
 	if !cfg.NoTree {
-		if err := printPreviewTree(stdout, entries, report.sizes, report.statuses, report.modeTags, colors); err != nil {
+		if err := printPreviewTree(stdout, plan, report, colors); err != nil {
 			return err
 		}
 	}
@@ -75,7 +71,7 @@ func renderPreview(cfg runConfig, gitCtx gitContext, entries []fileEntry, report
 	return writeSummary(stdout, report, colors)
 }
 
-func writeNormalDiagnostics(cfg runConfig, gitCtx gitContext, entries []fileEntry, report outputReport, stderr io.Writer, colors colorPalette) (bool, error) {
+func writeNormalDiagnostics(cfg runConfig, gitCtx gitContext, plan outputPlan, report outputReport, stderr io.Writer, colors colorPalette) (bool, error) {
 	if !cfg.Quiet {
 		if err := writeFilterSummary(stderr, cfg, gitCtx, colors); err != nil {
 			return false, err
@@ -84,7 +80,7 @@ func writeNormalDiagnostics(cfg runConfig, gitCtx gitContext, entries []fileEntr
 			return false, err
 		}
 		if !cfg.NoTree {
-			if err := printPreviewTree(stderr, entries, report.sizes, report.statuses, report.modeTags, colors); err != nil {
+			if err := printPreviewTree(stderr, plan, report, colors); err != nil {
 				return false, err
 			}
 		}
@@ -134,39 +130,6 @@ func writeReportNotices(w io.Writer, report outputReport, colors colorPalette) e
 	return nil
 }
 
-func buildBypassNotices(entries []fileEntry) []string {
-	if len(entries) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{})
-	notices := make([]string, 0, 4)
-	for _, entry := range entries {
-		if !entry.Bypassed {
-			continue
-		}
-		key := entry.BypassKind + "\x00" + entry.BlockSource + "\x00" + entry.BlockRule
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-
-		rule := entry.BlockRule
-		if rule == "" {
-			rule = entry.BlockSource
-		}
-		reason := "including because directly targeted"
-		if entry.BypassKind != "" && entry.BypassKind != "direct" {
-			reason = "including because specifically targeted"
-		}
-		if entry.BlockSource != "" {
-			notices = append(notices, fmt.Sprintf("Warning: bypassing ignore rule %s from %s - %s", singleQuoted(rule), entry.BlockSource, reason))
-			continue
-		}
-		notices = append(notices, fmt.Sprintf("Warning: bypassing ignore rule %s - %s", singleQuoted(rule), reason))
-	}
-	return notices
-}
-
 func writeSummary(w io.Writer, report outputReport, colors colorPalette) error {
 	return renderTreeSummarySection(w, buildTreeSummaryFromReport(report), treeRenderOptions{
 		ShowSummary: true,
@@ -174,26 +137,26 @@ func writeSummary(w io.Writer, report outputReport, colors colorPalette) error {
 	}, colors)
 }
 
-func writeClipboardSuccess(w io.Writer, entries []fileEntry, colors colorPalette) error {
-	if len(entries) == 0 {
+func writeClipboardSuccess(w io.Writer, plan outputPlan, colors colorPalette) error {
+	if len(plan.items) == 0 {
 		return nil
 	}
-	first := entries[0].RelPath
-	last := entries[len(entries)-1].RelPath
+	first := plan.items[0].relPath
+	last := plan.items[len(plan.items)-1].relPath
 	fileWord := "files"
-	if len(entries) == 1 {
+	if len(plan.items) == 1 {
 		fileWord = "file"
 	}
 
 	switch {
-	case len(entries) == 1:
+	case len(plan.items) == 1:
 		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%s%s %sto clipboard%s\n", colors.OK, colors.Reset, colors.Bold, first, colors.Reset, colors.OK, colors.Reset)
 		return err
 	case first == last:
-		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s\n", colors.OK, colors.Reset, colors.Bold, len(entries), fileWord, colors.Reset, colors.OK, colors.Reset)
+		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s\n", colors.OK, colors.Reset, colors.Bold, len(plan.items), fileWord, colors.Reset, colors.OK, colors.Reset)
 		return err
 	default:
-		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s %s(%s ... %s)%s\n", colors.OK, colors.Reset, colors.Bold, len(entries), fileWord, colors.Reset, colors.OK, colors.Reset, colors.Dim, first, last, colors.Reset)
+		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s %s(%s ... %s)%s\n", colors.OK, colors.Reset, colors.Bold, len(plan.items), fileWord, colors.Reset, colors.OK, colors.Reset, colors.Dim, first, last, colors.Reset)
 		return err
 	}
 }
@@ -222,26 +185,8 @@ func shortPath(value string) string {
 	return value
 }
 
-func collectFileSizes(entries []fileEntry) (map[string]int64, int64, error) {
-	sizes := make(map[string]int64, len(entries))
-	var total int64
-	for _, entry := range entries {
-		// Lstat keeps preview accounting faithful to the on-disk entry size.
-		// Symlinks are currently excluded before preview generation, so this is
-		// effectively regular-file size accounting today.
-		info, err := os.Lstat(entry.AbsPath)
-		if err != nil {
-			return nil, 0, err
-		}
-		size := info.Size()
-		sizes[entry.RelPath] = size
-		total += size
-	}
-	return sizes, total, nil
-}
-
-func collectGitStatusMap(gitCtx gitContext, entries []fileEntry) (map[string]string, error) {
-	pathspecs := previewGitStatusPathspecs(gitCtx, entries)
+func collectGitStatusMapForPlan(gitCtx gitContext, plan outputPlan) (map[string]string, error) {
+	pathspecs := plan.GitStatusPathspecs(gitCtx)
 	out, err := collectGitStatusOutput(gitCtx, pathspecs)
 	if err != nil {
 		if len(pathspecs) > 0 {
@@ -317,69 +262,12 @@ func parseGitStatusMap(gitCtx gitContext, output string) map[string]string {
 	return statuses
 }
 
-func previewGitStatusPathspecs(gitCtx gitContext, entries []fileEntry) []string {
-	set := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		repoPath := ""
-		if entry.TargetRoot != "" && entry.TargetRoot != "." {
-			repoPath = gitCtx.toRepoPath(entry.TargetRoot)
-		} else {
-			repoPath = gitCtx.toRepoPath(entry.RelPath)
-		}
-		repoPath = normalizeRelPath(repoPath)
-		if repoPath == "" || repoPath == "." {
-			continue
-		}
-		set[repoPath] = struct{}{}
-	}
-
-	pathspecs := make([]string, 0, len(set))
-	for repoPath := range set {
-		pathspecs = append(pathspecs, repoPath)
-	}
-	sort.Strings(pathspecs)
-	return pathspecs
-}
-
-func buildPreviewModeTags(entries []fileEntry, statuses map[string]string) map[string]string {
-	tags := make(map[string]string)
-	for _, entry := range entries {
-		switch entry.Mode {
-		case entryModeDiff:
-			if statuses[entry.RelPath] == "?" {
-				continue
-			}
-			tags[entry.RelPath] = "diff only"
-		case entryModeSnippet:
-			tags[entry.RelPath] = "snippet only"
-		}
-	}
-	return tags
-}
-
 // printPreviewTree renders the compact directory tree shown before clipboard or
-// stdout emission, including bypass coloring and target path hints.
-func printPreviewTree(w io.Writer, entries []fileEntry, sizes map[string]int64, statuses map[string]string, modeTags map[string]string, colors colorPalette) error {
-	docEntries := make([]treeDocumentEntry, 0, len(entries))
-	for _, entry := range entries {
-		treeEntry := treeDocumentEntry{
-			Path:        entry.RelPath,
-			GitStatus:   statuses[entry.RelPath],
-			ModeTag:     modeTags[entry.RelPath],
-			TargetRoot:  entry.TargetRoot,
-			Bypassed:    entry.Bypassed,
-			BlockRule:   entry.BlockRule,
-			BlockSource: entry.BlockSource,
-		}
-		if size, ok := sizes[entry.RelPath]; ok {
-			sizeCopy := size
-			treeEntry.Size = &sizeCopy
-		}
-		docEntries = append(docEntries, treeEntry)
-	}
+// stdout emission, including include-allowed coloring and target path hints.
+func printPreviewTree(w io.Writer, plan outputPlan, report outputReport, colors colorPalette) error {
 	return renderTreeDocument(w, treeDocument{
 		Mode:    treeDocumentModeTree,
-		Entries: docEntries,
+		Entries: plan.TreeEntries(report),
 	}, treeRenderOptions{
 		ShowSizes:     true,
 		ShowGitStatus: true,
@@ -388,12 +276,12 @@ func printPreviewTree(w io.Writer, entries []fileEntry, sizes map[string]int64, 
 	}, colors)
 }
 
-func bypassesDirectoryLabel(entry fileEntry, relDir string) bool {
-	return bypassesTreeDirectoryLabel(treeDocumentEntry{
-		Path:        entry.RelPath,
-		TargetRoot:  entry.TargetRoot,
-		Bypassed:    entry.Bypassed,
-		BlockRule:   entry.BlockRule,
-		BlockSource: entry.BlockSource,
+func allowedByIncludeDirectoryLabel(entry fileEntry, relDir string) bool {
+	return allowedByIncludeTreeDirectoryLabel(treeDocumentEntry{
+		Path:             entry.RelPath,
+		TargetRoot:       entry.TargetRoot,
+		AllowedByInclude: entry.AllowedByInclude,
+		BlockRule:        entry.BlockRule,
+		BlockSource:      entry.BlockSource,
 	}, relDir)
 }

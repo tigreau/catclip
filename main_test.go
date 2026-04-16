@@ -39,16 +39,28 @@ func (r *errAfterReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+func parsedExecutionScopes(t *testing.T, cfg runConfig) []executionScope {
+	t.Helper()
+	return executionScopesFromCommandSpec(cfg.Command)
+}
+
+func parsedExecutionScope(t *testing.T, cfg runConfig) executionScope {
+	t.Helper()
+	scopes := parsedExecutionScopes(t, cfg)
+	if len(scopes) != 1 {
+		t.Fatalf("expected 1 scope, got %d", len(scopes))
+	}
+	return scopes[0]
+}
+
 func TestParseArgsDefaultsToCurrentDirectoryScope(t *testing.T) {
 	cfg, err := parseArgs(nil)
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 
-	if len(cfg.Scopes) != 1 {
-		t.Fatalf("expected 1 scope, got %d", len(cfg.Scopes))
-	}
-	if got := cfg.Scopes[0].Targets; len(got) != 1 || got[0] != "." {
+	scope := parsedExecutionScope(t, cfg)
+	if got := scope.Targets; len(got) != 1 || got[0] != "." {
 		t.Fatalf("expected default target '.', got %#v", got)
 	}
 }
@@ -59,34 +71,32 @@ func TestParseArgsBuildsMultipleScopes(t *testing.T) {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 
-	if len(cfg.Scopes) != 2 {
-		t.Fatalf("expected 2 scopes, got %d", len(cfg.Scopes))
+	scopes := parsedExecutionScopes(t, cfg)
+	if got, want := len(scopes), 2; got != want {
+		t.Fatalf("expected %d scopes, got %d", want, got)
 	}
 
-	if got := cfg.Scopes[0].Targets[0]; got != "src" {
+	if got := scopes[0].Targets[0]; got != "src" {
 		t.Fatalf("expected first scope target 'src', got %q", got)
 	}
-	if got := cfg.Scopes[0].Only[0]; got != "*.ts" {
+	if got := scopes[0].Only[0]; got != "*.ts" {
 		t.Fatalf("expected first scope only '*.ts', got %q", got)
 	}
-	if got := cfg.Scopes[1].Targets[0]; got != "tests" {
+	if got := scopes[1].Targets[0]; got != "tests" {
 		t.Fatalf("expected second scope target 'tests', got %q", got)
 	}
-	if got := cfg.Scopes[1].Only[0]; got != "*.test.ts" {
+	if got := scopes[1].Only[0]; got != "*.test.ts" {
 		t.Fatalf("expected second scope only '*.test.ts', got %q", got)
 	}
 }
 
 func TestParseArgsAppliesModifierOnlyScopeToDot(t *testing.T) {
-	cfg, err := parseArgs([]string{"--changed", "--diff"})
+	cfg, err := parseArgs([]string{"--changed-diff"})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 
-	if len(cfg.Scopes) != 1 {
-		t.Fatalf("expected 1 scope, got %d", len(cfg.Scopes))
-	}
-	scope := cfg.Scopes[0]
+	scope := parsedExecutionScope(t, cfg)
 	if len(scope.Targets) != 1 || scope.Targets[0] != "." {
 		t.Fatalf("expected modifier-only scope to default to '.', got %#v", scope.Targets)
 	}
@@ -111,7 +121,7 @@ func TestParseArgsConsumesMultiValueExcludeStage(t *testing.T) {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 
-	scope := cfg.Scopes[0]
+	scope := parsedExecutionScope(t, cfg)
 	if got, want := len(scope.Exclude), 2; got != want {
 		t.Fatalf("expected %d exclude patterns, got %d", want, got)
 	}
@@ -123,7 +133,7 @@ func TestParseArgsAcceptsBareRecentStage(t *testing.T) {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 
-	scope := cfg.Scopes[0]
+	scope := parsedExecutionScope(t, cfg)
 	if got, want := len(scope.Stages), 1; got != want {
 		t.Fatalf("expected %d stage, got %d", want, got)
 	}
@@ -141,7 +151,7 @@ func TestParseArgsAcceptsRecentLimitAndKeepsStageBoundaries(t *testing.T) {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 
-	scope := cfg.Scopes[0]
+	scope := parsedExecutionScope(t, cfg)
 	if got, want := len(scope.Only), 1; got != want {
 		t.Fatalf("expected %d only pattern, got %d", want, got)
 	}
@@ -184,10 +194,11 @@ func TestParseArgsTreatsIncludeAsAllowedTargetSelection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
-	if got := cfg.Scopes[0].Targets; strings.Join(got, "\n") != "." {
+	scope := parsedExecutionScope(t, cfg)
+	if got := scope.Targets; strings.Join(got, "\n") != "." {
 		t.Fatalf("expected include to preserve the explicit base target only, got %#v", got)
 	}
-	if got := cfg.Scopes[0].IncludedTargets; strings.Join(got, "\n") != "node_modules\ncoverage" {
+	if got := scope.IncludedTargets; strings.Join(got, "\n") != "node_modules\ncoverage" {
 		t.Fatalf("expected included target metadata, got %#v", got)
 	}
 }
@@ -197,10 +208,11 @@ func TestParseArgsTreatsBareIncludeAsAugmentingDotScope(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
-	if got := cfg.Scopes[0].Targets; strings.Join(got, "\n") != "." {
+	scope := parsedExecutionScope(t, cfg)
+	if got := scope.Targets; strings.Join(got, "\n") != "." {
 		t.Fatalf("expected bare include to preserve implicit dot scope, got %#v", got)
 	}
-	if got := cfg.Scopes[0].IncludedTargets; strings.Join(got, "\n") != "node_modules\ncoverage" {
+	if got := scope.IncludedTargets; strings.Join(got, "\n") != "node_modules\ncoverage" {
 		t.Fatalf("expected included target metadata, got %#v", got)
 	}
 }
@@ -251,24 +263,24 @@ func TestParseArgsStagedImpliesChanged(t *testing.T) {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 
-	scope := cfg.Scopes[0]
+	scope := parsedExecutionScope(t, cfg)
 	if !scope.Staged || !scope.Changed {
 		t.Fatalf("expected staged to imply changed, got %+v", scope)
 	}
 }
 
-func TestParseArgsSnippetRequiresContains(t *testing.T) {
+func TestParseArgsSnippetRequiresPattern(t *testing.T) {
 	_, err := parseArgs([]string{"src", "--snippet"})
 	if err == nil {
-		t.Fatal("expected error for --snippet without --contains")
+		t.Fatal("expected error for --snippet without a regex pattern")
 	}
-	if !strings.Contains(err.Error(), "--snippet requires --contains") {
+	if !strings.Contains(err.Error(), "--snippet requires a regex pattern") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestParseArgsRejectsSnippetWithDiff(t *testing.T) {
-	_, err := parseArgs([]string{"src", "--contains", "TODO", "--snippet", "--changed", "--diff"})
+	_, err := parseArgs([]string{"src", "--snippet", "TODO", "--changed-diff"})
 	if err == nil {
 		t.Fatal("expected error for --snippet with --diff")
 	}
@@ -277,22 +289,152 @@ func TestParseArgsRejectsSnippetWithDiff(t *testing.T) {
 	}
 }
 
+func TestParseArgsRejectsContainsAfterSnippet(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--snippet", "TODO", "--contains", "FIXME"})
+	if err == nil {
+		t.Fatal("expected error for --contains after --snippet")
+	}
+	if !strings.Contains(err.Error(), "--contains must come before --snippet in the same scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsRejectsRepeatedSnippet(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--snippet", "TODO", "--snippet", "FIXME"})
+	if err == nil {
+		t.Fatal("expected error for repeated --snippet")
+	}
+	if !strings.Contains(err.Error(), "--snippet cannot be repeated in the same scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsAllowsSnippetAfterEarlierFilters(t *testing.T) {
+	cfg, err := parseArgs([]string{".", "--contains", "keep", "--only", "README.md", "--snippet", "show"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	scope := parsedExecutionScope(t, cfg)
+	if !scope.Snippet || scope.Contains != "keep" || scope.SnippetPattern != "show" {
+		t.Fatalf("unexpected parsed scope: %+v", scope)
+	}
+}
+
+func TestParseArgsAllowsContainsBeforeChangedDiff(t *testing.T) {
+	cfg, err := parseArgs([]string{"src", "--contains", "TODO", "--changed-diff"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+
+	scope := parsedExecutionScope(t, cfg)
+	if !scope.Diff || !scope.Changed || scope.Contains != "TODO" {
+		t.Fatalf("unexpected parsed scope: %+v", scope)
+	}
+}
+
+func TestParseArgsRejectsContainsAfterDiff(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--changed-diff", "--contains", "TODO"})
+	if err == nil {
+		t.Fatal("expected error for --contains after --diff")
+	}
+	if !strings.Contains(err.Error(), "--contains must come before --changed-diff in the same scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "content filters cannot come after it") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsAllowsModifierLikeContainsPattern(t *testing.T) {
+	cfg, err := parseArgs([]string{"src", "--contains", "--snippet"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	scope := parsedExecutionScope(t, cfg)
+	if got := scope.Contains; got != "--snippet" {
+		t.Fatalf("scope.Contains = %q, want --snippet", got)
+	}
+}
+
+func TestParseArgsAllowsModifierLikeSnippetPattern(t *testing.T) {
+	cfg, err := parseArgs([]string{"src", "--snippet", "--contains"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	scope := parsedExecutionScope(t, cfg)
+	if got := scope.SnippetPattern; got != "--contains" {
+		t.Fatalf("scope.SnippetPattern = %q, want --contains", got)
+	}
+}
+
+func TestParseArgsAllowsDoubleDashRegexPatterns(t *testing.T) {
+	cfg, err := parseArgs([]string{"src", "--contains", "--", "--snippet", "--"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	scope := parsedExecutionScope(t, cfg)
+	if got := scope.Contains; got != "--" {
+		t.Fatalf("scope.Contains = %q, want --", got)
+	}
+	if got := scope.SnippetPattern; got != "--" {
+		t.Fatalf("scope.SnippetPattern = %q, want --", got)
+	}
+}
+
+func TestParseStartupInputTokensAllowsModifierLikeRegexValues(t *testing.T) {
+	parsed, err := parseStartupInputTokens([]string{".", "--contains", "--snippet", "--snippet", "--contains"})
+	if err != nil {
+		t.Fatalf("parseStartupInputTokens returned error: %v", err)
+	}
+	if got, want := strings.Join(parsed.modifiers, "\n"), "--contains\n--snippet\n--snippet\n--contains"; got != want {
+		t.Fatalf("parsed.modifiers = %q, want %q", got, want)
+	}
+}
+
+func TestParseArgsRejectsGitFilterAfterDiff(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--changed-diff", "--staged"})
+	if err == nil {
+		t.Fatal("expected error for git filter after --diff")
+	}
+	if !strings.Contains(err.Error(), "--staged must come before --changed-diff in the same scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "git change filters are not allowed") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsAllowsRecentAfterDiff(t *testing.T) {
+	cfg, err := parseArgs([]string{"src", "--changed-diff", "--recent", "5"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+
+	scope := parsedExecutionScope(t, cfg)
+	if !scope.Diff || !scope.Changed {
+		t.Fatalf("unexpected parsed scope: %+v", scope)
+	}
+	if len(scope.Stages) == 0 || scope.Stages[len(scope.Stages)-1].Kind != scopeStageRecent {
+		t.Fatalf("expected trailing recent stage, got %+v", scope.Stages)
+	}
+}
+
 func TestParseArgsRejectsDiffWithoutChangeSelector(t *testing.T) {
 	_, err := parseArgs([]string{"src", "--diff"})
 	if err == nil {
 		t.Fatal("expected error for --diff without change selector")
 	}
-	if !strings.Contains(err.Error(), "--diff requires --changed") {
+	if !strings.Contains(err.Error(), "--diff is no longer a standalone modifier") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestParseArgsRejectsUntrackedDiffAlone(t *testing.T) {
-	_, err := parseArgs([]string{"src", "--untracked", "--diff"})
+	_, err := parseArgs([]string{"src", "--untracked", "--changed-diff"})
 	if err == nil {
 		t.Fatal("expected error for --untracked --diff")
 	}
-	if !strings.Contains(err.Error(), "--untracked --diff doesn't make sense") {
+	if !strings.Contains(err.Error(), "--untracked-diff doesn't make sense") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -333,20 +475,28 @@ func TestParseArgsRejectsPlainTokenAfterZeroArgModifier(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for plain token after zero-arg modifier")
 	}
-	if !strings.Contains(err.Error(), "positional targets must come before modifiers") {
+	if !strings.Contains(err.Error(), "--changed takes no value") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestParseArgsStopsOptionParsingAfterDoubleDash(t *testing.T) {
-	cfg, err := parseArgs([]string{"--", "--changed", "src"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
+func TestParseArgsRejectsBareDoubleDashAsPositionalDelimiter(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--", "other"})
+	if err == nil {
+		t.Fatal("expected bare -- delimiter usage to fail")
 	}
+	if !strings.Contains(err.Error(), "bare -- can only be followed by another bare -- in the same scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
-	scope := cfg.Scopes[0]
-	if len(scope.Targets) != 2 || scope.Targets[0] != "--changed" || scope.Targets[1] != "src" {
-		t.Fatalf("expected post -- tokens to be targets, got %#v", scope.Targets)
+func TestParseArgsRejectsTrailingBareDoubleDashOutsideInteractive(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--"})
+	if err == nil {
+		t.Fatal("expected trailing bare -- to fail outside startup interactive flow")
+	}
+	if !strings.Contains(err.Error(), "opens interactive modifier selection") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -586,8 +736,8 @@ func TestParseArgsImmediateActionsReturnEarly(t *testing.T) {
 	if cfg.Action != actionVersion {
 		t.Fatalf("expected version action, got %q", cfg.Action)
 	}
-	if len(cfg.Scopes) != 0 {
-		t.Fatalf("expected no scopes for immediate action, got %#v", cfg.Scopes)
+	if got := len(parsedExecutionScopes(t, cfg)); got != 0 {
+		t.Fatalf("expected no scopes for immediate action, got %d", got)
 	}
 }
 
@@ -681,11 +831,15 @@ func TestEmitFullOutputPrefetchMatchesSequential(t *testing.T) {
 		{RelPath: "b.txt", AbsPath: filepath.Join(project, "b.txt")},
 		{RelPath: "c.txt", AbsPath: filepath.Join(project, "c.txt")},
 	}
+	units, err := prepareFileUnits(gitContext{}, entries)
+	if err != nil {
+		t.Fatalf("prepareFileUnits returned error: %v", err)
+	}
 
 	cfg := runConfig{OutputMode: outputModeStdout}
 
 	var sequential bytes.Buffer
-	if _, err := emitFullOutput(cfg, gitContext{}, entries, &sequential, colorPalette{}); err != nil {
+	if _, err := emitFullOutput(cfg, units, &sequential, colorPalette{}); err != nil {
 		t.Fatalf("sequential emitFullOutput returned error: %v", err)
 	}
 
@@ -693,7 +847,7 @@ func TestEmitFullOutputPrefetchMatchesSequential(t *testing.T) {
 	t.Setenv("CATCLIP_PREFETCH_FILE_KIB", "64")
 
 	var prefetched bytes.Buffer
-	if _, err := emitFullOutput(cfg, gitContext{}, entries, &prefetched, colorPalette{}); err != nil {
+	if _, err := emitFullOutput(cfg, units, &prefetched, colorPalette{}); err != nil {
 		t.Fatalf("prefetch emitFullOutput returned error: %v", err)
 	}
 
@@ -781,8 +935,8 @@ func TestRunIncludeAllowsBlockedDirectory(t *testing.T) {
 	if !strings.Contains(stdout.String(), "tests/main.ts") {
 		t.Fatalf("expected --include to allow tests/, got:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "bypassing ignore rule 'tests/'") {
-		t.Fatalf("expected bypass warning, got:\n%s", stderr.String())
+	if strings.Contains(stderr.String(), "bypassing ignore rule") {
+		t.Fatalf("expected no bypass warning, got:\n%s", stderr.String())
 	}
 }
 
@@ -1054,28 +1208,35 @@ func TestFilterRedundantTargetMatchesRemovesCoveredChildren(t *testing.T) {
 	}
 }
 
-func TestSafeTargetPickerHeaderMentionsCtrlOInclude(t *testing.T) {
+func TestSafeTargetPickerHeaderOmitsCtrlO(t *testing.T) {
 	header := safeTargetPickerHeader()
-	if !strings.Contains(header, "Ctrl-O") || !strings.Contains(header, "ignored targets") {
-		t.Fatalf("expected safe picker header to mention Ctrl-O include handoff, got %q", header)
+	if strings.Contains(header, "[Ctrl-O]") || strings.Contains(header, "ignored ones") {
+		t.Fatalf("expected safe picker header to stay visible-target-only, got %q", header)
 	}
-	if !strings.Contains(header, "Type part of a directory or file name") || !strings.Contains(header, "arrow keys") {
+	if !strings.Contains(header, "Pick files and folders to include.") || !strings.Contains(header, "[Up/Down] move  [Enter] confirm  [Tab] mark  [Esc] cancel") {
 		t.Fatalf("expected safe picker header to guide first-time fzf users, got %q", header)
 	}
 }
 
-func TestPickerHeadersUseFourLines(t *testing.T) {
+func TestPickerHeadersUseFourLinesMax60Chars(t *testing.T) {
 	headers := map[string]string{
 		"safe":     safeTargetPickerHeader(),
 		"ignored":  ignoredTargetPickerHeader(),
-		"contains": containsPickerHeader(),
+		"contains": contentMatchPickerHeader("--contains"),
+		"snippet":  contentMatchPickerHeader("--snippet"),
 		"modifier": startupModifierPickerHeader(),
 		"only":     startupFileSetPickerHeader("--only"),
 		"exclude":  startupFileSetPickerHeader("--exclude"),
 	}
 	for name, header := range headers {
-		if got, want := len(strings.Split(header, "\n")), 4; got != want {
+		lines := strings.Split(header, "\n")
+		if got, want := len(lines), 4; got != want {
 			t.Fatalf("expected %s header to use %d lines, got %d: %q", name, want, got, header)
+		}
+		for _, line := range lines {
+			if len(line) > 60 {
+				t.Fatalf("expected %s header line to fit 60 chars, got %d: %q", name, len(line), line)
+			}
 		}
 	}
 }
@@ -1155,14 +1316,14 @@ func TestFzfPreviewCommandIncludesIgnoredTargetAuthorization(t *testing.T) {
 	}
 }
 
-func TestFzfContainsPreviewCommandUsesFilePreviewPayload(t *testing.T) {
+func TestFzfContentPreviewCommandUsesFilePreviewPayload(t *testing.T) {
 	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
 	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write fake catclip-tree: %v", err)
 	}
 	t.Setenv("CATCLIP_TREE", treeBin)
 
-	command := fzfContainsPreviewCommand(false)
+	command := fzfContentPreviewCommand("--contains")
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
@@ -1176,21 +1337,33 @@ func TestFzfContainsPreviewCommandUsesFilePreviewPayload(t *testing.T) {
 	}
 }
 
-func TestFzfContainsSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
+func TestFzfContentSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
 	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write fake catclip-tree: %v", err)
 	}
 	t.Setenv("CATCLIP_TREE", treeBin)
 
-	command := fzfContainsPreviewCommand(true)
+	command := fzfContentPreviewCommand("--snippet")
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; `+shellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path "$preview_target" --snippet --contains {q}`) {
+	if !strings.Contains(command, `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; `+shellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path "$preview_target" --snippet {q}`) {
 		t.Fatalf("expected snippet contains preview to forward --snippet, got %q", command)
+	}
+}
+
+func TestFzfContentMatchListCommandQuotesMultiwordQuery(t *testing.T) {
+	command := fzfContentMatchListCommand([]string{".", "--exclude", "uninstall"}, "--snippet")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable returned error: %v", err)
+	}
+
+	if !strings.Contains(command, shellQuoteArg(self)+` --quiet --internal-content-match-list . --exclude uninstall --snippet {q}`) {
+		t.Fatalf("expected content match list command to pass raw {q} placeholder, got %q", command)
 	}
 }
 
@@ -1201,17 +1374,119 @@ func TestFzfDiffFilePreviewCommandUsesFilePreviewPayload(t *testing.T) {
 	}
 	t.Setenv("CATCLIP_TREE", treeBin)
 
-	command := fzfDiffFilePreviewCommand("--changed")
+	command := fzfDiffFilePreviewCommand([]string{"cmd", "--include", "Formula", "--changed-diff"})
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path \"$preview_target\" --changed --diff") {
+	if !strings.Contains(command, `preview_value={2};`) || !strings.Contains(command, `preview_target={3};`) {
+		t.Fatalf("expected diff preview command to bind hovered row fields, got %q", command)
+	}
+	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path \"$preview_target\" cmd --include Formula --changed-diff") {
 		t.Fatalf("expected diff file preview command to invoke internal file preview payload producer, got %q", command)
+	}
+	if !strings.Contains(command, `set -- "$@" --only "$preview_value"`) {
+		t.Fatalf("expected diff preview command to narrow inside current scope, got %q", command)
 	}
 	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
 		t.Fatalf("expected diff file preview command to pipe into themed catclip-tree preview renderer, got %q", command)
+	}
+}
+
+func TestFzfFileSetPreviewCommandInheritsCurrentScope(t *testing.T) {
+	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
+	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake catclip-tree: %v", err)
+	}
+	t.Setenv("CATCLIP_TREE", treeBin)
+
+	command := fzfFileSetPreviewCommand([]string{"cmd", "--include", "Formula"}, "--only")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable returned error: %v", err)
+	}
+
+	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-tree-payload cmd --include Formula") {
+		t.Fatalf("expected file-set preview to inherit current scope args, got %q", command)
+	}
+	if !strings.Contains(command, `set -- "$@" --only "$preview_value"`) {
+		t.Fatalf("expected file-set preview to refine current scope by the hovered row, got %q", command)
+	}
+	if !strings.Contains(command, `if [ -n "$preview_target" ]; then set -- "$@" --internal-tree-target "$preview_target" --internal-tree-kind "$preview_kind" --internal-tree-state "$preview_state"; fi;`) {
+		t.Fatalf("expected file-set preview to keep empty-target metadata when a file row is hovered, got %q", command)
+	}
+}
+
+func TestStartupFileSetPreviewCommandKeepsDiffPreviewAfterDiffModeChosen(t *testing.T) {
+	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
+	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake catclip-tree: %v", err)
+	}
+	t.Setenv("CATCLIP_TREE", treeBin)
+
+	command := startupFileSetPreviewCommand([]string{"cmd", "--include", "Formula", "--changed-diff"}, "--only", false)
+	if !strings.Contains(command, "--internal-file-preview") {
+		t.Fatalf("expected --only after diff mode to keep diff preview, got %q", command)
+	}
+	if !strings.Contains(command, "--changed-diff") {
+		t.Fatalf("expected --only after diff mode to inherit current diff scope, got %q", command)
+	}
+}
+
+func TestStartupFileSetPreviewCommandUsesOnlyRefinementForGitSelectors(t *testing.T) {
+	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
+	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake catclip-tree: %v", err)
+	}
+	t.Setenv("CATCLIP_TREE", treeBin)
+
+	command := startupFileSetPreviewCommand([]string{"cmd", "--changed"}, "--changed", false)
+	if !strings.Contains(command, `set -- "$@" --only "$preview_value"`) {
+		t.Fatalf("expected git file-set preview to refine with --only, got %q", command)
+	}
+	if strings.Contains(command, `set -- "$@" --changed "$preview_value"`) {
+		t.Fatalf("git file-set preview appended value to --changed instead of --only: %q", command)
+	}
+}
+
+func TestStartupModifierCurrentScopePreviewCommandUsesCurrentScopeTree(t *testing.T) {
+	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
+	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake catclip-tree: %v", err)
+	}
+	t.Setenv("CATCLIP_TREE", treeBin)
+
+	limit := 5
+	command := startupModifierCurrentScopePreviewCommand(startupCurrentScopeState{
+		Known: true,
+		Config: runConfig{
+			Command: finalizedCommandSpecFromExecutionScopes([]executionScope{
+				{
+					Targets: []string{"src"},
+					Stages:  []scopeStage{{Kind: scopeStageOnly, Values: []string{"*.ts"}}},
+				},
+				{
+					Targets: []string{"docs"},
+					Stages:  []scopeStage{{Kind: scopeStageRecent, Limit: &limit}},
+				},
+			}),
+		},
+	})
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable returned error: %v", err)
+	}
+
+	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-tree-payload docs --recent 5") {
+		t.Fatalf("expected modifier preview to render the current scope tree, got %q", command)
+	}
+	if strings.Contains(command, " src --only '*.ts'") {
+		t.Fatalf("expected modifier preview to exclude earlier scopes, got %q", command)
+	}
+	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
+		t.Fatalf("expected modifier preview command to pipe into themed catclip-tree preview renderer, got %q", command)
 	}
 }
 
@@ -1226,7 +1501,7 @@ func TestAllIgnoredTargetsIncludesIgnoredEntries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadIgnoreRules returned error: %v", err)
 	}
-	matcher, err := buildScopeMatcher(baseRules, scope{})
+	matcher, err := buildScopeMatcher(baseRules, executionScope{})
 	if err != nil {
 		t.Fatalf("buildScopeMatcher returned error: %v", err)
 	}
@@ -1280,7 +1555,7 @@ func TestAllIgnoredTargetsTracksEmptyAndNoTextDirectoryState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadIgnoreRules returned error: %v", err)
 	}
-	matcher, err := buildScopeMatcher(baseRules, scope{})
+	matcher, err := buildScopeMatcher(baseRules, executionScope{})
 	if err != nil {
 		t.Fatalf("buildScopeMatcher returned error: %v", err)
 	}
@@ -1323,7 +1598,7 @@ func TestAllIgnoredTargetsIncludesGitignoreEntriesWithoutGitRepo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadIgnoreRules returned error: %v", err)
 	}
-	matcher, err := buildScopeMatcher(baseRules, scope{})
+	matcher, err := buildScopeMatcher(baseRules, executionScope{})
 	if err != nil {
 		t.Fatalf("buildScopeMatcher returned error: %v", err)
 	}
@@ -1757,7 +2032,7 @@ func TestRunSnippetEmitsBlankLineBoundedBlocks(t *testing.T) {
 		"src/skip.ts": "const ok = true\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--print", "src", "--contains", "TODO", "--snippet"})
+	cfg := parseInProject(t, project, []string{"--print", "src", "--snippet", "TODO"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -1866,7 +2141,7 @@ func TestRunPreviewShowsSnippetOnlyTags(t *testing.T) {
 		"src/app.ts": "const a = 1\nTODO: fix\nconst b = 2\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--preview", "src", "--contains", "TODO", "--snippet"})
+	cfg := parseInProject(t, project, []string{"--preview", "src", "--snippet", "TODO"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -1995,7 +2270,7 @@ func TestBuildVisibleDirIndexDerivesDirsFromVisibleFiles(t *testing.T) {
 		t.Fatalf("mkdir truly-empty: %v", err)
 	}
 
-	matcher, err := buildScopeMatcher(nil, scope{})
+	matcher, err := buildScopeMatcher(nil, executionScope{})
 	if err != nil {
 		t.Fatalf("buildScopeMatcher: %v", err)
 	}
@@ -2243,26 +2518,26 @@ func TestRunPreviewShowsGitStatusMarkers(t *testing.T) {
 
 func TestPreviewGitStatusPathspecsPreferTargetRoots(t *testing.T) {
 	gitCtx := gitContext{}
-	entries := []fileEntry{
-		{RelPath: "src/a.ts", TargetRoot: "src"},
-		{RelPath: "src/b.ts", TargetRoot: "src"},
-		{RelPath: "docs/readme.md", TargetRoot: "docs"},
-		{RelPath: "scattered/file.txt"},
+	units := []preparedFileUnit{
+		{Entry: fileEntry{RelPath: "src/a.ts", TargetRoot: "src"}},
+		{Entry: fileEntry{RelPath: "src/b.ts", TargetRoot: "src"}},
+		{Entry: fileEntry{RelPath: "docs/readme.md", TargetRoot: "docs"}},
+		{Entry: fileEntry{RelPath: "scattered/file.txt"}},
 	}
 
-	got := previewGitStatusPathspecs(gitCtx, entries)
+	got := buildOutputPlan(units).GitStatusPathspecs(gitCtx)
 	want := []string{"docs", "scattered/file.txt", "src"}
 	if fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
 		t.Fatalf("unexpected pathspecs: got %q want %q", got, want)
 	}
 }
 
-func TestBypassesDirectoryLabelColorsEntireIncludedSubtree(t *testing.T) {
+func TestAllowedByIncludeDirectoryLabelColorsEntireIncludedSubtree(t *testing.T) {
 	entry := fileEntry{
-		RelPath:    "node_modules/.cache/babel-loader/abc123.json",
-		TargetRoot: "node_modules",
-		Bypassed:   true,
-		BlockRule:  "node_modules/",
+		RelPath:          "node_modules/.cache/babel-loader/abc123.json",
+		TargetRoot:       "node_modules",
+		AllowedByInclude: true,
+		BlockRule:        "node_modules/",
 	}
 
 	for _, relDir := range []string{
@@ -2270,8 +2545,8 @@ func TestBypassesDirectoryLabelColorsEntireIncludedSubtree(t *testing.T) {
 		"node_modules/.cache",
 		"node_modules/.cache/babel-loader",
 	} {
-		if !bypassesDirectoryLabel(entry, relDir) {
-			t.Fatalf("expected %q to inherit bypass coloring", relDir)
+		if !allowedByIncludeDirectoryLabel(entry, relDir) {
+			t.Fatalf("expected %q to inherit include coloring", relDir)
 		}
 	}
 }
@@ -2281,6 +2556,25 @@ func TestSelectionPathsForIgnoredTargetsDoesNotTreatDotAsCoveringIgnoredTargets(
 	want := []string{"src", "node_modules"}
 	if fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
 		t.Fatalf("unexpected ignored-target selection filter: got %q want %q", got, want)
+	}
+}
+
+func TestTargetMatchArgsBatchesIgnoredOnlySelection(t *testing.T) {
+	got := targetMatchArgs([]targetMatch{
+		{Path: "node_modules", Ignored: true},
+		{Path: "coverage", Ignored: true},
+	})
+	want := []string{"--include", "node_modules", "coverage"}
+	if fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
+		t.Fatalf("unexpected ignored-only target args: got %q want %q", got, want)
+	}
+}
+
+func TestStartupResolvedTargetPathsSupportsMultiValueInclude(t *testing.T) {
+	got := startupResolvedTargetPaths([]string{"src", "--include", "node_modules", "coverage"})
+	want := []string{"src", "node_modules", "coverage"}
+	if fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
+		t.Fatalf("unexpected startup resolved target paths: got %q want %q", got, want)
 	}
 }
 
@@ -2453,7 +2747,7 @@ func TestRunDiffOutputsPatchesAndUntrackedContent(t *testing.T) {
 	writeProjectFile(t, project, "unstaged.txt", "two\n")
 	writeProjectFile(t, project, "new.txt", "brand new\n")
 
-	cfg := parseInProject(t, project, []string{"--print", ".", "--changed", "--diff"})
+	cfg := parseInProject(t, project, []string{"--print", ".", "--changed-diff"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -2501,13 +2795,13 @@ func TestRunDiffUsesSpecificDiffTypes(t *testing.T) {
 	}{
 		{
 			name:     "staged-diff",
-			args:     []string{"--print", ".", "--staged", "--diff"},
+			args:     []string{"--print", ".", "--staged-diff"},
 			wantType: "staged-diff",
 			wantPath: "staged.txt",
 		},
 		{
 			name:     "unstaged-diff",
-			args:     []string{"--print", ".", "--unstaged", "--diff"},
+			args:     []string{"--print", ".", "--unstaged-diff"},
 			wantType: "unstaged-diff",
 			wantPath: "unstaged.txt",
 		},
@@ -2544,7 +2838,7 @@ func TestRunPreviewShowsDiffOnlyTags(t *testing.T) {
 	runGit(t, project, "add", "staged.txt")
 	writeProjectFile(t, project, "new.txt", "brand new\n")
 
-	cfg := parseInProject(t, project, []string{"--preview", ".", "--changed", "--diff"})
+	cfg := parseInProject(t, project, []string{"--preview", ".", "--changed-diff"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -2734,22 +3028,6 @@ emit_query() {
 
 	case "$prompt" in
 	"select> ")
-		if [ "$expect" = "ctrl-o" ] && [ "$query" = "node" ]; then
-			emit_query
-			printf '%s\n' "ctrl-o"
-			exit 0
-		fi
-		if [ "$expect" = "ctrl-o" ] && [ "$query" = "src-back" ]; then
-			if [ ! -f "$back_state_file" ]; then
-				: > "$back_state_file"
-				emit_query
-				printf '%s\n' "ctrl-o"
-				exit 0
-			fi
-			emit_query
-			printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
-			exit 0
-		fi
 		case "$query" in
 			"")
 				emit_query
@@ -2779,7 +3057,7 @@ emit_query() {
 				;;
 		esac
 		;;
-	"scope> ")
+	"then> ")
 		emit_query
 		printf '%s\n' "$input" | head -n 1
 		exit 0
@@ -2793,9 +3071,6 @@ emit_query() {
 				emit_query
 				printf '%s\n' "$input" | grep -F "[ignored dir .hiss] node_modules" | head -n 1
 				exit 0
-				;;
-			src-back)
-				exit 130
 				;;
 		esac
 		;;
@@ -2969,6 +3244,48 @@ func TestStartupCommandCanRunDirectlyRejectsExplicitIncludeQueries(t *testing.T)
 	}
 }
 
+func TestStartupCommandCanRunDirectlyRejectsNonExactOnlyQuery(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+		"src/util.ts": "console.log('util')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	direct, err := startupCommandCanRunDirectly(resolver, []string{".", "--only", "uti"})
+	if err != nil {
+		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
+	}
+	if direct {
+		t.Fatal("expected non-exact --only query to stay on startup resolution path")
+	}
+}
+
+func TestStartupCommandCanRunDirectlyRejectsNonExactExcludeQuery(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+		"src/util.ts": "console.log('util')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	direct, err := startupCommandCanRunDirectly(resolver, []string{".", "--exclude", "mai"})
+	if err != nil {
+		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
+	}
+	if direct {
+		t.Fatal("expected non-exact --exclude query to stay on startup resolution path")
+	}
+}
+
 func TestResolveStartupArgsSkipsCoveredLaterTarget(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/components/ui/Button.tsx":             "export function Button() {}\n",
@@ -3101,11 +3418,11 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "include> " ] && [ -z "$query" ]; then
-	printf '%s\n' "$header" | grep -F "come from ignored paths in .gitignore or .hiss" >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Add files and folders ignored by .gitignore or .hiss." >/dev/null || {
 		echo "missing include header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Enter continues with the current selection as --include." >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Type to search by name." >/dev/null || {
 		echo "missing include enter help" >&2
 		exit 91
 	}
@@ -3211,6 +3528,72 @@ printf '%s\n' "$input" | head -n 1
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 	if got, want := strings.Join(targets, "\n"), "src\nshared"; got != want {
+		t.Fatalf("expected resolved targets %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupScopeInputsBatchesAdjacentIncludeSelections(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"config/catclip/.hiss":      "node_modules/\ncoverage/\n",
+		"node_modules/pkg/index.js": "export const x = 1\n",
+		"coverage/lcov.info":        "TN:\n",
+		"src/main.ts":               "console.log('ok')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+query=""
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--query)
+			query="$2"
+			shift 2
+			;;
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "include> " ]; then
+	case "$query" in
+		node)
+			printf '%s\n' "$input" | grep -F "[ignored dir .hiss] node_modules" | head -n 1
+			exit 0
+			;;
+		cov)
+			printf '%s\n' "$input" | grep -F "[ignored dir .hiss] coverage" | head -n 1
+			exit 0
+			;;
+	esac
+fi
+
+echo "unexpected prompt/query: $prompt / $query" >&2
+exit 91
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, targets, usedPicker, err := resolveStartupScopeInputs(resolver, nil, []string{"node", "cov"}, nil)
+	if err != nil {
+		t.Fatalf("resolveStartupScopeInputs returned error: %v", err)
+	}
+	if !usedPicker {
+		t.Fatal("expected ignored-target resolution to use the picker")
+	}
+	if got, want := strings.Join(args, "\n"), "--include\nnode_modules\ncoverage"; got != want {
+		t.Fatalf("expected batched include args %q, got %q", want, got)
+	}
+	if got, want := strings.Join(targets, "\n"), "node_modules\ncoverage"; got != want {
 		t.Fatalf("expected resolved targets %q, got %q", want, got)
 	}
 }
@@ -3364,7 +3747,7 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "filter> " ]; then
-	printf '%s\n' "$input" | grep -F -- "--changed --diff" | head -n 1
+	printf '%s\n' "$input" | grep -F -- "--changed-diff" | head -n 1
 	exit 0
 fi
 
@@ -3381,7 +3764,7 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveBareStartupModifierArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(args, "\n"), "--changed\n--diff"; got != want {
+	if got, want := strings.Join(args, "\n"), "--changed-diff"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -3425,12 +3808,12 @@ if [ "$prompt" = "filter> " ]; then
 fi
 
 if [ "$prompt" = "changed> " ]; then
-	printf '%s\n' "$header" | grep -F "Start from changed files in the current scope" >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Pick git-changed files." >/dev/null || {
 		echo "missing changed header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Select [all changed files] to keep plain --changed." >/dev/null || {
-		echo "missing changed all-files help" >&2
+	printf '%s\n' "$header" | grep -F "Type a path to narrow the list." >/dev/null || {
+		echo "missing changed enter help" >&2
 		exit 91
 	}
 	if ! printf '%s\n' "$input" | grep -F "[all changed files]" >/dev/null; then
@@ -3558,7 +3941,7 @@ if [ "$prompt" = "filter> " ]; then
 fi
 
 if [ "$prompt" = "changed> " ]; then
-	printf '%s\n' "$header" | grep -F "Start from changed files in the current scope" >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Pick diffs for git-changed files." >/dev/null || {
 		echo "missing changed header" >&2
 		exit 91
 	}
@@ -3579,17 +3962,23 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveBareStartupModifierArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(args, "\n"), "--changed\n--only\nsrc/main.ts\n--diff"; got != want {
+	if got, want := strings.Join(args, "\n"), "--changed-diff\n--only\nsrc/main.ts"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
 
 func TestMaybeResolveStartupPickerArgsTrailingModifierMenuAfterResolvedTargets(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":      "console.log('src')\n",
 		"shared/util.ts":   "console.log('shared')\n",
 		"scripts/build.ts": "console.log('scripts')\n",
 	})
+	initGitRepo(t, project)
+	writeProjectFile(t, project, "src/main.ts", "console.log('changed')\n")
 	_ = parseInProject(t, project, []string{"."})
 	installScriptFzf(t, `#!/bin/sh
 prompt=""
@@ -3617,7 +4006,12 @@ if [ "$prompt" = "filter> " ]; then
 	exit 0
 fi
 
-	echo "unexpected prompt: $prompt" >&2
+if [ "$prompt" = "changed> " ]; then
+	printf '%s\n' "$input" | grep -F "[all changed files]" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
@@ -3677,6 +4071,210 @@ exit 91
 	if got, want := strings.Join(args, "\n"), "src\n--then"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
+}
+
+func TestStartupAvailableModifierChoicesHideContainsAndGitRowsWhenScopeHasDiff(t *testing.T) {
+	choices := startupAvailableModifierChoicesWithState(
+		[]string{"src", "--changed-diff"},
+		startupCurrentScopeState{},
+	)
+
+	for _, key := range []string{"contains", "snippet", "changed", "staged", "unstaged", "untracked", "changed-diff", "staged-diff", "unstaged-diff"} {
+		if startupModifierChoiceKeysContain(choices, key) {
+			t.Fatalf("%s should be hidden when current scope already has --diff: %#v", key, startupModifierChoiceKeys(choices))
+		}
+	}
+	for _, key := range []string{"only", "exclude", "recent", "include", "then"} {
+		if !startupModifierChoiceKeysContain(choices, key) {
+			t.Fatalf("%s should remain available when current scope already has --diff: %#v", key, startupModifierChoiceKeys(choices))
+		}
+	}
+}
+
+func TestStartupAvailableModifierChoicesEmptyKnownScopeShowsNoChoices(t *testing.T) {
+	choices := startupAvailableModifierChoicesWithState(
+		[]string{"src", "--changed-diff"},
+		startupCurrentScopeState{Known: true, Empty: true},
+	)
+	if len(choices) != 0 {
+		t.Fatalf("expected no choices for known empty scope, got %#v", startupModifierChoiceKeys(choices))
+	}
+}
+
+func TestStartupAvailableModifierChoicesHideDiffModesWhenScopeHasSnippet(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: fix\n",
+		"src/util.ts": "TODO: keep\n",
+	})
+	initGitRepo(t, project)
+	writeProjectFile(t, project, "src/main.ts", "TODO: changed\n")
+	_ = parseInProject(t, project, []string{"."})
+
+	choices := startupAvailableModifierChoices([]string{"src", "--snippet", "TODO"})
+
+	for _, key := range []string{"contains", "snippet", "changed-diff", "staged-diff", "unstaged-diff"} {
+		if startupModifierChoiceKeysContain(choices, key) {
+			t.Fatalf("%s should be hidden when current scope already has --snippet: %#v", key, startupModifierChoiceKeys(choices))
+		}
+	}
+	if !startupModifierChoiceKeysContain(choices, "changed") {
+		t.Fatalf("plain changed should remain available when current scope has --snippet: %#v", startupModifierChoiceKeys(choices))
+	}
+}
+
+func TestStartupAvailableModifierChoicesHideGitRowsWhenScopeIsNotGitBacked(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	choices := startupAvailableModifierChoices([]string{"."})
+
+	for _, key := range []string{"changed", "staged", "unstaged", "untracked", "changed-diff", "staged-diff", "unstaged-diff"} {
+		if startupModifierChoiceKeysContain(choices, key) {
+			t.Fatalf("%s should be hidden when current scope is not git-backed: %#v", key, startupModifierChoiceKeys(choices))
+		}
+	}
+	for _, key := range []string{"contains", "snippet", "only", "exclude", "recent", "include", "then"} {
+		if !startupModifierChoiceKeysContain(choices, key) {
+			t.Fatalf("%s should remain available when current scope is not git-backed: %#v", key, startupModifierChoiceKeys(choices))
+		}
+	}
+}
+
+func TestStartupAvailableModifierChoicesUseCurrentScopeGitState(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"staged.txt":   "one\n",
+		"unstaged.txt": "one\n",
+	})
+	initGitRepo(t, project)
+	writeProjectFile(t, project, "staged.txt", "two\n")
+	runGit(t, project, "add", "staged.txt")
+	writeProjectFile(t, project, "unstaged.txt", "two\n")
+	writeProjectFile(t, project, "new.txt", "brand new\n")
+	_ = parseInProject(t, project, []string{"."})
+
+	choices := startupAvailableModifierChoices([]string{".", "--unstaged"})
+
+	for _, key := range []string{"changed", "staged", "unstaged", "untracked", "staged-diff"} {
+		if startupModifierChoiceKeysContain(choices, key) {
+			t.Fatalf("%s should be hidden for current unstaged-only scope: %#v", key, startupModifierChoiceKeys(choices))
+		}
+	}
+	for _, key := range []string{"changed-diff", "unstaged-diff", "contains", "snippet", "only", "exclude", "recent", "include", "then"} {
+		if !startupModifierChoiceKeysContain(choices, key) {
+			t.Fatalf("%s should remain available for current unstaged-only scope: %#v", key, startupModifierChoiceKeys(choices))
+		}
+	}
+}
+
+func TestResolveStartupArgsRejectsSnippetAfterDiffInSameScope(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	_, _, _, err = resolveStartupArgs(resolver, []string{"src", "--changed-diff", "--snippet", "TODO"})
+	if err == nil {
+		t.Fatal("expected same-scope --diff --snippet conflict error")
+	}
+	if !strings.Contains(err.Error(), "--snippet and --diff cannot be combined") {
+		t.Fatalf("expected diff/snippet conflict error, got %v", err)
+	}
+}
+
+func TestResolveStartupArgsRejectsContainsAfterDiffInSameScope(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	_, _, _, err = resolveStartupArgs(resolver, []string{"src", "--changed-diff", "--contains", "TODO"})
+	if err == nil {
+		t.Fatal("expected same-scope --contains after --diff error")
+	}
+	if !strings.Contains(err.Error(), "--contains must come before --changed-diff in the same scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveStartupArgsRejectsGitFilterAfterDiffInSameScope(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	_, _, _, err = resolveStartupArgs(resolver, []string{"src", "--changed-diff", "--staged"})
+	if err == nil {
+		t.Fatal("expected same-scope git filter after --diff error")
+	}
+	if !strings.Contains(err.Error(), "--staged must come before --changed-diff in the same scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveInteractiveStartupArgsEmptyCurrentScopeStopsWithNoFilesMessage(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+echo "fzf should not run for empty current scope" >&2
+exit 91
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	_, _, _, err = resolveInteractiveStartupArgs(resolver, []string{".", "--exclude", "*", "--"})
+	if err == nil {
+		t.Fatal("expected empty current scope to stop with no-files-found error")
+	}
+	if !strings.Contains(err.Error(), "No text files found matching your criteria.") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func startupModifierChoiceKeysContain(choices []startupModifierChoice, want string) bool {
+	for _, choice := range choices {
+		if choice.Key == want {
+			return true
+		}
+	}
+	return false
+}
+
+func startupModifierChoiceKeys(choices []startupModifierChoice) []string {
+	keys := make([]string, 0, len(choices))
+	for _, choice := range choices {
+		keys = append(keys, choice.Key)
+	}
+	return keys
 }
 
 func TestStartupCommandCanRunDirectlyRejectsTrailingModifierMenu(t *testing.T) {
@@ -4349,7 +4947,7 @@ exit 91
 	if !result.UsedFzf {
 		t.Fatal("expected leading modifier menus to use fzf")
 	}
-	if got, want := strings.Join(result.Args, "\n"), "src\n--changed\n--changed\n--diff"; got != want {
+	if got, want := strings.Join(result.Args, "\n"), "src\n--changed\n--changed-diff"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -4370,11 +4968,11 @@ func TestResolveStartupArgsRejectsUntrackedDiffInGitRepo(t *testing.T) {
 		t.Fatalf("newStartupPickerResolver returned error: %v", err)
 	}
 
-	_, _, _, err = resolveStartupArgs(resolver, []string{"--untracked", "--diff"})
+	_, _, _, err = resolveStartupArgs(resolver, []string{"--untracked", "--changed-diff"})
 	if err == nil {
 		t.Fatal("expected startup resolution error for --untracked --diff")
 	}
-	if !strings.Contains(err.Error(), "--untracked --diff doesn't make sense") {
+	if !strings.Contains(err.Error(), "--untracked-diff doesn't make sense") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -4421,7 +5019,7 @@ if [ "$prompt" = "filter> " ]; then
 fi
 
 if [ "$prompt" = "changed> " ]; then
-	printf '%s\n' "$header" | grep -F "Start from changed files in the current scope" >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Pick git-changed files." >/dev/null || {
 		echo "missing changed header" >&2
 		exit 91
 	}
@@ -4499,11 +5097,11 @@ if [ "$prompt" = "only> " ]; then
 		echo "missing toggle-all binding" >&2
 		exit 91
 	}
-	printf '%%s\n' "$header" | grep -F "keep only those files in the current scope" >/dev/null || {
+	printf '%%s\n' "$header" | grep -F "Keep only files whose paths match." >/dev/null || {
 		echo "missing only header" >&2
 		exit 91
 	}
-	printf '%%s\n' "$header" | grep -F "Enter continues with the current selection as --only." >/dev/null || {
+	printf '%%s\n' "$header" | grep -F "Type a path pattern." >/dev/null || {
 		echo "missing only enter help" >&2
 		exit 91
 	}
@@ -4660,11 +5258,11 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "exclude> " ]; then
-	printf '%s\n' "$header" | grep -F "remove files from the current scope" >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Remove files whose paths match." >/dev/null || {
 		echo "missing exclude header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Enter continues with the current selection as --exclude." >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Type a path pattern." >/dev/null || {
 		echo "missing exclude enter help" >&2
 		exit 91
 	}
@@ -4910,7 +5508,7 @@ exit 91
 	}
 }
 
-func TestResolveStartupArgsKeepsOnlyValueLiteralInCurrentScope(t *testing.T) {
+func TestResolveStartupArgsOpensOnlyPickerForNonExactValue(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":      "console.log('src')\n",
 		"src/util.ts":      "console.log('util')\n",
@@ -4919,7 +5517,31 @@ func TestResolveStartupArgsKeepsOnlyValueLiteralInCurrentScope(t *testing.T) {
 	})
 	_ = parseInProject(t, project, []string{"."})
 	installScriptFzf(t, `#!/bin/sh
-echo "fzf should not run for explicit --only values" >&2
+prompt=""
+query=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--query)
+			query="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+if [ "$prompt" = "only> " ]; then
+	[ "$query" = "uti" ] || { echo "unexpected query: $query" >&2; exit 91; }
+	printf '%s\n' 'util.ts	src/util.ts	src/util.ts	file	text	file'
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
@@ -4932,15 +5554,15 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveStartupArgs returned error: %v", err)
 	}
-	if usedFzf {
-		t.Fatal("expected explicit --only value to stay literal without fzf")
+	if !usedFzf {
+		t.Fatal("expected non-exact --only value to use fzf")
 	}
-	if got, want := strings.Join(args, "\n"), "src\n--only\nuti"; got != want {
+	if got, want := strings.Join(args, "\n"), "src\n--only\nsrc/util.ts"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
 
-func TestResolveStartupArgsKeepsExcludeValueLiteralInDefaultScope(t *testing.T) {
+func TestResolveStartupArgsOpensExcludePickerForNonExactValue(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":      "console.log('src')\n",
 		"src/util.ts":      "console.log('util')\n",
@@ -4949,7 +5571,31 @@ func TestResolveStartupArgsKeepsExcludeValueLiteralInDefaultScope(t *testing.T) 
 	})
 	_ = parseInProject(t, project, []string{"."})
 	installScriptFzf(t, `#!/bin/sh
-echo "fzf should not run for explicit --exclude values" >&2
+prompt=""
+query=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--query)
+			query="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+if [ "$prompt" = "exclude> " ]; then
+	[ "$query" = "mai" ] || { echo "unexpected query: $query" >&2; exit 91; }
+	printf '%s\n' 'main.ts	src/main.ts	src/main.ts	file	text	file'
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
@@ -4962,10 +5608,10 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveStartupArgs returned error: %v", err)
 	}
-	if usedFzf {
-		t.Fatal("expected explicit --exclude value to stay literal without fzf")
+	if !usedFzf {
+		t.Fatal("expected non-exact --exclude value to use fzf")
 	}
-	if got, want := strings.Join(args, "\n"), "--exclude\nmai"; got != want {
+	if got, want := strings.Join(args, "\n"), "--exclude\nsrc/main.ts"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -5035,7 +5681,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "select> " ] && [ "$query" = "Button.tsx" ]; then
+if [ "$prompt" = "then> " ] && [ "$query" = "Button.tsx" ]; then
 	if ! printf '%s\n' "$input" | grep -F "src/components/Button.tsx" >/dev/null; then
 		echo "expected Button.tsx to be selectable after --then" >&2
 		exit 91
@@ -5198,15 +5844,15 @@ if [ "$prompt" = "filter> " ]; then
 	exit 0
 fi
 
-if [ "$prompt" = "regex> " ]; then
+if [ "$prompt" = "match> " ]; then
 	[ "$disabled" -eq 1 ] || { echo "contains picker must use --disabled" >&2; exit 91; }
 	[ -z "$expect" ] || { echo "unexpected --expect: $expect" >&2; exit 91; }
-	printf '%%s\n' "$header" | grep -F "Regex matches file contents, not file names." >/dev/null || {
-		echo "missing regex header" >&2
+	printf '%%s\n' "$header" | grep -F "Keep files whose contents match a regex." >/dev/null || {
+		echo "missing match header" >&2
 		exit 91
 	}
-	printf '%%s\n' "$header" | grep -F "Select [all current matches] to keep plain --contains." >/dev/null || {
-		echo "missing all-matches header" >&2
+	printf '%%s\n' "$header" | grep -F "Type a regex." >/dev/null || {
+		echo "missing enter header" >&2
 		exit 91
 	}
 	printf '%%s\n' "$header" | grep -F %q >/dev/null || {
@@ -5221,8 +5867,8 @@ if [ "$prompt" = "regex> " ]; then
 		echo "missing toggle-all binding" >&2
 		exit 91
 	}
-	printf '%%s\n' "$bindings" | grep -F -- "--internal-contains-list" >/dev/null || {
-		echo "missing internal contains list command" >&2
+	printf '%%s\n' "$bindings" | grep -F -- "--internal-content-match-list" >/dev/null || {
+		echo "missing internal content match list command" >&2
 		exit 91
 	}
 	printf 'TODO\n'
@@ -5232,7 +5878,7 @@ fi
 
 echo "unexpected prompt: $prompt" >&2
 exit 91
-`, expectedKey+" toggles all current matches.", expectedBinding))
+`, "["+expectedKey+"] toggle", expectedBinding))
 
 	resolver, err := newStartupPickerResolver()
 	if err != nil {
@@ -5248,7 +5894,7 @@ exit 91
 	}
 }
 
-func TestResolveBareStartupModifierArgsContainsSnippetAppendsSnippetFlag(t *testing.T) {
+func TestResolveBareStartupModifierArgsSnippetAppendsSnippetPattern(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/todo.ts": "TODO: wire this up\n",
 	})
@@ -5267,12 +5913,12 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "filter> " ]; then
-	printf '%s\n' 'selected	contains-snippet'
+	if [ "$prompt" = "filter> " ]; then
+		printf '%s\n' 'selected	snippet'
 	exit 0
 fi
 
-if [ "$prompt" = "regex> " ]; then
+if [ "$prompt" = "match> " ]; then
 	printf 'TODO\n'
 	printf 'todo.ts\tsrc/todo.ts\tfile\ttext\n'
 	exit 0
@@ -5291,12 +5937,111 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveBareStartupModifierArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(args, "\n"), "--contains\nTODO\n--snippet"; got != want {
+	if got, want := strings.Join(args, "\n"), "--snippet\nTODO"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
 
-func TestResolveBareStartupModifierArgsContainsSnippetUsesSnippetPreviewCommand(t *testing.T) {
+func TestResolveStartupModifierArgsSnippetConsumesTrailingBarePlaceholder(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/todo.ts":    "TODO: wire this up\n",
+		"uninstall.sh":   "#!/bin/sh\n",
+		"scripts/run.sh": "echo hi\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	expectedBinding := multiSelectToggleAllBinding()
+	expectedKey := multiSelectToggleAllKey()
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+header=""
+bindings=""
+disabled=0
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--header)
+			header="$2"
+			shift 2
+			;;
+		--bind)
+			bindings="$bindings
+$2"
+			shift 2
+			;;
+		--disabled)
+			disabled=1
+			shift
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "filter> " ]; then
+	printf '%%s\n' "$input" | grep -F -- "snippet" | head -n 1
+	exit 0
+fi
+
+if [ "$prompt" = "match> " ]; then
+	[ "$disabled" -eq 1 ] || { echo "snippet picker must use --disabled" >&2; exit 91; }
+	printf '%%s\n' "$header" | grep -F "Extract snippets whose contents match a regex." >/dev/null || {
+		echo "missing match header" >&2
+		exit 91
+	}
+	printf '%%s\n' "$header" | grep -F "Type a regex." >/dev/null || {
+		echo "missing snippet enter header" >&2
+		exit 91
+	}
+	printf '%%s\n' "$header" | grep -F %q >/dev/null || {
+		echo "missing toggle-all header" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F -- %q >/dev/null || {
+		echo "missing toggle-all binding" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F -- "--internal-content-match-list" >/dev/null || {
+		echo "missing internal content match list command" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F -- '--exclude uninstall.sh --snippet {q}' >/dev/null || {
+		echo "missing trimmed snippet contains-list command" >&2
+		exit 91
+	}
+	if printf '%%s\n' "$bindings" | grep -F -- '--exclude uninstall.sh -- --snippet {q}' >/dev/null; then
+		echo "trailing bare placeholder leaked into snippet contains-list command" >&2
+		exit 91
+	fi
+	printf 'TODO\n'
+	printf 'todo.ts\tsrc/todo.ts\tfile\ttext\n'
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`, "["+expectedKey+"] toggle", expectedBinding))
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, err := resolveStartupModifierArgs(resolver, []string{".", "--exclude", "uninstall.sh", "--"}, []string{"."})
+	if err != nil {
+		t.Fatalf("resolveStartupModifierArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), ".\n--exclude\nuninstall.sh\n--snippet\nTODO"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupSnippetArgsUsesSnippetPreviewCommand(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/todo.ts": "TODO: wire this up\n",
 	})
@@ -5325,17 +6070,12 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "filter> " ]; then
-	printf '%s\n' 'selected	contains-snippet'
-	exit 0
-fi
-
-if [ "$prompt" = "regex> " ]; then
+if [ "$prompt" = "match> " ]; then
 	printf '%s\n' "$preview" | grep -F -- 'preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi;' >/dev/null || {
 		echo "missing snippet preview guard: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--internal-file-preview --internal-file-path "$preview_target" --snippet --contains {q}' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-preview --internal-file-path "$preview_target" --snippet {q}' >/dev/null || {
 		echo "missing snippet preview command: $preview" >&2
 		exit 91
 	}
@@ -5348,13 +6088,99 @@ echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	if _, _, err := resolveStartupContentArgs([]string{"."}, "--snippet"); err != nil {
+		t.Fatalf("resolveStartupContentArgs returned error: %v", err)
 	}
+}
 
-	if _, _, err := resolveBareStartupModifierArgs(resolver); err != nil {
-		t.Fatalf("resolveBareStartupModifierArgs returned error: %v", err)
+func TestResolveStartupContentArgsUsesSingleVisibleDisplayColumn(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"cli.go": "TODO: root file\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+with_nth=""
+nth=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--with-nth)
+			with_nth="$2"
+			shift 2
+			;;
+		--nth)
+			nth="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+if [ "$prompt" = "match> " ]; then
+	[ "$with_nth" = "1" ] || { echo "expected --with-nth 1, got $with_nth" >&2; exit 91; }
+	[ "$nth" = "1" ] || { echo "expected --nth 1, got $nth" >&2; exit 91; }
+	printf 'TODO\n'
+	printf 'cli.go\tcli.go\tfile\ttext\n'
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	if _, _, err := resolveStartupContentArgs([]string{"."}, "--contains"); err != nil {
+		t.Fatalf("resolveStartupContentArgs returned error: %v", err)
+	}
+}
+
+func TestResolveStartupScopeFileSetArgsUsesSingleVisibleDisplayColumn(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"cli.go": "package main\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+with_nth=""
+nth=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--with-nth)
+			with_nth="$2"
+			shift 2
+			;;
+		--nth)
+			nth="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+if [ "$prompt" = "only> " ]; then
+	[ "$with_nth" = "1" ] || { echo "expected --with-nth 1, got $with_nth" >&2; exit 91; }
+	[ "$nth" = "1" ] || { echo "expected --nth 1, got $nth" >&2; exit 91; }
+	printf 'cli.go\tcli.go\tcli.go\tfile\ttext\tfile\n'
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	if _, _, err := resolveStartupScopeFileSetArgs([]string{"."}, "--only", "only> "); err != nil {
+		t.Fatalf("resolveStartupScopeFileSetArgs returned error: %v", err)
 	}
 }
 
@@ -5455,8 +6281,8 @@ if [ "$prompt" = "filter> " ]; then
 		echo "missing --then description in description column: $last_desc" >&2
 		exit 91
 	}
-	printf '%s\n' "$input" | grep -F $'\tcontains-snippet' >/dev/null || {
-		echo "missing contains-snippet modifier row" >&2
+	printf '%s\n' "$input" | grep -F $'\tsnippet' >/dev/null || {
+		echo "missing snippet modifier row" >&2
 		exit 91
 	}
 	printf '%s\n' 'only'
@@ -5512,7 +6338,7 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "regex> " ]; then
+if [ "$prompt" = "match> " ]; then
 	{
 		printf 'TODO\n'
 		printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
@@ -5525,9 +6351,9 @@ echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
-	args, _, err := resolveStartupContainsArgs([]string{"src"}, false)
+	args, _, err := resolveStartupContentArgs([]string{"src"}, "--contains")
 	if err != nil {
-		t.Fatalf("resolveStartupContainsArgs returned error: %v", err)
+		t.Fatalf("resolveStartupContentArgs returned error: %v", err)
 	}
 	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
@@ -5556,7 +6382,7 @@ done
 
 input="$(cat)"
 
-if [ "$prompt" = "regex> " ]; then
+if [ "$prompt" = "match> " ]; then
 	{
 		printf 'TODO\n'
 		printf '[all current matches]\t\t\t\t\n'
@@ -5569,9 +6395,9 @@ echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
-	args, _, err := resolveStartupContainsArgs([]string{"src"}, false)
+	args, _, err := resolveStartupContentArgs([]string{"src"}, "--contains")
 	if err != nil {
-		t.Fatalf("resolveStartupContainsArgs returned error: %v", err)
+		t.Fatalf("resolveStartupContentArgs returned error: %v", err)
 	}
 	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
@@ -5598,7 +6424,7 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "regex> " ]; then
+if [ "$prompt" = "match> " ]; then
 	{
 		printf 'TODO\n'
 		printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
@@ -5610,12 +6436,73 @@ echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
-	args, _, err := resolveStartupContainsArgs([]string{"src"}, false)
+	args, _, err := resolveStartupContentArgs([]string{"src"}, "--contains")
 	if err != nil {
-		t.Fatalf("resolveStartupContainsArgs returned error: %v", err)
+		t.Fatalf("resolveStartupContentArgs returned error: %v", err)
 	}
 	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO\n--only\nsrc/main.ts"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupSnippetArgsSubsetStillUsesOnly(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: one\n",
+		"src/util.ts": "TODO: two\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+if [ "$prompt" = "match> " ]; then
+	{
+		printf 'TODO\n'
+		printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
+	}
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	args, _, err := resolveStartupContentArgs([]string{"src"}, "--snippet")
+	if err != nil {
+		t.Fatalf("resolveStartupContentArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--snippet\nTODO\n--only\nsrc/main.ts"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupArgsBareSnippetErrors(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: one\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	_, _, _, err = resolveInteractiveStartupArgs(resolver, []string{"src", "--snippet"})
+	if err == nil {
+		t.Fatal("expected bare --snippet to fail")
+	}
+	if !strings.Contains(err.Error(), "--snippet requires a regex pattern") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -5766,6 +6653,12 @@ if [ "$prompt" = "only> " ]; then
 	exit 91
 fi
 
+if [ "$prompt" = "then> " ]; then
+	emit_query
+	printf '%%s\n' 'shared'
+	exit 0
+fi
+
 echo "unexpected prompt: $prompt query=$query" >&2
 exit 91
 `, selectStateFile, selectStateFile, selectStateFile, modifierStateFile, modifierStateFile, modifierStateFile))
@@ -5780,6 +6673,91 @@ exit 91
 		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
 	}
 	if got, want := strings.Join(args, "\n"), "src\n--only\nsrc/main.ts\n--then\nshared\n--only\nshared/app.ts"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveInteractiveStartupArgsBarePlaceholderChainKeepsNextPlaceholderAfterContains(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "hello world\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	modifierStateFile := filepath.Join(t.TempDir(), "modifier-count")
+	regexStateFile := filepath.Join(t.TempDir(), "regex-count")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+if [ "$prompt" = "filter> " ]; then
+	count=0
+	if [ -f %q ]; then
+		count="$(cat %q)"
+	fi
+	count=$((count + 1))
+	printf '%%s' "$count" > %q
+	case "$count" in
+		1)
+			printf '%%s\n' 'contains'
+			;;
+		2)
+			printf '%%s\n' 'snippet'
+			;;
+		*)
+			echo "unexpected modifier count: $count" >&2
+			exit 91
+			;;
+	esac
+	exit 0
+fi
+
+if [ "$prompt" = "match> " ]; then
+	count=0
+	if [ -f %q ]; then
+		count="$(cat %q)"
+	fi
+	count=$((count + 1))
+	printf '%%s' "$count" > %q
+	case "$count" in
+		1)
+			printf 'hello\n'
+			;;
+		2)
+			printf 'world\n'
+			;;
+		*)
+			echo "unexpected regex count: $count" >&2
+			exit 91
+			;;
+	esac
+	printf '[all current matches]\t\t\t\t\n'
+	printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`, modifierStateFile, modifierStateFile, modifierStateFile, regexStateFile, regexStateFile, regexStateFile))
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, _, err := resolveInteractiveStartupArgs(resolver, []string{".", "--", "--"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), ".\n--contains\nhello\n--snippet\nworld"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -5998,7 +6976,7 @@ while [ "$#" -gt 0 ]; do
 	esac
 done
 
-if [ "$prompt" = "regex> " ]; then
+if [ "$prompt" = "match> " ]; then
 		printf 'TODO\n'
 		printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
 	exit 0
@@ -6018,6 +6996,89 @@ exit 91
 		t.Fatalf("resolveStartupTrailingActionArgs returned error: %v", err)
 	}
 	if got, want := strings.Join(args, "\n"), "src\n--contains\nTODO"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupTrailingActionArgsRejectsContainsAfterDiff(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: src\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	_, _, err = resolveStartupTrailingActionArgs(resolver, []string{"src", "--changed-diff"}, startupTrailingActionContains)
+	if err == nil {
+		t.Fatal("expected trailing contains action after --diff to fail")
+	}
+	if !strings.Contains(err.Error(), "--contains must come before --changed-diff in the same scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveStartupTrailingActionArgsRejectsContainsAfterSnippet(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: src\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	_, _, err = resolveStartupTrailingActionArgs(resolver, []string{"src", "--snippet", "TODO"}, startupTrailingActionContains)
+	if err == nil {
+		t.Fatal("expected trailing contains action after --snippet to fail")
+	}
+	if !strings.Contains(err.Error(), "--contains must come before --snippet in the same scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveStartupTrailingActionArgsSnippetStillUsesPicker(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: src\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+if [ "$prompt" = "match> " ]; then
+	printf 'TODO\n'
+	printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, err := resolveStartupTrailingActionArgs(resolver, []string{"src"}, startupTrailingActionSnippet)
+	if err != nil {
+		t.Fatalf("resolveStartupTrailingActionArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--snippet\nTODO"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -6042,13 +7103,25 @@ func TestWriteResolvedStartupCommandPrintsCanonicalCommand(t *testing.T) {
 	}
 }
 
-func TestRunInternalContainsListOutputsCurrentScopeMatches(t *testing.T) {
+func TestWriteResolvedStartupCommandShowsImplicitDotScope(t *testing.T) {
+	var stderr bytes.Buffer
+	if err := writeResolvedStartupCommand(&stderr, []string{"--only", "src/a.ts"}); err != nil {
+		t.Fatalf("writeResolvedStartupCommand returned error: %v", err)
+	}
+
+	want := "Resolved command:\n  catclip . --only src/a.ts\n"
+	if stderr.String() != want {
+		t.Fatalf("expected stderr %q, got %q", want, stderr.String())
+	}
+}
+
+func TestRunInternalContentMatchListOutputsCurrentScopeMatches(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":    "TODO: src\n",
 		"src/util.ts":    "helper\n",
 		"shared/util.ts": "TODO: shared\n",
 	})
-	cfg := parseInProject(t, project, []string{"--internal-contains-list", "src", "--contains", "TODO"})
+	cfg := parseInProject(t, project, []string{"--internal-content-match-list", "src", "--contains", "TODO"})
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -6057,25 +7130,55 @@ func TestRunInternalContainsListOutputsCurrentScopeMatches(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, containsAllMatchesLabel) {
-		t.Fatalf("expected all-matches row in internal contains list output, got %q", out)
+	if !strings.Contains(out, contentMatchAllMatchesLabel) {
+		t.Fatalf("expected all-matches row in internal content match list output, got %q", out)
 	}
 	if !strings.Contains(out, "\tsrc/main.ts\tfile\ttext") {
-		t.Fatalf("expected src/main.ts in internal contains list output, got %q", out)
+		t.Fatalf("expected src/main.ts in internal content match list output, got %q", out)
 	}
 	if strings.Contains(out, "\tshared/util.ts\tfile\ttext") {
-		t.Fatalf("shared/util.ts leaked into src-only contains list output: %q", out)
+		t.Fatalf("shared/util.ts leaked into src-only content match list output: %q", out)
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr, got %q", stderr.String())
 	}
 }
 
-func TestRunInternalContainsListSuppressesInvalidRegex(t *testing.T) {
+func TestRunInternalContentMatchListUsesSingleLabelForRootFiles(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"cli.go": "TODO: root\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-content-match-list", ".", "--contains", "TODO"})
+
+	var stdout bytes.Buffer
+	if err := runInternalContentMatchList(cfg, &stdout); err != nil {
+		t.Fatalf("runInternalContentMatchList returned error: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "cli.go\tcli.go\tcli.go\tfile\ttext") {
+		t.Fatalf("expected root file row in internal contains list output, got %q", out)
+	}
+	if strings.Contains(out, "cli.go  cli.go\tcli.go\tcli.go\tfile\ttext") {
+		t.Fatalf("root file label duplicated basename and relpath: %q", out)
+	}
+}
+
+func TestStartupFilePathRowsUseSingleLabelForRootFiles(t *testing.T) {
+	rows := startupFilePathRows([]string{"cli.go"})
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %#v", rows)
+	}
+	if got, want := rows[0].Display, "cli.go"; got != want {
+		t.Fatalf("expected display %q, got %q", want, got)
+	}
+}
+
+func TestRunInternalContentMatchListSuppressesInvalidRegex(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "TODO: src\n",
 	})
-	cfg := parseInProject(t, project, []string{"--internal-contains-list", "src", "--contains", "["})
+	cfg := parseInProject(t, project, []string{"--internal-content-match-list", "src", "--contains", "["})
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -6087,6 +7190,54 @@ func TestRunInternalContainsListSuppressesInvalidRegex(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr for invalid regex, got %q", stderr.String())
+	}
+}
+
+func TestRunInternalContentMatchListUsesSnippetPattern(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "TODO: src\n",
+		"src/util.ts":    "helper\n",
+		"shared/util.ts": "TODO: shared\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-content-match-list", "src", "--snippet", "TODO"})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, contentMatchAllMatchesLabel) {
+		t.Fatalf("expected all-matches row in internal content match list output, got %q", out)
+	}
+	if !strings.Contains(out, "\tsrc/main.ts\tfile\ttext") {
+		t.Fatalf("expected src/main.ts in internal content match list output, got %q", out)
+	}
+	if strings.Contains(out, "\tshared/util.ts\tfile\ttext") {
+		t.Fatalf("shared/util.ts leaked into src-only content match list output: %q", out)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunInternalContentMatchListAllowsEmptySnippetQuery(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: src\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-content-match-list", "src", "--snippet", ""})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("expected no stdout for empty snippet query, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr for empty snippet query, got %q", stderr.String())
 	}
 }
 
@@ -6119,11 +7270,48 @@ func TestRunInternalFilePreviewOutputsFilePayload(t *testing.T) {
 	}
 }
 
+func TestRunInternalFilePreviewOutputsContainsPayloadBeyondOldPreviewByteLimit(t *testing.T) {
+	largePrefix := strings.Repeat("x", 128*1024+1024)
+	project := setupTestProject(t, map[string]string{
+		"src/large.txt": largePrefix + "\nlate TODO match\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "src/large.txt", "--contains", "late TODO"})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	doc, err := decodeTreePayload(bytes.NewReader(stdout.Bytes()))
+	if err != nil {
+		t.Fatalf("decodeTreePayload returned error: %v", err)
+	}
+	if doc.File == nil {
+		t.Fatal("expected file preview payload")
+	}
+	if !strings.Contains(doc.File.Content, "late TODO match") {
+		t.Fatalf("expected contains preview to include late match beyond old preview byte limit, got %q", doc.File.Content)
+	}
+	if got := doc.File.MatchPattern; got != "late TODO" {
+		t.Fatalf("doc.File.MatchPattern = %q, want %q", got, "late TODO")
+	}
+	if !strings.Contains(doc.File.Content, largePrefix) {
+		t.Fatalf("expected contains preview payload to keep full file content, got %q", doc.File.Content)
+	}
+	if doc.File.Truncated {
+		t.Fatalf("expected full contains preview payload, not marked truncated")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
 func TestRunInternalFilePreviewOutputsSnippetPayload(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "const outside = 0\n\nconst a = 1\nTODO: first\nconst b = 2\n\nconst c = 3\nTODO: second\nconst d = 4\n",
 	})
-	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "src/main.ts", "--contains", "TODO", "--snippet"})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "src/main.ts", "--snippet", "TODO"})
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -6168,7 +7356,7 @@ func TestRunInternalFilePreviewOutputsSnippetHintForEmptyRegex(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "const a = 1\nTODO: first\n",
 	})
-	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "src/main.ts", "--contains", "", "--snippet"})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "src/main.ts", "--snippet", ""})
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -6200,6 +7388,37 @@ func TestRunInternalFilePreviewOutputsSnippetHintForEmptyRegex(t *testing.T) {
 	}
 }
 
+func TestRunInternalFilePreviewOutputsSnippetPayloadBeyondOldPreviewByteLimit(t *testing.T) {
+	largePrefix := strings.Repeat("x", 128*1024+1024)
+	project := setupTestProject(t, map[string]string{
+		"src/large.txt": largePrefix + "\n\nmatch start\nTODO: late\nmatch end\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "src/large.txt", "--snippet", "TODO: late"})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	doc, err := decodeTreePayload(bytes.NewReader(stdout.Bytes()))
+	if err != nil {
+		t.Fatalf("decodeTreePayload returned error: %v", err)
+	}
+	if doc.File == nil {
+		t.Fatal("expected file preview payload")
+	}
+	if !strings.Contains(doc.File.Content, "TODO: late") {
+		t.Fatalf("expected snippet preview to include late match beyond preview byte limit, got %q", doc.File.Content)
+	}
+	if doc.File.Truncated {
+		t.Fatalf("expected snippet preview payload to be built from extracted blocks, not marked truncated")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
 func TestRunInternalFilePreviewOutputsDiffPayload(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -6212,7 +7431,7 @@ func TestRunInternalFilePreviewOutputsDiffPayload(t *testing.T) {
 	writeProjectFile(t, project, "staged.txt", "two\n")
 	runGit(t, project, "add", "staged.txt")
 
-	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "staged.txt", "--staged", "--diff"})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "staged.txt", "--staged-diff"})
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -6241,6 +7460,48 @@ func TestRunInternalFilePreviewOutputsDiffPayload(t *testing.T) {
 	}
 }
 
+func TestRunInternalFilePreviewOutputsDiffPayloadBeyondOldPreviewByteLimit(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"tracked.txt": "tracked\n",
+	})
+	initGitRepo(t, project)
+	largePrefix := strings.Repeat("line in staged diff that makes it large enough\n", 4000)
+	writeProjectFile(t, project, "staged.txt", largePrefix+"LATE DIFF MARKER\n")
+	runGit(t, project, "add", "staged.txt")
+
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "staged.txt", "--staged-diff"})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	doc, err := decodeTreePayload(bytes.NewReader(stdout.Bytes()))
+	if err != nil {
+		t.Fatalf("decodeTreePayload returned error: %v", err)
+	}
+	if doc.File == nil {
+		t.Fatal("expected file preview payload")
+	}
+	if !strings.Contains(doc.File.Content, "LATE DIFF MARKER") {
+		t.Fatalf("expected diff preview to include late marker beyond old preview byte limit, got %q", doc.File.Content)
+	}
+	if got := doc.File.HighlightPath; got != internalDiffHighlightPath {
+		t.Fatalf("doc.File.HighlightPath = %q, want %q", got, internalDiffHighlightPath)
+	}
+	if doc.File.Truncated {
+		t.Fatalf("expected full diff preview payload, not marked truncated")
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
 func TestRunInternalFilePreviewChangedDiffFallsBackToFullFileForUntracked(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -6252,7 +7513,7 @@ func TestRunInternalFilePreviewChangedDiffFallsBackToFullFileForUntracked(t *tes
 	initGitRepo(t, project)
 	writeProjectFile(t, project, "new.txt", "brand new\n")
 
-	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "new.txt", "--changed", "--diff"})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "new.txt", "--changed-diff"})
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

@@ -85,10 +85,11 @@ func RenderSummarySection(w io.Writer, summary *DocumentSummary, opts RenderOpti
 	return nil
 }
 
-// BypassesDirectoryLabel reports whether a directory label should inherit the
-// bypass/error color for a directly targeted ignored subtree.
-func BypassesDirectoryLabel(entry DocumentEntry, relDir string) bool {
-	if !entry.Bypassed {
+// AllowedByIncludeDirectoryLabel reports whether a directory label should
+// inherit the include-allowed color for an ignored subtree admitted by
+// explicit --include.
+func AllowedByIncludeDirectoryLabel(entry DocumentEntry, relDir string) bool {
+	if !entry.AllowedByInclude {
 		return false
 	}
 	targetRoot := normalizeRelPath(entry.TargetRoot)
@@ -198,7 +199,7 @@ func renderEntries(w io.Writer, entries []DocumentEntry, opts RenderOptions, col
 				lineCount = 0
 			}
 			dirColor := colors.Dir
-			if BypassesDirectoryLabel(entry, accum) {
+			if AllowedByIncludeDirectoryLabel(entry, accum) {
 				dirColor = colors.Err
 			}
 			if _, err := fmt.Fprintf(w, "%s%s%s%s\n", prefix, dirColor, label, colors.Reset); err != nil {
@@ -214,7 +215,7 @@ func renderEntries(w io.Writer, entries []DocumentEntry, opts RenderOptions, col
 
 		nameColor := ""
 		nameReset := ""
-		if entry.Bypassed {
+		if entry.AllowedByInclude {
 			nameColor = colors.Err
 			nameReset = colors.Reset
 		}
@@ -222,7 +223,7 @@ func renderEntries(w io.Writer, entries []DocumentEntry, opts RenderOptions, col
 		fileLine := filePrefix + nameColor + parts[fileIndex] + nameReset
 		if opts.ShowSizes && entry.Size != nil {
 			sizeLabel := formatInlineSize(*entry.Size)
-			if entry.Bypassed {
+			if entry.AllowedByInclude {
 				fileLine += " " + colors.Err + "(" + sizeLabel + ")" + colors.Reset
 			} else {
 				fileLine += " " + styleSize(sizeLabel, *entry.Size, colors)
@@ -266,6 +267,7 @@ func renderFilePreview(w io.Writer, file *FilePreview, opts RenderOptions, color
 	lines := splitPreviewLines(content)
 	lines = overlayPreviewMatchHighlights(lines, rawLines, file.MatchPattern)
 	lines = overlayPreviewFocusLineHighlights(lines, file.FocusLines)
+	highlightedLineNumbers := previewHighlightedLineNumbers(rawLines, file.MatchPattern, file.FocusLines)
 	truncated := file.Truncated
 	if opts.MaxLines > 0 && len(lines) > opts.MaxLines {
 		lines = lines[:opts.MaxLines]
@@ -276,9 +278,10 @@ func renderFilePreview(w io.Writer, file *FilePreview, opts RenderOptions, color
 	if width < 1 {
 		width = 1
 	}
-	lineNumberColor := previewLineNumberColor(opts, colors)
 	for i, line := range lines {
-		if _, err := fmt.Fprintf(w, "%s%*d%s %s│%s %s\n", lineNumberColor, width, i+1, colors.Reset, colors.Tree, colors.Reset, line); err != nil {
+		lineNo := i + 1
+		lineNumber := stylePreviewLineNumber(fmt.Sprintf("%*d", width, lineNo), lineNo, highlightedLineNumbers, opts, colors)
+		if _, err := fmt.Fprintf(w, "%s %s│%s %s\n", lineNumber, colors.Tree, colors.Reset, line); err != nil {
 			return err
 		}
 	}
@@ -299,6 +302,14 @@ func previewLineNumberColor(opts RenderOptions, colors Palette) string {
 		return "\033[37m"
 	}
 	return colors.Label
+}
+
+func stylePreviewLineNumber(text string, lineNo int, highlighted map[int]struct{}, opts RenderOptions, colors Palette) string {
+	styled := previewLineNumberColor(opts, colors) + text + colors.Reset
+	if _, ok := highlighted[lineNo]; ok {
+		return highlightWholeLineANSI(styled)
+	}
+	return styled
 }
 
 func highlightFilePreview(relPath, content string, opts RenderOptions) string {
@@ -449,6 +460,30 @@ func overlayPreviewFocusLineHighlights(lines []string, focusLines []int) []strin
 		lines[lineNo-1] = highlightWholeLineANSI(lines[lineNo-1])
 	}
 	return lines
+}
+
+func previewHighlightedLineNumbers(rawLines []string, pattern string, focusLines []int) map[int]struct{} {
+	highlighted := make(map[int]struct{}, len(focusLines))
+	for _, lineNo := range focusLines {
+		if lineNo < 1 {
+			continue
+		}
+		highlighted[lineNo] = struct{}{}
+	}
+	if len(rawLines) == 0 || strings.TrimSpace(pattern) == "" {
+		return highlighted
+	}
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return highlighted
+	}
+	for i, line := range rawLines {
+		if re.MatchString(line) {
+			highlighted[i+1] = struct{}{}
+		}
+	}
+	return highlighted
 }
 
 func highlightWholeLineANSI(ansiLine string) string {

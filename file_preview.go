@@ -1,15 +1,12 @@
 package catclip
 
 import (
-	"bytes"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 )
 
-const internalFilePreviewByteLimit = 128 * 1024
 const internalDiffHighlightPath = "diff"
 const internalSnippetPreviewEmptyHint = "Type a regex to preview snippet blocks.\nSnippet mode extracts blank-line-separated blocks around matches."
 
@@ -30,8 +27,12 @@ func runInternalFilePreview(cfg runConfig, stdout io.Writer) error {
 func internalPreviewRelPath(cfg runConfig) string {
 	relPath := normalizeRelPath(cfg.FilePath)
 	if relPath == "" {
-		if len(cfg.Scopes) == 1 && len(cfg.Scopes[0].Targets) == 1 {
-			relPath = normalizeRelPath(cfg.Scopes[0].Targets[0])
+		scopeSpecs := configCommandScopes(cfg)
+		if len(scopeSpecs) == 1 {
+			targets := scopeSpecs[0].Targets()
+			if len(targets) == 1 {
+				relPath = normalizeRelPath(targets[0])
+			}
 		}
 	}
 	return relPath
@@ -40,29 +41,31 @@ func internalPreviewRelPath(cfg runConfig) string {
 func buildInternalPreviewDocument(cfg runConfig, gitCtx gitContext, relPath string) (treeDocument, bool) {
 	absPath := filepath.Join(cfg.WorkingDir, filepath.FromSlash(relPath))
 	s := internalPreviewScope(cfg)
-	switch {
-	case s.Snippet:
-		return buildInternalSnippetPreviewDocument(relPath, absPath, s.Contains)
-	case s.Diff:
+
+	switch executionScopeOutputMode(s) {
+	case entryModeSnippet:
+		return buildInternalSnippetPreviewDocument(relPath, absPath, s.SnippetPattern)
+	case entryModeDiff:
 		return buildInternalDiffPreviewDocument(relPath, absPath, gitCtx, s)
 	default:
 		return buildInternalFullFilePreviewDocument(relPath, absPath, s.Contains)
 	}
 }
 
-func internalPreviewScope(cfg runConfig) scope {
-	if len(cfg.Scopes) == 0 {
-		return scope{}
+func internalPreviewScope(cfg runConfig) executionScope {
+	scopeSpecs := configCommandScopes(cfg)
+	if len(scopeSpecs) == 0 {
+		return executionScope{}
 	}
-	return cfg.Scopes[len(cfg.Scopes)-1]
+	return executionScopeFromCommandScopeSpec(scopeSpecs[len(scopeSpecs)-1])
 }
 
 func buildInternalFullFilePreviewDocument(relPath, absPath, matchPattern string) (treeDocument, bool) {
-	content, truncated, ok := readInternalPreviewContent(relPath, absPath)
-	if !ok {
+	snapshot, err := loadTextSnapshot(absPath, relPath)
+	if err != nil || !snapshot.IsText {
 		return treeDocument{}, false
 	}
-	return buildTreeFilePreviewDocument(relPath, "", content, matchPattern, truncated, nil), true
+	return buildTreeFilePreviewDocument(relPath, "", snapshot.PreviewText(), matchPattern, false, nil), true
 }
 
 func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string) (treeDocument, bool) {
@@ -70,30 +73,24 @@ func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string) (tree
 		return buildInternalSnippetHintDocument(), true
 	}
 
-	content, truncated, ok := readInternalPreviewContent(relPath, absPath)
-	if !ok {
+	snapshot, err := loadTextSnapshot(absPath, relPath)
+	if err != nil || !snapshot.IsText {
+		return treeDocument{}, false
+	}
+	snippet, err := resolveSnippetFromSnapshot(snapshot, pattern)
+	if err != nil || len(snippet.Ranges) == 0 {
 		return treeDocument{}, false
 	}
 
-	re, err := compileContainsPattern(pattern)
-	if err != nil {
-		return treeDocument{}, false
-	}
-
-	ranges, lines, err := extractSnippetRangesFromContent([]byte(content), re)
-	if err != nil || len(ranges) == 0 {
-		return treeDocument{}, false
-	}
-
-	content, focusLines := buildInternalSnippetPreviewContent(ranges, lines)
-	return buildTreeFilePreviewDocument(relPath, "", content, "", truncated, focusLines), true
+	content, focusLines := buildInternalSnippetPreviewContent(snippet.Ranges, snippet.Lines)
+	return buildTreeFilePreviewDocument(relPath, "", content, "", false, focusLines), true
 }
 
 func buildInternalSnippetHintDocument() treeDocument {
 	return buildTreeFilePreviewDocument("", "", internalSnippetPreviewEmptyHint, "", false, nil)
 }
 
-func buildInternalDiffPreviewDocument(relPath, absPath string, gitCtx gitContext, s scope) (treeDocument, bool) {
+func buildInternalDiffPreviewDocument(relPath, absPath string, gitCtx gitContext, s executionScope) (treeDocument, bool) {
 	entry := fileEntry{
 		AbsPath:          absPath,
 		RelPath:          relPath,
@@ -112,21 +109,7 @@ func buildInternalDiffPreviewDocument(relPath, absPath string, gitCtx gitContext
 		return treeDocument{}, false
 	}
 
-	content, truncated := truncateInternalPreviewContent(content, internalFilePreviewByteLimit)
-	return buildTreeFilePreviewDocument(relPath, internalDiffHighlightPath, content, "", truncated, nil), true
-}
-
-func readInternalPreviewContent(relPath, absPath string) (string, bool, bool) {
-	text, err := isLikelyTextFile(relPath, absPath)
-	if err != nil || !text {
-		return "", false, false
-	}
-
-	content, truncated, err := readInternalFilePreview(absPath, internalFilePreviewByteLimit)
-	if err != nil {
-		return "", false, false
-	}
-	return content, truncated, true
+	return buildTreeFilePreviewDocument(relPath, internalDiffHighlightPath, content, "", false, nil), true
 }
 
 func buildInternalSnippetPreviewContent(ranges []snippetRange, lines []string) (string, []int) {
@@ -143,34 +126,4 @@ func buildInternalSnippetPreviewContent(ranges []snippetRange, lines []string) (
 		}
 	}
 	return strings.Join(previewLines, "\n"), focusLines
-}
-
-func truncateInternalPreviewContent(content string, maxBytes int64) (string, bool) {
-	data := []byte(content)
-	truncated := int64(len(data)) > maxBytes
-	if truncated {
-		data = data[:maxBytes]
-	}
-	data = bytes.ToValidUTF8(data, []byte{})
-	return string(data), truncated
-}
-
-func readInternalFilePreview(absPath string, maxBytes int64) (string, bool, error) {
-	f, err := os.Open(absPath)
-	if err != nil {
-		return "", false, err
-	}
-	defer f.Close()
-
-	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
-	if err != nil {
-		return "", false, err
-	}
-
-	truncated := int64(len(data)) > maxBytes
-	if truncated {
-		data = data[:maxBytes]
-	}
-	data = bytes.ToValidUTF8(data, []byte{})
-	return string(data), truncated, nil
 }

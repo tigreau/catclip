@@ -25,10 +25,10 @@ type payloadRecord struct {
 	Size        *int64 `json:"size,omitempty"`
 	Git         string `json:"git,omitempty"`
 	Tag         string `json:"tag,omitempty"`
-	TargetRoot  string `json:"target_root,omitempty"`
-	Bypassed    bool   `json:"bypassed,omitempty"`
-	BlockRule   string `json:"block_rule,omitempty"`
-	BlockSource string `json:"block_source,omitempty"`
+	TargetRoot       string `json:"target_root,omitempty"`
+	AllowedByInclude bool   `json:"allowed_by_include,omitempty"`
+	BlockRule        string `json:"block_rule,omitempty"`
+	BlockSource      string `json:"block_source,omitempty"`
 	Content     string `json:"content,omitempty"`
 	Highlight   string `json:"highlight,omitempty"`
 	Focus       []int  `json:"focus,omitempty"`
@@ -87,14 +87,14 @@ func EncodePayload(w io.Writer, doc Document) error {
 		for _, entry := range SortedEntries(doc.Entries) {
 			record := payloadRecord{
 				Type:        "entry",
-				Path:        entry.Path,
-				Kind:        "file",
-				Git:         entry.GitStatus,
-				Tag:         entry.ModeTag,
-				TargetRoot:  entry.TargetRoot,
-				Bypassed:    entry.Bypassed,
-				BlockRule:   entry.BlockRule,
-				BlockSource: entry.BlockSource,
+				Path:             entry.Path,
+				Kind:             "file",
+				Git:              entry.GitStatus,
+				Tag:              entry.ModeTag,
+				TargetRoot:       entry.TargetRoot,
+				AllowedByInclude: entry.AllowedByInclude,
+				BlockRule:        entry.BlockRule,
+				BlockSource:      entry.BlockSource,
 			}
 			if entry.Size != nil {
 				sizeCopy := *entry.Size
@@ -183,14 +183,14 @@ func DecodePayload(r io.Reader) (Document, error) {
 				return Document{}, fmt.Errorf("tree payload entry on line %d is missing a file path", lineNo)
 			}
 			doc.Entries = append(doc.Entries, DocumentEntry{
-				Path:        relPath,
-				Size:        record.Size,
-				GitStatus:   record.Git,
-				ModeTag:     record.Tag,
-				TargetRoot:  normalizeRelPath(record.TargetRoot),
-				Bypassed:    record.Bypassed,
-				BlockRule:   record.BlockRule,
-				BlockSource: record.BlockSource,
+				Path:             relPath,
+				Size:             record.Size,
+				GitStatus:        record.Git,
+				ModeTag:          record.Tag,
+				TargetRoot:       normalizeRelPath(record.TargetRoot),
+				AllowedByInclude: record.AllowedByInclude,
+				BlockRule:        record.BlockRule,
+				BlockSource:      record.BlockSource,
 			})
 		case "summary":
 			summary := DocumentSummary{

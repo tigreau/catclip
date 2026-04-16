@@ -47,12 +47,13 @@ func startupRecentPickerEntries(currentArgs []string) ([]fileEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(cfg.Scopes) == 0 {
+	scopeSpecs := configCommandScopes(cfg)
+	if len(scopeSpecs) == 0 {
 		return nil, nil
 	}
 
-	scopeIndex := len(cfg.Scopes) - 1
-	currentScope := cfg.Scopes[scopeIndex]
+	scopeIndex := len(scopeSpecs) - 1
+	currentScope := executionScopeFromCommandScopeSpec(scopeSpecs[scopeIndex])
 
 	gitCtx := detectGitContext(cfg.WorkingDir)
 	baseRules, err := loadIgnoreRules()
@@ -132,10 +133,9 @@ func applyStartupRecentSelection(currentArgs []string, result picker.Result) ([]
 
 func recentPickerHeader() string {
 	return pickerHeader(
-		"Choose how many recently modified files to keep.",
-		"Enter continues with the current selection.",
-		"Preview shows which files would be included.",
-		"Use Up/Down to move, Esc to cancel.",
+		"Pick recent files.",
+		"Type a number to choose how many to keep.",
+		"[Up/Down] move  [Enter] confirm  [Esc] cancel",
 	)
 }
 

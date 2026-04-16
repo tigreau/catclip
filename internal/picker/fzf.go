@@ -38,8 +38,8 @@ type Result struct {
 }
 
 const (
-	defaultPreviewWindow = "right:55%:wrap:border-left"
-	defaultPreviewLabel  = "preview"
+	defaultPreviewWindow = "right:55%:wrap:border-rounded"
+	defaultPreviewLabel  = "Scrollable Preview"
 )
 
 // Filter runs fzf in --filter mode and returns the matched keys from the

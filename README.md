@@ -17,7 +17,7 @@ Don't worry about accidentally copying that `package-lock.json` or creating a `.
 - 📄 **Near-instant filename lookup** - `catclip Footer.tsx` or shorthands like `Foo` resolve exact file names across the repo almost instantly
 - 🧩 **Multiple targets** - `catclip README.md src docs` in one run
 - 🧾 **File headers in output** - each file is wrapped in `<file path="path/to/file">` tags
-- 🌳 **Visual preview** - Tree view with file count, size, and token estimate before copying
+- 🌳 **Visual preview** - Tree view with file count, size, and token estimate before copying, rendered by the companion `catclip-tree` binary
 - 🙈 **Git-aware** - Respects safe discovery rules from `.gitignore` and `.hiss`, filters by staged/unstaged/untracked in git repos, and can output diffs instead of full files
 - 🎛️ **Flexible ignores** - `--exclude "*.css"` to skip, `--include` to allow blocked files or directories from `.gitignore` or `.hiss`, `--only` to narrow allowed targets safely
 - 🕒 **Recent-file stage** - `--recent` sorts the current file set by newest mtime first, with an optional top-N limit
@@ -31,7 +31,9 @@ Don't worry about accidentally copying that `package-lock.json` or creating a `.
 ```bash
 brew tap tigreau/catclip && brew install catclip
 ```
-Packaged installs are expected to include catclip plus private bundled `rg` and `fzf` helpers. Runtime does not fall back to arbitrary user `PATH` copies.
+Packaged installs are expected to include `catclip`, the companion
+`catclip-tree` preview renderer, and private bundled `rg` / `fzf` helpers.
+Runtime does not fall back to arbitrary user `PATH` copies.
 
 ### Direct install script (macOS / Linux)
 ```bash
@@ -70,10 +72,13 @@ Native Windows packaged installs keep the same private bundled-tool model as mac
 - Windows: Built-in `clip.exe`
 
 **Bundled with catclip**:
+- `catclip-tree` for interactive tree and file preview panes
 - `ripgrep` for Git-visible file discovery and `--contains`
 - `fzf` for fuzzy target resolution
 
-Packaged installs always carry private bundled `rg` and `fzf` binaries. If one is missing, the install is incomplete and should be reinstalled instead of relying on a system fallback.
+Packaged installs always carry `catclip-tree` plus private bundled `rg` and
+`fzf` binaries. If one is missing, the install is incomplete and should be
+reinstalled instead of relying on a system fallback.
 Normal users should use the published release bundles. Source installs are a developer-only path.
 
 <details><summary>Manual install (Windows release bundle)</summary>
@@ -270,13 +275,13 @@ catclip src --exclude "LoginForm.tsx"
 catclip src --contains "TODO"
 
 # Only blocks around TODO matches (not full files):
-catclip src --contains "TODO" --snippet
+catclip src --snippet "TODO"
 
 # Staged changes as unified diff (great for commit review):
-catclip --staged --diff
+catclip --staged-diff
 
 # All changes as patches + architecture reference:
-catclip --changed --diff --then src/api/reference.ts
+catclip --changed-diff --then src/api/reference.ts
 ```
 
 </details>
@@ -325,17 +330,18 @@ catclip --include coverage --only "*.json"
 
 ```bash
 catclip --changed                    # staged + unstaged + untracked
-catclip --staged --diff             # staged changes as patches
+catclip --staged-diff               # staged changes as patches
 catclip src --contains "TODO"       # content search (regex)
-catclip src --contains "TODO" --snippet
+catclip src --snippet "TODO"
 catclip src --recent 3
 ```
 
-`--changed` is git-only. With `--diff`, tracked files emit patches and
+`--changed` is git-only. With `--changed-diff`, tracked files emit patches and
 untracked files still emit full content.
 
-`--contains` searches file contents with regex. `--snippet` keeps only the
-matching blocks instead of the full file.
+`--contains` searches file contents with regex. `--snippet` searches file
+contents with its own regex and keeps only the matching blocks instead of the
+full file.
 
 `--recent` works in git and non-git directories.
 

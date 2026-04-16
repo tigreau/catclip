@@ -38,28 +38,11 @@ func defaultTreeRenderOptions() treeRenderOptions {
 	return treepkg.DefaultRenderOptions()
 }
 
-func buildTreeDocumentFromPreview(cfg runConfig, entries []fileEntry, report outputReport) treeDocument {
+func buildTreeDocumentFromPreview(cfg runConfig, plan outputPlan, report outputReport) treeDocument {
 	doc := treeDocument{
 		Mode:    treeDocumentModeTree,
-		Target:  buildTreeDocumentTargetForEntries(cfg, entries),
-		Entries: make([]treeDocumentEntry, 0, len(entries)),
-	}
-
-	for _, entry := range entries {
-		treeEntry := treeDocumentEntry{
-			Path:        entry.RelPath,
-			GitStatus:   report.statuses[entry.RelPath],
-			ModeTag:     report.modeTags[entry.RelPath],
-			TargetRoot:  entry.TargetRoot,
-			Bypassed:    entry.Bypassed,
-			BlockRule:   entry.BlockRule,
-			BlockSource: entry.BlockSource,
-		}
-		if size, ok := report.sizes[entry.RelPath]; ok {
-			sizeCopy := size
-			treeEntry.Size = &sizeCopy
-		}
-		doc.Entries = append(doc.Entries, treeEntry)
+		Target:  buildTreeDocumentTargetForPlan(cfg, plan),
+		Entries: plan.TreeEntries(report),
 	}
 
 	doc.Entries = treepkg.SortedEntries(doc.Entries)
@@ -71,19 +54,24 @@ func buildTreeDocumentTarget(cfg runConfig) *treeDocumentTarget {
 	return treepkg.BuildTarget(cfg.TreeTarget, cfg.TreeKind, cfg.TreeState)
 }
 
-func buildTreeDocumentTargetForEntries(cfg runConfig, entries []fileEntry) *treeDocumentTarget {
+func buildTreeDocumentTargetForPlan(cfg runConfig, plan outputPlan) *treeDocumentTarget {
 	if target := buildTreeDocumentTarget(cfg); target != nil {
 		return target
 	}
-	if len(cfg.Scopes) != 1 || len(cfg.Scopes[0].Targets) != 1 || len(entries) == 0 {
+	scopeSpecs := configCommandScopes(cfg)
+	if len(scopeSpecs) != 1 || len(plan.items) == 0 {
+		return nil
+	}
+	targets := scopeSpecs[0].Targets()
+	if len(targets) != 1 {
 		return nil
 	}
 
-	targetPath := normalizeRelPath(cfg.Scopes[0].Targets[0])
+	targetPath := normalizeRelPath(targets[0])
 	if targetPath == "" {
 		return nil
 	}
-	if len(entries) == 1 && normalizeRelPath(entries[0].RelPath) == targetPath {
+	if len(plan.items) == 1 && normalizeRelPath(plan.items[0].relPath) == targetPath {
 		return treepkg.BuildTarget(targetPath, treeTargetKindFile, treeTargetStateText)
 	}
 	return treepkg.BuildTarget(targetPath, treeTargetKindDir, treeTargetStateOK)
@@ -143,8 +131,8 @@ func renderTreeSummarySection(w io.Writer, summary *treeDocumentSummary, opts tr
 	return treepkg.RenderSummarySection(w, summary, opts, treePalette(colors))
 }
 
-func bypassesTreeDirectoryLabel(entry treeDocumentEntry, relDir string) bool {
-	return treepkg.BypassesDirectoryLabel(entry, relDir)
+func allowedByIncludeTreeDirectoryLabel(entry treeDocumentEntry, relDir string) bool {
+	return treepkg.AllowedByIncludeDirectoryLabel(entry, relDir)
 }
 
 // TreeMain is the catclip-tree process entrypoint used by cmd/catclip-tree.

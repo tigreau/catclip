@@ -1,6 +1,8 @@
 package picker
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestBuildArgsUsesLargerLabeledPreviewPane(t *testing.T) {
 	args := buildArgs(Request{

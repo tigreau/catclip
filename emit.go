@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,16 +53,20 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// emitFullOutput streams every selected entry in the requested payload format,
-// either to stdout or through the platform clipboard command.
-func emitFullOutput(cfg runConfig, gitCtx gitContext, entries []fileEntry, stdout io.Writer, colors colorPalette) (emitStats, error) {
+// emitFullOutput writes every prepared output unit either to stdout or through
+// the platform clipboard command.
+func emitFullOutput(cfg runConfig, units []preparedFileUnit, stdout io.Writer, colors colorPalette) (emitStats, error) {
+	return emitOutputPlan(cfg, buildOutputPlan(units), stdout, colors)
+}
+
+func emitOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
 	return withPayloadWriter(cfg, stdout, colors, func(w io.Writer) error {
-		prefetcher := startEmitPrefetch(entries)
+		prefetcher := startEmitPrefetch(plan)
 		if prefetcher != nil {
 			defer prefetcher.Close()
 		}
-		for i, entry := range entries {
-			if err := emitEntry(w, gitCtx, entry, i, prefetcher); err != nil {
+		for i, item := range plan.items {
+			if err := emitEntry(w, item.unit, i, prefetcher); err != nil {
 				return err
 			}
 		}
@@ -71,18 +74,16 @@ func emitFullOutput(cfg runConfig, gitCtx gitContext, entries []fileEntry, stdou
 	})
 }
 
-func emitEntry(w io.Writer, gitCtx gitContext, entry fileEntry, index int, prefetcher *emitPrefetcher) error {
-	switch entry.Mode {
-	case entryModeDiff:
-		return emitDiffEntry(w, gitCtx, entry)
-	case entryModeSnippet:
-		return emitSnippetEntry(w, entry)
-	default:
-		return emitFile(w, entry, index, prefetcher)
+func emitEntry(w io.Writer, unit preparedFileUnit, index int, prefetcher *emitPrefetcher) error {
+	if len(unit.Payload) > 0 {
+		_, err := w.Write(unit.Payload)
+		return err
 	}
+	return emitFile(w, unit, index, prefetcher)
 }
 
-func emitFile(w io.Writer, entry fileEntry, index int, prefetcher *emitPrefetcher) error {
+func emitFile(w io.Writer, unit preparedFileUnit, index int, prefetcher *emitPrefetcher) error {
+	entry := unit.Entry
 	if prefetcher != nil {
 		result, err := prefetcher.Wait(index)
 		if err != nil {
@@ -146,7 +147,7 @@ func emitWrappedReader(w io.Writer, relPath, typeAttr string, r io.Reader) error
 	return err
 }
 
-func startEmitPrefetch(entries []fileEntry) *emitPrefetcher {
+func startEmitPrefetch(plan outputPlan) *emitPrefetcher {
 	workers := emitReadWorkerCount()
 	capBytes := emitPrefetchFileCap()
 	if workers <= 1 || capBytes <= 0 {
@@ -155,7 +156,7 @@ func startEmitPrefetch(entries []fileEntry) *emitPrefetcher {
 
 	type job struct {
 		index int
-		entry fileEntry
+		unit  preparedFileUnit
 	}
 
 	done := make(chan struct{})
@@ -169,7 +170,7 @@ func startEmitPrefetch(entries []fileEntry) *emitPrefetcher {
 		go func() {
 			defer workerWG.Done()
 			for current := range jobs {
-				data, prefetched, err := readPrefetchCandidate(current.entry, capBytes)
+				data, prefetched, err := readPrefetchCandidate(current.unit.Entry, capBytes)
 				result := emitPrefetchResult{
 					index:      current.index,
 					data:       data,
@@ -187,12 +188,13 @@ func startEmitPrefetch(entries []fileEntry) *emitPrefetcher {
 
 	go func() {
 		defer close(jobs)
-		for i, entry := range entries {
-			if !entryUsesFullOutput(entry) {
+		for i, item := range plan.items {
+			unit := item.unit
+			if !unitUsesFullOutput(unit) {
 				continue
 			}
 			select {
-			case jobs <- job{index: i, entry: entry}:
+			case jobs <- job{index: i, unit: unit}:
 			case <-done:
 				return
 			}
@@ -266,6 +268,10 @@ func entryUsesFullOutput(entry fileEntry) bool {
 	return entry.Mode == "" || entry.Mode == entryModeFull
 }
 
+func unitUsesFullOutput(unit preparedFileUnit) bool {
+	return len(unit.Payload) == 0 && entryUsesFullOutput(unit.Entry)
+}
+
 func buildFileOpenTag(relPath, typeAttr string) []byte {
 	if typeAttr == "" {
 		tag := make([]byte, 0, len(relPath)+16)
@@ -292,103 +298,26 @@ type snippetRange struct {
 // emitSnippetEntry writes only the blank-line-bounded blocks that matched the
 // scope's --contains pattern.
 func emitSnippetEntry(w io.Writer, entry fileEntry) error {
-	ranges, lines, err := extractSnippetRanges(entry.AbsPath, entry.SnippetPattern)
+	payload, _, err := buildPreparedSnippetPayload(entry)
 	if err != nil {
 		return err
 	}
-	for _, r := range ranges {
-		if _, err := fmt.Fprintf(w, "<file path=\"%s\" snippet=\"%d-%d\">\n", entry.RelPath, r.Start, r.End); err != nil {
-			return err
-		}
-		for i := r.Start - 1; i < r.End; i++ {
-			if _, err := io.WriteString(w, lines[i]); err != nil {
-				return err
-			}
-			if _, err := io.WriteString(w, "\n"); err != nil {
-				return err
-			}
-		}
-		if _, err := io.WriteString(w, "</file>\n\n"); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func extractSnippetRanges(absPath, pattern string) ([]snippetRange, []string, error) {
-	re, err := compileContainsPattern(pattern)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return nil, nil, err
-	}
-	return extractSnippetRangesFromContent(data, re)
-}
-
-func extractSnippetRangesFromContent(data []byte, re *regexp.Regexp) ([]snippetRange, []string, error) {
-	if re == nil {
-		return nil, nil, nil
-	}
-	lines := splitLogicalLines(data)
-	if len(lines) == 0 {
-		return nil, lines, nil
-	}
-
-	matchedLines := make([]int, 0)
-	for i, line := range lines {
-		if re.MatchString(line) {
-			matchedLines = append(matchedLines, i+1)
-		}
-	}
-	if len(matchedLines) == 0 {
-		return nil, lines, nil
-	}
-
-	// Expand each hit to the surrounding blank-line-delimited block. Hits inside
-	// the same block collapse to one snippet range, matching the shell emitter.
-	ranges := make([]snippetRange, 0, len(matchedLines))
-	seen := make(map[string]struct{}, len(matchedLines))
-	total := len(lines)
-	for _, matchLine := range matchedLines {
-		start := matchLine
-		for start > 1 && lines[start-2] != "" {
-			start--
-		}
-
-		end := matchLine
-		for end < total && lines[end] != "" {
-			end++
-		}
-
-		key := fmt.Sprintf("%d:%d", start, end)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		ranges = append(ranges, snippetRange{Start: start, End: end})
-	}
-	return ranges, lines, nil
+	_, err = w.Write(payload)
+	return err
 }
 
 // emitDiffEntry emits git patches for tracked files and falls back to full
 // content for untracked files, matching the shell tool's diff UX.
 func emitDiffEntry(w io.Writer, gitCtx gitContext, entry fileEntry) error {
-	diffOutput, diffType, tracked, err := diffEntryOutput(gitCtx, entry)
+	payload, _, keep, err := buildPreparedDiffPayload(gitCtx, entry)
 	if err != nil {
 		return err
 	}
-	if !tracked {
-		// Untracked files have no unified diff. The shell falls back to full file
-		// content tagged as type="untracked", and the rewrite preserves that UX.
-		return emitFileFromDisk(w, entry.RelPath, "untracked", entry.AbsPath)
-	}
-	if strings.TrimSpace(diffOutput) == "" {
+	if !keep {
 		return nil
 	}
-	return emitWrappedFile(w, entry.RelPath, diffType, []byte(diffOutput))
+	_, err = w.Write(payload)
+	return err
 }
 
 func diffEntryOutput(gitCtx gitContext, entry fileEntry) (string, string, bool, error) {

@@ -214,7 +214,7 @@ func parseProjectGitignore(contents string) ([]ignoreRule, error) {
 // buildScopeMatcher compiles global ignore rules into the matcher used during
 // discovery and direct-target checks. Scope-level modifier stages are applied
 // later in evaluation order, not baked into discovery.
-func buildScopeMatcher(baseRules []ignoreRule, s scope) (scopeMatcher, error) {
+func buildScopeMatcher(baseRules []ignoreRule, s executionScope) (scopeMatcher, error) {
 	rules := append([]ignoreRule(nil), baseRules...)
 
 	matcher := scopeMatcher{}

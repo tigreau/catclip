@@ -46,7 +46,7 @@ func filterGitIgnoredEntries(gitCtx gitContext, entries []fileEntry) ([]fileEntr
 
 	pending := make([]fileEntry, 0, len(entries))
 	for _, entry := range entries {
-		if entry.Bypassed || entry.GitVisible {
+		if entry.AllowedByInclude || entry.GitVisible {
 			continue
 		}
 		pending = append(pending, entry)
@@ -65,7 +65,7 @@ func filterGitIgnoredEntries(gitCtx gitContext, entries []fileEntry) ([]fileEntr
 
 	out := make([]fileEntry, 0, len(entries))
 	for _, entry := range entries {
-		if _, ok := ignored[entry.RelPath]; ok && !entry.Bypassed {
+		if _, ok := ignored[entry.RelPath]; ok && !entry.AllowedByInclude {
 			continue
 		}
 		out = append(out, entry)
@@ -73,7 +73,7 @@ func filterGitIgnoredEntries(gitCtx gitContext, entries []fileEntry) ([]fileEntr
 	return out, nil
 }
 
-func filterChangedEntries(gitCtx gitContext, s scope, entries []fileEntry) ([]fileEntry, error) {
+func filterChangedEntries(gitCtx gitContext, s executionScope, entries []fileEntry) ([]fileEntry, error) {
 	changedRepoPaths, err := collectChangedRepoPaths(gitCtx, s)
 	if err != nil {
 		return nil, err
@@ -93,7 +93,7 @@ func filterChangedEntries(gitCtx gitContext, s scope, entries []fileEntry) ([]fi
 	return out, nil
 }
 
-func collectChangedRepoPaths(gitCtx gitContext, s scope) ([]string, error) {
+func collectChangedRepoPaths(gitCtx gitContext, s executionScope) ([]string, error) {
 	wantStaged, wantUnstaged, wantUntracked := changeSelection(s)
 	set := make(map[string]struct{})
 
@@ -144,7 +144,7 @@ func collectChangedRepoPaths(gitCtx gitContext, s scope) ([]string, error) {
 	return out, nil
 }
 
-func changeSelection(s scope) (wantStaged, wantUnstaged, wantUntracked bool) {
+func changeSelection(s executionScope) (wantStaged, wantUnstaged, wantUntracked bool) {
 	if s.Staged || s.Unstaged || s.Untracked {
 		return s.Staged, s.Unstaged, s.Untracked
 	}

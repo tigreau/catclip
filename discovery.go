@@ -56,7 +56,7 @@ func discoverFilesUnder(workingDir, rootAbs, rootRel string, matcher scopeMatche
 			}
 		}
 		if rootBypass != nil {
-			entry = withBypass(entry, "direct", *rootBypass)
+			entry = withAllowedByInclude(entry, *rootBypass)
 		}
 		if excludedTextLikeAsset(rel) {
 			return nil
@@ -136,7 +136,7 @@ func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string,
 			ModTime: info.ModTime(),
 		}
 		if rootBypass != nil {
-			entry = withBypass(entry, "direct", *rootBypass)
+			entry = withAllowedByInclude(entry, *rootBypass)
 		}
 		files = append(files, entry)
 		return nil
@@ -320,9 +320,8 @@ func mergeFileEntry(dst *fileEntry, incoming fileEntry) {
 	if incoming.GitVisible && !dst.GitVisible {
 		dst.GitVisible = true
 	}
-	if incoming.Bypassed && !dst.Bypassed {
-		dst.Bypassed = true
-		dst.BypassKind = incoming.BypassKind
+	if incoming.AllowedByInclude && !dst.AllowedByInclude {
+		dst.AllowedByInclude = true
 		dst.BlockRule = incoming.BlockRule
 		dst.BlockSource = incoming.BlockSource
 	}

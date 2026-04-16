@@ -53,7 +53,7 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 	fs.BoolVar(&showTok, "tokens", false, "show token estimate in the summary")
 	fs.StringVar(&colorMode, "color", "auto", "color mode: auto, always, or never")
 	fs.StringVar(&previewTheme, "preview-theme", "", "internal preview theme")
-	fs.IntVar(&maxLines, "max-lines", 400, "maximum rendered lines for file preview mode (0 = unlimited)")
+	fs.IntVar(&maxLines, "max-lines", 0, "maximum rendered lines for file preview mode (0 = unlimited)")
 	fs.BoolVar(&showVer, "version", false, "show version")
 	fs.Usage = func() {
 		_, _ = io.WriteString(stderr, helpText(version))

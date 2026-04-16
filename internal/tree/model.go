@@ -46,14 +46,14 @@ type DocumentTarget struct {
 
 // DocumentEntry is a single file row in a tree payload.
 type DocumentEntry struct {
-	Path        string
-	Size        *int64
-	GitStatus   string
-	ModeTag     string
-	TargetRoot  string
-	Bypassed    bool
-	BlockRule   string
-	BlockSource string
+	Path             string
+	Size             *int64
+	GitStatus        string
+	ModeTag          string
+	TargetRoot       string
+	AllowedByInclude bool
+	BlockRule        string
+	BlockSource      string
 }
 
 // FilePreview holds the text payload for file-preview mode.
@@ -109,7 +109,7 @@ func DefaultRenderOptions() RenderOptions {
 		ShowGitStatus: true,
 		ShowSummary:   true,
 		ShowTokens:    true,
-		MaxLines:      400,
+		MaxLines:      0,
 	}
 }
 
@@ -191,8 +191,10 @@ func BuildSummary(sizes map[string]int64, humanSize string, tokens int64, fileWo
 	}
 }
 
-// FormatSizeAndTokens converts total bytes into the human-readable size/token
-// estimate shown in preview summaries.
+// FormatSizeAndTokens converts total payload bytes into the human-readable
+// size/token estimate shown in preview summaries. Wrapper-tag overhead is
+// intentionally excluded so size math stays stable even if payload framing
+// changes later.
 func FormatSizeAndTokens(totalBytes int64, fileCount int) (string, int64) {
 	const (
 		kb = 1024
@@ -200,7 +202,7 @@ func FormatSizeAndTokens(totalBytes int64, fileCount int) (string, int64) {
 		gb = 1024 * mb
 	)
 
-	totalBytes += int64(fileCount) * 30
+	_ = fileCount
 	tokens := totalBytes / 4
 
 	switch {

@@ -51,20 +51,16 @@ done
 input="$(cat)"
 
 	if [ "$prompt" = "recent> " ]; then
-	printf '%s\n' "$header" | grep -F "Choose how many recently modified files to keep." >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Pick recent files." >/dev/null || {
 		echo "missing recent header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Enter continues with the current selection." >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Type a number to choose how many to keep." >/dev/null || {
 		echo "missing Enter header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Preview shows which files would be included." >/dev/null || {
+	printf '%s\n' "$header" | grep -F "[Up/Down] move  [Enter] confirm  [Esc] cancel" >/dev/null || {
 		echo "missing preview header" >&2
-		exit 91
-	}
-	printf '%s\n' "$header" | grep -F "Use Up/Down to move, Esc to cancel." >/dev/null || {
-		echo "missing movement header" >&2
 		exit 91
 	}
 	printf '%s\n' "$preview" | grep -F -- "--internal-recent-preview" >/dev/null || {

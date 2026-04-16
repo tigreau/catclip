@@ -42,7 +42,9 @@ type scopeResolver struct {
 	visibleFileListReady bool
 }
 
-func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s scope, baseRules []ignoreRule, stderr io.Writer, colors colorPalette) ([]fileEntry, []diagnostic, []string, bool, error) {
+func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s executionScope, baseRules []ignoreRule, stderr io.Writer, colors colorPalette) ([]fileEntry, []diagnostic, []string, bool, error) {
+	mode := executionScopeOutputMode(s)
+
 	matcher, err := buildScopeMatcher(baseRules, s)
 	if err != nil {
 		return nil, nil, nil, false, err
@@ -109,7 +111,7 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s scope, ba
 		}
 	}
 
-	if s.Changed && !gitCtx.Enabled {
+	if executionScopeHasGitSelection(s) && !gitCtx.Enabled {
 		diagnostics = append(diagnostics, diagnostic{message: "Warning: --changed/--staged/--unstaged/--untracked require a git repo."})
 	}
 
@@ -118,16 +120,9 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s scope, ba
 		return nil, diagnostics, notices, hadSelectionCancel, err
 	}
 
-	mode := entryModeFull
-	switch {
-	case s.Diff:
-		mode = entryModeDiff
-	case s.Snippet:
-		mode = entryModeSnippet
-	}
 	for i := range entries {
 		entries[i].Mode = mode
-		entries[i].SnippetPattern = s.Contains
+		entries[i].SnippetPattern = s.SnippetPattern
 		entries[i].DiffWantStaged = s.Staged
 		entries[i].DiffWantUnstaged = s.Unstaged
 	}
@@ -161,7 +156,7 @@ func buildProjectIgnoreMatcher(workingDir string, gitEnabled bool) (scopeMatcher
 	if len(rules) == 0 {
 		return scopeMatcher{}, false, nil
 	}
-	matcher, err := buildScopeMatcher(rules, scope{})
+	matcher, err := buildScopeMatcher(rules, executionScope{})
 	if err != nil {
 		return scopeMatcher{}, false, err
 	}
@@ -772,7 +767,7 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 		if !r.targetIncluded(relTarget) {
 			return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, rule, ".hiss", fromChained, colors), isError: true}, nil
 		}
-		entry = withBypass(entry, "direct", blockInfo{Rule: rule, Source: ".hiss"})
+		entry = withAllowedByInclude(entry, blockInfo{Rule: rule, Source: ".hiss"})
 	} else {
 		projectIgnored, projectRule, err := r.projectFileIgnored(relTarget)
 		if err != nil {
@@ -782,7 +777,7 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 			if !r.targetIncluded(relTarget) {
 				return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, projectRule, ".gitignore", fromChained, colors), isError: true}, nil
 			}
-			entry = withBypass(entry, "direct", blockInfo{Rule: projectRule, Source: ".gitignore"})
+			entry = withAllowedByInclude(entry, blockInfo{Rule: projectRule, Source: ".gitignore"})
 		} else {
 			gitIgnored, err := r.gitIgnored(relTarget)
 			if err != nil {
@@ -792,7 +787,7 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 				if !r.targetIncluded(relTarget) {
 					return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, ".gitignore", ".gitignore", fromChained, colors), isError: true}, nil
 				}
-				entry = withBypass(entry, "direct", blockInfo{Rule: ".gitignore", Source: ".gitignore"})
+				entry = withAllowedByInclude(entry, blockInfo{Rule: ".gitignore", Source: ".gitignore"})
 			}
 		}
 	}
@@ -1060,46 +1055,25 @@ func (r *scopeResolver) chooseRootTargetMatches(query, prompt string, includeCop
 	}
 
 	labels, index := targetMatchLabels(options)
-	currentQuery := query
-	browsingIgnored := false
-	for {
-		if browsingIgnored {
-			ignored, err := r.chooseIgnoredTargetMatches(currentQuery, "include> ", selectedPaths)
-			if err != nil {
-				if errors.Is(err, errSelectionCancelled) {
-					browsingIgnored = false
-					continue
-				}
-				return nil, err
-			}
-			return ignored, nil
-		}
-
-		result, err := chooseManyTargetMatchesWithFzfControl(path, currentQuery, prompt, "1,2", safeTargetPickerHeader(), labels, false, "ctrl-o")
-		if err != nil {
-			return nil, err
-		}
-		currentQuery = result.Query
-		if result.Key == "ctrl-o" {
-			browsingIgnored = true
-			continue
-		}
-
-		selected := make([]targetMatch, 0, len(result.Matches))
-		for _, key := range result.Matches {
-			match, ok := index[key]
-			if ok {
-				if match.Kind == "all" {
-					return []targetMatch{match}, nil
-				}
-				selected = append(selected, match)
-			}
-		}
-		if len(selected) == 0 {
-			return nil, errSelectionCancelled
-		}
-		return selected, nil
+	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, targetPickerHeader(prompt), labels, false)
+	if err != nil {
+		return nil, err
 	}
+
+	selected := make([]targetMatch, 0, len(selectedLabels))
+	for _, key := range selectedLabels {
+		match, ok := index[key]
+		if ok {
+			if match.Kind == "all" {
+				return []targetMatch{match}, nil
+			}
+			selected = append(selected, match)
+		}
+	}
+	if len(selected) == 0 {
+		return nil, errSelectionCancelled
+	}
+	return selected, nil
 }
 
 func (r *scopeResolver) chooseIgnoredTargetMatches(query, prompt string, selectedPaths []string) ([]targetMatch, error) {
@@ -2085,7 +2059,14 @@ func chooseManyFilePathsWithFzf(query, prompt, header string, candidates []strin
 	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", header, fzfPreviewCommand(false), formatFzfCandidates(candidates, treeTargetKindFile, treeTargetStateText))
 }
 
-func fzfFileSetPreviewCommand() string {
+func shellSetCommand(parts []string) string {
+	if len(parts) == 0 {
+		return "set --"
+	}
+	return "set -- " + strings.Join(parts, " ")
+}
+
+func fzfFileSetPreviewCommand(currentArgs []string, previewFlag string) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
 		return ""
@@ -2096,27 +2077,29 @@ func fzfFileSetPreviewCommand() string {
 		return ""
 	}
 
-	commandParts := []string{
-		shellQuoteArg(self),
-		"--quiet",
-		"--internal-tree-payload",
-		"--internal-tree-target", `"$preview_target"`,
-		"--internal-tree-kind", "{4}",
-		"--internal-tree-state", "{5}",
-		`"$preview_target"`,
+	commandParts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload"}
+	for _, arg := range currentArgs {
+		commandParts = append(commandParts, shellQuoteArg(arg))
 	}
-	commandParts = append(commandParts, "|", shellQuoteArg(treeBin))
-	commandParts = append(commandParts, fzfTreeRenderArgs()...)
-	return `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; ` + strings.Join(commandParts, " ")
+	command := shellSetCommand(commandParts)
+
+	script := []string{
+		`preview_value={2};`,
+		`preview_target={3};`,
+		`preview_kind={4};`,
+		`preview_state={5};`,
+		`preview_row_kind={6};`,
+		command + ";",
+	}
+	if previewFlag != "" {
+		script = append(script, `if [ "$preview_row_kind" != "all" ] && [ -n "$preview_value" ]; then set -- "$@" `+previewFlag+` "$preview_value"; fi;`)
+	}
+	script = append(script, `if [ -n "$preview_target" ]; then set -- "$@" --internal-tree-target "$preview_target" --internal-tree-kind "$preview_kind" --internal-tree-state "$preview_state"; fi;`)
+	script = append(script, `"$@" | `+shellQuoteArg(treeBin)+` `+strings.Join(fzfTreeRenderArgs(), " "))
+	return strings.Join(script, " ")
 }
 
-func fzfDiffFilePreviewCommand(stageFlag string) string {
-	switch stageFlag {
-	case "--changed", "--staged", "--unstaged":
-	default:
-		return ""
-	}
-
+func fzfDiffFilePreviewCommand(currentArgs []string) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
 		return ""
@@ -2127,26 +2110,31 @@ func fzfDiffFilePreviewCommand(stageFlag string) string {
 		return ""
 	}
 
-	commandParts := []string{
-		shellQuoteArg(self),
-		"--quiet",
-		"--internal-file-preview",
-		"--internal-file-path", `"$preview_target"`,
-		stageFlag,
-		"--diff",
+	commandParts := []string{shellQuoteArg(self), "--quiet", "--internal-file-preview", "--internal-file-path", `"$preview_target"`}
+	for _, arg := range currentArgs {
+		commandParts = append(commandParts, shellQuoteArg(arg))
 	}
-	commandParts = append(commandParts, "|", shellQuoteArg(treeBin))
-	commandParts = append(commandParts, fzfTreeRenderArgs()...)
-	return `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; ` + strings.Join(commandParts, " ")
+	command := shellSetCommand(commandParts)
+
+	script := []string{
+		`preview_value={2};`,
+		`preview_target={3};`,
+		`preview_row_kind={6};`,
+		`if [ -z "$preview_target" ]; then exit 0; fi;`,
+		command + ";",
+		`if [ "$preview_row_kind" != "all" ] && [ -n "$preview_value" ]; then set -- "$@" --only "$preview_value"; fi;`,
+		`"$@" | ` + shellQuoteArg(treeBin) + ` ` + strings.Join(fzfTreeRenderArgs(), " "),
+	}
+	return strings.Join(script, " ")
 }
 
-func chooseContainsMatchesWithFzf(query string, currentArgs []string, snippet bool) (fzfChooseResult, error) {
+func chooseContentMatchesWithFzf(query string, currentArgs []string, flag string) (fzfChooseResult, error) {
 	bin, err := fuzzyResolverBinary()
 	if err != nil {
 		return fzfChooseResult{}, err
 	}
 
-	command := fzfContainsListCommand(currentArgs)
+	command := fzfContentMatchListCommand(currentArgs, flag)
 	if command == "" {
 		return fzfChooseResult{}, errSelectionCancelled
 	}
@@ -2154,11 +2142,11 @@ func chooseContainsMatchesWithFzf(query string, currentArgs []string, snippet bo
 	stopActiveSpinner()
 	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
 		Query:          query,
-		Prompt:         "regex> ",
-		WithNth:        "1,2",
-		Nth:            "1,2",
-		Header:         containsPickerHeader(),
-		PreviewCommand: fzfContainsPreviewCommand(snippet),
+		Prompt:         "match> ",
+		WithNth:        "1",
+		Nth:            "1",
+		Header:         contentMatchPickerHeader(flag),
+		PreviewCommand: fzfContentPreviewCommand(flag),
 		Disabled:       true,
 		Multi:          true,
 		PrintQuery:     true,
@@ -2196,33 +2184,6 @@ type fzfChooseResult struct {
 	Query   string
 	Key     string
 	Matches []string
-}
-
-func chooseManyTargetMatchesWithFzfControl(bin, query, prompt, nth, header string, candidates []string, includeTarget bool, expectedKeys ...string) (fzfChooseResult, error) {
-	stopActiveSpinner()
-	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
-		Query:          query,
-		Prompt:         prompt,
-		WithNth:        "1",
-		Nth:            nth,
-		Header:         header,
-		PreviewCommand: fzfPreviewCommand(includeTarget),
-		Multi:          true,
-		PrintQuery:     true,
-		ExpectKeys:     expectedKeys,
-		Bindings:       multiSelectPickerBindings(),
-		Lines:          candidates,
-	}))
-	if errors.Is(err, picker.ErrSelectionCancelled) {
-		return fzfChooseResult{}, errSelectionCancelled
-	}
-	if err != nil {
-		return fzfChooseResult{}, err
-	}
-	if result.Key == "" && len(result.Matches) == 0 {
-		return fzfChooseResult{}, errSelectionCancelled
-	}
-	return fzfChooseResult{Query: result.Query, Key: result.Key, Matches: result.Matches}, nil
 }
 
 func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, previewCommand string, candidates []string) ([]string, error) {
@@ -2280,7 +2241,7 @@ func fzfPreviewCommand(includeTarget bool) string {
 	return strings.Join(parts, " ")
 }
 
-func fzfContainsPreviewCommand(snippet bool) string {
+func fzfContentPreviewCommand(flag string) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
 		return ""
@@ -2297,36 +2258,40 @@ func fzfContainsPreviewCommand(snippet bool) string {
 		"--quiet",
 		"--internal-file-preview",
 		"--internal-file-path", `"$preview_target"`,
-		"--contains", "{q}",
-	}
-	if snippet {
-		parts = append(parts[:5], append([]string{"--snippet"}, parts[5:]...)...)
+		// fzf already shell-quotes placeholders like {q}; adding our own quotes
+		// breaks regex input that includes spaces or quote characters.
+		flag, "{q}",
 	}
 	parts = append(parts, "|", shellQuoteArg(treeBin))
 	parts = append(parts, fzfTreeRenderArgs()...)
 	return commandPrefix + strings.Join(parts, " ")
 }
 
-func fzfContainsListCommand(currentArgs []string) string {
+func fzfContentMatchListCommand(currentArgs []string, flag string) string {
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
 		return ""
 	}
 
-	parts := []string{shellQuoteArg(self), "--quiet", "--internal-contains-list"}
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-content-match-list"}
 	for _, arg := range currentArgs {
 		parts = append(parts, shellQuoteArg(arg))
 	}
-	parts = append(parts, "--contains", "{q}")
+	// fzf already shell-quotes placeholders like {q}; adding our own quotes
+	// breaks regex input that includes spaces or quote characters.
+	parts = append(parts, flag, "{q}")
 	return strings.Join(parts, " ")
 }
 
-func containsPickerHeader() string {
+func contentMatchPickerHeader(flag string) string {
+	firstLine := "Keep files whose contents match a regex."
+	if flag == "--snippet" {
+		firstLine = "Extract snippets whose contents match a regex."
+	}
 	return pickerHeader(
-		"Regex matches file contents, not file names.",
-		"Select [all current matches] to keep plain --contains.",
-		fmt.Sprintf("Tab marks files; %s toggles all current matches.", multiSelectToggleAllKey()),
-		"Use Up/Down to move, Esc to cancel.",
+		firstLine,
+		"Type a regex.",
+		fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
 	)
 }
 
@@ -2468,21 +2433,27 @@ func targetMatchKey(match targetMatch) string {
 	return match.Kind + "\x00" + match.Path
 }
 
-func safeTargetPickerHeader() string {
+func targetPickerHeader(prompt string) string {
+	firstLine := "Pick files and folders to include."
+	if prompt == "then> " {
+		firstLine = "Add more files and folders."
+	}
 	return pickerHeader(
-		"Type part of a directory or file name to filter the list.",
-		"Enter confirms the current selection.",
-		"Tab multi-selects; Ctrl-O browses ignored targets.",
-		"Use Up/Down arrow keys to move, Esc to cancel.",
+		firstLine,
+		"Type to search by name.",
+		"[Up/Down] move  [Enter] confirm  [Tab] mark  [Esc] cancel",
 	)
+}
+
+func safeTargetPickerHeader() string {
+	return targetPickerHeader("select> ")
 }
 
 func ignoredTargetPickerHeader() string {
 	return pickerHeader(
-		"Matches come from ignored paths in .gitignore or .hiss.",
-		"Enter continues with the current selection as --include.",
-		fmt.Sprintf("Tab marks paths; %s toggles all visible matches.", multiSelectToggleAllKey()),
-		"Use Up/Down arrow keys to move, Esc to cancel.",
+		"Add files and folders ignored by .gitignore or .hiss.",
+		"Type to search by name.",
+		fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
 	)
 }
 
@@ -2576,9 +2547,8 @@ func prefersDirectFileLookup(target string) bool {
 	return looksLikeFileTarget(base) || strings.Contains(base, ".")
 }
 
-func withBypass(entry fileEntry, kind string, block blockInfo) fileEntry {
-	entry.Bypassed = true
-	entry.BypassKind = kind
+func withAllowedByInclude(entry fileEntry, block blockInfo) fileEntry {
+	entry.AllowedByInclude = true
 	entry.BlockRule = block.Rule
 	entry.BlockSource = block.Source
 	return entry
@@ -2657,8 +2627,9 @@ func writeNoFilesMatchedMessage(cfg runConfig, stderr io.Writer, colors colorPal
 	hasStaged := false
 	hasUnstaged := false
 	hasUntracked := false
-	for _, s := range cfg.Scopes {
-		anyChanged = anyChanged || s.Changed
+	for _, scopeSpec := range configCommandScopes(cfg) {
+		s := executionScopeFromCommandScopeSpec(scopeSpec)
+		anyChanged = anyChanged || executionScopeHasGitSelection(s)
 		hasStaged = hasStaged || s.Staged
 		hasUnstaged = hasUnstaged || s.Unstaged
 		hasUntracked = hasUntracked || s.Untracked

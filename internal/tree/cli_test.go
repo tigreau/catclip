@@ -3,6 +3,7 @@ package tree
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -117,6 +118,59 @@ func TestRunCLIFilePreviewTruncatesToMaxLines(t *testing.T) {
 	}
 	if !strings.Contains(stdout, "… truncated") {
 		t.Fatalf("expected truncation marker, got:\n%s", stdout)
+	}
+}
+
+func TestRunCLIFilePreviewIsUncappedByDefault(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`{"type":"meta","version":1,"mode":"file"}` + "\n")
+	b.WriteString(`{"type":"file","path":"src/app.ts","content":"`)
+	for i := 1; i <= 450; i++ {
+		fmt.Fprintf(&b, "line %d\\n", i)
+	}
+	b.WriteString(`"}` + "\n\n")
+
+	stdout, _, err := runCLIForTest(t, nil, b.String())
+	if err != nil {
+		t.Fatalf("RunCLI returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "450 │ line 450") {
+		t.Fatalf("expected default file preview to include late lines, got:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "… truncated") {
+		t.Fatalf("did not expect truncation marker with default unlimited preview, got:\n%s", stdout)
+	}
+}
+
+func TestRunCLIFilePreviewHighlightsMatchingLineNumbers(t *testing.T) {
+	payload := strings.Join([]string{
+		`{"type":"meta","version":1,"mode":"file"}`,
+		`{"type":"file","path":"src/app.ts","content":"one\nTODO here\nthree\n","pattern":"TODO"}`,
+		"",
+	}, "\n")
+
+	stdout, _, err := runCLIForTest(t, nil, payload)
+	if err != nil {
+		t.Fatalf("RunCLI returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "\x1b[7m2\x1b[27m") {
+		t.Fatalf("expected matching line number to use reverse video, got:\n%s", stdout)
+	}
+}
+
+func TestRunCLIFilePreviewHighlightsFocusedLineNumbers(t *testing.T) {
+	payload := strings.Join([]string{
+		`{"type":"meta","version":1,"mode":"file"}`,
+		`{"type":"file","path":"src/app.ts","content":"one\ntwo\nthree\n","focus":[2]}`,
+		"",
+	}, "\n")
+
+	stdout, _, err := runCLIForTest(t, nil, payload)
+	if err != nil {
+		t.Fatalf("RunCLI returned error: %v", err)
+	}
+	if !strings.Contains(stdout, "\x1b[7m2\x1b[27m") {
+		t.Fatalf("expected focused line number to use reverse video, got:\n%s", stdout)
 	}
 }
 

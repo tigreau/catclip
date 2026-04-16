@@ -244,7 +244,7 @@ func TestApplyRecentStageBackfillsModTimesFromDisk(t *testing.T) {
 
 	resolver := &scopeResolver{cfg: runConfig{WorkingDir: project}}
 	entries := []fileEntry{{RelPath: "a.txt"}, {RelPath: "b.txt"}}
-	scope := scope{Stages: []scopeStage{{Kind: scopeStageRecent}}}
+	scope := executionScope{Stages: []scopeStage{{Kind: scopeStageRecent}}}
 
 	filtered, err := applyScopeStages(resolver, gitContext{}, scope, entries)
 	if err != nil {

@@ -53,11 +53,11 @@ package catclip
 //      known text/binary allowlists are intentional behavior, not incidental
 //      heuristics
 //  12. No Silent Skips:
-//      if catclip excludes or bypasses something significant, the user should
-//      get a visible reason unless they explicitly asked for quiet behavior
-//  13. Warnings Must Be Actionable:
-//      diagnostics should tell the user what to do next, not only what went
-//      wrong
+//      if catclip excludes something significant, that should remain a
+//      deliberate product decision, not an accidental side effect
+//  13. Diagnostics Must Be Actionable:
+//      when catclip does show a diagnostic, it should tell the user what to do
+//      next, not only what went wrong
 //  14. Quiet Means Minimal UX, Not Different Semantics:
 //      `-q` may suppress presentation, prompts, and tree output, but it should
 //      not change what files are selected
@@ -108,8 +108,8 @@ package catclip
 //      - exact visible directory targets also use rg-backed subtree discovery
 //      - rg is also used for exact basename lookup and --contains matching
 //      - Go walks are still used where directory objects matter:
-//        ignored-target browsing and some exact ignored / bypassed directory
-//        cases
+//        ignored-target browsing and some exact ignored / include-allowed
+//        directory cases
 //      - symlinks are currently excluded everywhere by policy
 //      - visible directory targets are derived from the visible file set rather
 //        than a separate directory walk, so there is no standalone visible-dir
@@ -163,7 +163,7 @@ package catclip
 //     .hiss in Go
 //   - git check-ignore is reserved for narrow cases only:
 //     exact ignored-target diagnostics, ignored-target browsing, and other
-//     explicit include/bypass flows
+//     explicit include / allow-by-include flows
 //   - a previous git cat-file --batch fast-path experiment was benchmarked and
 //     was substantially slower than direct working-tree streaming for catclip's
 //     "wrap and emit many files" workload; do not assume Git blob batching is
@@ -308,6 +308,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -341,33 +342,35 @@ type runConfig struct {
 	WorkingDir string
 	OutputMode outputMode
 
-	Verbose       bool
-	Quiet         bool
-	Yes           bool
-	Print         bool
-	Preview       bool
-	NoTree        bool
-	TreePayload   bool
-	TreeTarget    string
-	TreeKind      string
-	TreeState     string
-	FilePreview   bool
-	FilePath      string
-	ContainsList  bool
-	RecentPreview bool
-	RecentData    string
-	RecentSelect  string
+	Verbose          bool
+	Quiet            bool
+	Yes              bool
+	Print            bool
+	Preview          bool
+	NoTree           bool
+	TreePayload      bool
+	TreeTarget       string
+	TreeKind         string
+	TreeState        string
+	FilePreview      bool
+	FilePath         string
+	ContentMatchList bool
+	RecentPreview    bool
+	RecentData       string
+	RecentSelect     string
 
-	Scopes   []scope
+	Command commandSpec
+
 	Warnings []string
 }
 
-type scope struct {
+type executionScope struct {
 	Targets         []string
 	IncludedTargets []string
 	Only            []string
 	Exclude         []string
 	Contains        string
+	SnippetPattern  string
 	Stages          []scopeStage
 	Snippet         bool
 	Changed         bool
@@ -377,9 +380,22 @@ type scope struct {
 	Diff            bool
 }
 
-type scopeBuilder struct {
-	scope
-	explicitChanged bool
+func executionScopeOutputMode(s executionScope) entryMode {
+	if s.Diff {
+		return entryModeDiff
+	}
+	if s.Snippet {
+		return entryModeSnippet
+	}
+	return entryModeFull
+}
+
+func executionScopeHasGitSelection(s executionScope) bool {
+	return s.Changed || s.Staged || s.Unstaged || s.Untracked
+}
+
+type executionScopeBuilder struct {
+	executionScope
 	explicitTargets int
 }
 
@@ -414,17 +430,20 @@ type scopeMatcher struct {
 type scopeStageKind string
 
 const (
-	scopeStageInclude   scopeStageKind = "include"
-	scopeStageOnly      scopeStageKind = "only"
-	scopeStageExclude   scopeStageKind = "exclude"
-	scopeStageRecent    scopeStageKind = "recent"
-	scopeStageContains  scopeStageKind = "contains"
-	scopeStageChanged   scopeStageKind = "changed"
-	scopeStageStaged    scopeStageKind = "staged"
-	scopeStageUnstaged  scopeStageKind = "unstaged"
-	scopeStageUntracked scopeStageKind = "untracked"
-	scopeStageDiff      scopeStageKind = "diff"
-	scopeStageSnippet   scopeStageKind = "snippet"
+	scopeStageInclude      scopeStageKind = "include"
+	scopeStageOnly         scopeStageKind = "only"
+	scopeStageExclude      scopeStageKind = "exclude"
+	scopeStageRecent       scopeStageKind = "recent"
+	scopeStageContains     scopeStageKind = "contains"
+	scopeStageChanged      scopeStageKind = "changed"
+	scopeStageStaged       scopeStageKind = "staged"
+	scopeStageUnstaged     scopeStageKind = "unstaged"
+	scopeStageUntracked    scopeStageKind = "untracked"
+	scopeStageDiff         scopeStageKind = "diff"
+	scopeStageSnippet      scopeStageKind = "snippet"
+	scopeStageChangedDiff  scopeStageKind = "changed-diff"
+	scopeStageStagedDiff   scopeStageKind = "staged-diff"
+	scopeStageUnstagedDiff scopeStageKind = "unstaged-diff"
 )
 
 type scopeStage struct {
@@ -443,8 +462,7 @@ type fileEntry struct {
 	SnippetPattern   string
 	DiffWantStaged   bool
 	DiffWantUnstaged bool
-	Bypassed         bool
-	BypassKind       string
+	AllowedByInclude bool
 	BlockRule        string
 	BlockSource      string
 }
@@ -620,10 +638,98 @@ func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
 }
 
 func formatResolvedStartupCommand(args []string) string {
+	if cfg, err := parseArgs(args); err == nil {
+		return formatCanonicalResolvedCommand(args, cfg)
+	}
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, "catclip")
 	for _, arg := range args {
 		parts = append(parts, shellQuoteArg(arg))
 	}
 	return strings.Join(parts, " ")
+}
+
+func formatCanonicalResolvedCommand(rawArgs []string, cfg runConfig) string {
+	parts := make([]string, 0, len(rawArgs)+4)
+	parts = append(parts, "catclip")
+	for _, arg := range resolvedCommandGlobalFlags(rawArgs) {
+		parts = append(parts, shellQuoteArg(arg))
+	}
+	for i, scopeSpec := range configCommandScopes(cfg) {
+		if i > 0 {
+			parts = append(parts, "--then")
+		}
+		s := executionScopeFromCommandScopeSpec(scopeSpec)
+		parts = append(parts, canonicalScopeArgs(s)...)
+	}
+	return strings.Join(parts, " ")
+}
+
+func canonicalScopeArgs(s executionScope) []string {
+	parts := make([]string, 0, len(s.Targets)+len(s.Stages)*2)
+	for _, target := range s.Targets {
+		parts = append(parts, shellQuoteArg(target))
+	}
+	for _, stage := range s.Stages {
+		switch stage.Kind {
+		case scopeStageInclude:
+			parts = append(parts, "--include")
+			for _, value := range stage.Values {
+				parts = append(parts, shellQuoteArg(value))
+			}
+		case scopeStageOnly:
+			parts = append(parts, "--only")
+			for _, value := range stage.Values {
+				parts = append(parts, shellQuoteArg(value))
+			}
+		case scopeStageExclude:
+			parts = append(parts, "--exclude")
+			for _, value := range stage.Values {
+				parts = append(parts, shellQuoteArg(value))
+			}
+		case scopeStageRecent:
+			parts = append(parts, "--recent")
+			if stage.Limit != nil {
+				parts = append(parts, shellQuoteArg(strconv.Itoa(*stage.Limit)))
+			}
+		case scopeStageContains:
+			parts = append(parts, "--contains")
+			for _, value := range stage.Values {
+				parts = append(parts, shellQuoteArg(value))
+			}
+		case scopeStageSnippet:
+			parts = append(parts, "--snippet")
+			for _, value := range stage.Values {
+				parts = append(parts, shellQuoteArg(value))
+			}
+		case scopeStageChanged:
+			parts = append(parts, "--changed")
+		case scopeStageStaged:
+			parts = append(parts, "--staged")
+		case scopeStageUnstaged:
+			parts = append(parts, "--unstaged")
+		case scopeStageUntracked:
+			parts = append(parts, "--untracked")
+		case scopeStageDiff:
+			parts = append(parts, "--diff")
+		case scopeStageChangedDiff:
+			parts = append(parts, "--changed-diff")
+		case scopeStageStagedDiff:
+			parts = append(parts, "--staged-diff")
+		case scopeStageUnstagedDiff:
+			parts = append(parts, "--unstaged-diff")
+		}
+	}
+	return parts
+}
+
+func resolvedCommandGlobalFlags(rawArgs []string) []string {
+	out := make([]string, 0, 6)
+	for _, arg := range rawArgs {
+		switch arg {
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-t", "--no-tree", "--preview":
+			out = append(out, arg)
+		}
+	}
+	return out
 }

@@ -7,30 +7,34 @@ import (
 	"strings"
 )
 
-const containsAllMatchesLabel = "[all current matches]"
+const contentMatchAllMatchesLabel = "[all current matches]"
 
-func runInternalContainsList(cfg runConfig, stdout io.Writer) error {
-	relPaths, err := containsScopeMatchPaths(cfg)
+type contentMatchRow struct {
+	RelPath string
+}
+
+func runInternalContentMatchList(cfg runConfig, stdout io.Writer) error {
+	rows, err := contentMatchRowsForScope(cfg)
 	if err != nil {
 		return err
 	}
-	if len(relPaths) == 0 {
+	if len(rows) == 0 {
 		return nil
 	}
 
-	lines := make([]string, 0, len(relPaths)+1)
+	lines := make([]string, 0, len(rows)+1)
 	lines = append(lines, strings.Join([]string{
-		containsAllMatchesLabel,
+		contentMatchAllMatchesLabel,
 		"",
 		"",
 		"",
 		"",
 	}, "\t"))
-	for _, relPath := range relPaths {
+	for _, row := range rows {
 		lines = append(lines, strings.Join([]string{
-			fmt.Sprintf("%s  %s", pathBase(relPath), relPath),
-			relPath,
-			relPath,
+			pickerFilePathDisplayLabel(row.RelPath),
+			row.RelPath,
+			row.RelPath,
 			treeTargetKindFile,
 			treeTargetStateText,
 		}, "\t"))
@@ -42,17 +46,34 @@ func runInternalContainsList(cfg runConfig, stdout io.Writer) error {
 	return err
 }
 
-func containsScopeMatchPaths(cfg runConfig) ([]string, error) {
-	if len(cfg.Scopes) == 0 {
+func pickerFilePathDisplayLabel(relPath string) string {
+	base := pathBase(relPath)
+	if base == relPath {
+		return relPath
+	}
+	return fmt.Sprintf("%s  %s", base, relPath)
+}
+
+func contentMatchScopePattern(s executionScope) string {
+	if s.Snippet {
+		return s.SnippetPattern
+	}
+	return s.Contains
+}
+
+func contentMatchRowsForScope(cfg runConfig) ([]contentMatchRow, error) {
+	scopeSpecs := configCommandScopes(cfg)
+	if len(scopeSpecs) == 0 {
 		return nil, nil
 	}
 
-	scopeIndex := len(cfg.Scopes) - 1
-	currentScope := cfg.Scopes[scopeIndex]
-	if strings.TrimSpace(currentScope.Contains) == "" {
+	scopeIndex := len(scopeSpecs) - 1
+	currentScope := executionScopeFromCommandScopeSpec(scopeSpecs[scopeIndex])
+	patternText := strings.TrimSpace(contentMatchScopePattern(currentScope))
+	if patternText == "" {
 		return nil, nil
 	}
-	if _, err := compileContainsPattern(currentScope.Contains); err != nil {
+	if _, err := compileContainsPattern(patternText); err != nil {
 		return nil, nil
 	}
 
@@ -66,17 +87,41 @@ func containsScopeMatchPaths(cfg runConfig) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return sortedUniqueEntryRelPaths(entries), nil
+	rows := make([]contentMatchRow, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		relPath := normalizeRelPath(entry.RelPath)
+		if relPath == "" {
+			continue
+		}
+		if _, ok := seen[relPath]; ok {
+			continue
+		}
+		seen[relPath] = struct{}{}
+		rows = append(rows, contentMatchRow{RelPath: relPath})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].RelPath < rows[j].RelPath
+	})
+	return rows, nil
 }
 
-func containsMatchPathsForArgs(currentArgs []string, query string) ([]string, error) {
+func contentMatchPathsForArgs(currentArgs []string, flag, query string) ([]string, error) {
 	args := append([]string(nil), currentArgs...)
-	args = append(args, "--contains", query)
+	args = append(args, flag, query)
 	cfg, err := parseArgs(args)
 	if err != nil {
 		return nil, err
 	}
-	return containsScopeMatchPaths(cfg)
+	rows, err := contentMatchRowsForScope(cfg)
+	if err != nil {
+		return nil, err
+	}
+	relPaths := make([]string, 0, len(rows))
+	for _, row := range rows {
+		relPaths = append(relPaths, row.RelPath)
+	}
+	return relPaths, nil
 }
 
 func sortedUniqueEntryRelPaths(entries []fileEntry) []string {

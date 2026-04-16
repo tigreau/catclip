@@ -34,6 +34,7 @@ func shortHelpText(version string, colors colorPalette) string {
 	cmd := func(s string) string { return colors.OK + s + colors.Reset }
 	bold := func(s string) string { return colors.Bold + s + colors.Reset }
 	dim := func(s string) string { return colors.Dim + s + colors.Reset }
+	bad := func(s string) string { return colors.Err + s + colors.Reset }
 
 	fmt.Fprintf(&b, "%scatclip v%s — Recursively copy code context for AI prompts%s\n\n", colors.Bold, version, colors.Reset)
 	b.WriteString("Usage:  catclip [target ...] [filters ...]\n\n")
@@ -61,7 +62,7 @@ func shortHelpText(version string, colors colorPalette) string {
 		{Left: `catclip src --exclude "*.css"`, Right: "Skip CSS files"},
 		{Left: "catclip src --recent 3", Right: "Keep the 3 most recently modified files"},
 		{Left: "catclip src --contains TODO", Right: "Find files containing specific text"},
-		{Left: "catclip src --contains TODO --snippet", Right: "Only the matching blocks, not full files"},
+		{Left: "catclip src --snippet TODO", Right: "Only the matching blocks, not full files"},
 	})
 
 	fmt.Fprintf(&b, "\n  %s\n", dim(`You can give --only, --exclude, and --include more than one value.`))
@@ -82,12 +83,17 @@ func shortHelpText(version string, colors colorPalette) string {
 	fmt.Fprintf(&b, "\n%s\n", bold("Git Filters (requires a git repo):"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: "catclip src --changed", Right: "Only files changed in git"},
-		{Left: "catclip --changed --diff", Right: "Show changes as patches instead of full files"},
+		{Left: "catclip --changed-diff", Right: "Show changes as patches instead of full files"},
 	})
 
 	fmt.Fprintf(&b, "\n%s\n", bold("--then (chain another catclip command):"))
 	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --only "*.ts" --then docs --recent 5`))
 	fmt.Fprintf(&b, "    %s\n", dim("Like running two catclip commands and combining the results."))
+	fmt.Fprintf(&b, "    %s\n", dim(`This keeps only the TS files from src, then adds the 5 most recent files from docs.`))
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "  %s\n", bad(`catclip src docs --only "*.ts"`))
+	fmt.Fprintf(&b, "    %s\n", dim(`Bad here because it would also throw away every non-TS file in docs.`))
+	fmt.Fprintf(&b, "    %s\n", dim("Use --then when the next target should use different filters."))
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Ignored Files:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
@@ -138,9 +144,11 @@ func fullHelpText(version string, colors colorPalette) string {
 		{Left: "--staged", Right: "Only staged files (git index)"},
 		{Left: "--unstaged", Right: "Only unstaged tracked modifications"},
 		{Left: "--untracked", Right: "Only new untracked files"},
-		{Left: "--diff", Right: "With change-selection flags: emit unified diff instead of full file"},
+		{Left: "--changed-diff", Right: "Changed files, emitted as unified diff"},
+		{Left: "--staged-diff", Right: "Staged files, emitted as unified diff"},
+		{Left: "--unstaged-diff", Right: "Unstaged files, emitted as unified diff"},
 		{Left: "--contains PATTERN", Right: "Only files whose contents match regex pattern"},
-		{Left: "--snippet", Right: "With --contains: emit only the matched block (blank-line bounded)"},
+		{Left: "--snippet PATTERN", Right: "Only blank-line-bounded blocks whose contents match regex"},
 		{Left: "--include VALUE...", Right: "Allow one or more ignored targets for this scope"},
 		{Left: "--then", Right: "Start a new scope (separate targets with different modifiers)"},
 	})
@@ -237,17 +245,17 @@ func fullHelpText(version string, colors colorPalette) string {
 		{Left: `--contains "useState|useEffect"`, Right: "Files matching either hook"},
 		{Left: `--contains '\$store'`, Right: "Escaped special characters"},
 	})
-	fmt.Fprintf(&b, "  %s\n", dim("Interactive contains pickers show [all current matches]. If your selection already covers every regex match in scope, catclip keeps plain --contains instead of appending --only."))
+	fmt.Fprintf(&b, "  %s\n", dim("Interactive content-match pickers show [all current matches]. If your selection already covers every regex match in scope, catclip keeps the current regex command plain instead of appending --only."))
 	fmt.Fprintf(&b, "  %s\n\n", dim("Plain text works for most searches. Use single quotes for special chars."))
 
 	fmt.Fprintf(&b, "%s\n", bold("--snippet (block extraction):"))
-	b.WriteString("  Requires --contains. Instead of the full file, emits only the semantic blocks\n")
+	b.WriteString("  Takes its own regex. Instead of the full file, emits only the semantic blocks\n")
 	b.WriteString("  (blank-line-bounded) surrounding each match. Dramatically reduces token usage.\n")
 	b.WriteString("  If a matched block spans the whole file, snippet output can look identical to\n")
 	b.WriteString("  full-file output for that file even though snippet mode is active.\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "catclip src --contains TODO --snippet", Right: "Blocks around each TODO"},
-		{Left: `catclip . --contains "useState" --snippet`, Right: "React hook call-sites only"},
+		{Left: "catclip src --snippet TODO", Right: "Blocks around each TODO"},
+		{Left: `catclip . --snippet "useState"`, Right: "React hook call-sites only"},
 	})
 	fmt.Fprintf(&b, "  Output: %s\n\n", dim(`<file path="..." snippet="42-57">...block...</file>`))
 
@@ -281,14 +289,15 @@ func fullHelpText(version string, colors colorPalette) string {
 	})
 	b.WriteByte('\n')
 
-	fmt.Fprintf(&b, "%s\n", bold("--diff (unified diff output):"))
-	b.WriteString("  Requires a change-selection flag (--changed, --staged, --unstaged, or --untracked).\n")
-	b.WriteString("  Emits the unified git diff instead of full file contents.\n")
-	b.WriteString("  Untracked files have no diff and are emitted with their full content (type=\"untracked\").\n")
+	fmt.Fprintf(&b, "%s\n", bold("*-diff (unified diff output):"))
+	b.WriteString("  Diff output is requested directly through --changed-diff, --staged-diff,\n")
+	b.WriteString("  or --unstaged-diff.\n")
+	b.WriteString("  Those commands emit unified git diff instead of full file contents.\n")
+	b.WriteString("  Changed diff may still include untracked files as full content (type=\"untracked\").\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "catclip --changed --diff", Right: "All modified files as patches"},
-		{Left: "catclip --staged --diff", Right: "Staged changes only — ideal for commit review"},
-		{Left: "catclip --unstaged --diff", Right: "WIP edits — what you're actively changing"},
+		{Left: "catclip --changed-diff", Right: "All modified files as patches"},
+		{Left: "catclip --staged-diff", Right: "Staged changes only — ideal for commit review"},
+		{Left: "catclip --unstaged-diff", Right: "WIP edits — what you're actively changing"},
 	})
 	fmt.Fprintf(&b, "  Output types: %s %s %s %s\n\n", dim(`type="staged-diff"`), dim(`type="unstaged-diff"`), dim(`type="diff"`), dim(`type="untracked"`))
 

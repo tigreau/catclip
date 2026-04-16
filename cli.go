@@ -42,8 +42,8 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		if cfg.FilePreview {
 			return runInternalFilePreview(cfg, stdout)
 		}
-		if cfg.ContainsList {
-			return runInternalContainsList(cfg, stdout)
+		if cfg.ContentMatchList {
+			return runInternalContentMatchList(cfg, stdout)
 		}
 		if cfg.RecentPreview {
 			return runInternalRecentPreview(cfg, stdout)
@@ -62,10 +62,11 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			return nil
 		}
 
+		commandScopes := configCommandScopes(cfg)
 		if cfg.Verbose {
-			fmt.Fprintf(stderr, "[verbose] parsed %d scope(s)\n", len(cfg.Scopes))
-			for i, s := range cfg.Scopes {
-				fmt.Fprintf(stderr, "[verbose] scope %d: %s\n", i+1, formatScopeSummary(s))
+			fmt.Fprintf(stderr, "[verbose] parsed %d scope(s)\n", len(commandScopes))
+			for i, s := range commandScopes {
+				fmt.Fprintf(stderr, "[verbose] scope %d: %s\n", i+1, formatScopeSummary(executionScopeFromCommandScopeSpec(s)))
 			}
 		}
 		discoverySpinnerStop := func() {}
@@ -79,8 +80,9 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		}
 		var notices []string
 		hadSelectionCancel := false
-		for i, s := range cfg.Scopes {
+		for i, scopeSpec := range commandScopes {
 			scopeStarted := time.Now()
+			s := executionScopeFromCommandScopeSpec(scopeSpec)
 			entries, scopeDiagnostics, scopeNotices, scopeSelectionCancel, err := evaluateScope(cfg, gitCtx, i, s, baseRules, stderr, colors)
 			if err != nil {
 				return err
@@ -94,7 +96,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			hadSelectionCancel = hadSelectionCancel || scopeSelectionCancel
 		}
 		discoverySpinnerStop()
-		if scopesUseRecentStage(cfg.Scopes) {
+		if commandScopesUseRecentStage(commandScopes) {
 			allEntries = dedupeEntriesByPathPreserveOrder(allEntries)
 		} else {
 			allEntries = dedupeEntriesByPath(allEntries)
@@ -122,14 +124,28 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 				return encodeTreePayload(stdout, doc)
 			}
 			reportStarted := time.Now()
-			report, err := buildOutputReport(cfg, gitCtx, allEntries, dedupePreserveOrder(notices))
+			outputPlan, err := prepareOutputPlan(gitCtx, allEntries)
+			if err != nil {
+				return err
+			}
+			if len(outputPlan.items) == 0 {
+				doc, ok := buildEmptyTreeDocument(cfg)
+				if !ok {
+					if err := writeNoFilesMatchedMessage(cfg, stderr, colors, hadSelectionCancel); err != nil {
+						return err
+					}
+					return newExitError(1, "")
+				}
+				return encodeTreePayload(stdout, doc)
+			}
+			report, err := buildOutputReportForPlan(cfg, gitCtx, outputPlan, dedupePreserveOrder(notices))
 			if err != nil {
 				return err
 			}
 			if cfg.Verbose {
 				fmt.Fprintf(stderr, "[verbose] report: %s\n", formatDuration(time.Since(reportStarted)))
 			}
-			return encodeTreePayload(stdout, buildTreeDocumentFromPreview(cfg, allEntries, report))
+			return encodeTreePayload(stdout, buildTreeDocumentFromPreview(cfg, outputPlan, report))
 		}
 		for _, diag := range diagnostics {
 			if diag.isError || !cfg.Quiet {
@@ -148,7 +164,22 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			return newExitError(1, "")
 		}
 		reportStarted := time.Now()
-		report, err := buildOutputReport(cfg, gitCtx, allEntries, dedupePreserveOrder(notices))
+		outputPlan, err := prepareOutputPlan(gitCtx, allEntries)
+		if err != nil {
+			return err
+		}
+		if len(outputPlan.items) == 0 {
+			if !cfg.Quiet {
+				for _, notice := range dedupePreserveOrder(notices) {
+					fmt.Fprintln(stderr, notice)
+				}
+			}
+			if err := writeNoFilesMatchedMessage(cfg, stderr, colors, hadSelectionCancel); err != nil {
+				return err
+			}
+			return newExitError(1, "")
+		}
+		report, err := buildOutputReportForPlan(cfg, gitCtx, outputPlan, dedupePreserveOrder(notices))
 		if err != nil {
 			return err
 		}
@@ -157,7 +188,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		}
 		if cfg.Preview {
 			renderStarted := time.Now()
-			err := renderPreview(cfg, gitCtx, allEntries, report, stdout, stderr, colors)
+			err := renderPreview(cfg, gitCtx, outputPlan, report, stdout, stderr, colors)
 			if err != nil {
 				return err
 			}
@@ -168,7 +199,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			return nil
 		}
 		diagStarted := time.Now()
-		proceed, err := writeNormalDiagnostics(cfg, gitCtx, allEntries, report, stderr, colors)
+		proceed, err := writeNormalDiagnostics(cfg, gitCtx, outputPlan, report, stderr, colors)
 		if err != nil {
 			return err
 		}
@@ -178,7 +209,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		if !proceed {
 			return nil
 		}
-		outputMetrics, err := collectVerboseOutputMetrics(cfg.Verbose, gitCtx, allEntries)
+		outputMetrics, err := collectVerboseOutputMetrics(cfg.Verbose, gitCtx, outputPlan)
 		if err != nil {
 			return err
 		}
@@ -190,7 +221,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			fmt.Fprintln(stderr)
 		}
 		outputStarted := time.Now()
-		emitStats, err := emitFullOutput(cfg, gitCtx, allEntries, stdout, colors)
+		emitStats, err := emitOutputPlan(cfg, outputPlan, stdout, colors)
 		if err != nil {
 			outputSpinnerStop()
 			return err
@@ -200,10 +231,10 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		if cfg.Verbose {
 			outputDuration := time.Since(outputStarted)
 			fmt.Fprintf(stderr, "[verbose] output: %s\n", formatDuration(outputDuration))
-			writeVerboseOutputMetrics(stderr, outputMetrics, emitStats, len(allEntries), outputDuration)
+			writeVerboseOutputMetrics(stderr, outputMetrics, emitStats, len(outputPlan.items), outputDuration)
 		}
 		if cfg.OutputMode == outputModeClipboard && !cfg.Quiet {
-			if err := writeClipboardSuccess(stderr, allEntries, colors); err != nil {
+			if err := writeClipboardSuccess(stderr, outputPlan, colors); err != nil {
 				return err
 			}
 		}
@@ -230,13 +261,13 @@ func shouldSeparateStdoutPayload(cfg runConfig, stdout, stderr io.Writer) bool {
 	return true
 }
 
-func collectVerboseOutputMetrics(verbose bool, gitCtx gitContext, entries []fileEntry) (verboseOutputMetrics, error) {
+func collectVerboseOutputMetrics(verbose bool, gitCtx gitContext, plan outputPlan) (verboseOutputMetrics, error) {
 	if !verbose {
 		return verboseOutputMetrics{}, nil
 	}
 
 	metrics := verboseOutputMetrics{}
-	if !gitCtx.Enabled || len(entries) == 0 {
+	if !gitCtx.Enabled || len(plan.items) == 0 {
 		return metrics, nil
 	}
 
@@ -253,7 +284,7 @@ func collectVerboseOutputMetrics(verbose bool, gitCtx gitContext, entries []file
 		tracked[normalizeRelPath(repoPath)] = struct{}{}
 	}
 
-	changedLines, err := collectChangedRepoPaths(gitCtx, scope{})
+	changedLines, err := collectChangedRepoPaths(gitCtx, executionScope{})
 	if err != nil {
 		return verboseOutputMetrics{}, err
 	}
@@ -262,7 +293,8 @@ func collectVerboseOutputMetrics(verbose bool, gitCtx gitContext, entries []file
 		changed[normalizeRelPath(repoPath)] = struct{}{}
 	}
 
-	for _, entry := range entries {
+	for _, item := range plan.items {
+		entry := item.unit.Entry
 		repoPath := normalizeRelPath(gitCtx.toRepoPath(entry.RelPath))
 		if _, ok := tracked[repoPath]; !ok {
 			metrics.ModifiedUntrackedCount++
@@ -339,6 +371,10 @@ func exitWithError(err error, stderr io.Writer) {
 
 	code := 1
 	if _, ok := err.(usageError); ok {
+		code = 2
+	}
+	var validation validationFailure
+	if errors.As(err, &validation) {
 		code = 2
 	}
 	if exitErr, ok := err.(exitError); ok {
@@ -547,32 +583,35 @@ func parseArgs(args []string) (runConfig, error) {
 		OutputMode: outputModeClipboard,
 	}
 
-	var current scopeBuilder
+	executionScopes := make([]executionScope, 0, 2)
+	var current executionScopeBuilder
 	inModifierMode := false
+	lastNoValueModifier := ""
 
 	finalize := func() error {
 		if !current.hasContent() {
-			current = scopeBuilder{}
+			current = executionScopeBuilder{}
 			return nil
 		}
 
-		s := current.scope
-		hasChangeSelector := current.explicitChanged || s.Staged || s.Unstaged || s.Untracked
-
-		if s.Diff && s.Untracked && !current.explicitChanged && !s.Staged && !s.Unstaged {
-			return newUsageError("Error: --untracked --diff doesn't make sense (untracked files have no diff).\n  Try: catclip --changed --diff    (includes untracked as full content)\n  Try: catclip --staged --diff     (only staged patches)")
-		}
-		if s.Snippet && s.Contains == "" && !cfg.FilePreview {
-			return newUsageError("Error: --snippet requires --contains (it extracts blocks around content matches).\n  Example: catclip src --contains 'TODO' --snippet")
-		}
-		if s.Snippet && s.Diff {
-			return newUsageError("Error: --snippet and --diff cannot be combined.\n  Use --snippet to extract blocks around content matches.\n  Use --diff to show unified git patches.")
-		}
-		if s.Diff && !hasChangeSelector {
-			return newUsageError("Error: --diff requires --changed, --staged, --unstaged, or --untracked.\n  Example: catclip src --changed --diff\n  Example: catclip src --staged --diff")
-		}
-		if s.Staged || s.Unstaged || s.Untracked || current.explicitChanged {
+		s := current.executionScope
+		mode := executionScopeOutputMode(s)
+		if s.Staged || s.Unstaged || s.Untracked {
 			s.Changed = true
+		}
+		hasChangeSelector := executionScopeHasGitSelection(s)
+
+		if mode == entryModeDiff && s.Untracked {
+			return untrackedDiffError()
+		}
+		if mode == entryModeSnippet && s.SnippetPattern == "" && !cfg.FilePreview && !cfg.ContentMatchList {
+			return requiredStageValueError("--snippet")
+		}
+		if mode == entryModeDiff && !hasChangeSelector {
+			return missingDiffSelectorError()
+		}
+		if err := validateScopeStageOrder(current.Stages); err != nil {
+			return err
 		}
 		if len(s.Targets) == 0 {
 			if cfg.TreePayload {
@@ -581,9 +620,10 @@ func parseArgs(args []string) (runConfig, error) {
 			s.Targets = []string{"."}
 		}
 
-		cfg.Scopes = append(cfg.Scopes, s)
-		current = scopeBuilder{}
+		executionScopes = append(executionScopes, s)
+		current = executionScopeBuilder{}
 		inModifierMode = false
+		lastNoValueModifier = ""
 		return nil
 	}
 
@@ -651,8 +691,8 @@ func parseArgs(args []string) (runConfig, error) {
 			}
 			i++
 			cfg.FilePath = args[i]
-		case "--internal-contains-list":
-			cfg.ContainsList = true
+		case "--internal-content-match-list":
+			cfg.ContentMatchList = true
 			cfg.Print = true
 			cfg.Quiet = true
 			cfg.OutputMode = outputModeStdout
@@ -675,64 +715,91 @@ func parseArgs(args []string) (runConfig, error) {
 			cfg.RecentSelect = args[i]
 		case "--changed":
 			inModifierMode = true
-			current.explicitChanged = true
 			current.Changed = true
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageChanged})
+			lastNoValueModifier = arg
 		case "--staged":
 			inModifierMode = true
 			current.Staged = true
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageStaged})
+			lastNoValueModifier = arg
 		case "--unstaged":
 			inModifierMode = true
 			current.Unstaged = true
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageUnstaged})
+			lastNoValueModifier = arg
 		case "--untracked":
 			inModifierMode = true
 			current.Untracked = true
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageUntracked})
-		case "--diff":
+			lastNoValueModifier = arg
+		case "--changed-diff":
 			inModifierMode = true
+			current.Changed = true
 			current.Diff = true
-			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageDiff})
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageChangedDiff})
+			lastNoValueModifier = arg
+		case "--staged-diff":
+			inModifierMode = true
+			current.Staged = true
+			current.Diff = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageStagedDiff})
+			lastNoValueModifier = arg
+		case "--unstaged-diff":
+			inModifierMode = true
+			current.Unstaged = true
+			current.Diff = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageUnstagedDiff})
+			lastNoValueModifier = arg
 		case "--snippet":
 			inModifierMode = true
+			if i+1 >= len(args) {
+				return runConfig{}, requiredStageValueError("--snippet")
+			}
+			i++
+			current.SnippetPattern = args[i]
 			current.Snippet = true
-			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageSnippet})
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageSnippet, Values: []string{args[i]}})
+			lastNoValueModifier = ""
 		case "--then":
 			if err := finalize(); err != nil {
 				return runConfig{}, err
 			}
 		case "--":
-			current.Targets = append(current.Targets, args[i+1:]...)
-			current.explicitTargets += len(args[i+1:])
-			i = len(args)
+			if i != len(args)-1 {
+				return runConfig{}, bareModifierPlaceholderOrderError()
+			}
+			return runConfig{}, bareModifierPlaceholderInteractiveOnlyError()
 		case "--only":
 			inModifierMode = true
 			values, next := consumeModifierValues(args, i+1)
 			if len(values) == 0 {
-				return runConfig{}, newUsageError("Error: --only requires a pattern.\n  Example: catclip src --only '*.ts'")
+				return runConfig{}, requiredStageValueError("--only")
 			}
 			current.Only = append(current.Only, values...)
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageOnly, Values: append([]string(nil), values...)})
 			i = next - 1
+			lastNoValueModifier = ""
 		case "--include":
 			inModifierMode = true
 			values, next := consumeModifierValues(args, i+1)
 			if len(values) == 0 {
-				return runConfig{}, newUsageError("Error: --include requires a target query.\n  Example: catclip --include node_modules\n  Example: catclip src --include .env")
+				return runConfig{}, requiredStageValueError("--include")
 			}
 			current.IncludedTargets = append(current.IncludedTargets, values...)
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageInclude, Values: append([]string(nil), values...)})
 			i = next - 1
+			lastNoValueModifier = ""
 		case "--exclude":
 			inModifierMode = true
 			values, next := consumeModifierValues(args, i+1)
 			if len(values) == 0 {
-				return runConfig{}, newUsageError("Error: --exclude requires a pattern.\n  Example: catclip src --exclude '*.test.*'")
+				return runConfig{}, requiredStageValueError("--exclude")
 			}
 			current.Exclude = append(current.Exclude, values...)
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageExclude, Values: append([]string(nil), values...)})
 			i = next - 1
+			lastNoValueModifier = ""
 		case "--recent":
 			inModifierMode = true
 			limit, next, err := consumeOptionalRecentLimit(args, i+1)
@@ -741,10 +808,11 @@ func parseArgs(args []string) (runConfig, error) {
 			}
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageRecent, Limit: limit})
 			i = next - 1
+			lastNoValueModifier = ""
 		case "--contains":
 			inModifierMode = true
 			if i+1 >= len(args) {
-				return runConfig{}, newUsageError("Error: --contains requires a regex pattern.\n  Example: catclip src --contains 'TODO'")
+				return runConfig{}, containsMissingPatternError(args, i)
 			}
 			i++
 			current.Contains = args[i]
@@ -752,22 +820,31 @@ func parseArgs(args []string) (runConfig, error) {
 			if looksLikeGlobConfusion(current.Contains) {
 				cfg.Warnings = append(cfg.Warnings, "Warning: --contains uses regex, not globs. Did you mean '.*' instead of '*'?\n  Example: --contains 'use.*Context' (not 'use*Context')")
 			}
+			lastNoValueModifier = ""
 		default:
 			switch {
 			case strings.HasPrefix(arg, "--contains="):
 				return runConfig{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
+			case strings.HasPrefix(arg, "--snippet="):
+				return runConfig{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
 			case strings.HasPrefix(arg, "--recent="):
 				return runConfig{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
+			case arg == "--diff":
+				return runConfig{}, diffStandaloneError()
 			case strings.HasPrefix(arg, "--"):
 				return runConfig{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
 				return runConfig{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
 			default:
 				if inModifierMode {
-					return runConfig{}, newUsageError("Error: positional targets must come before modifiers.\n  Add targets first, use --include, or use --then for a new scope.")
+					if lastNoValueModifier != "" {
+						return runConfig{}, noValueModifierError(lastNoValueModifier)
+					}
+					return runConfig{}, positionalAfterModifierError()
 				}
 				current.Targets = append(current.Targets, arg)
 				current.explicitTargets++
+				lastNoValueModifier = ""
 			}
 		}
 	}
@@ -776,21 +853,23 @@ func parseArgs(args []string) (runConfig, error) {
 		return runConfig{}, err
 	}
 
-	if len(cfg.Scopes) == 0 {
+	if len(executionScopes) == 0 {
 		if cfg.TreePayload {
 			return runConfig{}, newUsageError("Error: --internal-tree-payload requires an explicit target.\n  Use: catclip TARGET --internal-tree-payload")
 		}
-		cfg.Scopes = append(cfg.Scopes, scope{Targets: []string{"."}})
+		executionScopes = append(executionScopes, executionScope{Targets: []string{"."}})
 	}
+
+	cfg.Command = finalizedCommandSpecFromExecutionScopes(executionScopes)
 
 	return cfg, nil
 }
 
-func (b scopeBuilder) hasContent() bool {
+func (b executionScopeBuilder) hasContent() bool {
 	return len(b.Targets) > 0 || len(b.IncludedTargets) > 0 || len(b.Only) > 0 || len(b.Exclude) > 0 ||
 		len(b.Stages) > 0 ||
-		b.Contains != "" || b.Snippet || b.Changed || b.Staged || b.Unstaged ||
-		b.Untracked || b.Diff || b.explicitChanged
+		b.Contains != "" || b.SnippetPattern != "" || b.Snippet || b.Changed || b.Staged || b.Unstaged ||
+		b.Untracked || b.Diff
 }
 
 func splitCommaPatterns(value string) []string {
@@ -861,7 +940,7 @@ func looksLikeGlobConfusion(pattern string) bool {
 		!strings.Contains(pattern, "\\")
 }
 
-func formatScopeSummary(s scope) string {
+func formatScopeSummary(s executionScope) string {
 	parts := []string{
 		fmt.Sprintf("targets=%q", s.Targets),
 		fmt.Sprintf("included=%q", s.IncludedTargets),
@@ -872,7 +951,11 @@ func formatScopeSummary(s scope) string {
 		parts = append(parts, fmt.Sprintf("contains=%q", s.Contains))
 	}
 	if s.Snippet {
-		parts = append(parts, "snippet=true")
+		if s.SnippetPattern != "" {
+			parts = append(parts, fmt.Sprintf("snippet=%q", s.SnippetPattern))
+		} else {
+			parts = append(parts, "snippet=true")
+		}
 	}
 	if s.Changed {
 		parts = append(parts, "changed=true")
@@ -902,9 +985,9 @@ func formatScopeSummary(s scope) string {
 	return strings.Join(parts, " ")
 }
 
-func scopesUseRecentStage(scopes []scope) bool {
+func commandScopesUseRecentStage(scopes []commandScopeSpec) bool {
 	for _, s := range scopes {
-		for _, stage := range s.Stages {
+		for _, stage := range s.Stages() {
 			if stage.Kind == scopeStageRecent {
 				return true
 			}

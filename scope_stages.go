@@ -23,7 +23,10 @@ type stageValueMatcher struct {
 	hasGlob bool
 }
 
-func applyScopeStages(resolver *scopeResolver, gitCtx gitContext, s scope, entries []fileEntry) ([]fileEntry, error) {
+func applyScopeStages(resolver *scopeResolver, gitCtx gitContext, s executionScope, entries []fileEntry) ([]fileEntry, error) {
+	if len(entries) == 0 {
+		return entries, nil
+	}
 	for _, stage := range s.Stages {
 		var err error
 		switch stage.Kind {
@@ -41,31 +44,55 @@ func applyScopeStages(resolver *scopeResolver, gitCtx gitContext, s scope, entri
 			}
 			entries = ensureEntryAbsPaths(entries, resolver.cfg.WorkingDir)
 			entries, err = filterEntriesByContent(entries, stage.Values[0])
+		case scopeStageSnippet:
+			if len(stage.Values) == 0 {
+				continue
+			}
+			entries = ensureEntryAbsPaths(entries, resolver.cfg.WorkingDir)
+			entries, err = filterEntriesByContent(entries, stage.Values[0])
 		case scopeStageChanged:
 			if !gitCtx.Enabled {
 				continue
 			}
-			entries, err = filterChangedEntries(gitCtx, scope{Changed: true}, entries)
+			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true}, entries)
 		case scopeStageStaged:
 			if !gitCtx.Enabled {
 				continue
 			}
-			entries, err = filterChangedEntries(gitCtx, scope{Changed: true, Staged: true}, entries)
+			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Staged: true}, entries)
 		case scopeStageUnstaged:
 			if !gitCtx.Enabled {
 				continue
 			}
-			entries, err = filterChangedEntries(gitCtx, scope{Changed: true, Unstaged: true}, entries)
+			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Unstaged: true}, entries)
 		case scopeStageUntracked:
 			if !gitCtx.Enabled {
 				continue
 			}
-			entries, err = filterChangedEntries(gitCtx, scope{Changed: true, Untracked: true}, entries)
-		case scopeStageDiff, scopeStageSnippet:
+			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Untracked: true}, entries)
+		case scopeStageChangedDiff:
+			if !gitCtx.Enabled {
+				continue
+			}
+			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true}, entries)
+		case scopeStageStagedDiff:
+			if !gitCtx.Enabled {
+				continue
+			}
+			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Staged: true}, entries)
+		case scopeStageUnstagedDiff:
+			if !gitCtx.Enabled {
+				continue
+			}
+			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Unstaged: true}, entries)
+		case scopeStageDiff:
 			// Output-shape modifiers do not change the selected file set.
 		}
 		if err != nil {
 			return nil, err
+		}
+		if len(entries) == 0 {
+			return entries, nil
 		}
 	}
 	return entries, nil
