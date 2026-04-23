@@ -111,6 +111,23 @@ func TestValidateCurrentScopeFlagSequenceAllowsRecentAfterDiff(t *testing.T) {
 	}
 }
 
+func TestValidateCurrentScopeFlagSequenceAllowsDepthAfterDiff(t *testing.T) {
+	err := validateCurrentScopeFlagSequence([]string{"src", "--changed-diff"}, []string{"--depth"})
+	if err != nil {
+		t.Fatalf("expected depth after diff to remain valid, got %v", err)
+	}
+}
+
+func TestValidateCurrentScopeFlagSequenceRejectsContainsAfterPaths(t *testing.T) {
+	err := validateCurrentScopeFlagSequence([]string{"src", "--paths"}, []string{"--contains"})
+	if err == nil {
+		t.Fatal("expected contains after --paths to fail")
+	}
+	if !strings.Contains(err.Error(), "--paths finalizes the current scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestScopeStageBoundaryPolicies(t *testing.T) {
 	if !scopeStageBoundaryAllowsCategory(scopeStageBoundaryDiff, scopeStageCategorySetRefinement) {
 		t.Fatal("diff boundary should allow later set refinement")
@@ -132,6 +149,56 @@ func TestScopeStageBoundaryPolicies(t *testing.T) {
 	}
 	if scopeStageBoundaryAllowsCategory(scopeStageBoundaryTerminal, scopeStageCategorySetRefinement) {
 		t.Fatal("terminal boundary should reject later same-scope stages")
+	}
+	if scopeStageBoundaryAllowsCategory(scopeStageBoundaryTerminal, scopeStageCategoryOutputMode) {
+		t.Fatal("terminal boundary should reject later same-scope output modes")
+	}
+}
+
+func TestValidateCurrentScopeFlagSequenceRejectsIncludeAfterModifier(t *testing.T) {
+	for _, prior := range []string{"--only", "--exclude", "--changed", "--contains", "--recent"} {
+		args := []string{"src", prior}
+		if prior == "--only" || prior == "--exclude" || prior == "--contains" {
+			args = append(args, "val")
+		}
+		err := validateCurrentScopeFlagSequence(args, []string{"--include"})
+		if err == nil {
+			t.Fatalf("expected --include after %s to fail", prior)
+		}
+		if !strings.Contains(err.Error(), "--include must come before other modifiers") {
+			t.Fatalf("unexpected error after %s: %v", prior, err)
+		}
+	}
+}
+
+func TestValidateCurrentScopeFlagSequenceRejectsRepeatedInclude(t *testing.T) {
+	err := validateCurrentScopeFlagSequence([]string{"src", "--include", "vendor"}, []string{"--include"})
+	if err == nil {
+		t.Fatal("expected repeated --include to fail")
+	}
+	if !strings.Contains(err.Error(), "--include can only appear once per scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateCurrentScopeFlagSequenceAllowsIncludeFirst(t *testing.T) {
+	err := validateCurrentScopeFlagSequence([]string{"src"}, []string{"--include"})
+	if err != nil {
+		t.Fatalf("expected --include as first modifier to succeed, got %v", err)
+	}
+}
+
+func TestValidateCurrentScopeFlagSequenceAllowsModifierAfterInclude(t *testing.T) {
+	err := validateCurrentScopeFlagSequence([]string{"src", "--include", "vendor"}, []string{"--only"})
+	if err != nil {
+		t.Fatalf("expected --only after --include to succeed, got %v", err)
+	}
+}
+
+func TestValidateCurrentScopeFlagSequenceIncludeAfterThenResetsScope(t *testing.T) {
+	err := validateCurrentScopeFlagSequence([]string{"src", "--only", "*.ts", "--then", "docs"}, []string{"--include"})
+	if err != nil {
+		t.Fatalf("expected --include after --then to succeed, got %v", err)
 	}
 }
 

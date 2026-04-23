@@ -104,7 +104,7 @@ func buildTreeFilePreviewDocument(relPath, highlightPath, content, matchPattern 
 }
 
 func buildTreeSummaryFromReport(report outputReport) *treeDocumentSummary {
-	return treepkg.BuildSummary(report.sizes, report.humanSize, report.tokens, report.fileWord)
+	return treepkg.BuildSummary(report.sizes, report.humanSize, report.tokens, report.countWord)
 }
 
 func normalizeTreeTargetKind(kind string) string {

@@ -170,6 +170,23 @@ func normalizePositionalGlobScope(scope positionalGlobScope, quiet bool) positio
 		}
 	}
 
+	// Glob patterns in the target position are first-class targets.
+	// They pass through to the resolver, which glob-matches them against
+	// all discovered files. Bare extensions (.tsx) are still rejected
+	// because they are not valid glob patterns.
+	allPatternsAreGlobs := firstPatternToken.kind == positionalGlobPattern
+	if allPatternsAreGlobs {
+		for _, token := range scope.positional[firstPattern+1:] {
+			if token.kind == positionalGlobBareExt {
+				allPatternsAreGlobs = false
+				break
+			}
+		}
+	}
+	if allPatternsAreGlobs {
+		return positionalGlobScopeNormalization{rewritten: append([]string(nil), scope.raw...)}
+	}
+
 	for _, token := range scope.positional[firstPattern+1:] {
 		if !token.kind.isPatternLike() {
 			return positionalGlobScopeNormalization{

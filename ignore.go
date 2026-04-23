@@ -47,6 +47,10 @@ credentials.json
 *.swp
 *.swo
 
+# Text-encoded assets (XML/JSON formats unlikely to be useful as clipboard content)
+*.svg
+*.map
+
 # IDEs & Editors
 .idea/
 .vscode/

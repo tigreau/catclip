@@ -20,6 +20,8 @@ const (
 	validationReasonSnippetContentFilterOrder      validationReason = "snippet_content_filter_order"
 	validationReasonRepeatedOutputMode             validationReason = "repeated_output_mode"
 	validationReasonTerminalBoundaryOrder          validationReason = "terminal_boundary_order"
+	validationReasonIncludeAfterModifier           validationReason = "include_after_modifier"
+	validationReasonRepeatedInclude                validationReason = "repeated_include"
 )
 
 type validationFailure struct {
@@ -54,7 +56,7 @@ func renderValidationFailure(e validationFailure) string {
 	case validationReasonMissingDiffSelector:
 		return "Error: diff output requires --changed-diff, --staged-diff, or --unstaged-diff.\n  Example: catclip src --changed-diff\n  Example: catclip src --staged-diff"
 	case validationReasonUntrackedDiff:
-		return "Error: --untracked-diff doesn't make sense (untracked files have no diff).\n  Try: catclip --changed-diff    (includes untracked as full content)\n  Try: catclip --staged-diff     (only staged patches)"
+		return "Error: --untracked-diff doesn't make sense (untracked files have no diff).\n  Try: catclip src --changed-diff    (includes untracked as full content)\n  Try: catclip src --staged-diff     (only staged patches)"
 	case validationReasonPositionalAfterModifier:
 		return "Error: positional targets must come before modifiers.\n  Add targets first, use --include, or use --then for a new scope."
 	case validationReasonOutputModeConflict:
@@ -71,6 +73,10 @@ func renderValidationFailure(e validationFailure) string {
 		return fmt.Sprintf("Error: %s cannot be repeated in the same scope.\n  %s already commits the scope to an output mode.\n  Start a new scope with --then.", e.Flag, e.Flag)
 	case validationReasonTerminalBoundaryOrder:
 		return fmt.Sprintf("Error: %s finalizes the current scope.\n  No later same-scope modifiers are allowed after %s.\n  Start a new scope with --then.", e.BoundaryFlag, e.BoundaryFlag)
+	case validationReasonIncludeAfterModifier:
+		return "Error: --include must come before other modifiers in the same scope.\n  --include adds files, so it must appear before filters that narrow them.\n  Move --include before other modifiers, or start a new scope with --then."
+	case validationReasonRepeatedInclude:
+		return "Error: --include can only appear once per scope.\n  Combine targets in a single --include, or start a new scope with --then."
 	default:
 		return "Error: invalid command."
 	}
@@ -79,7 +85,7 @@ func renderValidationFailure(e validationFailure) string {
 func renderRequiredValueValidationFailure(e validationFailure) string {
 	switch e.Flag {
 	case "--include":
-		return "Error: --include requires a target query.\n  Example: catclip --include node_modules\n  Example: catclip src --include .env"
+		return "Error: --include requires a target query.\n  Example: catclip . --include node_modules\n  Example: catclip src --include vendor"
 	case "--exclude":
 		return "Error: --exclude requires a pattern.\n  Example: catclip src --exclude '*.test.*'"
 	case "--contains":
@@ -90,6 +96,8 @@ func renderRequiredValueValidationFailure(e validationFailure) string {
 		return fmt.Sprintf("%s\n  Did you mean: %s", base, e.Suggestion)
 	case "--snippet":
 		return "Error: --snippet requires a regex pattern.\n  Example: catclip src --snippet 'TODO'"
+	case "--depth":
+		return "Error: --depth requires a positive integer.\n  Example: catclip src --depth 2"
 	default:
 		return "Error: --only requires a pattern.\n  Example: catclip src --only '*.ts'"
 	}

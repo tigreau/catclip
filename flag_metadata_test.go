@@ -66,6 +66,20 @@ func TestScopeModifierFlagSpecsClassifyContentFamily(t *testing.T) {
 	if snippet.BoundaryPolicy != scopeStageBoundarySnippet {
 		t.Fatalf("expected --snippet boundary policy, got %q", snippet.BoundaryPolicy)
 	}
+
+	paths, ok := scopeModifierFlagSpecForFlag("--paths")
+	if !ok {
+		t.Fatal("missing --paths spec")
+	}
+	if paths.Arity != flagArityNone {
+		t.Fatalf("expected --paths to take no value, got %q", paths.Arity)
+	}
+	if paths.Family != flagFamilyOutputMode {
+		t.Fatalf("expected --paths to be an output mode, got %q", paths.Family)
+	}
+	if paths.BoundaryPolicy != scopeStageBoundaryTerminal {
+		t.Fatalf("expected --paths terminal boundary policy, got %q", paths.BoundaryPolicy)
+	}
 }
 
 func TestIsValueTakingFlag(t *testing.T) {
@@ -73,6 +87,7 @@ func TestIsValueTakingFlag(t *testing.T) {
 		"--include",
 		"--only",
 		"--exclude",
+		"--depth",
 		"--contains",
 		"--snippet",
 		"--internal-tree-target",

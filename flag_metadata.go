@@ -71,12 +71,28 @@ var scopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityOptionalValue,
 	},
 	{
+		Flag:           "--depth",
+		StageKind:      scopeStageDepth,
+		Arity:          flagArityOne,
+		Family:         flagFamilyFileSetRefinement,
+		BoundaryPolicy: scopeStageBoundaryNone,
+		Recoverability: flagRecoverabilityRequiredValue,
+	},
+	{
 		Flag:           "--contains",
 		StageKind:      scopeStageContains,
 		Arity:          flagArityOne,
 		Family:         flagFamilyContentFilter,
 		BoundaryPolicy: scopeStageBoundaryNone,
 		Recoverability: flagRecoverabilityRequiredValue,
+	},
+	{
+		Flag:           "--paths",
+		StageKind:      scopeStagePaths,
+		Arity:          flagArityNone,
+		Family:         flagFamilyOutputMode,
+		BoundaryPolicy: scopeStageBoundaryTerminal,
+		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
 		Flag:           "--changed",
@@ -198,7 +214,7 @@ func (f flagSemanticFamily) scopeStageCategory() (scopeStageCategory, bool) {
 
 func isValueTakingFlag(arg string) bool {
 	switch arg {
-	case "--include", "--only", "--exclude", "--contains", "--snippet",
+	case "--include", "--only", "--exclude", "--depth", "--contains", "--snippet",
 		"--internal-tree-target", "--internal-tree-kind", "--internal-tree-state",
 		"--internal-file-path":
 		return true
@@ -218,8 +234,9 @@ func isModifierBoundaryToken(arg string) bool {
 	case "--changed", "--staged", "--unstaged", "--untracked",
 		"--changed-diff", "--staged-diff", "--unstaged-diff",
 		"--recent",
-		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-t", "--no-tree",
-		"--preview", "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
+		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
+		"--preview", "--with-binaries",
+		"-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
 		return true
 	}
 	return strings.HasPrefix(arg, "--")

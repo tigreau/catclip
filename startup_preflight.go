@@ -63,7 +63,7 @@ func startupPreflightCommandSpec(args []string) (commandSpec, error) {
 		switch arg {
 		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
 			continue
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-t", "--no-tree", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--preview":
 			continue
 		case "--then":
 			if err := appendCurrentScope(); err != nil {
@@ -155,6 +155,32 @@ func startupPreflightCommandSpec(args []string) (commandSpec, error) {
 			}
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageRecent, Limit: &limit})
 			i++
+			continue
+		case "--depth":
+			inModifierMode = true
+			if err := stageState.apply(scopeStageDepth); err != nil {
+				return commandSpec{}, err
+			}
+			if i+1 >= len(args) {
+				return commandSpec{}, requiredStageValueError("--depth")
+			}
+			depth, err := parseDepthToken(args[i+1])
+			if err != nil {
+				return commandSpec{}, err
+			}
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageDepth, Limit: &depth})
+			i++
+			continue
+		case "--paths":
+			inModifierMode = true
+			if err := stageState.apply(scopeStagePaths); err != nil {
+				return commandSpec{}, err
+			}
+			current.Paths = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStagePaths})
+			if i+1 < len(args) && !isModifierBoundaryToken(args[i+1]) {
+				return commandSpec{}, noValueModifierError(arg)
+			}
 			continue
 		case "--contains", "--snippet":
 			inModifierMode = true
@@ -268,6 +294,8 @@ func startupPreflightCommandSpec(args []string) (commandSpec, error) {
 			return commandSpec{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
 		case strings.HasPrefix(arg, "--recent="):
 			return commandSpec{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
+		case strings.HasPrefix(arg, "--depth="):
+			return commandSpec{}, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 		case strings.HasPrefix(arg, "--"):
 			return commandSpec{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
 		case strings.HasPrefix(arg, "-") && len(arg) > 1:

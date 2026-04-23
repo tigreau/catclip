@@ -82,25 +82,38 @@ package catclip
 //     shared "types" packages, which is usually a sign the boundary is not ready
 //
 // CURRENT FILE GROUPS:
-//   - cli/help:       arg parsing, entry flow, prompts, help/version output
-//   - startup_picker: startup fzf recovery, modifier chaining, resolved-command echo
-//   - resolver:       target resolution and fzf integration
-//   - discovery:      walking, visibility indexes, file classification
-//   - content/ripgrep: content filtering and rg-backed helpers
-//   - ignore/git:     .hiss loading, git-aware filtering, changed-file logic
-//   - preview/emit:   preview tree, summaries, clipboard/stdout output
-//   - spinner:        short-lived TTY loading indicators
+//   - cli/help:          arg parsing, entry flow, prompts, help/version output
+//   - command_spec:      declarative scope/flag parsing and validation
+//   - flag_metadata:     flag specs, stage kinds, modifier boundary detection
+//   - startup_picker:    startup fzf recovery, modifier chaining, resolved-command echo
+//   - startup_preflight: pre-parse validation before full command spec
+//   - startup_file_set_normalization: dedup redundant interactive file-set selections
+//   - positional_glob_normalization: classify and pass through glob pattern targets
+//   - resolver:          target resolution (path, glob, fzf) and file discovery
+//   - discovery:         walking, visibility indexes, file classification
+//   - content/ripgrep:   content filtering, snippet extraction, rg-backed helpers
+//   - scope_stages:      stage execution (only, exclude, recent, depth, contains, etc.)
+//   - scope_order_rules: ordering constraints and boundary policies between stages
+//   - output_plan:       plan what to emit (full files, paths, snippets, diffs, raw)
+//   - ignore/git:        .hiss loading, git-aware filtering, changed-file logic
+//   - depth_stage/depth_picker: --depth filtering and interactive depth selection
+//   - recent_stage/recent_picker: --recent sorting/limiting and interactive selection
+//   - preview/emit:      preview tree, summaries, clipboard/stdout output
+//   - validation_error:  structured validation failures with actionable messages
+//   - spinner:           short-lived TTY loading indicators
 //
 // EXECUTION FLOW:
-//   1. Parse args and build scopes
+//   1. Parse args and build scopes (via CommandSpec / FlagSpec declarative model)
 //   2. For interactive TTY runs, decide whether a token is already exact enough
 //      to bypass fzf:
 //      - exact existing paths win immediately
 //      - exact basename file hits can also bypass the picker
+//      - glob patterns (*, ?, [) bypass the picker and resolve directly
 //      - only genuinely ambiguous / shorthand queries go to fzf
 //   3. Resolve each target into either:
 //      - an exact file
 //      - an exact directory subtree
+//      - a glob pattern matched against all visible files
 //      - an fzf-backed fuzzy selection
 //      - an --include-allowed ignored target
 //   4. Discover files for resolved targets:
@@ -135,10 +148,18 @@ package catclip
 //      - picker/index candidates are stored with RelPath first
 //      - AbsPath is materialized only when a file survives to real work
 //        like --contains, preview sizing, snippets/diffs, or final emission
-//   8. Apply scope stages in order:
-//      - `--include` adds allowed ignored targets into the working set
+//   8. Apply scope stages in order (left to right within each scope):
+//      - `--include` adds authorized ignored paths (must be first, once per scope)
 //      - `--only` / `--exclude` run as sequential file-set stages
-//      - git selectors and `--contains` then filter the resulting set
+//      - `--recent N` sorts by mtime, keeps top N
+//      - `--depth N` removes files deeper than N path segments from cwd
+//      - `--contains` filters by content match (regex, rg-backed)
+//      - `--snippet` extracts blank-line-bounded blocks matching regex
+//      - git selectors (`--changed`, `--staged`, `--unstaged`, `--untracked`)
+//      - output shape: `--paths` (terminal), `--*-diff`, or default full-file
+//      - `--only -`, `--exclude -`, `--include -` read exact paths from stdin
+//      - interactive file-set selections are normalized before argv emission:
+//        redundant literals covered by a selected pattern are dropped
 //   9. Build preview metadata and render the tree/summary when needed:
 //      - normal `-q` runs skip tree rendering and confirmation entirely
 //      - `-q` therefore makes `-y` and `-t` redundant in normal non-preview
@@ -155,7 +176,14 @@ package catclip
 //        a fast byte-based estimate (`bytes / 4`) on purpose, because exact
 //        tokenizers would add noticeable work while the real hot cost here is
 //        gathering file sizes, not formatting the final number
-//  10. Emit output to stdout or the clipboard sink
+//  10. Emit output to stdout or the clipboard sink:
+//      - default: full file contents in <file path="..."> wrappers
+//      - `--paths`: bare relative paths, one per line
+//      - `--snippet`: matched blocks in <file path="..." snippet="L-L"> wrappers
+//      - `--*-diff`: unified diff patches in <file path="..." type="diff"> wrappers
+//      - `--raw` (`-r`): single file body without wrappers (requires `-p`)
+//      - unresolvable targets: warn on stderr (even with `-q`), emit what
+//        resolved, exit 1
 //
 // GIT / RG PERFORMANCE RULES:
 //   - do not reintroduce git check-ignore into the normal visible-file hot path
@@ -344,8 +372,10 @@ type runConfig struct {
 
 	Verbose          bool
 	Quiet            bool
+	WithBinaries     bool
 	Yes              bool
 	Print            bool
+	Raw              bool
 	Preview          bool
 	NoTree           bool
 	TreePayload      bool
@@ -372,6 +402,7 @@ type executionScope struct {
 	Contains        string
 	SnippetPattern  string
 	Stages          []scopeStage
+	Paths           bool
 	Snippet         bool
 	Changed         bool
 	Staged          bool
@@ -434,11 +465,13 @@ const (
 	scopeStageOnly         scopeStageKind = "only"
 	scopeStageExclude      scopeStageKind = "exclude"
 	scopeStageRecent       scopeStageKind = "recent"
+	scopeStageDepth        scopeStageKind = "depth"
 	scopeStageContains     scopeStageKind = "contains"
 	scopeStageChanged      scopeStageKind = "changed"
 	scopeStageStaged       scopeStageKind = "staged"
 	scopeStageUnstaged     scopeStageKind = "unstaged"
 	scopeStageUntracked    scopeStageKind = "untracked"
+	scopeStagePaths        scopeStageKind = "paths"
 	scopeStageDiff         scopeStageKind = "diff"
 	scopeStageSnippet      scopeStageKind = "snippet"
 	scopeStageChangedDiff  scopeStageKind = "changed-diff"
@@ -447,9 +480,10 @@ const (
 )
 
 type scopeStage struct {
-	Kind   scopeStageKind
-	Values []string
-	Limit  *int
+	Kind        scopeStageKind
+	Values      []string
+	Limit       *int
+	ExactValues bool
 }
 
 type fileEntry struct {
@@ -495,7 +529,7 @@ type outputReport struct {
 	modeTags  map[string]string
 	humanSize string
 	tokens    int64
-	fileWord  string
+	countWord string
 	notices   []string
 }
 
@@ -548,8 +582,9 @@ type exitError struct {
 // target-by-target flow. Some of them are real "Error:" blocks that should
 // still print under --quiet even when soft warnings are suppressed.
 type diagnostic struct {
-	message string
-	isError bool
+	message          string
+	isError          bool
+	isTargetNotFound bool
 }
 
 type entryMode string
@@ -629,6 +664,34 @@ func Main() {
 	}
 }
 
+func rawArgsHeadlessStdoutMode(args []string) bool {
+	quiet := false
+	print := false
+	for _, arg := range args {
+		switch arg {
+		case "-q", "--quiet":
+			quiet = true
+		case "-p", "--print":
+			print = true
+		}
+	}
+	return quiet && print
+}
+
+func rawArgsUseStdinPathValues(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--include", "--only", "--exclude":
+			values, next := consumeModifierValues(args, i+1)
+			if len(values) == 1 && values[0] == "-" {
+				return true
+			}
+			i = next - 1
+		}
+	}
+	return false
+}
+
 func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
 	if len(args) == 0 {
 		return nil
@@ -692,11 +755,18 @@ func canonicalScopeArgs(s executionScope) []string {
 			if stage.Limit != nil {
 				parts = append(parts, shellQuoteArg(strconv.Itoa(*stage.Limit)))
 			}
+		case scopeStageDepth:
+			parts = append(parts, "--depth")
+			if stage.Limit != nil {
+				parts = append(parts, shellQuoteArg(strconv.Itoa(*stage.Limit)))
+			}
 		case scopeStageContains:
 			parts = append(parts, "--contains")
 			for _, value := range stage.Values {
 				parts = append(parts, shellQuoteArg(value))
 			}
+		case scopeStagePaths:
+			parts = append(parts, "--paths")
 		case scopeStageSnippet:
 			parts = append(parts, "--snippet")
 			for _, value := range stage.Values {
@@ -727,7 +797,7 @@ func resolvedCommandGlobalFlags(rawArgs []string) []string {
 	out := make([]string, 0, 6)
 	for _, arg := range rawArgs {
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-t", "--no-tree", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--preview", "--with-binaries":
 			out = append(out, arg)
 		}
 	}

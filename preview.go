@@ -12,7 +12,8 @@ import (
 )
 
 func buildOutputReportForPlan(cfg runConfig, gitCtx gitContext, plan outputPlan, notices []string) (outputReport, error) {
-	sizes, totalBytes := plan.BodySizes()
+	sizes, totalBytes := plan.PayloadSizes()
+	count, word := plan.SummaryCountWord()
 	report := outputReport{
 		sizes:   sizes,
 		notices: append([]string(nil), notices...),
@@ -29,11 +30,8 @@ func buildOutputReportForPlan(cfg runConfig, gitCtx gitContext, plan outputPlan,
 		report.modeTags = plan.PreviewModeTags(report.statuses)
 	}
 
-	report.humanSize, report.tokens = treepkg.FormatSizeAndTokens(totalBytes, len(plan.items))
-	report.fileWord = "files"
-	if len(plan.items) == 1 {
-		report.fileWord = "file"
-	}
+	report.humanSize, report.tokens = treepkg.FormatSizeAndTokens(totalBytes, count)
+	report.countWord = word
 	return report, nil
 }
 
@@ -98,7 +96,11 @@ func writeNormalDiagnostics(cfg runConfig, gitCtx gitContext, plan outputPlan, r
 		return true, nil
 	}
 
-	if promptYesNo(colors.Prompt+"Proceed? [y/N]"+colors.Reset, false, stderr) {
+	proceedPrompt, err := promptYesNo(colors.Prompt+"Proceed? [y/N]"+colors.Reset, false, stderr)
+	if err != nil {
+		return false, err
+	}
+	if proceedPrompt {
 		return true, nil
 	}
 	if _, err := fmt.Fprintf(stderr, "%sAborted.%s\n", colors.Warn, colors.Reset); err != nil {
@@ -138,25 +140,23 @@ func writeSummary(w io.Writer, report outputReport, colors colorPalette) error {
 }
 
 func writeClipboardSuccess(w io.Writer, plan outputPlan, colors colorPalette) error {
-	if len(plan.items) == 0 {
+	relPaths := plan.DistinctRelPaths()
+	if len(relPaths) == 0 {
 		return nil
 	}
-	first := plan.items[0].relPath
-	last := plan.items[len(plan.items)-1].relPath
-	fileWord := "files"
-	if len(plan.items) == 1 {
-		fileWord = "file"
-	}
+	count, word := plan.SummaryCountWord()
+	first := relPaths[0]
+	last := relPaths[len(relPaths)-1]
 
 	switch {
-	case len(plan.items) == 1:
+	case count == 1:
 		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%s%s %sto clipboard%s\n", colors.OK, colors.Reset, colors.Bold, first, colors.Reset, colors.OK, colors.Reset)
 		return err
 	case first == last:
-		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s\n", colors.OK, colors.Reset, colors.Bold, len(plan.items), fileWord, colors.Reset, colors.OK, colors.Reset)
+		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s\n", colors.OK, colors.Reset, colors.Bold, count, word, colors.Reset, colors.OK, colors.Reset)
 		return err
 	default:
-		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s %s(%s ... %s)%s\n", colors.OK, colors.Reset, colors.Bold, len(plan.items), fileWord, colors.Reset, colors.OK, colors.Reset, colors.Dim, first, last, colors.Reset)
+		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s %s(%s ... %s)%s\n", colors.OK, colors.Reset, colors.Bold, count, word, colors.Reset, colors.OK, colors.Reset, colors.Dim, first, last, colors.Reset)
 		return err
 	}
 }

@@ -30,6 +30,8 @@ type scopeStageTransitionState struct {
 	outputModeKind     scopeStageKind
 	activeBoundaryKind scopeStageKind
 	activeBoundary     scopeStageBoundaryPolicy
+	hasInclude         bool
+	hasNonIncludeStage bool
 }
 
 func validateScopeStageOrder(stages []scopeStage) error {
@@ -92,12 +94,25 @@ func (s *scopeStageTransitionState) apply(kind scopeStageKind) error {
 		s.activeBoundary = semantics.BoundaryPolicy
 		s.activeBoundaryKind = kind
 	}
+	if kind == scopeStageInclude {
+		s.hasInclude = true
+	} else {
+		s.hasNonIncludeStage = true
+	}
 	return nil
 }
 
 func (s scopeStageTransitionState) validate(kind scopeStageKind, semantics scopeStageSemantics) error {
 	if s.activeBoundary == scopeStageBoundaryTerminal {
 		return terminalBoundaryOrderError(scopeStageFlagLabel(s.activeBoundaryKind), semantics.Flag)
+	}
+	if kind == scopeStageInclude {
+		if s.hasInclude {
+			return repeatedIncludeError()
+		}
+		if s.hasNonIncludeStage {
+			return includeAfterModifierError()
+		}
 	}
 	if err := validateOutputModeTransition(s.outputModeKind, kind, semantics); err != nil {
 		return err
@@ -205,7 +220,7 @@ func currentScopeStagesFromArgsLegacy(args []string) []scopeStage {
 					i++
 				}
 			}
-		case "--contains", "--snippet":
+		case "--contains", "--snippet", "--depth":
 			kind, _ := scopeStageKindForFlag(args[i])
 			stages = append(stages, scopeStage{Kind: kind})
 			if i+1 < len(args) && !isModifierBoundaryToken(args[i+1]) {
@@ -286,4 +301,12 @@ func repeatedOutputModeError(flag string) error {
 
 func terminalBoundaryOrderError(boundaryFlag, nextFlag string) error {
 	return validationFailure{Reason: validationReasonTerminalBoundaryOrder, BoundaryFlag: boundaryFlag, NextFlag: nextFlag}
+}
+
+func includeAfterModifierError() error {
+	return validationFailure{Reason: validationReasonIncludeAfterModifier}
+}
+
+func repeatedIncludeError() error {
+	return validationFailure{Reason: validationReasonRepeatedInclude}
 }

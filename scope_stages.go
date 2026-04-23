@@ -31,13 +31,26 @@ func applyScopeStages(resolver *scopeResolver, gitCtx gitContext, s executionSco
 		var err error
 		switch stage.Kind {
 		case scopeStageInclude:
-			entries, err = applyIncludeStage(resolver, entries, stage.Values)
+			entries, err = applyIncludeStage(resolver, s, entries, stage.Values, stage.ExactValues)
 		case scopeStageOnly:
+			if stage.ExactValues {
+				entries = filterEntriesByExactStagePaths(entries, stage.Values, true)
+				continue
+			}
 			entries, err = filterEntriesByStagePatterns(entries, stage.Values, true)
 		case scopeStageExclude:
+			if stage.ExactValues {
+				entries = filterEntriesByExactStagePaths(entries, stage.Values, false)
+				continue
+			}
 			entries, err = filterEntriesByStagePatterns(entries, stage.Values, false)
 		case scopeStageRecent:
 			entries, err = applyRecentStage(entries, resolver.cfg.WorkingDir, stage.Limit)
+		case scopeStageDepth:
+			if stage.Limit == nil {
+				continue
+			}
+			entries, err = applyDepthStage(entries, *stage.Limit)
 		case scopeStageContains:
 			if len(stage.Values) == 0 {
 				continue
@@ -98,20 +111,136 @@ func applyScopeStages(resolver *scopeResolver, gitCtx gitContext, s executionSco
 	return entries, nil
 }
 
-func applyIncludeStage(resolver *scopeResolver, entries []fileEntry, targets []string) ([]fileEntry, error) {
+func applyIncludeStage(resolver *scopeResolver, s executionScope, entries []fileEntry, targets []string, exactValues bool) ([]fileEntry, error) {
 	if len(targets) == 0 {
 		return entries, nil
 	}
 
 	out := append([]fileEntry(nil), entries...)
 	for _, target := range targets {
-		included, _, _, _, err := resolver.resolveAndDiscoverTarget(0, target, io.Discard, colorPalette{})
-		if err != nil {
-			return nil, err
+		if target == "*" || includeTargetActsAsAuthorizationOnly(s, target) {
+			continue
 		}
-		out = append(out, included...)
+		scopedTargets := scopeIncludeTarget(s.Targets, target)
+		for _, scopedTarget := range scopedTargets {
+			if exactValues {
+				included, err := resolveExactIncludeStageTarget(resolver, scopedTarget)
+				if err != nil {
+					return nil, err
+				}
+				out = append(out, included...)
+				continue
+			}
+			included, _, _, _, err := resolver.resolveAndDiscoverTarget(0, scopedTarget, io.Discard, colorPalette{})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, included...)
+		}
 	}
 	return dedupeEntriesByPathPreserveOrder(out), nil
+}
+
+// scopeIncludeTarget resolves an include target relative to the scope targets.
+// Returns the list of concrete paths to resolve (one per scope target that
+// could contain the include target). When any scope target is "." (root), the
+// include target is returned as-is since the entire project is in scope.
+func scopeIncludeTarget(scopeTargets []string, includeTarget string) []string {
+	includeTarget = normalizeRelPath(includeTarget)
+	if includeTarget == "" || includeTarget == "." {
+		return nil
+	}
+
+	// If any scope target is root, the include target is in scope as-is.
+	for _, target := range scopeTargets {
+		target = normalizeRelPath(target)
+		if target == "" || target == "." {
+			return []string{includeTarget}
+		}
+	}
+
+	// Anchored include target (contains "/"): check if it falls under any
+	// scope target prefix, or is an ancestor of any scope target (authorizing
+	// discovery of the scope target itself).
+	if strings.Contains(includeTarget, "/") {
+		for _, target := range scopeTargets {
+			target = normalizeRelPath(target)
+			if target == "" {
+				continue
+			}
+			if includeTarget == target || strings.HasPrefix(includeTarget, target+"/") || strings.HasPrefix(target, includeTarget+"/") {
+				return []string{includeTarget}
+			}
+		}
+		return nil
+	}
+
+	// Bare include target (no "/"): resolve relative to each scope target.
+	out := make([]string, 0, len(scopeTargets))
+	for _, target := range scopeTargets {
+		target = normalizeRelPath(target)
+		if target == "" {
+			continue
+		}
+		out = append(out, target+"/"+includeTarget)
+	}
+	return out
+}
+
+func includeTargetActsAsAuthorizationOnly(s executionScope, includeTarget string) bool {
+	return includeTargetActsAsAuthorizationOnlyForTargets(s.Targets, includeTarget)
+}
+
+func includeTargetActsAsAuthorizationOnlyForTargets(targets []string, includeTarget string) bool {
+	includeTarget = normalizeRelPath(includeTarget)
+	if includeTarget == "" || includeTarget == "." {
+		return false
+	}
+	for _, target := range targets {
+		target = normalizeRelPath(target)
+		if target == "" || target == "." {
+			continue
+		}
+		if target == includeTarget || strings.HasPrefix(target, includeTarget+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func resolveExactIncludeStageTarget(resolver *scopeResolver, target string) ([]fileEntry, error) {
+	normalized := normalizeRelPath(target)
+	if normalized == "" {
+		return nil, nil
+	}
+	included, handled, _, err := resolver.resolveExactTarget(normalized, false, colorPalette{})
+	if err != nil {
+		return nil, err
+	}
+	if !handled {
+		return nil, nil
+	}
+	return included, nil
+}
+
+func filterEntriesByExactStagePaths(entries []fileEntry, paths []string, keepMatches bool) []fileEntry {
+	wanted := make(map[string]struct{}, len(paths))
+	for _, value := range paths {
+		normalized := normalizeRelPath(value)
+		if normalized == "" {
+			continue
+		}
+		wanted[normalized] = struct{}{}
+	}
+
+	out := make([]fileEntry, 0, len(entries))
+	for _, entry := range entries {
+		_, matched := wanted[normalizeRelPath(entry.RelPath)]
+		if keepMatches == matched {
+			out = append(out, entry)
+		}
+	}
+	return out
 }
 
 func filterEntriesByStagePatterns(entries []fileEntry, patterns []string, keepMatches bool) ([]fileEntry, error) {

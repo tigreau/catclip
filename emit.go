@@ -60,6 +60,12 @@ func emitFullOutput(cfg runConfig, units []preparedFileUnit, stdout io.Writer, c
 }
 
 func emitOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
+	if cfg.Raw {
+		return emitRawOutputPlan(cfg, plan, stdout, colors)
+	}
+	if plan.HasPaths() {
+		return emitSectionedOutputPlan(cfg, plan, stdout, colors)
+	}
 	return withPayloadWriter(cfg, stdout, colors, func(w io.Writer) error {
 		prefetcher := startEmitPrefetch(plan)
 		if prefetcher != nil {
@@ -72,6 +78,70 @@ func emitOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors col
 		}
 		return nil
 	})
+}
+
+func emitRawOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
+	return withPayloadWriter(cfg, stdout, colors, func(w io.Writer) error {
+		if len(plan.items) != 1 {
+			return fmt.Errorf("raw output requires exactly one plan item")
+		}
+		item := plan.items[0]
+		if item.kind != outputSectionKindFiles || item.mode != entryModeFull {
+			return fmt.Errorf("raw output requires one full-file item")
+		}
+		return emitFileBodyFromDisk(w, item.unit.Entry.AbsPath)
+	})
+}
+
+func emitSectionedOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
+	return withPayloadWriter(cfg, stdout, colors, func(w io.Writer) error {
+		for i, section := range plan.sections {
+			if i > 0 {
+				separator := outputSectionSeparator(plan.sections[i-1].kind, section.kind)
+				if separator != "" {
+					if _, err := io.WriteString(w, separator); err != nil {
+						return err
+					}
+				}
+			}
+			switch section.kind {
+			case outputSectionKindPaths:
+				for _, item := range section.items {
+					if _, err := io.WriteString(w, item.relPath+"\n"); err != nil {
+						return err
+					}
+				}
+			case outputSectionKindFiles:
+				subplan := outputPlan{items: section.items}
+				prefetcher := startEmitPrefetch(subplan)
+				for idx, item := range section.items {
+					if err := emitEntry(w, item.unit, idx, prefetcher); err != nil {
+						if prefetcher != nil {
+							prefetcher.Close()
+						}
+						return err
+					}
+				}
+				if prefetcher != nil {
+					prefetcher.Close()
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func outputSectionSeparator(prev, next outputSectionKind) string {
+	if prev == outputSectionKindPaths && next == outputSectionKindFiles {
+		return "\n"
+	}
+	if prev == outputSectionKindFiles && next == outputSectionKindPaths {
+		return ""
+	}
+	if prev != next {
+		return "\n"
+	}
+	return ""
 }
 
 func emitEntry(w io.Writer, unit preparedFileUnit, index int, prefetcher *emitPrefetcher) error {
@@ -107,6 +177,20 @@ func emitFileFromDisk(w io.Writer, relPath, typeAttr, absPath string) error {
 	defer f.Close()
 
 	return emitWrappedReader(w, relPath, typeAttr, f)
+}
+
+func emitFileBodyFromDisk(w io.Writer, absPath string) error {
+	f, err := os.Open(absPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	buf := make([]byte, readBufferSize())
+	if _, err := io.CopyBuffer(w, f, buf); err != nil {
+		return fmt.Errorf("failed while streaming %s: %w", absPath, err)
+	}
+	return nil
 }
 
 func emitWrappedFile(w io.Writer, relPath, typeAttr string, data []byte) error {

@@ -1,6 +1,7 @@
 package catclip
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,6 +20,13 @@ type verboseOutputMetrics struct {
 	ModifiedUntrackedCount int
 	GitStateKnown          bool
 	GitStateNote           string
+}
+
+var headlessPromptGuardCount atomic.Int32
+
+type stdinPathCache struct {
+	loaded bool
+	paths  []string
 }
 
 func run(cfg runConfig, stdout, stderr io.Writer) error {
@@ -39,6 +48,8 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		if err := validateImplementedFeatureSet(cfg); err != nil {
 			return err
 		}
+		restorePromptGuard := pushHeadlessPromptGuard(cfg.HeadlessStdoutMode())
+		defer restorePromptGuard()
 		if cfg.FilePreview {
 			return runInternalFilePreview(cfg, stdout)
 		}
@@ -74,6 +85,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			discoverySpinnerStop = startLoadingSpinner(spinnerOutputFile(stderr), "Scanning files...")
 		}
 		var allEntries []fileEntry
+		evaluatedScopes := make([]evaluatedOutputScope, 0, len(commandScopes))
 		diagnostics := make([]diagnostic, 0, len(cfg.Warnings))
 		for _, warning := range cfg.Warnings {
 			diagnostics = append(diagnostics, diagnostic{message: warning})
@@ -85,25 +97,49 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			s := executionScopeFromCommandScopeSpec(scopeSpec)
 			entries, scopeDiagnostics, scopeNotices, scopeSelectionCancel, err := evaluateScope(cfg, gitCtx, i, s, baseRules, stderr, colors)
 			if err != nil {
+				discoverySpinnerStop()
 				return err
 			}
 			if cfg.Verbose {
 				fmt.Fprintf(stderr, "[verbose] scope %d: discovered %d file(s) in %s\n", i+1, len(entries), formatDuration(time.Since(scopeStarted)))
 			}
 			allEntries = append(allEntries, entries...)
+			evaluatedScopes = append(evaluatedScopes, evaluatedOutputScope{
+				Paths:   s.Paths,
+				Entries: append([]fileEntry(nil), entries...),
+			})
 			diagnostics = append(diagnostics, scopeDiagnostics...)
 			notices = append(notices, scopeNotices...)
 			hadSelectionCancel = hadSelectionCancel || scopeSelectionCancel
 		}
 		discoverySpinnerStop()
-		if commandScopesUseRecentStage(commandScopes) {
-			allEntries = dedupeEntriesByPathPreserveOrder(allEntries)
+		usePathsOutput := commandScopesUsePathsStage(commandScopes)
+		var outputPlan outputPlan
+		if usePathsOutput {
+			outputPlan, err = prepareSectionedOutputPlan(gitCtx, evaluatedScopes, commandScopesUseRecentStage(commandScopes))
+			if err != nil {
+				return err
+			}
 		} else {
-			allEntries = dedupeEntriesByPath(allEntries)
+			if commandScopesUseRecentStage(commandScopes) {
+				allEntries = dedupeEntriesByPathPreserveOrder(allEntries)
+			} else {
+				allEntries = dedupeEntriesByPath(allEntries)
+			}
+			outputPlan, err = prepareOutputPlan(gitCtx, allEntries)
+			if err != nil {
+				return err
+			}
 		}
 		if cfg.TreePayload {
 			hadErrorDiagnostic := false
+			hadTargetNotFound := false
 			for _, diag := range diagnostics {
+				if diag.isTargetNotFound {
+					hadTargetNotFound = true
+					fmt.Fprintln(stderr, diag.message)
+					continue
+				}
 				if !diag.isError {
 					continue
 				}
@@ -113,21 +149,6 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			if hadErrorDiagnostic {
 				return newExitError(1, "")
 			}
-			if len(allEntries) == 0 {
-				doc, ok := buildEmptyTreeDocument(cfg)
-				if !ok {
-					if err := writeNoFilesMatchedMessage(cfg, stderr, colors, hadSelectionCancel); err != nil {
-						return err
-					}
-					return newExitError(1, "")
-				}
-				return encodeTreePayload(stdout, doc)
-			}
-			reportStarted := time.Now()
-			outputPlan, err := prepareOutputPlan(gitCtx, allEntries)
-			if err != nil {
-				return err
-			}
 			if len(outputPlan.items) == 0 {
 				doc, ok := buildEmptyTreeDocument(cfg)
 				if !ok {
@@ -136,8 +157,15 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 					}
 					return newExitError(1, "")
 				}
-				return encodeTreePayload(stdout, doc)
+				if err := encodeTreePayload(stdout, doc); err != nil {
+					return err
+				}
+				if hadTargetNotFound {
+					return newExitError(1, "")
+				}
+				return nil
 			}
+			reportStarted := time.Now()
 			report, err := buildOutputReportForPlan(cfg, gitCtx, outputPlan, dedupePreserveOrder(notices))
 			if err != nil {
 				return err
@@ -145,28 +173,22 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			if cfg.Verbose {
 				fmt.Fprintf(stderr, "[verbose] report: %s\n", formatDuration(time.Since(reportStarted)))
 			}
-			return encodeTreePayload(stdout, buildTreeDocumentFromPreview(cfg, outputPlan, report))
-		}
-		for _, diag := range diagnostics {
-			if diag.isError || !cfg.Quiet {
-				fmt.Fprintln(stderr, diag.message)
-			}
-		}
-		if len(allEntries) == 0 {
-			if !cfg.Quiet {
-				for _, notice := range dedupePreserveOrder(notices) {
-					fmt.Fprintln(stderr, notice)
-				}
-			}
-			if err := writeNoFilesMatchedMessage(cfg, stderr, colors, hadSelectionCancel); err != nil {
+			if err := encodeTreePayload(stdout, buildTreeDocumentFromPreview(cfg, outputPlan, report)); err != nil {
 				return err
 			}
-			return newExitError(1, "")
+			if hadTargetNotFound {
+				return newExitError(1, "")
+			}
+			return nil
 		}
-		reportStarted := time.Now()
-		outputPlan, err := prepareOutputPlan(gitCtx, allEntries)
-		if err != nil {
-			return err
+		hadTargetNotFound := false
+		for _, diag := range diagnostics {
+			if diag.isError || diag.isTargetNotFound || !cfg.Quiet {
+				fmt.Fprintln(stderr, diag.message)
+			}
+			if diag.isTargetNotFound {
+				hadTargetNotFound = true
+			}
 		}
 		if len(outputPlan.items) == 0 {
 			if !cfg.Quiet {
@@ -179,6 +201,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			}
 			return newExitError(1, "")
 		}
+		reportStarted := time.Now()
 		report, err := buildOutputReportForPlan(cfg, gitCtx, outputPlan, dedupePreserveOrder(notices))
 		if err != nil {
 			return err
@@ -196,7 +219,13 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 				fmt.Fprintf(stderr, "[verbose] preview: %s\n", formatDuration(time.Since(renderStarted)))
 				fmt.Fprintf(stderr, "[verbose] total: %s\n", formatDuration(time.Since(started)))
 			}
+			if hadTargetNotFound {
+				return newExitError(1, "")
+			}
 			return nil
+		}
+		if err := validateRawOutputPlan(cfg, outputPlan); err != nil {
+			return err
 		}
 		diagStarted := time.Now()
 		proceed, err := writeNormalDiagnostics(cfg, gitCtx, outputPlan, report, stderr, colors)
@@ -240,6 +269,9 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		}
 		if cfg.Verbose {
 			fmt.Fprintf(stderr, "[verbose] total: %s\n", formatDuration(time.Since(started)))
+		}
+		if hadTargetNotFound {
+			return newExitError(1, "")
 		}
 		return nil
 	default:
@@ -294,7 +326,7 @@ func collectVerboseOutputMetrics(verbose bool, gitCtx gitContext, plan outputPla
 	}
 
 	for _, item := range plan.items {
-		entry := item.unit.Entry
+		entry := item.entry
 		repoPath := normalizeRelPath(gitCtx.toRepoPath(entry.RelPath))
 		if _, ok := tracked[repoPath]; !ok {
 			metrics.ModifiedUntrackedCount++
@@ -452,7 +484,10 @@ func runResetHiss(cfg runConfig, stderr io.Writer) error {
 		if !cfg.Quiet {
 			fmt.Fprintf(stderr, "This will overwrite %s with defaults.\n", path)
 		}
-		shouldReset = promptYesNo("Are you sure? [y/N]", false, stderr)
+		shouldReset, err = promptYesNo("Are you sure? [y/N]", false, stderr)
+		if err != nil {
+			return err
+		}
 	}
 
 	if !shouldReset {
@@ -480,20 +515,24 @@ func resolveEditorCommand() (editorCommand, error) {
 	return resolveEditorCommandForGOOS(runtime.GOOS, os.Getenv("VISUAL"), os.Getenv("EDITOR"), exec.LookPath)
 }
 
-func promptYesNo(prompt string, defaultYes bool, stderr io.Writer) bool {
+func promptYesNo(prompt string, defaultYes bool, stderr io.Writer) (bool, error) {
 	defaultResponse := "n"
 	if defaultYes {
 		defaultResponse = "y"
 	}
 
-	if response, ok := readPromptResponse(prompt, stderr); ok {
+	response, ok, err := readPromptResponse(prompt, stderr)
+	if err != nil {
+		return false, err
+	}
+	if ok {
 		response = strings.TrimSpace(strings.ToLower(response))
 		if response == "" {
 			response = defaultResponse
 		}
-		return response == "y" || response == "yes"
+		return response == "y" || response == "yes", nil
 	}
-	return defaultYes
+	return defaultYes, nil
 }
 
 func canPromptInteractively() bool {
@@ -508,32 +547,60 @@ func canPromptInteractively() bool {
 	return true
 }
 
-func readPromptResponse(prompt string, stderr io.Writer) (string, bool) {
-	if isTerminalFile(os.Stdin) {
-		return readPromptKey(os.Stdin, stderr, prompt)
+func pushHeadlessPromptGuard(enabled bool) func() {
+	if !enabled {
+		return func() {}
 	}
-
-	ttyIn, ttyOut, err := openPromptTTY()
-	if err != nil {
-		return "", false
+	headlessPromptGuardCount.Add(1)
+	return func() {
+		headlessPromptGuardCount.Add(-1)
 	}
-	defer closePromptTTY(ttyIn, ttyOut)
-
-	return readPromptKey(ttyIn, ttyOut, prompt)
 }
 
-func readLineResponse(prompt string, stderr io.Writer) (string, bool) {
+func headlessPromptGuardActive() bool {
+	return headlessPromptGuardCount.Load() > 0
+}
+
+func headlessPromptBugError() error {
+	return fmt.Errorf("BUG: reached interactive prompt in headless mode (-q -p).\n  This is a catclip bug; please report it.")
+}
+
+func readPromptResponse(prompt string, stderr io.Writer) (string, bool, error) {
+	if headlessPromptGuardActive() {
+		return "", false, headlessPromptBugError()
+	}
 	if isTerminalFile(os.Stdin) {
-		return readPromptLine(os.Stdin, stderr, prompt)
+		response, ok := readPromptKey(os.Stdin, stderr, prompt)
+		return response, ok, nil
 	}
 
 	ttyIn, ttyOut, err := openPromptTTY()
 	if err != nil {
-		return "", false
+		return "", false, nil
 	}
 	defer closePromptTTY(ttyIn, ttyOut)
 
-	return readPromptLine(ttyIn, ttyOut, prompt)
+	response, ok := readPromptKey(ttyIn, ttyOut, prompt)
+	return response, ok, nil
+}
+
+func readLineResponse(prompt string, stderr io.Writer) (string, bool, error) {
+	if headlessPromptGuardActive() {
+		return "", false, headlessPromptBugError()
+	}
+	if isTerminalFile(os.Stdin) {
+		response, ok := readPromptLine(os.Stdin, stderr, prompt)
+		return response, ok, nil
+	}
+
+	ttyIn, ttyOut, err := openPromptTTY()
+	if err != nil {
+		return "", false, nil
+	}
+	defer closePromptTTY(ttyIn, ttyOut)
+
+	response, ok := readPromptLine(ttyIn, ttyOut, prompt)
+	return response, ok, nil
 }
 
 func readPromptKey(input *os.File, output io.Writer, prompt string) (string, bool) {
@@ -569,6 +636,36 @@ func validateImplementedFeatureSet(cfg runConfig) error {
 	return nil
 }
 
+func validateRawOutputPlan(cfg runConfig, plan outputPlan) error {
+	if !cfg.Raw {
+		return nil
+	}
+	if !cfg.Print || cfg.OutputMode != outputModeStdout {
+		return newUsageError("Error: --raw requires -p/--print.")
+	}
+	if plan.HasPaths() {
+		return newUsageError("Error: --raw cannot be combined with --paths.")
+	}
+	if len(plan.items) != 1 {
+		return newUsageError("Error: --raw requires exactly one surviving full-file output item; %d matched.", len(plan.items))
+	}
+
+	item := plan.items[0]
+	if item.kind != outputSectionKindFiles {
+		return newUsageError("Error: --raw cannot be combined with --paths.")
+	}
+	switch item.mode {
+	case entryModeSnippet:
+		return newUsageError("Error: --raw cannot be combined with snippet output.")
+	case entryModeDiff:
+		return newUsageError("Error: --raw cannot be combined with diff output.")
+	case entryModeFull:
+		return nil
+	default:
+		return newUsageError("Error: --raw requires exactly one surviving full-file output item; %d matched.", len(plan.items))
+	}
+}
+
 func parseArgs(args []string) (runConfig, error) {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -587,6 +684,7 @@ func parseArgs(args []string) (runConfig, error) {
 	var current executionScopeBuilder
 	inModifierMode := false
 	lastNoValueModifier := ""
+	var stdinCache stdinPathCache
 
 	finalize := func() error {
 		if !current.hasContent() {
@@ -612,6 +710,11 @@ func parseArgs(args []string) (runConfig, error) {
 		}
 		if err := validateScopeStageOrder(current.Stages); err != nil {
 			return err
+		}
+		if cfg.WithBinaries {
+			if err := validateWithBinariesCompatibility(s); err != nil {
+				return err
+			}
 		}
 		if len(s.Targets) == 0 {
 			if cfg.TreePayload {
@@ -653,6 +756,10 @@ func parseArgs(args []string) (runConfig, error) {
 		case "-p", "--print":
 			cfg.Print = true
 			cfg.OutputMode = outputModeStdout
+		case "-r", "--raw":
+			cfg.Raw = true
+		case "--with-binaries":
+			cfg.WithBinaries = true
 		case "-t", "--no-tree":
 			cfg.NoTree = true
 		case "--preview":
@@ -772,32 +879,46 @@ func parseArgs(args []string) (runConfig, error) {
 			return runConfig{}, bareModifierPlaceholderInteractiveOnlyError()
 		case "--only":
 			inModifierMode = true
-			values, next := consumeModifierValues(args, i+1)
+			values, next, exactValues, err := consumePathModifierValues(args, i+1, "--only", &stdinCache)
+			if err != nil {
+				return runConfig{}, err
+			}
 			if len(values) == 0 {
 				return runConfig{}, requiredStageValueError("--only")
 			}
 			current.Only = append(current.Only, values...)
-			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageOnly, Values: append([]string(nil), values...)})
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageOnly, Values: append([]string(nil), values...), ExactValues: exactValues})
 			i = next - 1
 			lastNoValueModifier = ""
 		case "--include":
 			inModifierMode = true
-			values, next := consumeModifierValues(args, i+1)
+			values, next, exactValues, err := consumePathModifierValues(args, i+1, "--include", &stdinCache)
+			if err != nil {
+				return runConfig{}, err
+			}
 			if len(values) == 0 {
 				return runConfig{}, requiredStageValueError("--include")
 			}
+			for _, v := range values {
+				if v != "*" && hasGlobChars(v) {
+					return runConfig{}, newUsageError("Error: --include does not accept glob patterns. Use literal paths or '*' to include all.")
+				}
+			}
 			current.IncludedTargets = append(current.IncludedTargets, values...)
-			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageInclude, Values: append([]string(nil), values...)})
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageInclude, Values: append([]string(nil), values...), ExactValues: exactValues})
 			i = next - 1
 			lastNoValueModifier = ""
 		case "--exclude":
 			inModifierMode = true
-			values, next := consumeModifierValues(args, i+1)
+			values, next, exactValues, err := consumePathModifierValues(args, i+1, "--exclude", &stdinCache)
+			if err != nil {
+				return runConfig{}, err
+			}
 			if len(values) == 0 {
 				return runConfig{}, requiredStageValueError("--exclude")
 			}
 			current.Exclude = append(current.Exclude, values...)
-			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageExclude, Values: append([]string(nil), values...)})
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageExclude, Values: append([]string(nil), values...), ExactValues: exactValues})
 			i = next - 1
 			lastNoValueModifier = ""
 		case "--recent":
@@ -808,6 +929,18 @@ func parseArgs(args []string) (runConfig, error) {
 			}
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageRecent, Limit: limit})
 			i = next - 1
+			lastNoValueModifier = ""
+		case "--depth":
+			inModifierMode = true
+			if i+1 >= len(args) {
+				return runConfig{}, requiredStageValueError("--depth")
+			}
+			i++
+			depth, err := parseDepthToken(args[i])
+			if err != nil {
+				return runConfig{}, err
+			}
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageDepth, Limit: intPtr(depth)})
 			lastNoValueModifier = ""
 		case "--contains":
 			inModifierMode = true
@@ -821,6 +954,11 @@ func parseArgs(args []string) (runConfig, error) {
 				cfg.Warnings = append(cfg.Warnings, "Warning: --contains uses regex, not globs. Did you mean '.*' instead of '*'?\n  Example: --contains 'use.*Context' (not 'use*Context')")
 			}
 			lastNoValueModifier = ""
+		case "--paths":
+			inModifierMode = true
+			current.Paths = true
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStagePaths})
+			lastNoValueModifier = arg
 		default:
 			switch {
 			case strings.HasPrefix(arg, "--contains="):
@@ -829,12 +967,16 @@ func parseArgs(args []string) (runConfig, error) {
 				return runConfig{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
 			case strings.HasPrefix(arg, "--recent="):
 				return runConfig{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
+			case strings.HasPrefix(arg, "--depth="):
+				return runConfig{}, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 			case arg == "--diff":
 				return runConfig{}, diffStandaloneError()
 			case strings.HasPrefix(arg, "--"):
 				return runConfig{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
 				return runConfig{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
+			case arg == "-":
+				return runConfig{}, newUsageError("Error: '-' is not a valid target path.\n  To read file paths from stdin, use it with a modifier:\n    catclip src --exclude -\n    catclip src --only -")
 			default:
 				if inModifierMode {
 					if lastNoValueModifier != "" {
@@ -859,6 +1001,9 @@ func parseArgs(args []string) (runConfig, error) {
 		}
 		executionScopes = append(executionScopes, executionScope{Targets: []string{"."}})
 	}
+	if cfg.Action == actionRun && cfg.Preview && cfg.Print {
+		return runConfig{}, newUsageError("Error: --preview cannot be used with -p.\n  --preview renders a preview instead of emitting payload.\n  -p emits payload to stdout.")
+	}
 
 	cfg.Command = finalizedCommandSpecFromExecutionScopes(executionScopes)
 
@@ -868,7 +1013,7 @@ func parseArgs(args []string) (runConfig, error) {
 func (b executionScopeBuilder) hasContent() bool {
 	return len(b.Targets) > 0 || len(b.IncludedTargets) > 0 || len(b.Only) > 0 || len(b.Exclude) > 0 ||
 		len(b.Stages) > 0 ||
-		b.Contains != "" || b.SnippetPattern != "" || b.Snippet || b.Changed || b.Staged || b.Unstaged ||
+		b.Contains != "" || b.Paths || b.SnippetPattern != "" || b.Snippet || b.Changed || b.Staged || b.Unstaged ||
 		b.Untracked || b.Diff
 }
 
@@ -895,6 +1040,55 @@ func consumeModifierValues(args []string, start int) ([]string, int) {
 		i++
 	}
 	return values, i
+}
+
+func consumePathModifierValues(args []string, start int, flag string, cache *stdinPathCache) ([]string, int, bool, error) {
+	values, next := consumeModifierValues(args, start)
+	if len(values) == 1 && values[0] == "-" {
+		paths, err := readModifierPathsFromStdin(flag, cache)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		return paths, next, true, nil
+	}
+	return values, next, false, nil
+}
+
+func readModifierPathsFromStdin(flag string, cache *stdinPathCache) ([]string, error) {
+	if cache.loaded {
+		return append([]string(nil), cache.paths...), nil
+	}
+	if isTerminalFile(os.Stdin) {
+		return nil, newUsageError("Error: %s - reads paths from stdin, but no input is being piped.\n  Pipe paths from another command:\n    catclip src --contains \"pattern\" --paths | catclip src %s -", flag, flag)
+	}
+	paths, err := readNormalizedStdinPaths(os.Stdin)
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, newUsageError("Error: %s - received no paths from stdin.\n  The piped command produced no output.", flag)
+	}
+	cache.loaded = true
+	cache.paths = append([]string(nil), paths...)
+	return append([]string(nil), cache.paths...), nil
+}
+
+func readNormalizedStdinPaths(stdin io.Reader) ([]string, error) {
+	scanner := bufio.NewScanner(stdin)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	paths := make([]string, 0, 64)
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		normalized := normalizeRelPath(line)
+		if normalized == "" {
+			continue
+		}
+		paths = append(paths, normalized)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return paths, nil
 }
 
 func warnDirectoryPatternSemantics(cfg runConfig, baseRules []ignoreRule, stderr io.Writer, colors colorPalette) (bool, error) {
@@ -932,6 +1126,19 @@ func looksLikeDirectoryPattern(workingDir, pattern string, ignoredDirs map[strin
 	return pattern != ""
 }
 
+func validateWithBinariesCompatibility(s executionScope) error {
+	if s.Contains != "" {
+		return newUsageError("Error: --with-binaries cannot be combined with --contains.\n  --contains searches file content, which is not meaningful for binary files.")
+	}
+	if s.Snippet {
+		return newUsageError("Error: --with-binaries cannot be combined with --snippet.\n  --snippet extracts content blocks, which is not meaningful for binary files.")
+	}
+	if s.Diff {
+		return newUsageError("Error: --with-binaries cannot be combined with diff output.\n  Diff output operates on file content, which is not meaningful for binary files.")
+	}
+	return nil
+}
+
 func looksLikeGlobConfusion(pattern string) bool {
 	return strings.Contains(pattern, "*") &&
 		!strings.Contains(pattern, ".") &&
@@ -957,6 +1164,9 @@ func formatScopeSummary(s executionScope) string {
 			parts = append(parts, "snippet=true")
 		}
 	}
+	if s.Paths {
+		parts = append(parts, "paths=true")
+	}
 	if s.Changed {
 		parts = append(parts, "changed=true")
 	}
@@ -973,14 +1183,21 @@ func formatScopeSummary(s executionScope) string {
 		parts = append(parts, "diff=true")
 	}
 	for _, stage := range s.Stages {
-		if stage.Kind != scopeStageRecent {
-			continue
+		switch stage.Kind {
+		case scopeStageRecent:
+			if stage.Limit == nil {
+				parts = append(parts, "recent=true")
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("recent=%d", *stage.Limit))
+		case scopeStageDepth:
+			if stage.Limit == nil {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("depth=%d", *stage.Limit))
+		case scopeStagePaths:
+			parts = append(parts, "paths_stage=true")
 		}
-		if stage.Limit == nil {
-			parts = append(parts, "recent=true")
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("recent=%d", *stage.Limit))
 	}
 	return strings.Join(parts, " ")
 }
@@ -991,6 +1208,15 @@ func commandScopesUseRecentStage(scopes []commandScopeSpec) bool {
 			if stage.Kind == scopeStageRecent {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func commandScopesUsePathsStage(scopes []commandScopeSpec) bool {
+	for _, s := range scopes {
+		if s.HasPathsOutput() {
+			return true
 		}
 	}
 	return false

@@ -19,6 +19,23 @@ import (
 
 var errSelectionCancelled = errors.New("selection cancelled")
 
+type errNoScopedIgnoredTargets struct {
+	ScopeTargets []string
+}
+
+func (e errNoScopedIgnoredTargets) Error() string {
+	if len(e.ScopeTargets) == 1 {
+		return fmt.Sprintf("--include: no ignored files or directories under '%s'\n\n  --include is scoped to the target paths. To include from elsewhere,\n  use --then to start a new scope:\n    catclip %s --then . --include <path>", e.ScopeTargets[0], e.ScopeTargets[0])
+	}
+	return "--include: no ignored files or directories under the current scope targets\n\n  --include is scoped to the target paths. To include from elsewhere,\n  use --then to start a new scope."
+}
+
+type includedTargetSet struct {
+	exact    map[string]struct{}
+	dirs     []string
+	wildcard bool
+}
+
 type scopeResolver struct {
 	cfg                  runConfig
 	gitCtx               gitContext
@@ -28,7 +45,8 @@ type scopeResolver struct {
 	allowFileSymlinks    bool
 	textFileCache        map[string]bool
 	useGitIgnore         bool
-	includedTargets      map[string]struct{}
+	withBinaries         bool
+	includedTargets      includedTargetSet
 	wantedBasenames      map[string]struct{}
 	interactiveTargets   []targetMatch
 	interactiveTargetsOk bool
@@ -45,13 +63,24 @@ type scopeResolver struct {
 func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s executionScope, baseRules []ignoreRule, stderr io.Writer, colors colorPalette) ([]fileEntry, []diagnostic, []string, bool, error) {
 	mode := executionScopeOutputMode(s)
 
-	matcher, err := buildScopeMatcher(baseRules, s)
-	if err != nil {
-		return nil, nil, nil, false, err
+	includeAll := includeTargetsContainWildcard(s.IncludedTargets)
+
+	var matcher scopeMatcher
+	if includeAll {
+		matcher = scopeMatcher{}
+	} else {
+		var err error
+		matcher, err = buildScopeMatcher(baseRules, s)
+		if err != nil {
+			return nil, nil, nil, false, err
+		}
 	}
 	projectIgnore, useProjectIgnore, err := buildProjectIgnoreMatcher(cfg.WorkingDir, gitCtx.Enabled)
 	if err != nil {
 		return nil, nil, nil, false, err
+	}
+	if includeAll {
+		useProjectIgnore = false
 	}
 	resolver := scopeResolver{
 		cfg:               cfg,
@@ -60,8 +89,9 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 		projectIgnore:     projectIgnore,
 		useProjectIgnore:  useProjectIgnore,
 		allowFileSymlinks: false,
-		useGitIgnore:      gitCtx.Enabled,
-		includedTargets:   makeIncludedTargetSet(s.IncludedTargets),
+		useGitIgnore:      gitCtx.Enabled && !includeAll,
+		withBinaries:      cfg.WithBinaries,
+		includedTargets:   buildIncludedTargetSet(cfg.WorkingDir, s.IncludedTargets),
 		wantedBasenames:   collectWantedBasenames(s.Targets),
 	}
 
@@ -130,17 +160,34 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 	return entries, diagnostics, dedupePreserveOrder(notices), hadSelectionCancel, nil
 }
 
-func makeIncludedTargetSet(targets []string) map[string]struct{} {
-	if len(targets) == 0 {
-		return nil
+func includeTargetsContainWildcard(targets []string) bool {
+	for _, t := range targets {
+		if t == "*" {
+			return true
+		}
 	}
-	set := make(map[string]struct{}, len(targets))
+	return false
+}
+
+func buildIncludedTargetSet(workingDir string, targets []string) includedTargetSet {
+	if len(targets) == 0 {
+		return includedTargetSet{}
+	}
+	set := includedTargetSet{
+		exact:    make(map[string]struct{}, len(targets)),
+		dirs:     make([]string, 0, len(targets)),
+		wildcard: includeTargetsContainWildcard(targets),
+	}
 	for _, target := range targets {
 		target = normalizeRelPath(target)
 		if target == "" {
 			continue
 		}
-		set[target] = struct{}{}
+		set.exact[target] = struct{}{}
+		info, err := os.Stat(filepath.Join(workingDir, filepath.FromSlash(target)))
+		if err == nil && info.IsDir() {
+			set.dirs = append(set.dirs, target)
+		}
 	}
 	return set
 }
@@ -164,7 +211,7 @@ func buildProjectIgnoreMatcher(workingDir string, gitEnabled bool) (scopeMatcher
 }
 
 func (r *scopeResolver) ensureProjectIgnoreMatcher() error {
-	if r.useGitIgnore || r.useProjectIgnore {
+	if r.useGitIgnore || r.useProjectIgnore || r.includedTargets.wildcard {
 		return nil
 	}
 	matcher, ok, err := buildProjectIgnoreMatcher(r.cfg.WorkingDir, false)
@@ -208,12 +255,22 @@ func (r *scopeResolver) projectFileIgnored(relPath string) (bool, string, error)
 }
 
 func (r *scopeResolver) targetIncluded(target string) bool {
-	if len(r.includedTargets) == 0 {
+	if len(r.includedTargets.exact) == 0 {
 		return false
 	}
+	if r.includedTargets.wildcard {
+		return true
+	}
 	target = normalizeRelPath(target)
-	_, ok := r.includedTargets[target]
-	return ok
+	if _, ok := r.includedTargets.exact[target]; ok {
+		return true
+	}
+	for _, dir := range r.includedTargets.dirs {
+		if target == dir || strings.HasPrefix(target, dir+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *scopeResolver) targetPathExists(relTarget string) (bool, error) {
@@ -231,6 +288,10 @@ func (r *scopeResolver) targetPathExists(relTarget string) (bool, error) {
 // deterministic branches. It returns true only when a target can be handled
 // without opening fzf or prompting for ambiguity resolution.
 func (r *scopeResolver) canResolveTargetWithoutPrompt(target string) (bool, error) {
+	if hasGlobChars(target) {
+		return true, nil
+	}
+
 	normalizedTarget := normalizeRelPath(target)
 	if normalizedTarget == "" {
 		normalizedTarget = "."
@@ -348,7 +409,7 @@ func (r *scopeResolver) canResolveScopedTargetWithoutPrompt(normalizedTarget str
 		return false, err
 	}
 	if blockedDir != nil {
-		discovered, err := discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.matcher, r.classifyTextFile, blockedDir)
+		discovered, err := discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.matcher, r.classifyTextFile, blockedDir, r.withBinaries)
 		if err != nil {
 			return false, err
 		}
@@ -381,6 +442,10 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 	}
 	if containsParentTraversal(target) {
 		return nil, nil, nil, false, newUsageError("Error: Cannot traverse above working directory: %s\n  catclip only operates within the current directory tree.\n  Use a relative path from your project root instead.\n  Example: catclip config/", singleQuoted(target))
+	}
+
+	if hasGlobChars(target) {
+		return r.resolveGlobTarget(scopeIndex, target, colors)
 	}
 
 	normalizedTarget := normalizeRelPath(target)
@@ -422,7 +487,7 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 			return nil, diagnostics, notices, false, err
 		}
 		if blockedDir != nil {
-			discovered, err = discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.matcher, r.classifyTextFile, blockedDir)
+			discovered, err = discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.matcher, r.classifyTextFile, blockedDir, r.withBinaries)
 		} else {
 			var skipped []skippedMatch
 			discovered, skipped, err = r.resolveVisibleFilesByBasename(resolvedDir, baseName)
@@ -466,7 +531,7 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 			}
 			return discovered, diagnostics, notices, false, nil
 		}
-		diagnostics = append(diagnostics, diagnostic{message: targetNotFoundWarning(target, scopeIndex, colors)})
+		diagnostics = append(diagnostics, diagnostic{message: targetNotFoundWarning(target, scopeIndex, colors), isTargetNotFound: true})
 		return nil, diagnostics, notices, false, nil
 	}
 
@@ -619,7 +684,7 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 			}
 		}
 		if len(notices) == 0 {
-			diagnostics = append(diagnostics, diagnostic{message: targetNotFoundWarning(target, scopeIndex, colors)})
+			diagnostics = append(diagnostics, diagnostic{message: targetNotFoundWarning(target, scopeIndex, colors), isTargetNotFound: true})
 		}
 		return nil, diagnostics, notices, false, nil
 	case 1:
@@ -643,6 +708,34 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 		}
 		return files, diagnostics, notices, false, nil
 	}
+}
+
+func (r *scopeResolver) resolveGlobTarget(scopeIndex int, pattern string, colors colorPalette) ([]fileEntry, []diagnostic, []string, bool, error) {
+	allFiles, err := r.discoverVisibleFilesUnder(".")
+	if err != nil {
+		return nil, nil, nil, false, err
+	}
+	var matched []fileEntry
+	for _, entry := range allFiles {
+		ok, matchErr := path.Match(pattern, path.Base(entry.RelPath))
+		if matchErr != nil {
+			return nil, nil, nil, false, newUsageError("Error: Invalid glob pattern %s: %v", singleQuoted(pattern), matchErr)
+		}
+		if !ok {
+			ok, _ = path.Match(pattern, entry.RelPath)
+		}
+		if ok {
+			matched = append(matched, entry)
+		}
+	}
+	if len(matched) == 0 {
+		diag := diagnostic{
+			message:          targetNotFoundWarning(pattern, scopeIndex, colors),
+			isTargetNotFound: true,
+		}
+		return nil, []diagnostic{diag}, nil, false, nil
+	}
+	return withTargetRoot(matched, "."), nil, nil, false, nil
 }
 
 func (r *scopeResolver) resolveTargetMatch(match targetMatch, colors colorPalette) ([]fileEntry, bool, *diagnostic, error) {
@@ -680,7 +773,7 @@ func (r *scopeResolver) resolveIncludedTarget(target, normalizedTarget string, s
 		}}, false, nil
 	}
 
-	matches, err := r.chooseIgnoredTargetMatches(target, "include> ", nil)
+	matches, _, err := r.chooseIgnoredTargetMatches(target, "include> ", nil, nil, nil)
 	if err != nil {
 		if errors.Is(err, errSelectionCancelled) {
 			return nil, nil, true, nil
@@ -708,11 +801,12 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 	}
 
 	if info.IsDir() {
+		hasIncludes := len(r.includedTargets.exact) > 0
 		if ignored, rule := r.matcher.dirIgnored(relTarget); ignored {
 			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, rule, ".hiss", colors), isError: true}, nil
+				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, rule, ".hiss", hasIncludes, colors), isError: true}, nil
 			}
-			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: rule, Source: ".hiss"})
+			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: rule, Source: ".hiss"}, r.withBinaries)
 			return withTargetRoot(files, relTarget), true, nil, err
 		}
 		projectIgnored, projectRule, err := r.projectDirIgnored(relTarget)
@@ -721,9 +815,9 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 		}
 		if projectIgnored {
 			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, projectRule, ".gitignore", colors), isError: true}, nil
+				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, projectRule, ".gitignore", hasIncludes, colors), isError: true}, nil
 			}
-			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: projectRule, Source: ".gitignore"})
+			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: projectRule, Source: ".gitignore"}, r.withBinaries)
 			return withTargetRoot(files, relTarget), true, nil, err
 		}
 		gitIgnored, err := r.gitIgnored(relTarget)
@@ -732,9 +826,9 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 		}
 		if gitIgnored {
 			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, ".gitignore", ".gitignore", colors), isError: true}, nil
+				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, ".gitignore", ".gitignore", hasIncludes, colors), isError: true}, nil
 			}
-			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: ".gitignore", Source: ".gitignore"})
+			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: ".gitignore", Source: ".gitignore"}, r.withBinaries)
 			return withTargetRoot(files, relTarget), true, nil, err
 		}
 		files, err := r.discoverVisibleFilesUnder(relTarget)
@@ -744,7 +838,7 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 	if !info.Mode().IsRegular() {
 		return nil, true, nil, nil
 	}
-	if excludedTextLikeAsset(relTarget) {
+	if !r.withBinaries && excludedTextLikeAsset(relTarget) {
 		return nil, true, nil, nil
 	}
 	text, err := r.classifyTextFile(relTarget, absTarget)
@@ -763,9 +857,10 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 	if dir := normalizeRelPath(path.Dir(relTarget)); dir != "." {
 		entry.TargetRoot = dir
 	}
+	hasIncludes := len(r.includedTargets.exact) > 0
 	if ignored, rule := r.matcher.fileIgnored(relTarget); ignored {
 		if !r.targetIncluded(relTarget) {
-			return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, rule, ".hiss", fromChained, colors), isError: true}, nil
+			return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, rule, ".hiss", fromChained, hasIncludes, colors), isError: true}, nil
 		}
 		entry = withAllowedByInclude(entry, blockInfo{Rule: rule, Source: ".hiss"})
 	} else {
@@ -775,7 +870,7 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 		}
 		if projectIgnored {
 			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, projectRule, ".gitignore", fromChained, colors), isError: true}, nil
+				return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, projectRule, ".gitignore", fromChained, hasIncludes, colors), isError: true}, nil
 			}
 			entry = withAllowedByInclude(entry, blockInfo{Rule: projectRule, Source: ".gitignore"})
 		} else {
@@ -785,7 +880,7 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 			}
 			if gitIgnored {
 				if !r.targetIncluded(relTarget) {
-					return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, ".gitignore", ".gitignore", fromChained, colors), isError: true}, nil
+					return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, ".gitignore", ".gitignore", fromChained, hasIncludes, colors), isError: true}, nil
 				}
 				entry = withAllowedByInclude(entry, blockInfo{Rule: ".gitignore", Source: ".gitignore"})
 			}
@@ -809,6 +904,9 @@ func (r *scopeResolver) gitIgnored(relPath string) (bool, error) {
 }
 
 func (r *scopeResolver) classifyTextFile(relPath, absPath string) (bool, error) {
+	if r.withBinaries {
+		return true, nil
+	}
 	if knownTextLikeFile(relPath) {
 		return true, nil
 	}
@@ -950,6 +1048,18 @@ func (r *scopeResolver) resolveChainedDirWithoutPrompt(relPath string) (string, 
 	return currentRel, true, nil
 }
 
+func (r *scopeResolver) targetNeedsInclude(target string) (bool, error) {
+	normalizedTarget := normalizeRelPath(target)
+	if normalizedTarget == "" || normalizedTarget == "." {
+		return false, nil
+	}
+	_, handled, diag, err := r.resolveExactTarget(normalizedTarget, false, colorPalette{})
+	if err != nil {
+		return false, err
+	}
+	return handled && diag != nil && diag.isError, nil
+}
+
 func (r *scopeResolver) resolveVisibleDirByExactBasename(baseRel, basename string) (string, bool, error) {
 	if basename == "" || basename == "." {
 		return "", false, nil
@@ -1076,7 +1186,7 @@ func (r *scopeResolver) chooseRootTargetMatches(query, prompt string, includeCop
 	return selected, nil
 }
 
-func (r *scopeResolver) chooseIgnoredTargetMatches(query, prompt string, selectedPaths []string) ([]targetMatch, error) {
+func (r *scopeResolver) chooseIgnoredTargetMatches(query, prompt string, selectedPaths, explicitTargets, scopeTargets []string) ([]targetMatch, int, error) {
 	query = normalizeInteractivePickerQuery(query)
 	stopSpinner := func() {}
 	if !r.ignoredTargetsOk {
@@ -1085,24 +1195,30 @@ func (r *scopeResolver) chooseIgnoredTargetMatches(query, prompt string, selecte
 	allTargets, err := r.allIgnoredTargets()
 	stopSpinner()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	allTargets = filterIgnoredTargetsByScopeTargets(allTargets, scopeTargets)
+	if len(allTargets) == 0 && len(scopeTargets) > 0 {
+		return nil, 0, errNoScopedIgnoredTargets{ScopeTargets: scopeTargets}
 	}
 	options := filterRedundantTargetMatches(allTargets, selectionPathsForIgnoredTargets(selectedPaths))
-	if len(options) == 0 {
-		return nil, errSelectionCancelled
+	options = filterAuthorizationOnlyIncludeMatches(options, explicitTargets)
+	totalOptions := len(options)
+	if totalOptions == 0 {
+		return nil, 0, errSelectionCancelled
 	}
 	if match, ok := exactTargetPathMatch(options, query); ok {
-		return []targetMatch{match}, nil
+		return []targetMatch{match}, totalOptions, nil
 	}
 
 	path, err := fuzzyResolverBinary()
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	labels, index := targetMatchLabels(options)
 	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, ignoredTargetPickerHeader(), labels, true)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	selected := make([]targetMatch, 0, len(selectedLabels))
@@ -1113,9 +1229,9 @@ func (r *scopeResolver) chooseIgnoredTargetMatches(query, prompt string, selecte
 		}
 	}
 	if len(selected) == 0 {
-		return nil, errSelectionCancelled
+		return nil, 0, errSelectionCancelled
 	}
-	return selected, nil
+	return selected, totalOptions, nil
 }
 
 func selectionPathsForIgnoredTargets(selectedPaths []string) []string {
@@ -1129,12 +1245,81 @@ func selectionPathsForIgnoredTargets(selectedPaths []string) []string {
 	return filtered
 }
 
-func (r *scopeResolver) resolveInteractiveIncludeTargets(query string, selectedPaths []string) ([]string, error) {
-	matches, err := r.chooseIgnoredTargetMatches(query, "include> ", selectedPaths)
+func (r *scopeResolver) resolveInteractiveIncludeTargets(query string, selectedPaths, explicitTargets, scopeTargets []string) ([]string, error) {
+	matches, totalOptions, err := r.chooseIgnoredTargetMatches(query, "include> ", selectedPaths, explicitTargets, scopeTargets)
 	if err != nil {
 		return nil, err
 	}
+	if totalOptions > 0 && len(matches) == totalOptions {
+		return []string{"*"}, nil
+	}
 	return targetMatchPaths(matches), nil
+}
+
+func (r *scopeResolver) resolveExactIgnoredIncludeTarget(query string, scopeTargets []string) (string, bool, error) {
+	options, err := r.allIgnoredTargets()
+	if err != nil {
+		return "", false, err
+	}
+	options = filterIgnoredTargetsByScopeTargets(options, scopeTargets)
+	match, ok := exactTargetPathMatch(options, query)
+	if !ok {
+		return "", false, nil
+	}
+	return match.Path, true, nil
+}
+
+func (r *scopeResolver) resolveExactIgnoredIncludeTargets(queries []string, scopeTargets []string) ([]string, []string, error) {
+	exact := make([]string, 0, len(queries))
+	remaining := make([]string, 0, len(queries))
+	for _, query := range queries {
+		path, ok, err := r.resolveExactIgnoredIncludeTarget(query, scopeTargets)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok {
+			exact = append(exact, path)
+			continue
+		}
+		remaining = append(remaining, query)
+	}
+	return dedupePreserveOrder(exact), remaining, nil
+}
+
+// filterIgnoredTargetsByScopeTargets filters ignored targets to only those
+// that fall under any scope target OR are ancestors of any scope target.
+// Ancestors are included because --include authorizes discovery of an ignored
+// directory, which may contain the scope target itself. If any scope target is
+// "." (root), all targets are returned.
+func filterIgnoredTargetsByScopeTargets(targets []targetMatch, scopeTargets []string) []targetMatch {
+	if len(scopeTargets) == 0 {
+		return targets
+	}
+	for _, st := range scopeTargets {
+		if normalizeRelPath(st) == "." || normalizeRelPath(st) == "" {
+			return targets
+		}
+	}
+
+	out := make([]targetMatch, 0, len(targets))
+	for _, target := range targets {
+		rel := normalizeRelPath(target.Path)
+		for _, st := range scopeTargets {
+			st = normalizeRelPath(st)
+			// Descendant or exact match: ignored target is under scope target.
+			if rel == st || strings.HasPrefix(rel, st+"/") {
+				out = append(out, target)
+				break
+			}
+			// Ancestor: ignored target is a parent of scope target.
+			// This authorizes discovery of the scope target itself.
+			if strings.HasPrefix(st, rel+"/") {
+				out = append(out, target)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func targetMatchPaths(matches []targetMatch) []string {
@@ -1258,6 +1443,37 @@ func filterRedundantTargetMatches(candidates []targetMatch, selectedPaths []stri
 	return filtered
 }
 
+func filterAuthorizationOnlyIncludeMatches(candidates []targetMatch, explicitTargets []string) []targetMatch {
+	if len(explicitTargets) == 0 {
+		return candidates
+	}
+	filtered := make([]targetMatch, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Kind == "dir" && includeTargetIsAncestorOnlyForTargets(explicitTargets, candidate.Path) {
+			continue
+		}
+		filtered = append(filtered, candidate)
+	}
+	return filtered
+}
+
+func includeTargetIsAncestorOnlyForTargets(targets []string, includeTarget string) bool {
+	includeTarget = normalizeRelPath(includeTarget)
+	if includeTarget == "" || includeTarget == "." {
+		return false
+	}
+	for _, target := range targets {
+		target = normalizeRelPath(target)
+		if target == "" || target == "." {
+			continue
+		}
+		if strings.HasPrefix(target, includeTarget+"/") {
+			return true
+		}
+	}
+	return false
+}
+
 func coveredBySelection(path string, selectedPaths []string) bool {
 	for _, selected := range selectedPaths {
 		selected = normalizeRelPath(selected)
@@ -1348,7 +1564,7 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 		if err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
-		if excludedTextLikeAsset(rel) {
+		if !r.withBinaries && excludedTextLikeAsset(rel) {
 			return nil
 		}
 		text, err := r.classifyTextFile(rel, current)
@@ -1628,7 +1844,7 @@ func (r *scopeResolver) buildVisibleFileList() error {
 	if r.visibleFileListReady {
 		return nil
 	}
-	paths, err := runRipgrepFiles(r.cfg.WorkingDir, ripgrepFileOptions{})
+	paths, err := runRipgrepFiles(r.cfg.WorkingDir, ripgrepFileOptions{NoIgnore: !r.useGitIgnore})
 	if err != nil {
 		return err
 	}
@@ -1665,7 +1881,7 @@ func (r *scopeResolver) textEntriesFromRipgrepPaths(relPaths []string, applyIgno
 				}
 			}
 		}
-		if excludedTextLikeAsset(rel) {
+		if !r.withBinaries && excludedTextLikeAsset(rel) {
 			continue
 		}
 
@@ -1684,7 +1900,9 @@ func (r *scopeResolver) textEntriesFromRipgrepPaths(relPaths []string, applyIgno
 
 func (r *scopeResolver) discoverVisibleFilesUnder(rootRel string) ([]fileEntry, error) {
 	rootRel = normalizeRelPath(rootRel)
-	opts := ripgrepFileOptions{}
+	opts := ripgrepFileOptions{
+		NoIgnore: !r.useGitIgnore,
+	}
 	if rootRel != "." && rootRel != "" {
 		opts.Paths = []string{rootRel}
 	}
@@ -1907,7 +2125,7 @@ func (r *scopeResolver) fuzzySearchFilesUnder(baseRel, needle string, rootBypass
 	}
 
 	rootAbs := filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(baseRel))
-	entries, err := discoverFilesUnder(r.cfg.WorkingDir, rootAbs, baseRel, r.matcher, r.classifyTextFile, rootBypass)
+	entries, err := discoverFilesUnder(r.cfg.WorkingDir, rootAbs, baseRel, r.matcher, r.classifyTextFile, rootBypass, r.withBinaries)
 	if err != nil {
 		return nil, err
 	}
@@ -1920,10 +2138,7 @@ func (r *scopeResolver) fuzzySearchFilesUnder(baseRel, needle string, rootBypass
 
 func chooseDirectoryMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
 	if cfg.HeadlessStdoutMode() || !canPromptInteractively() {
-		if currentRel == "." {
-			return nil, fmt.Errorf("Error: Multiple directories match %s.\n  Use a more specific path segment to disambiguate.", singleQuoted(needle))
-		}
-		return nil, fmt.Errorf("Error: Multiple directories match %s in %s.\n  Use a more specific path segment to disambiguate.", singleQuoted(needle), currentRel)
+		return nil, headlessDirectoryAmbiguityError(needle, currentRel, matches)
 	}
 
 	path, err := fuzzyResolverBinary()
@@ -1935,10 +2150,7 @@ func chooseDirectoryMatch(cfg runConfig, needle, currentRel string, matches []st
 
 func chooseFileMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
 	if cfg.HeadlessStdoutMode() || !canPromptInteractively() {
-		if currentRel == "." {
-			return nil, fmt.Errorf("Error: Multiple files match %s.\n  Use a more specific name or path to disambiguate.", singleQuoted(needle))
-		}
-		return nil, fmt.Errorf("Error: Multiple files match %s in %s.\n  Use a more specific name or path to disambiguate.", singleQuoted(needle), currentRel)
+		return nil, headlessFileAmbiguityError(needle, currentRel, matches)
 	}
 
 	path, err := fuzzyResolverBinary()
@@ -1950,7 +2162,7 @@ func chooseFileMatch(cfg runConfig, needle, currentRel string, matches []string,
 
 func chooseTargetMatch(cfg runConfig, needle string, matches []targetMatch, stderr io.Writer, colors colorPalette) ([]targetMatch, error) {
 	if cfg.HeadlessStdoutMode() || !canPromptInteractively() {
-		return nil, fmt.Errorf("Error: Multiple files and directories match %s.\n  Use a more specific name or path to disambiguate.", singleQuoted(needle))
+		return nil, headlessTargetAmbiguityError(needle, matches)
 	}
 
 	path, err := fuzzyResolverBinary()
@@ -1973,6 +2185,63 @@ func chooseTargetMatch(cfg runConfig, needle string, matches []targetMatch, stde
 		return nil, errSelectionCancelled
 	}
 	return selected, nil
+}
+
+const headlessCandidateListLimit = 10
+
+func formatHeadlessCandidateList(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	limit := len(items)
+	if limit > headlessCandidateListLimit {
+		limit = headlessCandidateListLimit
+	}
+	var b strings.Builder
+	b.WriteString("\n  Matches:")
+	for _, item := range items[:limit] {
+		fmt.Fprintf(&b, "\n    - %s", item)
+	}
+	if len(items) > limit {
+		fmt.Fprintf(&b, "\n    - ... and %d more", len(items)-limit)
+	}
+	return b.String()
+}
+
+func headlessDirectoryAmbiguityError(needle, currentRel string, matches []string) error {
+	var b strings.Builder
+	if currentRel == "." {
+		fmt.Fprintf(&b, "Error: Multiple directories match %s in headless mode (-q -p).", singleQuoted(needle))
+	} else {
+		fmt.Fprintf(&b, "Error: Multiple directories match %s in %s in headless mode (-q -p).", singleQuoted(needle), currentRel)
+	}
+	b.WriteString(formatHeadlessCandidateList(matches))
+	b.WriteString("\n  Use a more specific path segment to disambiguate.")
+	return errors.New(b.String())
+}
+
+func headlessFileAmbiguityError(needle, currentRel string, matches []string) error {
+	var b strings.Builder
+	if currentRel == "." {
+		fmt.Fprintf(&b, "Error: Multiple files match %s in headless mode (-q -p).", singleQuoted(needle))
+	} else {
+		fmt.Fprintf(&b, "Error: Multiple files match %s in %s in headless mode (-q -p).", singleQuoted(needle), currentRel)
+	}
+	b.WriteString(formatHeadlessCandidateList(matches))
+	b.WriteString("\n  Use a more specific name or path to disambiguate.")
+	return errors.New(b.String())
+}
+
+func headlessTargetAmbiguityError(needle string, matches []targetMatch) error {
+	items := make([]string, 0, len(matches))
+	for _, match := range matches {
+		items = append(items, fmt.Sprintf("[%s] %s", match.Kind, match.Path))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Error: Multiple files and directories match %s in headless mode (-q -p).", singleQuoted(needle))
+	b.WriteString(formatHeadlessCandidateList(items))
+	b.WriteString("\n  Use a more specific name or path to disambiguate.")
+	return errors.New(b.String())
 }
 
 func fzfBinary() (string, bool) {
@@ -2487,7 +2756,14 @@ func targetNotFoundWarning(target string, scopeIndex int, colors colorPalette) s
 		colors.Dim, colors.Reset)
 }
 
-func ignoredDirMessage(relTarget, rule, source string, colors colorPalette) string {
+func ignoredDirMessage(relTarget, rule, source string, includesActive bool, colors colorPalette) string {
+	if includesActive {
+		return fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+			colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
+			colors.Dim, colors.Reset,
+			colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
+			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
+	}
 	return fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
 		colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
 		colors.Dim, colors.Reset,
@@ -2496,7 +2772,18 @@ func ignoredDirMessage(relTarget, rule, source string, colors colorPalette) stri
 		colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
 }
 
-func ignoredFileMessage(relTarget, rule, source string, fromChained bool, colors colorPalette) string {
+func ignoredFileMessage(relTarget, rule, source string, fromChained, includesActive bool, colors colorPalette) string {
+	if includesActive {
+		message := fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s",
+			colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
+			colors.Dim, colors.Reset,
+			colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset)
+		if fromChained {
+			return message
+		}
+		return message + fmt.Sprintf("\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
+	}
 	message := fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
 		colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
 		colors.Dim, colors.Reset,

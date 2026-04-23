@@ -2,6 +2,7 @@ package catclip
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -20,11 +21,15 @@ func TestRequiredStageValueErrorCarriesTypedReasonAndCurrentMessage(t *testing.T
 		},
 		{
 			flag: "--include",
-			want: "Error: --include requires a target query.\n  Example: catclip --include node_modules\n  Example: catclip src --include .env",
+			want: "Error: --include requires a target query.\n  Example: catclip . --include node_modules\n  Example: catclip src --include vendor",
 		},
 		{
 			flag: "--snippet",
 			want: "Error: --snippet requires a regex pattern.\n  Example: catclip src --snippet 'TODO'",
+		},
+		{
+			flag: "--depth",
+			want: "Error: --depth requires a positive integer.\n  Example: catclip src --depth 2",
 		},
 	}
 
@@ -108,6 +113,41 @@ func TestScopeOrderHelpersReturnTypedValidationFailures(t *testing.T) {
 		}
 		if got.Reason != tt.wantReason {
 			t.Fatalf("%s: reason = %q, want %q", tt.name, got.Reason, tt.wantReason)
+		}
+	}
+}
+
+func TestIncludeOrderingErrorsReturnTypedValidationFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantReason validationReason
+		wantMsg    string
+	}{
+		{
+			name:       "include after modifier",
+			err:        includeAfterModifierError(),
+			wantReason: validationReasonIncludeAfterModifier,
+			wantMsg:    "--include must come before other modifiers",
+		},
+		{
+			name:       "repeated include",
+			err:        repeatedIncludeError(),
+			wantReason: validationReasonRepeatedInclude,
+			wantMsg:    "--include can only appear once per scope",
+		},
+	}
+
+	for _, tt := range tests {
+		var got validationFailure
+		if !errors.As(tt.err, &got) {
+			t.Fatalf("%s: expected validationFailure, got %T", tt.name, tt.err)
+		}
+		if got.Reason != tt.wantReason {
+			t.Fatalf("%s: reason = %q, want %q", tt.name, got.Reason, tt.wantReason)
+		}
+		if msg := tt.err.Error(); !strings.Contains(msg, tt.wantMsg) {
+			t.Fatalf("%s: message %q missing %q", tt.name, msg, tt.wantMsg)
 		}
 	}
 }

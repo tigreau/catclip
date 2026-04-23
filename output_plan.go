@@ -2,14 +2,40 @@ package catclip
 
 import "sort"
 
+type outputSectionKind string
+
+const (
+	outputSectionKindFiles outputSectionKind = "files"
+	outputSectionKindPaths outputSectionKind = "paths"
+)
+
 type outputPlan struct {
+	sections []outputPlanSection
+	items    []outputPlanItem
+}
+
+type outputPlanSection struct {
+	kind  outputSectionKind
 	items []outputPlanItem
 }
 
 type outputPlanItem struct {
-	unit    preparedFileUnit
-	relPath string
-	mode    entryMode
+	kind      outputSectionKind
+	unit      preparedFileUnit
+	entry     fileEntry
+	relPath   string
+	mode      entryMode
+	bodyBytes int64
+}
+
+type evaluatedOutputScope struct {
+	Paths   bool
+	Entries []fileEntry
+}
+
+type scopedFileCandidate struct {
+	scopeIndex int
+	entry      fileEntry
 }
 
 func buildOutputPlan(units []preparedFileUnit) outputPlan {
@@ -17,13 +43,36 @@ func buildOutputPlan(units []preparedFileUnit) outputPlan {
 		items: make([]outputPlanItem, 0, len(units)),
 	}
 	for _, unit := range units {
-		plan.items = append(plan.items, outputPlanItem{
-			unit:    unit,
-			relPath: unit.Entry.RelPath,
-			mode:    unit.Entry.Mode,
-		})
+		plan.items = append(plan.items, newFileOutputPlanItem(unit))
+	}
+	if len(plan.items) > 0 {
+		plan.sections = []outputPlanSection{{
+			kind:  outputSectionKindFiles,
+			items: append([]outputPlanItem(nil), plan.items...),
+		}}
 	}
 	return plan
+}
+
+func newFileOutputPlanItem(unit preparedFileUnit) outputPlanItem {
+	return outputPlanItem{
+		kind:      outputSectionKindFiles,
+		unit:      unit,
+		entry:     unit.Entry,
+		relPath:   unit.Entry.RelPath,
+		mode:      unit.Entry.Mode,
+		bodyBytes: unit.BodyBytes,
+	}
+}
+
+func newPathOutputPlanItem(entry fileEntry) outputPlanItem {
+	return outputPlanItem{
+		kind:      outputSectionKindPaths,
+		entry:     entry,
+		relPath:   entry.RelPath,
+		mode:      entry.Mode,
+		bodyBytes: int64(len(entry.RelPath) + 1),
+	}
 }
 
 func prepareOutputPlan(gitCtx gitContext, entries []fileEntry) (outputPlan, error) {
@@ -34,28 +83,257 @@ func prepareOutputPlan(gitCtx gitContext, entries []fileEntry) (outputPlan, erro
 	return buildOutputPlan(units), nil
 }
 
-func (p outputPlan) PreviewModeTags(statuses map[string]string) map[string]string {
-	tags := make(map[string]string)
-	for _, item := range p.items {
-		switch item.mode {
-		case entryModeDiff:
-			if statuses[item.relPath] == "?" {
+func prepareSectionedOutputPlan(gitCtx gitContext, scopes []evaluatedOutputScope, preserveFileOrder bool) (outputPlan, error) {
+	fileItemsByScope, err := prepareSectionedFileItems(gitCtx, scopes, preserveFileOrder)
+	if err != nil {
+		return outputPlan{}, err
+	}
+
+	plan := outputPlan{
+		sections: make([]outputPlanSection, 0, len(scopes)),
+		items:    make([]outputPlanItem, 0, len(fileItemsByScope)),
+	}
+
+	var currentPathSeen map[string]struct{}
+	for scopeIndex, scope := range scopes {
+		if scope.Paths {
+			if len(scope.Entries) == 0 {
 				continue
 			}
-			tags[item.relPath] = "diff only"
-		case entryModeSnippet:
-			tags[item.relPath] = "snippet only"
+			if len(plan.sections) == 0 || plan.sections[len(plan.sections)-1].kind != outputSectionKindPaths {
+				plan.sections = append(plan.sections, outputPlanSection{kind: outputSectionKindPaths})
+				currentPathSeen = make(map[string]struct{}, len(scope.Entries))
+			}
+			section := &plan.sections[len(plan.sections)-1]
+			for _, entry := range scope.Entries {
+				if entry.RelPath == "" {
+					continue
+				}
+				if _, ok := currentPathSeen[entry.RelPath]; ok {
+					continue
+				}
+				currentPathSeen[entry.RelPath] = struct{}{}
+				item := newPathOutputPlanItem(entry)
+				section.items = append(section.items, item)
+				plan.items = append(plan.items, item)
+			}
+			continue
+		}
+
+		scopeItems := fileItemsByScope[scopeIndex]
+		if len(scopeItems) == 0 {
+			continue
+		}
+		currentPathSeen = nil
+		if len(plan.sections) == 0 || plan.sections[len(plan.sections)-1].kind != outputSectionKindFiles {
+			plan.sections = append(plan.sections, outputPlanSection{kind: outputSectionKindFiles})
+		}
+		section := &plan.sections[len(plan.sections)-1]
+		section.items = append(section.items, scopeItems...)
+		plan.items = append(plan.items, scopeItems...)
+	}
+
+	return plan, nil
+}
+
+func prepareSectionedFileItems(gitCtx gitContext, scopes []evaluatedOutputScope, preserveOrder bool) (map[int][]outputPlanItem, error) {
+	candidates := make([]scopedFileCandidate, 0)
+	for scopeIndex, scope := range scopes {
+		if scope.Paths {
+			continue
+		}
+		for _, entry := range scope.Entries {
+			candidates = append(candidates, scopedFileCandidate{
+				scopeIndex: scopeIndex,
+				entry:      entry,
+			})
+		}
+	}
+
+	candidates = dedupeScopedFileCandidates(candidates, preserveOrder)
+	itemsByScope := make(map[int][]outputPlanItem, len(scopes))
+	for _, candidate := range candidates {
+		unit, keep, err := prepareFileUnit(gitCtx, candidate.entry)
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
+		itemsByScope[candidate.scopeIndex] = append(itemsByScope[candidate.scopeIndex], newFileOutputPlanItem(unit))
+	}
+	return itemsByScope, nil
+}
+
+func dedupeScopedFileCandidates(candidates []scopedFileCandidate, preserveOrder bool) []scopedFileCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	if preserveOrder {
+		out := make([]scopedFileCandidate, 0, len(candidates))
+		indexByPath := make(map[string]int, len(candidates))
+		for _, candidate := range candidates {
+			idx, ok := indexByPath[candidate.entry.RelPath]
+			if !ok {
+				indexByPath[candidate.entry.RelPath] = len(out)
+				out = append(out, candidate)
+				continue
+			}
+			mergeScopedFileCandidate(&out[idx], candidate)
+		}
+		return out
+	}
+
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].entry.RelPath != candidates[j].entry.RelPath {
+			return candidates[i].entry.RelPath < candidates[j].entry.RelPath
+		}
+		return entryModePriority(candidates[i].entry.Mode) > entryModePriority(candidates[j].entry.Mode)
+	})
+
+	out := make([]scopedFileCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if len(out) == 0 || candidate.entry.RelPath != out[len(out)-1].entry.RelPath {
+			out = append(out, candidate)
+			continue
+		}
+		mergeScopedFileCandidate(&out[len(out)-1], candidate)
+	}
+	return out
+}
+
+func mergeScopedFileCandidate(dst *scopedFileCandidate, incoming scopedFileCandidate) {
+	if entryModePriority(incoming.entry.Mode) > entryModePriority(dst.entry.Mode) {
+		*dst = incoming
+		return
+	}
+	mergeFileEntry(&dst.entry, incoming.entry)
+}
+
+func (p outputPlan) HasPaths() bool {
+	for _, section := range p.sections {
+		if section.kind == outputSectionKindPaths {
+			return true
+		}
+	}
+	for _, item := range p.items {
+		if item.kind == outputSectionKindPaths {
+			return true
+		}
+	}
+	return false
+}
+
+func (p outputPlan) HasFiles() bool {
+	for _, section := range p.sections {
+		if section.kind == outputSectionKindFiles {
+			return true
+		}
+	}
+	for _, item := range p.items {
+		if item.kind == outputSectionKindFiles {
+			return true
+		}
+	}
+	return false
+}
+
+func (p outputPlan) DistinctRelPaths() []string {
+	if len(p.items) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(p.items))
+	paths := make([]string, 0, len(p.items))
+	for _, item := range p.items {
+		if item.relPath == "" {
+			continue
+		}
+		if _, ok := seen[item.relPath]; ok {
+			continue
+		}
+		seen[item.relPath] = struct{}{}
+		paths = append(paths, item.relPath)
+	}
+	return paths
+}
+
+func (p outputPlan) SummaryCountWord() (int, string) {
+	count := len(p.DistinctRelPaths())
+	switch {
+	case p.HasPaths() && !p.HasFiles():
+		if count == 1 {
+			return count, "path"
+		}
+		return count, "paths"
+	case !p.HasPaths() && p.HasFiles():
+		if count == 1 {
+			return count, "file"
+		}
+		return count, "files"
+	default:
+		if count == 1 {
+			return count, "item"
+		}
+		return count, "items"
+	}
+}
+
+func (p outputPlan) PreviewModeTags(statuses map[string]string) map[string]string {
+	type presence struct {
+		hasPath bool
+		hasFile bool
+		mode    entryMode
+	}
+
+	seen := make(map[string]presence)
+	for _, item := range p.items {
+		state := seen[item.relPath]
+		switch item.kind {
+		case outputSectionKindPaths:
+			state.hasPath = true
+		case outputSectionKindFiles:
+			state.hasFile = true
+			mode := item.mode
+			if mode == entryModeDiff && statuses[item.relPath] == "?" {
+				mode = entryModeFull
+			}
+			if entryModePriority(mode) >= entryModePriority(state.mode) {
+				state.mode = mode
+			}
+		}
+		seen[item.relPath] = state
+	}
+
+	tags := make(map[string]string)
+	for relPath, state := range seen {
+		switch {
+		case state.hasPath && !state.hasFile:
+			tags[relPath] = "path only"
+		case state.hasPath && state.mode == entryModeSnippet:
+			tags[relPath] = "path + snippet"
+		case state.hasPath && state.mode == entryModeDiff:
+			tags[relPath] = "path + diff"
+		case state.hasPath && state.hasFile:
+			tags[relPath] = "path + file"
+		case state.mode == entryModeSnippet:
+			tags[relPath] = "snippet only"
+		case state.mode == entryModeDiff:
+			tags[relPath] = "diff only"
 		}
 	}
 	return tags
 }
 
-func (p outputPlan) BodySizes() (map[string]int64, int64) {
+// PayloadSizes returns emitted payload bytes keyed by relPath.
+// Path-only items contribute the bytes of the emitted `path\n` line because
+// that text is real payload and should count toward size/token estimates.
+func (p outputPlan) PayloadSizes() (map[string]int64, int64) {
 	sizes := make(map[string]int64, len(p.items))
 	var total int64
 	for _, item := range p.items {
-		sizes[item.relPath] = item.unit.BodyBytes
-		total += item.unit.BodyBytes
+		sizes[item.relPath] += item.bodyBytes
+		total += item.bodyBytes
 	}
 	return sizes, total
 }
@@ -63,7 +341,7 @@ func (p outputPlan) BodySizes() (map[string]int64, int64) {
 func (p outputPlan) GitStatusPathspecs(gitCtx gitContext) []string {
 	set := make(map[string]struct{}, len(p.items))
 	for _, item := range p.items {
-		entry := item.unit.Entry
+		entry := item.entry
 		repoPath := ""
 		if entry.TargetRoot != "" && entry.TargetRoot != "." {
 			repoPath = gitCtx.toRepoPath(entry.TargetRoot)
@@ -86,19 +364,32 @@ func (p outputPlan) GitStatusPathspecs(gitCtx gitContext) []string {
 }
 
 func (p outputPlan) TreeEntries(report outputReport) []treeDocumentEntry {
-	docEntries := make([]treeDocumentEntry, 0, len(p.items))
+	merged := make(map[string]fileEntry, len(p.items))
+	order := make([]string, 0, len(p.items))
 	for _, item := range p.items {
-		entry := item.unit.Entry
+		entry, ok := merged[item.relPath]
+		if !ok {
+			merged[item.relPath] = item.entry
+			order = append(order, item.relPath)
+			continue
+		}
+		mergeFileEntry(&entry, item.entry)
+		merged[item.relPath] = entry
+	}
+
+	docEntries := make([]treeDocumentEntry, 0, len(order))
+	for _, relPath := range order {
+		entry := merged[relPath]
 		treeEntry := treeDocumentEntry{
-			Path:             entry.RelPath,
-			GitStatus:        report.statuses[entry.RelPath],
-			ModeTag:          report.modeTags[entry.RelPath],
+			Path:             relPath,
+			GitStatus:        report.statuses[relPath],
+			ModeTag:          report.modeTags[relPath],
 			TargetRoot:       entry.TargetRoot,
 			AllowedByInclude: entry.AllowedByInclude,
 			BlockRule:        entry.BlockRule,
 			BlockSource:      entry.BlockSource,
 		}
-		if size, ok := report.sizes[entry.RelPath]; ok {
+		if size, ok := report.sizes[relPath]; ok {
 			sizeCopy := size
 			treeEntry.Size = &sizeCopy
 		}

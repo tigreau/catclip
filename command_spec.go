@@ -21,6 +21,7 @@ type commandScopeSpec struct {
 
 	hasContainsFilter bool
 	containsPattern   string
+	hasPathsOutput    bool
 	hasSnippetOutput  bool
 	snippetPattern    string
 	outputMode        entryMode
@@ -47,6 +48,7 @@ func executionScopeFromCommandScopeSpec(s commandScopeSpec) executionScope {
 		Only:            s.OnlyPatterns(),
 		Exclude:         s.ExcludePatterns(),
 		Stages:          s.Stages(),
+		Paths:           s.HasPathsOutput(),
 		Changed:         s.Changed(),
 		Staged:          s.Staged(),
 		Unstaged:        s.Unstaged(),
@@ -102,6 +104,7 @@ func commandScopeSpecFromExecutionScope(s executionScope) commandScopeSpec {
 		stages:            cloneScopeStages(s.Stages),
 		hasContainsFilter: executionScopeHasStage(s, scopeStageContains),
 		containsPattern:   s.Contains,
+		hasPathsOutput:    s.Paths || executionScopeHasStage(s, scopeStagePaths),
 		hasSnippetOutput:  s.Snippet || executionScopeHasStage(s, scopeStageSnippet),
 		snippetPattern:    s.SnippetPattern,
 		outputMode:        executionScopeOutputMode(s),
@@ -151,6 +154,10 @@ func (s commandScopeSpec) HasContainsFilter() bool {
 
 func (s commandScopeSpec) ContainsPattern() string {
 	return s.containsPattern
+}
+
+func (s commandScopeSpec) HasPathsOutput() bool {
+	return s.hasPathsOutput
 }
 
 func (s commandScopeSpec) HasSnippetOutput() bool {

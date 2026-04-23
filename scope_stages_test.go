@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -256,5 +257,134 @@ func TestApplyRecentStageBackfillsModTimesFromDisk(t *testing.T) {
 	}
 	if filtered[0].ModTime.IsZero() || filtered[1].ModTime.IsZero() {
 		t.Fatalf("expected mod times to be populated, got %+v", filtered)
+	}
+}
+
+func TestApplyDepthStageKeepsOnlyPathsAtOrAboveRequestedDepth(t *testing.T) {
+	entries := testStageEntries(
+		"README.md",
+		"src/main.ts",
+		"src/components/Button.tsx",
+		"src/components/forms/Login.tsx",
+	)
+
+	filtered, err := applyDepthStage(entries, 2)
+	if err != nil {
+		t.Fatalf("applyDepthStage returned error: %v", err)
+	}
+
+	if got, want := testStageRelPaths(filtered), []string{
+		"README.md",
+		"src/main.ts",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected depth-filtered paths %v, got %v", want, got)
+	}
+}
+
+func TestApplyDepthStageRejectsValuesGreaterThanCurrentScopeMaxDepth(t *testing.T) {
+	entries := testStageEntries(
+		"README.md",
+		"src/main.ts",
+		"src/components/Button.tsx",
+	)
+
+	_, err := applyDepthStage(entries, 4)
+	if err == nil {
+		t.Fatal("expected out-of-range depth error")
+	}
+	if !strings.Contains(err.Error(), "current scope max depth 3") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestApplyScopeStagesKeepsDepthOrderingSemanticWithRecent(t *testing.T) {
+	now := time.Now()
+	resolver := &scopeResolver{cfg: runConfig{WorkingDir: ""}}
+	entries := []fileEntry{
+		{RelPath: "README.md", ModTime: now.Add(-3 * time.Hour)},
+		{RelPath: "src/main.ts", ModTime: now.Add(-2 * time.Hour)},
+		{RelPath: "src/components/Button.tsx", ModTime: now.Add(-1 * time.Hour)},
+	}
+
+	scope := executionScope{Stages: []scopeStage{
+		{Kind: scopeStageRecent, Limit: intPtr(1)},
+		{Kind: scopeStageDepth, Limit: intPtr(2)},
+	}}
+
+	_, err := applyScopeStages(resolver, gitContext{}, scope, entries)
+	if err == nil {
+		t.Fatal("expected depth error when recent-then-depth leaves no files")
+	}
+	if !strings.Contains(err.Error(), "no files at depth 2") {
+		t.Fatalf("expected depth-specific error, got: %v", err)
+	}
+
+	scope = executionScope{Stages: []scopeStage{
+		{Kind: scopeStageDepth, Limit: intPtr(2)},
+		{Kind: scopeStageRecent, Limit: intPtr(1)},
+	}}
+	filtered, err := applyScopeStages(resolver, gitContext{}, scope, entries)
+	if err != nil {
+		t.Fatalf("applyScopeStages returned error: %v", err)
+	}
+	if got, want := testStageRelPaths(filtered), []string{"src/main.ts"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected depth-then-recent order %v, got %v", want, got)
+	}
+}
+
+func TestScopeIncludeTargetWithRootScope(t *testing.T) {
+	got := scopeIncludeTarget([]string{"."}, "node_modules")
+	want := []string{"node_modules"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scopeIncludeTarget(., node_modules) = %v, want %v", got, want)
+	}
+}
+
+func TestScopeIncludeTargetBareWithNonRootScope(t *testing.T) {
+	got := scopeIncludeTarget([]string{"src"}, "node_modules")
+	want := []string{"src/node_modules"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scopeIncludeTarget(src, node_modules) = %v, want %v", got, want)
+	}
+}
+
+func TestScopeIncludeTargetBareWithMultipleScopes(t *testing.T) {
+	got := scopeIncludeTarget([]string{"src", "lib"}, "vendor")
+	want := []string{"src/vendor", "lib/vendor"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scopeIncludeTarget([src,lib], vendor) = %v, want %v", got, want)
+	}
+}
+
+func TestScopeIncludeTargetAnchoredInScope(t *testing.T) {
+	got := scopeIncludeTarget([]string{"src"}, "src/vendor")
+	want := []string{"src/vendor"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scopeIncludeTarget(src, src/vendor) = %v, want %v", got, want)
+	}
+}
+
+func TestScopeIncludeTargetAnchoredOutOfScope(t *testing.T) {
+	got := scopeIncludeTarget([]string{"src"}, "lib/vendor")
+	if len(got) != 0 {
+		t.Fatalf("scopeIncludeTarget(src, lib/vendor) = %v, want empty", got)
+	}
+}
+
+func TestScopeIncludeTargetAnchoredAncestorOfScope(t *testing.T) {
+	got := scopeIncludeTarget([]string{"ignored/deep/path"}, "ignored/deep")
+	want := []string{"ignored/deep"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scopeIncludeTarget(ignored/deep/path, ignored/deep) = %v, want %v", got, want)
+	}
+}
+
+func TestScopeIncludeTargetWildcardSkipped(t *testing.T) {
+	// "*" is handled before scopeIncludeTarget is called, but verify it
+	// doesn't produce nonsensical output if it were passed
+	got := scopeIncludeTarget([]string{"src"}, "*")
+	want := []string{"src/*"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scopeIncludeTarget(src, *) = %v, want %v", got, want)
 	}
 }

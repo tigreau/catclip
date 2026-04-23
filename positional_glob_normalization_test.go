@@ -1,7 +1,6 @@
 package catclip
 
 import (
-	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -38,21 +37,13 @@ func TestNormalizePositionalGlobArgsWrapperStarQuietSuppressesHint(t *testing.T)
 	}
 }
 
-func TestNormalizePositionalGlobArgsPatternFixIt(t *testing.T) {
-	_, err := normalizePositionalGlobArgs([]string{"*.js"}, false)
-	if err == nil {
-		t.Fatal("expected pattern fix-it error")
+func TestNormalizePositionalGlobArgsGlobPatternPassesThrough(t *testing.T) {
+	result, err := normalizePositionalGlobArgs([]string{"*.js"}, false)
+	if err != nil {
+		t.Fatalf("normalizePositionalGlobArgs returned error: %v", err)
 	}
-
-	var usage usageError
-	if !errors.As(err, &usage) {
-		t.Fatalf("expected usageError, got %T", err)
-	}
-	if !strings.Contains(err.Error(), "Error: '*.js' is a pattern, not a target.") {
-		t.Fatalf("expected pattern fix-it, got:\n%s", err)
-	}
-	if !strings.Contains(err.Error(), `catclip . --only "*.js"`) {
-		t.Fatalf("expected canonical pattern fix-it, got:\n%s", err)
+	if !reflect.DeepEqual(result.Args, []string{"*.js"}) {
+		t.Fatalf("expected glob pattern to pass through, got %#v", result.Args)
 	}
 }
 
@@ -69,55 +60,43 @@ func TestNormalizePositionalGlobArgsBareExtensionFixIt(t *testing.T) {
 	}
 }
 
-func TestNormalizePositionalGlobArgsCrossScopeFixIt(t *testing.T) {
-	_, err := normalizePositionalGlobArgs([]string{"*.js", "--then", "*.ts"}, false)
-	if err == nil {
-		t.Fatal("expected cross-scope fix-it error")
+func TestNormalizePositionalGlobArgsCrossScopeGlobPassesThrough(t *testing.T) {
+	result, err := normalizePositionalGlobArgs([]string{"*.js", "--then", "*.ts"}, false)
+	if err != nil {
+		t.Fatalf("normalizePositionalGlobArgs returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), `catclip . --only "*.js" --then . --only "*.ts"`) {
-		t.Fatalf("expected full cross-scope canonical fix-it, got:\n%s", err)
-	}
-}
-
-func TestNormalizePositionalGlobArgsWrapperStarAndPatternFixIt(t *testing.T) {
-	_, err := normalizePositionalGlobArgs([]string{"*Button*", "*.js"}, false)
-	if err == nil {
-		t.Fatal("expected mixed wrapper-star/pattern fix-it error")
-	}
-	if !strings.Contains(err.Error(), `catclip Button --only "*.js"`) {
-		t.Fatalf("expected wrapper-star target normalization inside fix-it, got:\n%s", err)
+	if !reflect.DeepEqual(result.Args, []string{"*.js", "--then", "*.ts"}) {
+		t.Fatalf("expected cross-scope globs to pass through, got %#v", result.Args)
 	}
 }
 
-func TestNormalizePositionalGlobArgsDegenerateStarFixIt(t *testing.T) {
-	_, err := normalizePositionalGlobArgs([]string{"*"}, false)
-	if err == nil {
-		t.Fatal("expected degenerate-star fix-it error")
+func TestNormalizePositionalGlobArgsWrapperStarAndPatternPassesThrough(t *testing.T) {
+	result, err := normalizePositionalGlobArgs([]string{"*Button*", "*.js"}, false)
+	if err != nil {
+		t.Fatalf("normalizePositionalGlobArgs returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Error: '*' is a pattern, not a target.") {
-		t.Fatalf("expected pattern error, got:\n%s", err)
-	}
-	if !strings.Contains(err.Error(), "catclip .") {
-		t.Fatalf("expected collapsed dot fix-it, got:\n%s", err)
-	}
-	if strings.Contains(err.Error(), `--only "*"`) {
-		t.Fatalf("expected degenerate star not to suggest --only *, got:\n%s", err)
+	if !reflect.DeepEqual(result.Args, []string{"*Button*", "*.js"}) {
+		t.Fatalf("expected mixed wrapper-star/pattern to pass through, got %#v", result.Args)
 	}
 }
 
-func TestNormalizePositionalGlobArgsAmbiguousInterleaving(t *testing.T) {
-	_, err := normalizePositionalGlobArgs([]string{"src", "*.js", "components", "*.tsx"}, false)
-	if err == nil {
-		t.Fatal("expected ambiguous interleaving error")
+func TestNormalizePositionalGlobArgsDegenerateStarPassesThrough(t *testing.T) {
+	result, err := normalizePositionalGlobArgs([]string{"*"}, false)
+	if err != nil {
+		t.Fatalf("normalizePositionalGlobArgs returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Patterns and targets can't be interleaved in one scope.") {
-		t.Fatalf("expected ambiguity diagnostic, got:\n%s", err)
+	if !reflect.DeepEqual(result.Args, []string{"*"}) {
+		t.Fatalf("expected degenerate star to pass through, got %#v", result.Args)
 	}
-	if !strings.Contains(err.Error(), `catclip src --only "*.js" --then components --only "*.tsx"`) {
-		t.Fatalf("expected --then alternative, got:\n%s", err)
+}
+
+func TestNormalizePositionalGlobArgsInterleavedGlobsPassThrough(t *testing.T) {
+	result, err := normalizePositionalGlobArgs([]string{"src", "*.js", "components", "*.tsx"}, false)
+	if err != nil {
+		t.Fatalf("normalizePositionalGlobArgs returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), `catclip src components --only "*.js" "*.tsx"`) {
-		t.Fatalf("expected one-scope alternative, got:\n%s", err)
+	if !reflect.DeepEqual(result.Args, []string{"src", "*.js", "components", "*.tsx"}) {
+		t.Fatalf("expected interleaved globs to pass through, got %#v", result.Args)
 	}
 }
 

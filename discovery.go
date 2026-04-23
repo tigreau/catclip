@@ -11,7 +11,7 @@ import (
 
 type textClassifier func(relPath, absPath string) (bool, error)
 
-func discoverFilesUnder(workingDir, rootAbs, rootRel string, matcher scopeMatcher, classifyText textClassifier, rootBypass *blockInfo) ([]fileEntry, error) {
+func discoverFilesUnder(workingDir, rootAbs, rootRel string, matcher scopeMatcher, classifyText textClassifier, rootBypass *blockInfo, withBinaries bool) ([]fileEntry, error) {
 	rootRel = normalizeRelPath(rootRel)
 	var files []fileEntry
 	err := filepath.WalkDir(rootAbs, func(current string, d fs.DirEntry, walkErr error) error {
@@ -58,7 +58,7 @@ func discoverFilesUnder(workingDir, rootAbs, rootRel string, matcher scopeMatche
 		if rootBypass != nil {
 			entry = withAllowedByInclude(entry, *rootBypass)
 		}
-		if excludedTextLikeAsset(rel) {
+		if !withBinaries && excludedTextLikeAsset(rel) {
 			return nil
 		}
 
@@ -77,7 +77,7 @@ func discoverFilesUnder(workingDir, rootAbs, rootRel string, matcher scopeMatche
 	return files, nil
 }
 
-func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string, matcher scopeMatcher, classifyText textClassifier, rootBypass *blockInfo) ([]fileEntry, error) {
+func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string, matcher scopeMatcher, classifyText textClassifier, rootBypass *blockInfo, withBinaries bool) ([]fileEntry, error) {
 	rootRel = normalizeRelPath(rootRel)
 	var files []fileEntry
 	err := filepath.WalkDir(rootAbs, func(current string, d fs.DirEntry, walkErr error) error {
@@ -118,7 +118,7 @@ func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string,
 				return nil
 			}
 		}
-		if excludedTextLikeAsset(rel) {
+		if !withBinaries && excludedTextLikeAsset(rel) {
 			return nil
 		}
 
@@ -195,7 +195,7 @@ var knownTextBasenames = map[string]struct{}{
 }
 
 var knownBinaryExts = map[string]struct{}{
-	"png": {}, "jpg": {}, "jpeg": {}, "gif": {}, "bmp": {}, "ico": {}, "svg": {}, "webp": {}, "tif": {}, "tiff": {}, "psd": {}, "xcf": {}, "heic": {}, "raw": {},
+	"png": {}, "jpg": {}, "jpeg": {}, "gif": {}, "bmp": {}, "ico": {}, "webp": {}, "tif": {}, "tiff": {}, "psd": {}, "xcf": {}, "heic": {}, "raw": {},
 	"pdf": {}, "docx": {}, "doc": {}, "xlsx": {}, "xls": {}, "pptx": {}, "ppt": {}, "odt": {}, "ods": {}, "odp": {}, "rtf": {},
 	"zip": {}, "tar": {}, "gz": {}, "bz2": {}, "xz": {}, "7z": {}, "rar": {}, "dmg": {}, "iso": {}, "img": {}, "vmdk": {}, "qcow2": {},
 	"exe": {}, "dll": {}, "so": {}, "dylib": {}, "a": {}, "lib": {}, "o": {}, "obj": {}, "pdb": {},
@@ -205,7 +205,7 @@ var knownBinaryExts = map[string]struct{}{
 	"mp3": {}, "mp4": {}, "mov": {}, "avi": {}, "mkv": {}, "webm": {}, "flv": {}, "wmv": {}, "m4a": {}, "wav": {}, "flac": {}, "ogg": {}, "3gp": {},
 	"ttf": {}, "otf": {}, "woff": {}, "woff2": {}, "eot": {},
 	"blend": {}, "glb": {}, "fbx": {}, "3ds": {},
-	"db": {}, "sqlite": {}, "sqlite3": {}, "bin": {}, "dat": {}, "hex": {}, "dump": {}, "map": {}, "lockb": {},
+	"db": {}, "sqlite": {}, "sqlite3": {}, "bin": {}, "dat": {}, "hex": {}, "dump": {}, "lockb": {},
 	"pack": {}, "eslintcache": {}, "inf": {}, "pbm": {}, "ppm": {},
 	"icns": {}, "xpm": {}, "scpt": {},
 }

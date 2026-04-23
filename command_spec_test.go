@@ -126,6 +126,28 @@ func TestParseArgsBuildsCommandSpecForMultiScopeGitDiff(t *testing.T) {
 	}
 }
 
+func TestParseArgsBuildsCommandSpecForPathsScope(t *testing.T) {
+	cfg, err := parseArgs([]string{"src", "--only", "*.ts", "--paths"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+
+	scopeSpecs := cfg.Command.Scopes()
+	if got, want := len(scopeSpecs), 1; got != want {
+		t.Fatalf("expected %d command scope, got %d", want, got)
+	}
+	scopeSpec := scopeSpecs[0]
+	if !scopeSpec.HasPathsOutput() {
+		t.Fatal("expected paths output mode")
+	}
+	if got, want := scopeSpec.OutputMode(), entryModeFull; got != want {
+		t.Fatalf("OutputMode() = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(scopeSpec.OnlyPatterns(), "\n"), "*.ts"; got != want {
+		t.Fatalf("OnlyPatterns() = %q, want %q", got, want)
+	}
+}
+
 func BenchmarkFinalizedCommandSpecFromScopesInteractiveSized(b *testing.B) {
 	limit := 10
 	scopes := []executionScope{

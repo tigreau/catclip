@@ -3,6 +3,7 @@ package catclip
 import (
 	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -26,6 +27,95 @@ func TestOutputPlanPreviewModeTagsMatchPreparedOutputModes(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
+	}
+}
+
+func TestOutputPlanPreviewModeTagsIncludePathsModes(t *testing.T) {
+	plan := outputPlan{
+		items: []outputPlanItem{
+			newPathOutputPlanItem(fileEntry{RelPath: "path-only.txt"}),
+			newPathOutputPlanItem(fileEntry{RelPath: "path-and-file.txt"}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "path-and-file.txt", Mode: entryModeFull}, BodyBytes: 10}),
+			newPathOutputPlanItem(fileEntry{RelPath: "path-and-snippet.txt"}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "path-and-snippet.txt", Mode: entryModeSnippet}, BodyBytes: 5}),
+			newPathOutputPlanItem(fileEntry{RelPath: "path-and-diff.txt"}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "path-and-diff.txt", Mode: entryModeDiff}, BodyBytes: 7}),
+			newPathOutputPlanItem(fileEntry{RelPath: "path-and-untracked.txt"}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "path-and-untracked.txt", Mode: entryModeDiff}, BodyBytes: 9}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "snippet-only.txt", Mode: entryModeSnippet}, BodyBytes: 4}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "diff-only.txt", Mode: entryModeDiff}, BodyBytes: 6}),
+		},
+	}
+	statuses := map[string]string{
+		"path-and-diff.txt":      "M",
+		"path-and-untracked.txt": "?",
+		"diff-only.txt":          "M",
+	}
+
+	got := plan.PreviewModeTags(statuses)
+	want := map[string]string{
+		"path-only.txt":          "path only",
+		"path-and-file.txt":      "path + file",
+		"path-and-snippet.txt":   "path + snippet",
+		"path-and-diff.txt":      "path + diff",
+		"path-and-untracked.txt": "path + file",
+		"snippet-only.txt":       "snippet only",
+		"diff-only.txt":          "diff only",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
+	}
+}
+
+func TestOutputPlanSummaryCountWordUsesDistinctPathsAndComposition(t *testing.T) {
+	tests := []struct {
+		name      string
+		plan      outputPlan
+		wantCount int
+		wantWord  string
+	}{
+		{
+			name: "paths only",
+			plan: outputPlan{
+				items: []outputPlanItem{
+					newPathOutputPlanItem(fileEntry{RelPath: "src/a.ts"}),
+					newPathOutputPlanItem(fileEntry{RelPath: "src/b.ts"}),
+				},
+			},
+			wantCount: 2,
+			wantWord:  "paths",
+		},
+		{
+			name: "files only",
+			plan: outputPlan{
+				items: []outputPlanItem{
+					newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "src/a.ts", Mode: entryModeFull}, BodyBytes: 10}),
+				},
+			},
+			wantCount: 1,
+			wantWord:  "file",
+		},
+		{
+			name: "mixed output uses items",
+			plan: outputPlan{
+				items: []outputPlanItem{
+					newPathOutputPlanItem(fileEntry{RelPath: "src/a.ts"}),
+					newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "src/a.ts", Mode: entryModeFull}, BodyBytes: 10}),
+					newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "src/b.ts", Mode: entryModeFull}, BodyBytes: 12}),
+				},
+			},
+			wantCount: 2,
+			wantWord:  "items",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotCount, gotWord := tt.plan.SummaryCountWord()
+			if gotCount != tt.wantCount || gotWord != tt.wantWord {
+				t.Fatalf("SummaryCountWord() = (%d, %q), want (%d, %q)", gotCount, gotWord, tt.wantCount, tt.wantWord)
+			}
+		})
 	}
 }
 
@@ -59,6 +149,23 @@ func TestBuildOutputReportForPlanUsesOutputPlanModeTags(t *testing.T) {
 	}
 	if !reflect.DeepEqual(report.modeTags, want) {
 		t.Fatalf("report.modeTags = %#v, want %#v", report.modeTags, want)
+	}
+}
+
+func TestBuildOutputReportForPlanUsesPathsWordForPathOnlyOutput(t *testing.T) {
+	plan := outputPlan{
+		items: []outputPlanItem{
+			newPathOutputPlanItem(fileEntry{RelPath: "src/a.ts"}),
+			newPathOutputPlanItem(fileEntry{RelPath: "src/b.ts"}),
+		},
+	}
+
+	report, err := buildOutputReportForPlan(runConfig{}, gitContext{}, plan, nil)
+	if err != nil {
+		t.Fatalf("buildOutputReportForPlan returned error: %v", err)
+	}
+	if got, want := report.countWord, "paths"; got != want {
+		t.Fatalf("report.countWord = %q, want %q", got, want)
 	}
 }
 
@@ -97,6 +204,58 @@ func TestBuildOutputReportForPlanUsesPlanAccounting(t *testing.T) {
 	}
 	if report.humanSize == "" || report.tokens == 0 {
 		t.Fatalf("expected summary fields to be populated, got size=%q tokens=%d", report.humanSize, report.tokens)
+	}
+}
+
+func TestWriteClipboardSuccessUsesDistinctSummarySubjects(t *testing.T) {
+	tests := []struct {
+		name     string
+		plan     outputPlan
+		wantText string
+	}{
+		{
+			name: "paths only",
+			plan: outputPlan{
+				items: []outputPlanItem{
+					newPathOutputPlanItem(fileEntry{RelPath: "src/a.ts"}),
+					newPathOutputPlanItem(fileEntry{RelPath: "src/b.ts"}),
+				},
+			},
+			wantText: "Copied 2 paths to clipboard (src/a.ts ... src/b.ts)",
+		},
+		{
+			name: "mixed uses items and distinct relpaths",
+			plan: outputPlan{
+				items: []outputPlanItem{
+					newPathOutputPlanItem(fileEntry{RelPath: "src/a.ts"}),
+					newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "src/a.ts", Mode: entryModeFull}, BodyBytes: 10}),
+					newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "src/b.ts", Mode: entryModeFull}, BodyBytes: 12}),
+				},
+			},
+			wantText: "Copied 2 items to clipboard (src/a.ts ... src/b.ts)",
+		},
+		{
+			name: "single distinct relpath stays direct",
+			plan: outputPlan{
+				items: []outputPlanItem{
+					newPathOutputPlanItem(fileEntry{RelPath: "src/a.ts"}),
+					newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "src/a.ts", Mode: entryModeFull}, BodyBytes: 10}),
+				},
+			},
+			wantText: "Copied src/a.ts to clipboard",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := writeClipboardSuccess(&out, tt.plan, colorPalette{}); err != nil {
+				t.Fatalf("writeClipboardSuccess returned error: %v", err)
+			}
+			if got := strings.TrimSpace(out.String()); got != tt.wantText {
+				t.Fatalf("writeClipboardSuccess output = %q, want %q", got, tt.wantText)
+			}
+		})
 	}
 }
 
