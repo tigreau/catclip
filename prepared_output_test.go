@@ -35,7 +35,7 @@ func TestPrepareFileUnitsUsesSnippetBodyBytes(t *testing.T) {
 	if got := units[0].BodyBytes; got != wantBody {
 		t.Fatalf("expected snippet body bytes %d, got %d", wantBody, got)
 	}
-	if !strings.Contains(string(units[0].Payload), `<file path="src/app.ts" snippet="1-3">`) {
+	if !strings.Contains(string(units[0].Payload), `<file path="src/app.ts" lines="1-3">`) {
 		t.Fatalf("expected prepared snippet payload, got:\n%s", string(units[0].Payload))
 	}
 

@@ -43,7 +43,7 @@ func resolveStartupRecentPickerArgs(currentArgs []string, query string) ([]strin
 }
 
 func startupRecentPickerEntries(currentArgs []string) ([]fileEntry, error) {
-	cfg, err := parseArgs(currentArgs)
+	cfg, err := parseArgsAllowImplicitDot(currentArgs)
 	if err != nil {
 		return nil, err
 	}

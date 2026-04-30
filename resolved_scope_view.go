@@ -11,7 +11,7 @@ type resolvedScopeView struct {
 }
 
 func resolvedCurrentScopeViewForArgs(args []string) (resolvedScopeView, error) {
-	cfg, err := parseArgs(args)
+	cfg, err := parseArgsAllowImplicitDot(args)
 	if err != nil {
 		return resolvedScopeView{}, err
 	}
@@ -54,7 +54,7 @@ func startupResolvedCurrentScopeViewForArgs(args []string) (resolvedScopeView, b
 		return resolvedScopeView{}, false, nil
 	}
 
-	cfg, err := parseArgs(args)
+	cfg, err := parseArgsAllowImplicitDot(args)
 	if err != nil {
 		return resolvedScopeView{}, false, err
 	}

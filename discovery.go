@@ -175,6 +175,8 @@ func shellStyleExtension(relPath string) string {
 var knownBinaryBasenames = map[string]struct{}{
 	".ds_store":              {},
 	"thumbs.db":              {},
+	"ehthumbs.db":            {},
+	"desktop.ini":            {},
 	"bad-nonprintable.bconf": {},
 }
 
@@ -284,6 +286,10 @@ func dedupeEntriesByPath(entries []fileEntry) []fileEntry {
 			out = append(out, entry)
 			continue
 		}
+		if linesEntriesShouldCoexist(*last, entry) {
+			out = append(out, entry)
+			continue
+		}
 		mergeFileEntry(last, entry)
 	}
 	return out
@@ -295,17 +301,45 @@ func dedupeEntriesByPathPreserveOrder(entries []fileEntry) []fileEntry {
 	}
 
 	out := make([]fileEntry, 0, len(entries))
-	indexByPath := make(map[string]int, len(entries))
+	indicesByPath := make(map[string][]int, len(entries))
 	for _, entry := range entries {
-		idx, ok := indexByPath[entry.RelPath]
+		indices, ok := indicesByPath[entry.RelPath]
 		if !ok {
-			indexByPath[entry.RelPath] = len(out)
+			indicesByPath[entry.RelPath] = []int{len(out)}
 			out = append(out, entry)
 			continue
 		}
-		mergeFileEntry(&out[idx], entry)
+		merged := false
+		for _, idx := range indices {
+			if !linesEntriesShouldCoexist(out[idx], entry) {
+				mergeFileEntry(&out[idx], entry)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			indicesByPath[entry.RelPath] = append(indices, len(out))
+			out = append(out, entry)
+		}
 	}
 	return out
+}
+
+// linesEntriesShouldCoexist returns true when two entryModeLines entries for the
+// same path carry different ranges and should both survive dedup.
+func linesEntriesShouldCoexist(a, b fileEntry) bool {
+	if a.Mode != entryModeLines || b.Mode != entryModeLines {
+		return false
+	}
+	// Bare lines (LinesStart == 0) absorbs any ranged entry.
+	if a.LinesStart == 0 || b.LinesStart == 0 {
+		return false
+	}
+	// Same range → dedupe.
+	if a.LinesStart == b.LinesStart && a.LinesEnd == b.LinesEnd {
+		return false
+	}
+	return true
 }
 
 func mergeFileEntry(dst *fileEntry, incoming fileEntry) {
@@ -355,8 +389,10 @@ func dedupePreserveOrder(values []string) []string {
 func entryModePriority(mode entryMode) int {
 	switch mode {
 	case entryModeDiff:
-		return 2
+		return 3
 	case entryModeSnippet:
+		return 2
+	case entryModeLines:
 		return 1
 	default:
 		return 0

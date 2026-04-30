@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -48,7 +49,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		if err := validateImplementedFeatureSet(cfg); err != nil {
 			return err
 		}
-		restorePromptGuard := pushHeadlessPromptGuard(cfg.HeadlessStdoutMode())
+		restorePromptGuard := pushHeadlessPromptGuard(cfg.Headless || cfg.isInternalKind())
 		defer restorePromptGuard()
 		if cfg.FilePreview {
 			return runInternalFilePreview(cfg, stdout)
@@ -418,8 +419,13 @@ func exitWithError(err error, stderr io.Writer) {
 	os.Exit(code)
 }
 
-func (cfg runConfig) HeadlessStdoutMode() bool {
-	return cfg.Print && cfg.Quiet
+func (cfg runConfig) isInternalKind() bool {
+	return cfg.TreePayload || cfg.FilePreview ||
+		cfg.ContentMatchList || cfg.RecentPreview
+}
+
+func (cfg runConfig) canPromptForChoice() bool {
+	return !cfg.Headless && !cfg.isInternalKind() && canPromptInteractively()
 }
 
 func activeColorPalette() colorPalette {
@@ -562,7 +568,7 @@ func headlessPromptGuardActive() bool {
 }
 
 func headlessPromptBugError() error {
-	return fmt.Errorf("BUG: reached interactive prompt in headless mode (-q -p).\n  This is a catclip bug; please report it.")
+	return fmt.Errorf("BUG: reached interactive prompt in headless mode (--headless or --internal-*).\n  This is a catclip bug; please report it.")
 }
 
 func readPromptResponse(prompt string, stderr io.Writer) (string, bool, error) {
@@ -636,37 +642,42 @@ func validateImplementedFeatureSet(cfg runConfig) error {
 	return nil
 }
 
+
+
 func validateRawOutputPlan(cfg runConfig, plan outputPlan) error {
 	if !cfg.Raw {
 		return nil
 	}
-	if !cfg.Print || cfg.OutputMode != outputModeStdout {
-		return newUsageError("Error: --raw requires -p/--print.")
+	for _, item := range plan.items {
+		if item.kind != outputSectionKindFiles {
+			return newUsageError("Error: --raw cannot be combined with --paths.")
+		}
+		switch item.mode {
+		case entryModeSnippet:
+			return newUsageError("Error: --raw cannot be combined with snippet output.")
+		case entryModeDiff:
+			return newUsageError("Error: --raw cannot be combined with diff output.")
+		case entryModeFull, entryModeLines:
+			// OK
+		default:
+			return newUsageError("Error: --raw cannot be combined with this output kind.")
+		}
 	}
-	if plan.HasPaths() {
-		return newUsageError("Error: --raw cannot be combined with --paths.")
-	}
-	if len(plan.items) != 1 {
-		return newUsageError("Error: --raw requires exactly one surviving full-file output item; %d matched.", len(plan.items))
-	}
-
-	item := plan.items[0]
-	if item.kind != outputSectionKindFiles {
-		return newUsageError("Error: --raw cannot be combined with --paths.")
-	}
-	switch item.mode {
-	case entryModeSnippet:
-		return newUsageError("Error: --raw cannot be combined with snippet output.")
-	case entryModeDiff:
-		return newUsageError("Error: --raw cannot be combined with diff output.")
-	case entryModeFull:
-		return nil
-	default:
-		return newUsageError("Error: --raw requires exactly one surviving full-file output item; %d matched.", len(plan.items))
-	}
+	return nil
 }
 
 func parseArgs(args []string) (runConfig, error) {
+	return parseArgsWithMode(args, false)
+}
+
+// parseArgsAllowImplicitDot is for internal inspection (startup picker, etc.)
+// where it's OK to default the scope target to "." when none is provided.
+// The CLI entry point uses parseArgs (strict) to require explicit targets.
+func parseArgsAllowImplicitDot(args []string) (runConfig, error) {
+	return parseArgsWithMode(args, true)
+}
+
+func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return runConfig{}, err
@@ -720,7 +731,14 @@ func parseArgs(args []string) (runConfig, error) {
 			if cfg.TreePayload {
 				return newUsageError("Error: --internal-tree-payload requires an explicit target.\n  Use: catclip TARGET --internal-tree-payload")
 			}
-			s.Targets = []string{"."}
+			if cfg.Headless {
+				return newUsageError("Error: --headless requires explicit targets.\n  Pass a path, --include, or another scope-defining flag.\n  Example: catclip . --headless")
+			}
+			if cfg.isInternalKind() || cfg.Action != actionRun || allowImplicitDotScope {
+				s.Targets = []string{"."}
+			} else {
+				return newUsageError("Error: no target specified.\n  Pass an explicit target — use '.' for the current directory.\n  Example: catclip . --paths")
+			}
 		}
 
 		executionScopes = append(executionScopes, s)
@@ -754,8 +772,9 @@ func parseArgs(args []string) (runConfig, error) {
 		case "-y", "--yes":
 			cfg.Yes = true
 		case "-p", "--print":
-			cfg.Print = true
 			cfg.OutputMode = outputModeStdout
+		case "--headless":
+			cfg.Headless = true
 		case "-r", "--raw":
 			cfg.Raw = true
 		case "--with-binaries":
@@ -766,9 +785,6 @@ func parseArgs(args []string) (runConfig, error) {
 			cfg.Preview = true
 		case "--internal-tree-payload":
 			cfg.TreePayload = true
-			cfg.Print = true
-			cfg.Quiet = true
-			cfg.OutputMode = outputModeStdout
 		case "--internal-tree-target":
 			if i+1 >= len(args) {
 				return runConfig{}, newUsageError("Error: --internal-tree-target requires a path.")
@@ -789,9 +805,6 @@ func parseArgs(args []string) (runConfig, error) {
 			cfg.TreeState = args[i]
 		case "--internal-file-preview":
 			cfg.FilePreview = true
-			cfg.Print = true
-			cfg.Quiet = true
-			cfg.OutputMode = outputModeStdout
 		case "--internal-file-path":
 			if i+1 >= len(args) {
 				return runConfig{}, newUsageError("Error: --internal-file-path requires a path.")
@@ -800,14 +813,8 @@ func parseArgs(args []string) (runConfig, error) {
 			cfg.FilePath = args[i]
 		case "--internal-content-match-list":
 			cfg.ContentMatchList = true
-			cfg.Print = true
-			cfg.Quiet = true
-			cfg.OutputMode = outputModeStdout
 		case "--internal-recent-preview":
 			cfg.RecentPreview = true
-			cfg.Print = true
-			cfg.Quiet = true
-			cfg.OutputMode = outputModeStdout
 		case "--internal-recent-data":
 			if i+1 >= len(args) {
 				return runConfig{}, newUsageError("Error: --internal-recent-data requires a path.")
@@ -858,6 +865,38 @@ func parseArgs(args []string) (runConfig, error) {
 			current.Diff = true
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageUnstagedDiff})
 			lastNoValueModifier = arg
+		case "--lines":
+			inModifierMode = true
+			current.Lines = true
+			var start, end int
+			if i+1 < len(args) {
+				next := args[i+1]
+				if n, err := strconv.Atoi(next); err == nil {
+					if n < 1 {
+						return runConfig{}, newUsageError("Error: --lines start must be >= 1 (got %d).\n  Line numbers are 1-based, matching editors and compiler output.", n)
+					}
+					start = n
+					i++
+					if i+1 < len(args) {
+						next2 := args[i+1]
+						if n2, err := strconv.Atoi(next2); err == nil {
+							if n2 < start {
+								return runConfig{}, newUsageError("Error: --lines end (%d) must be >= start (%d).\n  Use: --lines START END where END >= START.", n2, start)
+							}
+							end = n2
+							i++
+						} else if !strings.HasPrefix(next2, "-") {
+							return runConfig{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next2)
+						}
+					}
+				} else if !strings.HasPrefix(next, "-") {
+					return runConfig{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next)
+				}
+			}
+			current.LinesStart = start
+			current.LinesEnd = end
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageLines})
+			lastNoValueModifier = arg
 		case "--snippet":
 			inModifierMode = true
 			if i+1 >= len(args) {
@@ -875,6 +914,9 @@ func parseArgs(args []string) (runConfig, error) {
 		case "--":
 			if i != len(args)-1 {
 				return runConfig{}, bareModifierPlaceholderOrderError()
+			}
+			if cfg.Headless {
+				return runConfig{}, bareModifierPlaceholderHeadlessModeError()
 			}
 			return runConfig{}, bareModifierPlaceholderInteractiveOnlyError()
 		case "--only":
@@ -995,14 +1037,23 @@ func parseArgs(args []string) (runConfig, error) {
 		return runConfig{}, err
 	}
 
+	if cfg.Headless || cfg.isInternalKind() {
+		cfg.OutputMode = outputModeStdout
+		cfg.Quiet = true
+	}
+
 	if len(executionScopes) == 0 {
 		if cfg.TreePayload {
 			return runConfig{}, newUsageError("Error: --internal-tree-payload requires an explicit target.\n  Use: catclip TARGET --internal-tree-payload")
 		}
-		executionScopes = append(executionScopes, executionScope{Targets: []string{"."}})
-	}
-	if cfg.Action == actionRun && cfg.Preview && cfg.Print {
-		return runConfig{}, newUsageError("Error: --preview cannot be used with -p.\n  --preview renders a preview instead of emitting payload.\n  -p emits payload to stdout.")
+		if cfg.Headless {
+			return runConfig{}, newUsageError("Error: --headless requires explicit targets.\n  Pass a path, --include, or another scope-defining flag.\n  Example: catclip . --headless")
+		}
+		if cfg.isInternalKind() || cfg.Action != actionRun || allowImplicitDotScope {
+			executionScopes = append(executionScopes, executionScope{Targets: []string{"."}})
+		} else {
+			return runConfig{}, newUsageError("Error: no target specified.\n  Run catclip from an interactive terminal to pick targets, or pass an explicit target — use '.' for the current directory.\n  Example: catclip .")
+		}
 	}
 
 	cfg.Command = finalizedCommandSpecFromExecutionScopes(executionScopes)

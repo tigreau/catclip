@@ -9,6 +9,7 @@ const (
 	validationReasonNoValueModifier                validationReason = "no_value_modifier"
 	validationReasonBarePlaceholderOrder           validationReason = "bare_placeholder_order"
 	validationReasonBarePlaceholderInteractiveOnly validationReason = "bare_placeholder_interactive_only"
+	validationReasonBarePlaceholderHeadlessMode    validationReason = "bare_placeholder_headless_mode"
 	validationReasonDiffStandalone                 validationReason = "diff_standalone"
 	validationReasonMissingDiffSelector            validationReason = "missing_diff_selector"
 	validationReasonUntrackedDiff                  validationReason = "untracked_diff"
@@ -51,6 +52,8 @@ func renderValidationFailure(e validationFailure) string {
 		return "Error: bare -- can only be followed by another bare -- in the same scope.\n  It opens interactive modifier selection, so explicit modifiers and values cannot appear to its right."
 	case validationReasonBarePlaceholderInteractiveOnly:
 		return "Error: -- opens interactive modifier selection.\n  Run catclip in an interactive terminal, or remove the trailing --."
+	case validationReasonBarePlaceholderHeadlessMode:
+		return "Error: -- opens interactive modifier selection, which is unavailable in headless mode (--headless).\n  Replace -- with explicit modifiers (--only, --recent, --snippet, ...), or drop --headless to run interactively."
 	case validationReasonDiffStandalone:
 		return "Error: --diff is no longer a standalone modifier.\n  Use --changed-diff, --staged-diff, or --unstaged-diff."
 	case validationReasonMissingDiffSelector:
@@ -117,6 +120,10 @@ func bareModifierPlaceholderOrderError() error {
 
 func bareModifierPlaceholderInteractiveOnlyError() error {
 	return validationFailure{Reason: validationReasonBarePlaceholderInteractiveOnly}
+}
+
+func bareModifierPlaceholderHeadlessModeError() error {
+	return validationFailure{Reason: validationReasonBarePlaceholderHeadlessMode}
 }
 
 func diffStandaloneError() error {

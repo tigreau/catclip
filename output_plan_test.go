@@ -67,6 +67,78 @@ func TestOutputPlanPreviewModeTagsIncludePathsModes(t *testing.T) {
 	}
 }
 
+func TestOutputPlanPreviewModeTagsLines(t *testing.T) {
+	plan := outputPlan{
+		items: []outputPlanItem{
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "bare.go", Mode: entryModeLines, Lines: true}, BodyBytes: 100}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "ranged.go", Mode: entryModeLines, Lines: true, LinesStart: 1, LinesEnd: 5}, BodyBytes: 50}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "open.go", Mode: entryModeLines, Lines: true, LinesStart: 400}, BodyBytes: 80}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "full.go", Mode: entryModeFull}, BodyBytes: 200}),
+		},
+	}
+	got := plan.PreviewModeTags(nil)
+	want := map[string]string{
+		"bare.go":   "numbered",
+		"ranged.go": "lines 1-5",
+		"open.go":   "lines 400-",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
+	}
+}
+
+func TestOutputPlanPreviewModeTagsLinesWithPaths(t *testing.T) {
+	plan := outputPlan{
+		items: []outputPlanItem{
+			newPathOutputPlanItem(fileEntry{RelPath: "numbered.go"}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "numbered.go", Mode: entryModeLines, Lines: true}, BodyBytes: 100}),
+			newPathOutputPlanItem(fileEntry{RelPath: "ranged.go"}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "ranged.go", Mode: entryModeLines, Lines: true, LinesStart: 1, LinesEnd: 5}, BodyBytes: 50}),
+		},
+	}
+	got := plan.PreviewModeTags(nil)
+	want := map[string]string{
+		"numbered.go": "path + numbered",
+		"ranged.go":   "path + lines 1-5",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
+	}
+}
+
+func TestOutputPlanPreviewModeTagsLinesMultiEntry(t *testing.T) {
+	plan := outputPlan{
+		items: []outputPlanItem{
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "multi.go", Mode: entryModeLines, Lines: true, LinesStart: 1, LinesEnd: 5}, BodyBytes: 50}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "multi.go", Mode: entryModeLines, Lines: true, LinesStart: 400, LinesEnd: 450}, BodyBytes: 50}),
+		},
+	}
+	got := plan.PreviewModeTags(nil)
+	want := map[string]string{
+		"multi.go": "lines 1-5, lines 400-450",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
+	}
+}
+
+func TestOutputPlanPreviewModeTagsLinesDedup(t *testing.T) {
+	// Snippet wins over lines (higher priority).
+	plan := outputPlan{
+		items: []outputPlanItem{
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "snippet-wins.go", Mode: entryModeLines, Lines: true, LinesStart: 1, LinesEnd: 5}, BodyBytes: 50}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "snippet-wins.go", Mode: entryModeSnippet}, BodyBytes: 30}),
+		},
+	}
+	got := plan.PreviewModeTags(nil)
+	want := map[string]string{
+		"snippet-wins.go": "snippet only",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
+	}
+}
+
 func TestOutputPlanSummaryCountWordUsesDistinctPathsAndComposition(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -266,7 +338,7 @@ func TestEmitOutputPlanUsesPreparedPayload(t *testing.T) {
 			RelPath: "snippet.txt",
 			Mode:    entryModeSnippet,
 		},
-		Payload:   []byte("<file path=\"snippet.txt\" snippet=\"1-1\">\nTODO\n</file>\n\n"),
+		Payload:   []byte("<file path=\"snippet.txt\" lines=\"1-1\">\nTODO\n</file>\n\n"),
 		BodyBytes: int64(len("TODO\n")),
 	}
 

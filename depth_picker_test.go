@@ -60,7 +60,7 @@ if [ "$prompt" = "depth> " ]; then
 		echo "missing internal tree payload preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--depth "$depth_value"' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--depth {2}' >/dev/null || {
 		echo "missing dynamic depth preview" >&2
 		exit 91
 	}

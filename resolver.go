@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path"
@@ -153,6 +152,9 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 	for i := range entries {
 		entries[i].Mode = mode
 		entries[i].SnippetPattern = s.SnippetPattern
+		entries[i].Lines = s.Lines
+		entries[i].LinesStart = s.LinesStart
+		entries[i].LinesEnd = s.LinesEnd
 		entries[i].DiffWantStaged = s.Staged
 		entries[i].DiffWantUnstaged = s.Unstaged
 	}
@@ -622,7 +624,7 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 					return discovered, diagnostics, notices, false, err
 				}
 			}
-			if !r.cfg.HeadlessStdoutMode() && canPromptInteractively() {
+			if r.cfg.canPromptForChoice() {
 				selected, err := chooseTargetMatch(r.cfg, normalizedTarget, combined, stderr, colors)
 				if err != nil {
 					if errors.Is(err, errSelectionCancelled) {
@@ -766,7 +768,7 @@ func (r *scopeResolver) resolveIncludedTarget(target, normalizedTarget string, s
 		return discovered, diagnostics, false, err
 	}
 
-	if r.cfg.HeadlessStdoutMode() || !canPromptInteractively() {
+	if !r.cfg.canPromptForChoice() {
 		return nil, []diagnostic{{
 			message: includeQueryNeedsSelectionMessage(target, colors),
 			isError: true,
@@ -1530,58 +1532,51 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 		return nil, err
 	}
 
-	dirPaths := make([]string, 0, 256)
-	filePaths := make([]string, 0, 512)
-	dirHasChild := make(map[string]bool, 256)
-	dirHasText := make(map[string]bool, 256)
-	err := filepath.WalkDir(r.cfg.WorkingDir, func(current string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if current == r.cfg.WorkingDir {
-			return nil
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
+	rgPaths, err := runRipgrepFiles(r.cfg.WorkingDir, ripgrepFileOptions{NoIgnore: true})
+	if err != nil {
+		return nil, err
+	}
 
-		rel, err := filepath.Rel(r.cfg.WorkingDir, current)
-		if err != nil {
-			return err
-		}
+	dirSet, err := collectAllDirPaths(r.cfg.WorkingDir)
+	if err != nil {
+		return nil, err
+	}
+	filePaths := make([]string, 0, len(rgPaths))
+	dirHasChild := make(map[string]bool, len(dirSet))
+	dirHasText := make(map[string]bool, len(dirSet))
+	for _, rel := range rgPaths {
 		rel = normalizeRelPath(rel)
+		if rel == "" || rel == "." {
+			continue
+		}
 		parent := normalizeRelPath(path.Dir(rel))
 		if parent != "" && parent != "." {
 			dirHasChild[parent] = true
 		}
 
-		if d.IsDir() {
-			dirPaths = append(dirPaths, rel)
-			return nil
-		}
-
-		info, err := os.Stat(current)
-		if err != nil || !info.Mode().IsRegular() {
-			return nil
-		}
 		if !r.withBinaries && excludedTextLikeAsset(rel) {
-			return nil
+			continue
 		}
-		text, err := r.classifyTextFile(rel, current)
+		text, err := r.classifyTextFile(rel, "")
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if text {
 			filePaths = append(filePaths, rel)
-			for dir := normalizeRelPath(path.Dir(rel)); dir != "" && dir != "."; dir = normalizeRelPath(path.Dir(dir)) {
-				dirHasText[dir] = true
+			for d := parent; d != "" && d != "."; d = normalizeRelPath(path.Dir(d)) {
+				dirHasText[d] = true
 			}
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
+
+	dirPaths := make([]string, 0, len(dirSet))
+	for d := range dirSet {
+		dirPaths = append(dirPaths, d)
+		if parent := normalizeRelPath(path.Dir(d)); parent != "" && parent != "." {
+			dirHasChild[parent] = true
+		}
+	}
+	sort.Strings(dirPaths)
 
 	relPaths := make([]string, 0, len(dirPaths)+len(filePaths))
 	relPaths = append(relPaths, dirPaths...)
@@ -1651,6 +1646,36 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 	r.ignoredTargets = targets
 	r.ignoredTargetsOk = true
 	return append([]targetMatch(nil), targets...), nil
+}
+
+func collectAllDirPaths(root string) (map[string]struct{}, error) {
+	dirs := make(map[string]struct{}, 256)
+	var walk func(absDir, relDir string) error
+	walk = func(absDir, relDir string) error {
+		entries, err := os.ReadDir(absDir)
+		if err != nil {
+			return nil
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			name := entry.Name()
+			childRel := name
+			if relDir != "" {
+				childRel = relDir + "/" + name
+			}
+			dirs[childRel] = struct{}{}
+			if err := walk(filepath.Join(absDir, name), childRel); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := walk(root, ""); err != nil {
+		return nil, err
+	}
+	return dirs, nil
 }
 
 func (r *scopeResolver) resolveTargetMatches(matches []targetMatch, colors colorPalette) ([]fileEntry, error) {
@@ -2137,7 +2162,7 @@ func (r *scopeResolver) fuzzySearchFilesUnder(baseRel, needle string, rootBypass
 }
 
 func chooseDirectoryMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
-	if cfg.HeadlessStdoutMode() || !canPromptInteractively() {
+	if !cfg.canPromptForChoice() {
 		return nil, headlessDirectoryAmbiguityError(needle, currentRel, matches)
 	}
 
@@ -2149,7 +2174,7 @@ func chooseDirectoryMatch(cfg runConfig, needle, currentRel string, matches []st
 }
 
 func chooseFileMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
-	if cfg.HeadlessStdoutMode() || !canPromptInteractively() {
+	if !cfg.canPromptForChoice() {
 		return nil, headlessFileAmbiguityError(needle, currentRel, matches)
 	}
 
@@ -2161,7 +2186,7 @@ func chooseFileMatch(cfg runConfig, needle, currentRel string, matches []string,
 }
 
 func chooseTargetMatch(cfg runConfig, needle string, matches []targetMatch, stderr io.Writer, colors colorPalette) ([]targetMatch, error) {
-	if cfg.HeadlessStdoutMode() || !canPromptInteractively() {
+	if !cfg.canPromptForChoice() {
 		return nil, headlessTargetAmbiguityError(needle, matches)
 	}
 
@@ -2211,9 +2236,9 @@ func formatHeadlessCandidateList(items []string) string {
 func headlessDirectoryAmbiguityError(needle, currentRel string, matches []string) error {
 	var b strings.Builder
 	if currentRel == "." {
-		fmt.Fprintf(&b, "Error: Multiple directories match %s in headless mode (-q -p).", singleQuoted(needle))
+		fmt.Fprintf(&b, "Error: Multiple directories match %s in headless mode (--headless).", singleQuoted(needle))
 	} else {
-		fmt.Fprintf(&b, "Error: Multiple directories match %s in %s in headless mode (-q -p).", singleQuoted(needle), currentRel)
+		fmt.Fprintf(&b, "Error: Multiple directories match %s in %s in headless mode (--headless).", singleQuoted(needle), currentRel)
 	}
 	b.WriteString(formatHeadlessCandidateList(matches))
 	b.WriteString("\n  Use a more specific path segment to disambiguate.")
@@ -2223,9 +2248,9 @@ func headlessDirectoryAmbiguityError(needle, currentRel string, matches []string
 func headlessFileAmbiguityError(needle, currentRel string, matches []string) error {
 	var b strings.Builder
 	if currentRel == "." {
-		fmt.Fprintf(&b, "Error: Multiple files match %s in headless mode (-q -p).", singleQuoted(needle))
+		fmt.Fprintf(&b, "Error: Multiple files match %s in headless mode (--headless).", singleQuoted(needle))
 	} else {
-		fmt.Fprintf(&b, "Error: Multiple files match %s in %s in headless mode (-q -p).", singleQuoted(needle), currentRel)
+		fmt.Fprintf(&b, "Error: Multiple files match %s in %s in headless mode (--headless).", singleQuoted(needle), currentRel)
 	}
 	b.WriteString(formatHeadlessCandidateList(matches))
 	b.WriteString("\n  Use a more specific name or path to disambiguate.")
@@ -2238,7 +2263,7 @@ func headlessTargetAmbiguityError(needle string, matches []targetMatch) error {
 		items = append(items, fmt.Sprintf("[%s] %s", match.Kind, match.Path))
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "Error: Multiple files and directories match %s in headless mode (-q -p).", singleQuoted(needle))
+	fmt.Fprintf(&b, "Error: Multiple files and directories match %s in headless mode (--headless).", singleQuoted(needle))
 	b.WriteString(formatHeadlessCandidateList(items))
 	b.WriteString("\n  Use a more specific name or path to disambiguate.")
 	return errors.New(b.String())
@@ -2328,13 +2353,6 @@ func chooseManyFilePathsWithFzf(query, prompt, header string, candidates []strin
 	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", header, fzfPreviewCommand(false), formatFzfCandidates(candidates, treeTargetKindFile, treeTargetStateText))
 }
 
-func shellSetCommand(parts []string) string {
-	if len(parts) == 0 {
-		return "set --"
-	}
-	return "set -- " + strings.Join(parts, " ")
-}
-
 func fzfFileSetPreviewCommand(currentArgs []string, previewFlag string) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
@@ -2346,26 +2364,21 @@ func fzfFileSetPreviewCommand(currentArgs []string, previewFlag string) string {
 		return ""
 	}
 
-	commandParts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload"}
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload"}
 	for _, arg := range currentArgs {
-		commandParts = append(commandParts, shellQuoteArg(arg))
-	}
-	command := shellSetCommand(commandParts)
-
-	script := []string{
-		`preview_value={2};`,
-		`preview_target={3};`,
-		`preview_kind={4};`,
-		`preview_state={5};`,
-		`preview_row_kind={6};`,
-		command + ";",
+		parts = append(parts, shellQuoteArg(arg))
 	}
 	if previewFlag != "" {
-		script = append(script, `if [ "$preview_row_kind" != "all" ] && [ -n "$preview_value" ]; then set -- "$@" `+previewFlag+` "$preview_value"; fi;`)
+		parts = append(parts, previewFlag, "{+2}")
 	}
-	script = append(script, `if [ -n "$preview_target" ]; then set -- "$@" --internal-tree-target "$preview_target" --internal-tree-kind "$preview_kind" --internal-tree-state "$preview_state"; fi;`)
-	script = append(script, `"$@" | `+shellQuoteArg(treeBin)+` `+strings.Join(fzfTreeRenderArgs(), " "))
-	return strings.Join(script, " ")
+	parts = append(parts,
+		"--internal-tree-target", "{3}",
+		"--internal-tree-kind", "{4}",
+		"--internal-tree-state", "{5}",
+	)
+	parts = append(parts, "|", shellQuoteArg(treeBin))
+	parts = append(parts, fzfTreeRenderArgs()...)
+	return strings.Join(parts, " ")
 }
 
 func fzfDiffFilePreviewCommand(currentArgs []string) string {
@@ -2379,22 +2392,14 @@ func fzfDiffFilePreviewCommand(currentArgs []string) string {
 		return ""
 	}
 
-	commandParts := []string{shellQuoteArg(self), "--quiet", "--internal-file-preview", "--internal-file-path", `"$preview_target"`}
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-file-preview", "--internal-file-path", "{3}"}
 	for _, arg := range currentArgs {
-		commandParts = append(commandParts, shellQuoteArg(arg))
+		parts = append(parts, shellQuoteArg(arg))
 	}
-	command := shellSetCommand(commandParts)
-
-	script := []string{
-		`preview_value={2};`,
-		`preview_target={3};`,
-		`preview_row_kind={6};`,
-		`if [ -z "$preview_target" ]; then exit 0; fi;`,
-		command + ";",
-		`if [ "$preview_row_kind" != "all" ] && [ -n "$preview_value" ]; then set -- "$@" --only "$preview_value"; fi;`,
-		`"$@" | ` + shellQuoteArg(treeBin) + ` ` + strings.Join(fzfTreeRenderArgs(), " "),
-	}
-	return strings.Join(script, " ")
+	parts = append(parts, "--only", "{+2}")
+	parts = append(parts, "|", shellQuoteArg(treeBin))
+	parts = append(parts, fzfTreeRenderArgs()...)
+	return strings.Join(parts, " ")
 }
 
 func chooseContentMatchesWithFzf(query string, currentArgs []string, flag string) (fzfChooseResult, error) {
@@ -2491,23 +2496,20 @@ func fzfPreviewCommand(includeTarget bool) string {
 		return ""
 	}
 
-	parts := []string{shellQuoteArg(self), "--quiet"}
+	selfQ := shellQuoteArg(self)
+	treeQ := shellQuoteArg(treeBin)
+	treeArgs := strings.Join(fzfTreeRenderArgs(), " ")
+
+	// {+2} passes all selected targets (falls back to focused when none selected).
+	// {2}/{3}/{4} are the focused entry's metadata for tree highlight.
 	if includeTarget {
-		parts = append(parts, "{2}")
+		return selfQ + ` --quiet {+2} --internal-tree-payload` +
+			` --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4}` +
+			` --include {+2} | ` + treeQ + ` ` + treeArgs
 	}
-	parts = append(parts, "--internal-tree-payload",
-		"--internal-tree-target", "{2}",
-		"--internal-tree-kind", "{3}",
-		"--internal-tree-state", "{4}",
-	)
-	if includeTarget {
-		parts = append(parts, "--include", "{2}")
-	} else {
-		parts = append(parts, "{2}")
-	}
-	parts = append(parts, "|", shellQuoteArg(treeBin))
-	parts = append(parts, fzfTreeRenderArgs()...)
-	return strings.Join(parts, " ")
+	return selfQ + ` --quiet --internal-tree-payload` +
+		` --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4}` +
+		` {+2} | ` + treeQ + ` ` + treeArgs
 }
 
 func fzfContentPreviewCommand(flag string) string {
@@ -2521,19 +2523,18 @@ func fzfContentPreviewCommand(flag string) string {
 		return ""
 	}
 
-	commandPrefix := `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; `
 	parts := []string{
 		shellQuoteArg(self),
 		"--quiet",
 		"--internal-file-preview",
-		"--internal-file-path", `"$preview_target"`,
+		"--internal-file-path", "{3}",
 		// fzf already shell-quotes placeholders like {q}; adding our own quotes
 		// breaks regex input that includes spaces or quote characters.
 		flag, "{q}",
 	}
 	parts = append(parts, "|", shellQuoteArg(treeBin))
 	parts = append(parts, fzfTreeRenderArgs()...)
-	return commandPrefix + strings.Join(parts, " ")
+	return strings.Join(parts, " ")
 }
 
 func fzfContentMatchListCommand(currentArgs []string, flag string) string {
@@ -2569,6 +2570,7 @@ func multiSelectPickerBindings() []string {
 		"tab:toggle+down",
 		"btab:toggle+up",
 		multiSelectToggleAllBinding(),
+		"multi:refresh-preview",
 	}
 }
 

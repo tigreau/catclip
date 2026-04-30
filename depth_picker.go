@@ -143,7 +143,7 @@ func depthPickerPreviewCommand(currentArgs []string) string {
 		return ""
 	}
 
-	cfg, err := parseArgs(currentArgs)
+	cfg, err := parseArgsAllowImplicitDot(currentArgs)
 	if err != nil {
 		return ""
 	}
@@ -156,17 +156,10 @@ func depthPickerPreviewCommand(currentArgs []string) string {
 		return ""
 	}
 
-	commandParts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload"}
-	for _, arg := range scopeArgs {
-		commandParts = append(commandParts, arg)
-	}
-	command := shellSetCommand(commandParts)
-
-	script := []string{
-		`depth_value={2};`,
-		command + ";",
-		`if [ -n "$depth_value" ]; then set -- "$@" --depth "$depth_value"; fi;`,
-		`"$@" | ` + shellQuoteArg(treeBin) + ` ` + strings.Join(fzfTreeRenderArgs(), " "),
-	}
-	return strings.Join(script, " ")
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload"}
+	parts = append(parts, scopeArgs...)
+	parts = append(parts, "--depth", "{2}")
+	parts = append(parts, "|", shellQuoteArg(treeBin))
+	parts = append(parts, fzfTreeRenderArgs()...)
+	return strings.Join(parts, " ")
 }

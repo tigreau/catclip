@@ -1,0 +1,294 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  RIPGREP_VERSION: 14.1.1
+  FZF_VERSION: 0.71.0
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            goos: darwin
+            goarch: amd64
+            artifact: catclip_darwin_amd64.tar.gz
+            archive_kind: tar
+            rg_triple: x86_64-apple-darwin
+            rg_ext: tar.gz
+            fzf_target: darwin_amd64
+            fzf_ext: tar.gz
+            bin_ext: ""
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
+            artifact: catclip_darwin_arm64.tar.gz
+            archive_kind: tar
+            rg_triple: aarch64-apple-darwin
+            rg_ext: tar.gz
+            fzf_target: darwin_arm64
+            fzf_ext: tar.gz
+            bin_ext: ""
+          - runner: ubuntu-22.04
+            goos: linux
+            goarch: amd64
+            artifact: catclip_linux_amd64.tar.gz
+            archive_kind: tar
+            rg_triple: x86_64-unknown-linux-musl
+            rg_ext: tar.gz
+            fzf_target: linux_amd64
+            fzf_ext: tar.gz
+            bin_ext: ""
+          - runner: ubuntu-22.04-arm
+            goos: linux
+            goarch: arm64
+            artifact: catclip_linux_arm64.tar.gz
+            archive_kind: tar
+            rg_triple: aarch64-unknown-linux-gnu
+            rg_ext: tar.gz
+            fzf_target: linux_arm64
+            fzf_ext: tar.gz
+            bin_ext: ""
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+            artifact: catclip_windows_amd64.zip
+            archive_kind: zip
+            rg_triple: x86_64-pc-windows-msvc
+            rg_ext: zip
+            fzf_target: windows_amd64
+            fzf_ext: zip
+            bin_ext: ".exe"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Resolve version from tag
+        shell: bash
+        run: echo "CATCLIP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Build catclip and catclip-tree
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          set -euo pipefail
+          mkdir -p stage stage/bin
+          go build -trimpath -ldflags '-s -w' -o "stage/catclip${{ matrix.bin_ext }}" ./cmd/catclip
+          go build -trimpath -ldflags '-s -w' -o "stage/catclip-tree${{ matrix.bin_ext }}" ./cmd/catclip-tree
+
+      - name: Stage bundled tools (rg, fzf)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rg_dir="ripgrep-${RIPGREP_VERSION}-${{ matrix.rg_triple }}"
+          rg_archive="${rg_dir}.${{ matrix.rg_ext }}"
+          curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/${rg_archive}" -o "$rg_archive"
+          if [[ "${{ matrix.rg_ext }}" == "zip" ]]; then
+            7z x -bd "$rg_archive" >/dev/null
+            cp "${rg_dir}/rg.exe" "stage/bin/rg.exe"
+          else
+            tar -xzf "$rg_archive"
+            cp "${rg_dir}/rg" "stage/bin/rg"
+            chmod +x "stage/bin/rg"
+          fi
+
+          fzf_archive="fzf-${FZF_VERSION}-${{ matrix.fzf_target }}.${{ matrix.fzf_ext }}"
+          curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/${fzf_archive}" -o "$fzf_archive"
+          mkdir -p fzf-extract
+          if [[ "${{ matrix.fzf_ext }}" == "zip" ]]; then
+            7z x -bd "$fzf_archive" -ofzf-extract >/dev/null
+            cp "fzf-extract/fzf.exe" "stage/bin/fzf.exe"
+          else
+            tar -xzf "$fzf_archive" -C fzf-extract
+            cp "fzf-extract/fzf" "stage/bin/fzf"
+            chmod +x "stage/bin/fzf"
+          fi
+
+      - name: Write VERSION
+        shell: bash
+        run: printf '%s\n' "$CATCLIP_VERSION" > stage/VERSION
+
+      - name: Create archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd stage
+          if [[ "${{ matrix.archive_kind }}" == "zip" ]]; then
+            7z a "../${{ matrix.artifact }}" . >/dev/null
+          else
+            tar -czf "../${{ matrix.artifact }}" .
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  validate:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            artifact: catclip_darwin_arm64.tar.gz
+            kind: tar
+            bin_ext: ""
+          - runner: ubuntu-22.04
+            artifact: catclip_linux_amd64.tar.gz
+            kind: tar
+            bin_ext: ""
+          - runner: ubuntu-24.04
+            artifact: catclip_linux_amd64.tar.gz
+            kind: tar
+            bin_ext: ""
+          - runner: windows-latest
+            artifact: catclip_windows_amd64.zip
+            kind: zip
+            bin_ext: ".exe"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+
+      - name: Extract bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          if [[ "${{ matrix.kind }}" == "zip" ]]; then
+            7z x -bd -oextracted "${{ matrix.artifact }}" >/dev/null
+          else
+            tar -xzf "${{ matrix.artifact }}" -C extracted
+          fi
+          ls -la extracted
+          ls -la extracted/bin
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd extracted
+          ext="${{ matrix.bin_ext }}"
+          ./catclip${ext} --version
+          ./catclip${ext} --help-all >/dev/null
+          ./catclip${ext} . --paths -q -p >/dev/null
+          ./catclip${ext} . --depth 1 --paths -q -p >/dev/null
+          ./catclip${ext} README.md -r -q -p >/dev/null
+
+          # warn-and-continue: nonexistent target → exit 1, warning on stderr
+          set +e
+          ./catclip${ext} nonexistent -q -p >/dev/null 2>err.log
+          rc=$?
+          set -e
+          if [[ $rc -ne 1 ]]; then
+            echo "expected exit 1 for missing target, got $rc"
+            cat err.log
+            exit 1
+          fi
+          if ! grep -qi "not found" err.log; then
+            echo "expected 'not found' on stderr"
+            cat err.log
+            exit 1
+          fi
+
+  release:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum catclip_*.tar.gz catclip_*.zip > checksums.txt
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/catclip_darwin_amd64.tar.gz
+            artifacts/catclip_darwin_arm64.tar.gz
+            artifacts/catclip_linux_amd64.tar.gz
+            artifacts/catclip_linux_arm64.tar.gz
+            artifacts/catclip_windows_amd64.zip
+            artifacts/checksums.txt
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+        with:
+          repository: tigreau/homebrew-catclip
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+
+      - name: Resolve version
+        run: echo "CATCLIP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
+      - name: Fetch source tarball and compute sha256
+        run: |
+          set -euo pipefail
+          url="https://github.com/${{ github.repository }}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          # Tag tarballs are sometimes not immediately materialized on github.com
+          for attempt in 1 2 3 4 5; do
+            if curl -fsSL "$url" -o source.tar.gz; then
+              break
+            fi
+            echo "tarball not ready (attempt $attempt), retrying..."
+            sleep 5
+          done
+          [ -s source.tar.gz ] || { echo "source tarball download failed"; exit 1; }
+          sha=$(sha256sum source.tar.gz | cut -d' ' -f1)
+          echo "TARBALL_URL=$url" >> "$GITHUB_ENV"
+          echo "TARBALL_SHA=$sha" >> "$GITHUB_ENV"
+
+      - name: Update formula
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          formula=Formula/catclip.rb
+          # Anchor on 2-space indent so we don't accidentally match homepage/desc.
+          sed -i "s|^  url \".*\"|  url \"${TARBALL_URL}\"|" "$formula"
+          sed -i "s|^  sha256 \".*\"|  sha256 \"${TARBALL_SHA}\"|" "$formula"
+          echo "--- updated formula header ---"
+          grep -E '^  (url|sha256) ' "$formula"
+
+      - name: Commit and push
+        working-directory: tap
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "no formula changes — skipping commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/catclip.rb
+          git commit -m "catclip ${CATCLIP_VERSION}"
+          git push

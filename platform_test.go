@@ -45,7 +45,7 @@ func TestBundledToolCandidatesForGOOSFindWindowsShareLayout(t *testing.T) {
 		t.Fatalf("write fake rg.exe: %v", err)
 	}
 
-	got, ok := firstExistingBinary(bundledToolCandidatesForGOOS("windows", "rg", []string{binDir}))
+	got, ok := firstExistingBinary(bundledToolCandidatesForGOOS("windows", "rg", []string{binDir}, ""))
 	if !ok {
 		t.Fatal("expected bundled rg.exe to be found")
 	}

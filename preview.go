@@ -92,7 +92,7 @@ func writeNormalDiagnostics(cfg runConfig, gitCtx gitContext, plan outputPlan, r
 		}
 	}
 
-	if report.tokens <= tokenWarnThreshold || cfg.Yes || cfg.Quiet || cfg.HeadlessStdoutMode() {
+	if report.tokens <= tokenWarnThreshold || cfg.Yes || cfg.Quiet {
 		return true, nil
 	}
 

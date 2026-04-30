@@ -82,15 +82,215 @@ func emitOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors col
 
 func emitRawOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
 	return withPayloadWriter(cfg, stdout, colors, func(w io.Writer) error {
-		if len(plan.items) != 1 {
-			return fmt.Errorf("raw output requires exactly one plan item")
+		for _, item := range plan.items {
+			if item.kind != outputSectionKindFiles || (item.mode != entryModeFull && item.mode != entryModeLines) {
+				return fmt.Errorf("raw output requires full-file or lines items")
+			}
+			entry := item.unit.Entry
+			if entry.Lines {
+				if err := emitLinesSliceRaw(w, entry.AbsPath, entry.LinesStart, entry.LinesEnd); err != nil {
+					return err
+				}
+				continue
+			}
+			if err := emitFileBodyFromDisk(w, entry.AbsPath); err != nil {
+				return err
+			}
 		}
-		item := plan.items[0]
-		if item.kind != outputSectionKindFiles || item.mode != entryModeFull {
-			return fmt.Errorf("raw output requires one full-file item")
-		}
-		return emitFileBodyFromDisk(w, item.unit.Entry.AbsPath)
+		return nil
 	})
+}
+
+// emitLinesSliceRaw streams lines [linesStart, linesEnd] of absPath with no
+// formatting — no XML wrapper, no `cat -n`-style line numbers. The slice
+// is the bare bytes of the matching lines, each terminated by \n.
+func emitLinesSliceRaw(w io.Writer, absPath string, linesStart, linesEnd int) error {
+	f, err := os.Open(absPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, readBufferSize()), 10*1024*1024)
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		if linesStart > 0 && lineNum < linesStart {
+			continue
+		}
+		if linesEnd > 0 && lineNum > linesEnd {
+			break
+		}
+		if _, err := w.Write(scanner.Bytes()); err != nil {
+			return fmt.Errorf("failed while writing %s: %w", absPath, err)
+		}
+		if _, err := w.Write([]byte{'\n'}); err != nil {
+			return fmt.Errorf("failed while writing %s: %w", absPath, err)
+		}
+	}
+	return scanner.Err()
+}
+
+func emitNumberedFileBodyFromDisk(w io.Writer, absPath string) error {
+	f, err := os.Open(absPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	nw := &numberedWriter{w: w, line: 1, atLineStart: true}
+	buf := make([]byte, readBufferSize())
+	if _, err := io.CopyBuffer(nw, f, buf); err != nil {
+		return fmt.Errorf("failed while streaming %s: %w", absPath, err)
+	}
+	return nil
+}
+
+// emitLinesFile writes a wrapped file with line numbering. For sliced mode
+// (LinesStart > 0), it adds a lines="START-END" attribute and only emits
+// the requested range. For bare --lines, it numbers the entire file.
+func emitLinesFile(w io.Writer, entry fileEntry) error {
+	f, err := os.Open(entry.AbsPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	linesAttr := ""
+	if entry.LinesStart > 0 {
+		if entry.LinesEnd > 0 {
+			linesAttr = fmt.Sprintf("%d-%d", entry.LinesStart, entry.LinesEnd)
+		} else {
+			linesAttr = fmt.Sprintf("%d-", entry.LinesStart)
+		}
+	}
+
+	if _, err := w.Write(buildFileOpenTagWithLines(entry.RelPath, "", linesAttr)); err != nil {
+		return err
+	}
+
+	var contentWriter io.Writer
+	startLine := 1
+	if entry.LinesStart > 0 {
+		startLine = entry.LinesStart
+	}
+	nw := &numberedWriter{w: w, line: startLine, atLineStart: true}
+	contentWriter = nw
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, readBufferSize()), 10*1024*1024)
+	lineNum := 0
+	var lastByte byte
+	wroteAny := false
+
+	for scanner.Scan() {
+		lineNum++
+		if entry.LinesStart > 0 && lineNum < entry.LinesStart {
+			continue
+		}
+		if entry.LinesEnd > 0 && lineNum > entry.LinesEnd {
+			break
+		}
+		line := scanner.Bytes()
+		if _, err := contentWriter.Write(line); err != nil {
+			return fmt.Errorf("failed while writing %s: %w", entry.RelPath, err)
+		}
+		if _, err := contentWriter.Write([]byte{'\n'}); err != nil {
+			return fmt.Errorf("failed while writing %s: %w", entry.RelPath, err)
+		}
+		wroteAny = true
+		lastByte = '\n'
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("failed while streaming %s: %w", entry.AbsPath, err)
+	}
+
+	if wroteAny && lastByte != '\n' {
+		_, err := w.Write(fileCloseTagWithNewline)
+		return err
+	}
+	_, err = w.Write(fileCloseTag)
+	return err
+}
+
+// emitLinesFileBody writes file content with line numbering to a raw writer
+// (no XML wrapper). For sliced mode, only emits the requested range.
+func emitLinesFileBody(w io.Writer, absPath string, linesStart, linesEnd int) error {
+	f, err := os.Open(absPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	startLine := 1
+	if linesStart > 0 {
+		startLine = linesStart
+	}
+	nw := &numberedWriter{w: w, line: startLine, atLineStart: true}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, readBufferSize()), 10*1024*1024)
+	lineNum := 0
+
+	for scanner.Scan() {
+		lineNum++
+		if linesStart > 0 && lineNum < linesStart {
+			continue
+		}
+		if linesEnd > 0 && lineNum > linesEnd {
+			break
+		}
+		line := scanner.Bytes()
+		if _, err := nw.Write(line); err != nil {
+			return fmt.Errorf("failed while writing %s: %w", absPath, err)
+		}
+		if _, err := nw.Write([]byte{'\n'}); err != nil {
+			return fmt.Errorf("failed while writing %s: %w", absPath, err)
+		}
+	}
+	return scanner.Err()
+}
+
+type numberedWriter struct {
+	w           io.Writer
+	line        int
+	atLineStart bool
+}
+
+func (nw *numberedWriter) Write(p []byte) (int, error) {
+	consumed := 0
+	for len(p) > 0 {
+		if nw.atLineStart {
+			prefix := formatLineNumber(nw.line)
+			if _, err := nw.w.Write(prefix); err != nil {
+				return consumed, err
+			}
+			nw.atLineStart = false
+		}
+		idx := bytes.IndexByte(p, '\n')
+		if idx < 0 {
+			n, err := nw.w.Write(p)
+			consumed += n
+			return consumed, err
+		}
+		n, err := nw.w.Write(p[:idx+1])
+		consumed += n
+		if err != nil {
+			return consumed, err
+		}
+		nw.line++
+		nw.atLineStart = true
+		p = p[idx+1:]
+	}
+	return consumed, nil
+}
+
+func formatLineNumber(n int) []byte {
+	if n <= 999999 {
+		return []byte(fmt.Sprintf("%6d\t", n))
+	}
+	return []byte(fmt.Sprintf("%d\t", n))
 }
 
 func emitSectionedOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
@@ -154,6 +354,9 @@ func emitEntry(w io.Writer, unit preparedFileUnit, index int, prefetcher *emitPr
 
 func emitFile(w io.Writer, unit preparedFileUnit, index int, prefetcher *emitPrefetcher) error {
 	entry := unit.Entry
+	if entry.Lines {
+		return emitLinesFile(w, entry)
+	}
 	if prefetcher != nil {
 		result, err := prefetcher.Wait(index)
 		if err != nil {
@@ -357,20 +560,32 @@ func unitUsesFullOutput(unit preparedFileUnit) bool {
 }
 
 func buildFileOpenTag(relPath, typeAttr string) []byte {
-	if typeAttr == "" {
-		tag := make([]byte, 0, len(relPath)+16)
-		tag = append(tag, "<file path=\""...)
-		tag = append(tag, relPath...)
-		tag = append(tag, "\">\n"...)
-		return tag
-	}
+	return buildFileOpenTagWithLines(relPath, typeAttr, "")
+}
 
-	tag := make([]byte, 0, len(relPath)+len(typeAttr)+25)
+func buildFileOpenTagWithLines(relPath, typeAttr, linesAttr string) []byte {
+	size := len(relPath) + 16
+	if typeAttr != "" {
+		size += len(typeAttr) + 9
+	}
+	if linesAttr != "" {
+		size += len(linesAttr) + 9
+	}
+	tag := make([]byte, 0, size)
 	tag = append(tag, "<file path=\""...)
 	tag = append(tag, relPath...)
-	tag = append(tag, "\" type=\""...)
-	tag = append(tag, typeAttr...)
-	tag = append(tag, "\">\n"...)
+	tag = append(tag, '"')
+	if typeAttr != "" {
+		tag = append(tag, " type=\""...)
+		tag = append(tag, typeAttr...)
+		tag = append(tag, '"')
+	}
+	if linesAttr != "" {
+		tag = append(tag, " lines=\""...)
+		tag = append(tag, linesAttr...)
+		tag = append(tag, '"')
+	}
+	tag = append(tag, ">\n"...)
 	return tag
 }
 

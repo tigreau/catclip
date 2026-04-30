@@ -15,11 +15,13 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if path, err := exec.LookPath("rg"); err == nil {
-		_ = os.Setenv("CATCLIP_RG", path)
+	if _, ok := ripgrepBinary(); !ok {
+		fmt.Fprintln(os.Stderr, "FATAL: rg not found. Run 'make dev' to set up dev tools.")
+		os.Exit(1)
 	}
-	if path, err := exec.LookPath("fzf"); err == nil {
-		_ = os.Setenv("CATCLIP_FZF", path)
+	if _, ok := fzfBinary(); !ok {
+		fmt.Fprintln(os.Stderr, "FATAL: fzf not found. Run 'make dev' to set up dev tools.")
+		os.Exit(1)
 	}
 	os.Exit(m.Run())
 }
@@ -78,15 +80,13 @@ func setTestPipeStdin(t *testing.T, input string) {
 	setTestStdinFile(t, reader)
 }
 
-func TestParseArgsDefaultsToCurrentDirectoryScope(t *testing.T) {
-	cfg, err := parseArgs(nil)
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
+func TestParseArgsRejectsBareInvocationWithoutTargets(t *testing.T) {
+	_, err := parseArgs(nil)
+	if err == nil {
+		t.Fatal("expected bare parseArgs to error (no implicit '.' target)")
 	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if got := scope.Targets; len(got) != 1 || got[0] != "." {
-		t.Fatalf("expected default target '.', got %#v", got)
+	if !strings.Contains(err.Error(), "no target specified") {
+		t.Fatalf("expected no-target error, got: %v", err)
 	}
 }
 
@@ -115,18 +115,13 @@ func TestParseArgsBuildsMultipleScopes(t *testing.T) {
 	}
 }
 
-func TestParseArgsAppliesModifierOnlyScopeToDot(t *testing.T) {
-	cfg, err := parseArgs([]string{"--changed-diff"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
+func TestParseArgsRejectsModifierOnlyWithoutTargets(t *testing.T) {
+	_, err := parseArgs([]string{"--changed-diff"})
+	if err == nil {
+		t.Fatal("expected modifier-only invocation to error (no implicit '.' target)")
 	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if len(scope.Targets) != 1 || scope.Targets[0] != "." {
-		t.Fatalf("expected modifier-only scope to default to '.', got %#v", scope.Targets)
-	}
-	if !scope.Changed || !scope.Diff {
-		t.Fatalf("expected changed+diff scope, got %+v", scope)
+	if !strings.Contains(err.Error(), "no target specified") {
+		t.Fatalf("expected no-target error, got: %v", err)
 	}
 }
 
@@ -280,13 +275,21 @@ func TestParseArgsAcceptsRawFlag(t *testing.T) {
 	}
 }
 
-func TestParseArgsRejectsPreviewWithPrint(t *testing.T) {
-	_, err := parseArgs([]string{"src", "--preview", "--print"})
-	if err == nil {
-		t.Fatal("expected --preview with -p/--print to fail")
-	}
-	if !strings.Contains(err.Error(), "--preview cannot be used with -p") {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseArgsPreviewAndPrintCoexist(t *testing.T) {
+	for _, args := range [][]string{
+		{"src", "--preview", "--print"},
+		{"src", "--print", "--preview"},
+	} {
+		cfg, err := parseArgs(args)
+		if err != nil {
+			t.Fatalf("parseArgs(%v) returned error: %v", args, err)
+		}
+		if !cfg.Preview {
+			t.Fatalf("parseArgs(%v): expected Preview=true, got %+v", args, cfg)
+		}
+		if cfg.OutputMode != outputModeStdout {
+			t.Fatalf("parseArgs(%v): expected OutputMode=stdout, got %q", args, cfg.OutputMode)
+		}
 	}
 }
 
@@ -314,14 +317,14 @@ func TestParseArgsTreatsIncludeAsAllowedTargetSelection(t *testing.T) {
 	}
 }
 
-func TestParseArgsTreatsBareIncludeAsAugmentingDotScope(t *testing.T) {
-	cfg, err := parseArgs([]string{"--include", "node_modules", "coverage"})
+func TestParseArgsBareIncludeAugmentsExplicitDotScope(t *testing.T) {
+	cfg, err := parseArgs([]string{".", "--include", "node_modules", "coverage"})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 	scope := parsedExecutionScope(t, cfg)
 	if got := scope.Targets; strings.Join(got, "\n") != "." {
-		t.Fatalf("expected bare include to preserve implicit dot scope, got %#v", got)
+		t.Fatalf("expected explicit dot scope, got %#v", got)
 	}
 	if got := scope.IncludedTargets; strings.Join(got, "\n") != "node_modules\ncoverage" {
 		t.Fatalf("expected included target metadata, got %#v", got)
@@ -645,6 +648,128 @@ func TestParseArgsRejectsTrailingBareDoubleDashOutsideInteractive(t *testing.T) 
 	if !strings.Contains(err.Error(), "opens interactive modifier selection") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if strings.Contains(err.Error(), "headless mode") {
+		t.Fatalf("non-headless invocation should not mention headless mode: %v", err)
+	}
+}
+
+func TestParseArgsRejectsTrailingBareDoubleDashInHeadlessMode(t *testing.T) {
+	_, err := parseArgs([]string{".", "--headless", "--"})
+	if err == nil {
+		t.Fatal("expected trailing bare -- to fail under --headless")
+	}
+	if !strings.Contains(err.Error(), "headless mode") {
+		t.Fatalf("expected headless-specific error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--headless") {
+		t.Fatalf("expected error to mention --headless, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "(-p -q)") || strings.Contains(err.Error(), "(-q -p)") {
+		t.Fatalf("error should not reference -p -q anymore, got: %v", err)
+	}
+}
+
+func TestParseArgsHeadlessImpliesStdoutAndQuiet(t *testing.T) {
+	cfg, err := parseArgs([]string{".", "--headless"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if !cfg.Headless {
+		t.Fatal("expected cfg.Headless to be true")
+	}
+	if cfg.OutputMode != outputModeStdout {
+		t.Fatalf("expected OutputMode=stdout, got %q", cfg.OutputMode)
+	}
+	if !cfg.Quiet {
+		t.Fatal("expected cfg.Quiet to be true")
+	}
+}
+
+func TestParseArgsHeadlessRequiresExplicitTargets(t *testing.T) {
+	_, err := parseArgs([]string{"--headless"})
+	if err == nil {
+		t.Fatal("expected --headless without targets to fail")
+	}
+	if !strings.Contains(err.Error(), "--headless requires explicit targets") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := parseArgs([]string{".", "--headless"}); err != nil {
+		t.Fatalf("--headless with explicit target should succeed, got: %v", err)
+	}
+}
+
+func TestParseArgsHeadlessPreviewRequiresTargets(t *testing.T) {
+	_, err := parseArgs([]string{"--preview", "--headless"})
+	if err == nil {
+		t.Fatal("expected --preview --headless without targets to fail")
+	}
+	if !strings.Contains(err.Error(), "--headless requires explicit targets") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, err := parseArgs([]string{".", "--preview", "--headless"}); err != nil {
+		t.Fatalf("--preview --headless with explicit target should succeed, got: %v", err)
+	}
+}
+
+func TestRunHeadlessRejectsBareDoubleDash(t *testing.T) {
+	_, err := parseArgs([]string{".", "--headless", "--"})
+	if err == nil {
+		t.Fatal("expected --headless . -- to fail")
+	}
+	if !strings.Contains(err.Error(), "headless mode") {
+		t.Fatalf("expected headless error, got: %v", err)
+	}
+}
+
+func TestRunHeadlessRejectsFuzzyAmbiguity(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a/Button.tsx": "export const A = 1\n",
+		"src/b/Banner.tsx": "export const B = 2\n",
+		"docs/notes.md":    "notes\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"bn", "--headless"})
+
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected fuzzy ambiguity to error under --headless\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
+	}
+	msg := err.Error() + stderr.String()
+	if !strings.Contains(msg, "Multiple") {
+		t.Fatalf("expected ambiguity error, got: err=%v stderr=%s", err, stderr.String())
+	}
+	if !strings.Contains(msg, "--headless") {
+		t.Fatalf("expected error to mention --headless, got: err=%v stderr=%s", err, stderr.String())
+	}
+}
+
+func TestRunPrintQuietAllowsBareDoubleDash(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available; bare -- test requires TTY for picker")
+	}
+	_, err := parseArgs([]string{".", "-p", "-q", "--"})
+	if err == nil {
+		return
+	}
+	if strings.Contains(err.Error(), "headless mode") {
+		t.Fatalf("-p -q should not produce a headless error, got: %v", err)
+	}
+}
+
+func TestInternalCommandTargetMessageNotShadowed(t *testing.T) {
+	_, err := parseArgs([]string{"--internal-tree-payload"})
+	if err == nil {
+		t.Fatal("expected --internal-tree-payload without targets to fail")
+	}
+	if !strings.Contains(err.Error(), "--internal-tree-payload requires an explicit target") {
+		t.Fatalf("expected internal-specific error, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "--headless") {
+		t.Fatalf("internal error should not mention --headless, got: %v", err)
+	}
 }
 
 func TestRunAppliesMultiValueOnlyExcludeStages(t *testing.T) {
@@ -860,7 +985,7 @@ func TestRunIncludeSupportsGitignoreOutsideGitRepo(t *testing.T) {
 		"src/main.ts":  "export const main = true\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "--include", "blocked", "--only", "blocked/a.ts"})
+	cfg := parseInProject(t, project, []string{".", "--quiet", "--print", "--include", "blocked", "--only", "blocked/a.ts"})
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -1023,21 +1148,85 @@ func TestRunRawEmitsExactSingleFileBody(t *testing.T) {
 	}
 }
 
-func TestRunRawRejectsMultipleFiles(t *testing.T) {
+func TestRunRawConcatenatesMultipleFiles(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"a.txt": "a\n",
-		"b.txt": "b\n",
+		"a.txt": "alpha\n",
+		"b.txt": "beta\n",
 	})
 
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "a.txt", "b.txt", "--raw"})
 
 	var stdout, stderr bytes.Buffer
-	err := run(cfg, &stdout, &stderr)
-	if err == nil {
-		t.Fatal("expected raw mode to reject multiple files")
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "--raw requires exactly one surviving full-file output item; 2 matched") {
-		t.Fatalf("unexpected error: %v", err)
+
+	want := "alpha\nbeta\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("unexpected raw concat\nwant:\n%s\ngot:\n%s", want, got)
+	}
+	if strings.Contains(stdout.String(), "<file path=") {
+		t.Fatalf("did not expect wrapped file output, got:\n%s", stdout.String())
+	}
+}
+
+func TestRunRawWithLinesStripsNumbers(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"main.go": "line1\nline2\nline3\nline4\nline5\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "main.go", "--lines", "2", "4", "--raw"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	want := "line2\nline3\nline4\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("unexpected raw lines output\nwant:\n%s\ngot:\n%s", want, got)
+	}
+	if strings.Contains(stdout.String(), "<file path=") {
+		t.Fatalf("did not expect wrapped file output, got:\n%s", stdout.String())
+	}
+	for _, prefix := range []string{"2:", "3:", "4:", "  2 ", "  3 ", "  4 "} {
+		if strings.Contains(stdout.String(), prefix) {
+			t.Fatalf("did not expect line-number prefix %q, got:\n%s", prefix, stdout.String())
+		}
+	}
+}
+
+func TestRunRawMultiFileWithLines(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"a.txt": "a1\na2\na3\na4\n",
+		"b.txt": "b1\nb2\nb3\nb4\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "a.txt", "b.txt", "--lines", "2", "3", "--raw"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	want := "a2\na3\nb2\nb3\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("unexpected raw multi-lines output\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestRunRawAllowedWithoutPrint(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"VERSION": "0.4.2\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "VERSION", "--raw"})
+
+	if !cfg.Raw {
+		t.Fatal("expected Raw=true")
+	}
+	if cfg.OutputMode != outputModeClipboard {
+		t.Fatalf("expected OutputMode=clipboard, got %q", cfg.OutputMode)
 	}
 }
 
@@ -1094,23 +1283,6 @@ func TestRunRawRejectsDiffOutput(t *testing.T) {
 	}
 }
 
-func TestRunRawRequiresPrint(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"VERSION": "0.4.1\n",
-	})
-
-	cfg := parseInProject(t, project, []string{"VERSION", "--raw"})
-
-	var stdout, stderr bytes.Buffer
-	err := run(cfg, &stdout, &stderr)
-	if err == nil {
-		t.Fatal("expected raw mode to require --print")
-	}
-	if !strings.Contains(err.Error(), "--raw requires -p/--print") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestRunPreviewIgnoresRawOutputFraming(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"VERSION": "0.4.1\n",
@@ -1134,6 +1306,170 @@ func TestRunPreviewIgnoresRawOutputFraming(t *testing.T) {
 	}
 	if rawStderr.String() != baseStderr.String() {
 		t.Fatalf("expected raw preview stderr to match normal preview\nwant:\n%s\ngot:\n%s", baseStderr.String(), rawStderr.String())
+	}
+}
+
+func TestRunLinesAddsLineNumbers(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"hello.txt": "alpha\nbeta\ngamma\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "hello.txt", "--lines"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	got := stdout.String()
+	if !strings.Contains(got, "<file path=\"hello.txt\">") {
+		t.Fatalf("expected file open tag without lines attribute, got:\n%s", got)
+	}
+	if !strings.Contains(got, "     1\talpha\n") {
+		t.Fatalf("expected numbered line 1, got:\n%s", got)
+	}
+	if !strings.Contains(got, "     3\tgamma\n") {
+		t.Fatalf("expected numbered line 3, got:\n%s", got)
+	}
+}
+
+func TestRunLinesRangeSlice(t *testing.T) {
+	lines := ""
+	for i := 1; i <= 20; i++ {
+		lines += fmt.Sprintf("line %d\n", i)
+	}
+	project := setupTestProject(t, map[string]string{
+		"data.txt": lines,
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "data.txt", "--lines", "5", "10"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	got := stdout.String()
+	if !strings.Contains(got, `lines="5-10"`) {
+		t.Fatalf("expected lines attribute in tag, got:\n%s", got)
+	}
+	if !strings.Contains(got, "     5\tline 5\n") {
+		t.Fatalf("expected numbered line 5, got:\n%s", got)
+	}
+	if !strings.Contains(got, "    10\tline 10\n") {
+		t.Fatalf("expected numbered line 10, got:\n%s", got)
+	}
+	if strings.Contains(got, "line 4\n") {
+		t.Fatalf("should not contain line 4, got:\n%s", got)
+	}
+	if strings.Contains(got, "line 11\n") {
+		t.Fatalf("should not contain line 11, got:\n%s", got)
+	}
+}
+
+func TestRunLinesOpenEndedRange(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"data.txt": "a\nb\nc\nd\ne\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "data.txt", "--lines", "3"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	got := stdout.String()
+	if !strings.Contains(got, `lines="3-"`) {
+		t.Fatalf("expected open-ended lines attribute, got:\n%s", got)
+	}
+	if !strings.Contains(got, "     3\tc\n") {
+		t.Fatalf("expected line 3, got:\n%s", got)
+	}
+	if !strings.Contains(got, "     5\te\n") {
+		t.Fatalf("expected line 5, got:\n%s", got)
+	}
+	if strings.Contains(got, "     1\t") || strings.Contains(got, "     2\t") {
+		t.Fatalf("should not contain lines before start, got:\n%s", got)
+	}
+}
+
+func TestRunLinesRawMode(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"data.txt": "a\nb\nc\nd\ne\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "--raw", "data.txt", "--lines", "2", "4"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	got := stdout.String()
+	want := "b\nc\nd\n"
+	if got != want {
+		t.Fatalf("unexpected raw lines output\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestParseArgsLinesRejectsZeroStart(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--lines", "0"})
+	if err == nil {
+		t.Fatal("expected error for --lines 0")
+	}
+	if !strings.Contains(err.Error(), "--lines start must be >= 1") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsLinesRejectsEndLessThanStart(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--lines", "10", "5"})
+	if err == nil {
+		t.Fatal("expected error for --lines 10 5")
+	}
+	if !strings.Contains(err.Error(), "--lines end (5) must be >= start (10)") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsLinesRejectsNonIntegerStart(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--lines", "abc"})
+	if err == nil {
+		t.Fatal("expected error for --lines abc")
+	}
+	if !strings.Contains(err.Error(), "--lines expects line numbers") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsLinesRejectsNonIntegerEnd(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--lines", "10", "abc"})
+	if err == nil {
+		t.Fatal("expected error for --lines 10 abc")
+	}
+	if !strings.Contains(err.Error(), "--lines expects line numbers") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsLinesRejectsWithSnippet(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--lines", "--snippet", "a"})
+	if err == nil {
+		t.Fatal("expected error for --lines --snippet")
+	}
+	if !strings.Contains(err.Error(), "--lines finalizes the current scope") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseArgsLinesRejectsWithPaths(t *testing.T) {
+	_, err := parseArgs([]string{"src", "--lines", "--paths"})
+	if err == nil {
+		t.Fatal("expected error for --lines --paths")
+	}
+	if !strings.Contains(err.Error(), "--lines finalizes the current scope") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -1393,7 +1729,7 @@ func TestRunIncludeAllowsBlockedDirectory(t *testing.T) {
 		"tests/main.ts": "console.log('test')\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--print", "--include", "tests"})
+	cfg := parseInProject(t, project, []string{".", "--print", "--include", "tests"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -1586,6 +1922,34 @@ func TestRunWithBinariesNotSetExcludesBinaryFiles(t *testing.T) {
 		t.Fatalf("expected binary files to be excluded without --with-binaries, got:\n%s", out)
 	}
 	if !strings.Contains(out, "src/main.ts") {
+		t.Fatalf("expected text files to still appear, got:\n%s", out)
+	}
+}
+
+func TestRunExcludesWindowsSystemFiles(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.go": "package main\n",
+		// UTF-16 LE BOM + bytes — Windows desktop.ini files are typically
+		// UTF-16 with null bytes that truncate clip.exe mid-stream. The .ini
+		// extension would otherwise force text classification.
+		"desktop.ini": "\xFF\xFE[\x00.\x00S\x00h\x00e\x00l\x00l\x00]\x00",
+		"Thumbs.db":   "\x00\x01\x02 thumbs cache",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", ".", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	out := stdout.String()
+	if strings.Contains(out, "desktop.ini") {
+		t.Fatalf("expected desktop.ini to be excluded, got:\n%s", out)
+	}
+	if strings.Contains(out, "Thumbs.db") {
+		t.Fatalf("expected Thumbs.db to be excluded, got:\n%s", out)
+	}
+	if !strings.Contains(out, "src/main.go") {
 		t.Fatalf("expected text files to still appear, got:\n%s", out)
 	}
 }
@@ -2050,7 +2414,7 @@ func TestFzfPreviewCommandUsesCatclipTreeRenderer(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-tree-payload --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} {2}") {
+	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-tree-payload --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} {+2}") {
 		t.Fatalf("expected preview command to invoke catclip payload producer, got %q", command)
 	}
 	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
@@ -2070,7 +2434,7 @@ func TestFzfPreviewCommandIncludesIgnoredTargetAuthorization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
-	if !strings.Contains(command, shellQuoteArg(self)+" --quiet {2} --internal-tree-payload --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} --include {2}") {
+	if !strings.Contains(command, shellQuoteArg(self)+" --quiet {+2} --internal-tree-payload --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} --include {+2}") {
 		t.Fatalf("expected ignored target preview to allow the hovered path, got %q", command)
 	}
 }
@@ -2088,7 +2452,7 @@ func TestFzfContentPreviewCommandUsesFilePreviewPayload(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; `+shellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path "$preview_target" --contains {q}`) {
+	if !strings.Contains(command, shellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path {3} --contains {q}`) {
 		t.Fatalf("expected contains preview to invoke file preview payload producer, got %q", command)
 	}
 	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
@@ -2109,7 +2473,7 @@ func TestFzfContentSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, `preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi; `+shellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path "$preview_target" --snippet {q}`) {
+	if !strings.Contains(command, shellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path {3} --snippet {q}`) {
 		t.Fatalf("expected snippet contains preview to forward --snippet, got %q", command)
 	}
 }
@@ -2139,14 +2503,8 @@ func TestFzfDiffFilePreviewCommandUsesFilePreviewPayload(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, `preview_value={2};`) || !strings.Contains(command, `preview_target={3};`) {
-		t.Fatalf("expected diff preview command to bind hovered row fields, got %q", command)
-	}
-	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path \"$preview_target\" cmd --include Formula --changed-diff") {
-		t.Fatalf("expected diff file preview command to invoke internal file preview payload producer, got %q", command)
-	}
-	if !strings.Contains(command, `set -- "$@" --only "$preview_value"`) {
-		t.Fatalf("expected diff preview command to narrow inside current scope, got %q", command)
+	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path {3} cmd --include Formula --changed-diff --only {+2}") {
+		t.Fatalf("expected diff file preview command to invoke internal file preview payload producer with scope-narrowing --only, got %q", command)
 	}
 	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
 		t.Fatalf("expected diff file preview command to pipe into themed catclip-tree preview renderer, got %q", command)
@@ -2166,14 +2524,22 @@ func TestFzfFileSetPreviewCommandInheritsCurrentScope(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-tree-payload cmd --include Formula") {
-		t.Fatalf("expected file-set preview to inherit current scope args, got %q", command)
+	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-tree-payload cmd --include Formula --only {+2} --internal-tree-target {3} --internal-tree-kind {4} --internal-tree-state {5}") {
+		t.Fatalf("expected file-set preview to inherit current scope and refine by selected rows with hovered-row metadata, got %q", command)
 	}
-	if !strings.Contains(command, `set -- "$@" --only "$preview_value"`) {
-		t.Fatalf("expected file-set preview to refine current scope by the hovered row, got %q", command)
+}
+
+func TestMultiSelectPickerBindingsIncludeRefreshPreview(t *testing.T) {
+	bindings := multiSelectPickerBindings()
+	found := false
+	for _, b := range bindings {
+		if b == "multi:refresh-preview" {
+			found = true
+			break
+		}
 	}
-	if !strings.Contains(command, `if [ -n "$preview_target" ]; then set -- "$@" --internal-tree-target "$preview_target" --internal-tree-kind "$preview_kind" --internal-tree-state "$preview_state"; fi;`) {
-		t.Fatalf("expected file-set preview to keep empty-target metadata when a file row is hovered, got %q", command)
+	if !found {
+		t.Fatalf("expected multi:refresh-preview in picker bindings, got %v", bindings)
 	}
 }
 
@@ -2201,10 +2567,10 @@ func TestStartupFileSetPreviewCommandUsesOnlyRefinementForGitSelectors(t *testin
 	t.Setenv("CATCLIP_TREE", treeBin)
 
 	command := startupFileSetPreviewCommand([]string{"cmd", "--changed"}, "--changed", false)
-	if !strings.Contains(command, `set -- "$@" --only "$preview_value"`) {
+	if !strings.Contains(command, "--only {+2}") {
 		t.Fatalf("expected git file-set preview to refine with --only, got %q", command)
 	}
-	if strings.Contains(command, `set -- "$@" --changed "$preview_value"`) {
+	if strings.Contains(command, "--changed {+2}") {
 		t.Fatalf("git file-set preview appended value to --changed instead of --only: %q", command)
 	}
 }
@@ -2933,7 +3299,7 @@ func TestRunIncludeAllowsGitIgnoredDirectory(t *testing.T) {
 	})
 	initGitRepo(t, project)
 
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "--include", "ignored"})
+	cfg := parseInProject(t, project, []string{".", "--quiet", "--print", "--include", "ignored"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -2971,13 +3337,13 @@ func TestRunSnippetEmitsBlankLineBoundedBlocks(t *testing.T) {
 	if strings.Contains(out, "src/skip.ts") {
 		t.Fatalf("expected non-matching file to stay out of snippet output, got:\n%s", out)
 	}
-	if got := strings.Count(out, `<file path="src/app.ts" snippet="`); got != 2 {
+	if got := strings.Count(out, `<file path="src/app.ts" lines="`); got != 2 {
 		t.Fatalf("expected 2 snippet blocks, got %d:\n%s", got, out)
 	}
-	if !strings.Contains(out, "<file path=\"src/app.ts\" snippet=\"1-4\">\nconst a = 1\nTODO: first\nconst b = 2\nTODO: second\n</file>\n\n") {
+	if !strings.Contains(out, "<file path=\"src/app.ts\" lines=\"1-4\">\nconst a = 1\nTODO: first\nconst b = 2\nTODO: second\n</file>\n\n") {
 		t.Fatalf("expected first snippet block, got:\n%s", out)
 	}
-	if !strings.Contains(out, "<file path=\"src/app.ts\" snippet=\"6-8\">\nconst c = 3\nTODO: third\nconst d = 4\n</file>\n\n") {
+	if !strings.Contains(out, "<file path=\"src/app.ts\" lines=\"6-8\">\nconst c = 3\nTODO: third\nconst d = 4\n</file>\n\n") {
 		t.Fatalf("expected second snippet block, got:\n%s", out)
 	}
 }
@@ -3182,9 +3548,6 @@ func TestFilterGitIgnoredEntriesSkipsGitVisibleEntries(t *testing.T) {
 }
 
 func TestBuildVisibleDirIndexDerivesDirsFromVisibleFiles(t *testing.T) {
-	if _, err := exec.LookPath("rg"); err != nil {
-		t.Skip("rg not available")
-	}
 
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":           "export const main = true\n",
@@ -3296,7 +3659,7 @@ func TestRunIncludeAllowsGitIgnoredFile(t *testing.T) {
 	})
 	initGitRepo(t, project)
 
-	cfg := parseInProject(t, project, []string{"--print", "--include", "ignored/secret.ts"})
+	cfg := parseInProject(t, project, []string{".", "--print", "--include", "ignored/secret.ts"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3321,7 +3684,7 @@ func TestRunIncludeFromStdinAllowsExactIgnoredTargets(t *testing.T) {
 	initGitRepo(t, project)
 
 	setTestPipeStdin(t, "ignored\\secret.ts\r\n")
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "--include", "-"})
+	cfg := parseInProject(t, project, []string{".", "--quiet", "--print", "--include", "-"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3594,9 +3957,6 @@ func TestRunPreviewSkipsTrackedFileSymlink(t *testing.T) {
 }
 
 func TestFilterEntriesByContentWithRipgrep(t *testing.T) {
-	if _, ok := ripgrepBinary(); !ok {
-		t.Skip("rg not available")
-	}
 
 	project := setupTestProject(t, map[string]string{
 		"src/todo.ts":  "const x = 'TODO';\n",
@@ -3627,9 +3987,6 @@ func TestFilterEntriesByContentWithRipgrep(t *testing.T) {
 }
 
 func TestBuildVisibleFileListWithRipgrepSkipsDirSymlinkDescendants(t *testing.T) {
-	if _, ok := ripgrepBinary(); !ok {
-		t.Skip("rg not available")
-	}
 
 	project := setupTestProject(t, map[string]string{
 		"real/file.ts": "export const value = 1\n",
@@ -3663,9 +4020,6 @@ func TestBuildVisibleFileListWithRipgrepSkipsDirSymlinkDescendants(t *testing.T)
 }
 
 func TestBuildVisibleFileListWithRipgrepSkipsFileSymlinks(t *testing.T) {
-	if _, ok := ripgrepBinary(); !ok {
-		t.Skip("rg not available")
-	}
 
 	project := setupTestProject(t, map[string]string{
 		"real/file.ts": "export const value = 1\n",
@@ -3874,7 +4228,7 @@ func TestHelpTextIncludesShellParitySections(t *testing.T) {
 	help := shortHelpText("0.2.1", colorPalette{})
 	full := fullHelpText("0.2.1", colorPalette{})
 
-	for _, want := range []string{"Quick Start:", "Interactive mode (build commands from menus):", "Filtering:", "Git Filters (requires a git repo):", "Full reference with all flags: catclip --help-all"} {
+	for _, want := range []string{"Quick Start:", "Interactive mode (build commands from menus):", "Filtering:", "Git Filters (requires a git repo):", "For agents and full flag reference: catclip --help-all"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("expected short help to contain %q, got:\n%s", want, help)
 		}
@@ -6007,7 +6361,7 @@ func TestPromptYesNoErrorsWhenHeadlessPromptGuardActive(t *testing.T) {
 	if answer {
 		t.Fatalf("expected false answer on error, got %v", answer)
 	}
-	if !strings.Contains(err.Error(), "BUG: reached interactive prompt in headless mode (-q -p)") {
+	if !strings.Contains(err.Error(), "BUG: reached interactive prompt in headless mode") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -7460,11 +7814,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$prompt" = "match> " ]; then
-	printf '%s\n' "$preview" | grep -F -- 'preview_target={3}; if [ -z "$preview_target" ]; then exit 0; fi;' >/dev/null || {
-		echo "missing snippet preview guard: $preview" >&2
-		exit 91
-	}
-	printf '%s\n' "$preview" | grep -F -- '--internal-file-preview --internal-file-path "$preview_target" --snippet {q}' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-preview --internal-file-path {3} --snippet {q}' >/dev/null || {
 		echo "missing snippet preview command: $preview" >&2
 		exit 91
 	}
@@ -7662,11 +8012,11 @@ if [ "$prompt" = "filter> " ]; then
 		echo "missing --then label in last row: $last_label" >&2
 		exit 91
 	}
-	printf '%s\n' "$last_label" | grep -F -- "Add another catclip command after this one, with its own targets and filters" >/dev/null && {
+	printf '%s\n' "$last_label" | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null && {
 		echo "label column should not contain description text: $last_label" >&2
 		exit 91
 	}
-	printf '%s\n' "$last_desc" | grep -F -- "Add another catclip command after this one, with its own targets and filters" >/dev/null || {
+	printf '%s\n' "$last_desc" | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null || {
 		echo "missing --then description in description column: $last_desc" >&2
 		exit 91
 	}

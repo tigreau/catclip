@@ -200,14 +200,14 @@ var startupModifierChoices = []startupModifierChoice{
 	{
 		Key:         "then",
 		Label:       "--then",
-		Description: "Add another catclip command after this one, with its own targets and filters",
+		Description: "Chain a new scope with its own targets and filters",
 		Args:        []string{"--then"},
 		Mode:        startupModifierModeThen,
 	},
 }
 
 func maybeResolveStartupPickerArgs(args []string) (startupPickerResult, bool, error) {
-	if rawArgsHeadlessStdoutMode(args) {
+	if rawArgsHasHeadless(args) {
 		return startupPickerResult{}, false, nil
 	}
 	if rawArgsUseStdinPathValues(args) {
@@ -296,7 +296,7 @@ func startupCommandCanRunDirectly(resolver *scopeResolver, args []string) (bool,
 	if needsFileSetResolution {
 		return false, nil
 	}
-	cfg, err := parseArgs(args)
+	cfg, err := parseArgsAllowImplicitDot(args)
 	if err != nil {
 		return false, nil
 	}
@@ -410,6 +410,17 @@ func startupHasUnresolvedScope(args []string) bool {
 				}
 			}
 			continue
+		case "--lines":
+			if !scopeHasExplicitTarget {
+				return true
+			}
+			for i+1 < len(args) {
+				if _, err := strconv.Atoi(args[i+1]); err != nil {
+					break
+				}
+				i++
+			}
+			continue
 		default:
 			if strings.HasPrefix(arg, "--contains=") || strings.HasPrefix(arg, "--recent=") || strings.HasPrefix(arg, "--depth=") {
 				return true
@@ -464,6 +475,14 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 			i = next - 1
 			continue
 		case "--paths":
+			continue
+		case "--lines":
+			for i+1 < len(args) {
+				if _, err := strconv.Atoi(args[i+1]); err != nil {
+					break
+				}
+				i++
+			}
 			continue
 		case "--recent":
 			if i+1 < len(args) && !isModifierBoundaryToken(args[i+1]) {
@@ -543,6 +562,15 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 			"--preview", "--changed", "--staged", "--unstaged", "--untracked",
 			"--changed-diff", "--staged-diff", "--unstaged-diff", "--paths":
 			parsed.modifiers = append(parsed.modifiers, tokens[i])
+		case "--lines":
+			parsed.modifiers = append(parsed.modifiers, tokens[i])
+			for i+1 < len(tokens) {
+				if _, err := strconv.Atoi(tokens[i+1]); err != nil {
+					break
+				}
+				i++
+				parsed.modifiers = append(parsed.modifiers, tokens[i])
+			}
 		case "--only", "--exclude", "--contains", "--snippet", "--depth":
 			if i+1 >= len(tokens) {
 				switch tokens[i] {
@@ -799,7 +827,7 @@ func startupResolvedTargetPaths(args []string) []string {
 }
 
 func startupCurrentScopeTargetPaths(args []string) ([]string, error) {
-	cfg, err := parseArgs(args)
+	cfg, err := parseArgsAllowImplicitDot(args)
 	if err != nil {
 		return nil, err
 	}
@@ -820,7 +848,7 @@ func startupCurrentScopeTargetPaths(args []string) ([]string, error) {
 }
 
 func startupCurrentScopeIncludedTargetPaths(args []string) ([]string, error) {
-	cfg, err := parseArgs(args)
+	cfg, err := parseArgsAllowImplicitDot(args)
 	if err != nil {
 		return nil, err
 	}
@@ -967,7 +995,7 @@ func resolveStartupArgsWithMode(resolver *scopeResolver, args []string, requireS
 			i += 1 + consumed
 			modifierMode = true
 			hadScopeInput = true
-		case "--include", "--only", "--exclude", "--contains", "--snippet", "--recent", "--depth", "--paths":
+		case "--include", "--only", "--exclude", "--contains", "--snippet", "--recent", "--depth", "--paths", "--lines":
 			argsAfterStage, newScopeTargets, stageUsedFzf, consumed, err := resolveStartupModifierStage(resolver, finalArgs, currentScopeTargets, currentScopeExplicitTargets, []string{arg}, args[i+1:], false)
 			if err != nil {
 				return nil, nil, false, err
@@ -1392,6 +1420,20 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 		}
 		finalArgs := append(append([]string(nil), currentArgs...), flag)
 		return finalArgs, append([]string(nil), currentScopeTargets...), false, 0, nil
+	case "--lines":
+		if err := validateCurrentScopeFlagAddition(currentArgs, "--lines"); err != nil {
+			return nil, append([]string(nil), currentScopeTargets...), false, 0, err
+		}
+		finalArgs := append(append([]string(nil), currentArgs...), flag)
+		consumed := 0
+		for consumed < len(remaining) {
+			if _, err := strconv.Atoi(remaining[consumed]); err != nil {
+				break
+			}
+			finalArgs = append(finalArgs, remaining[consumed])
+			consumed++
+		}
+		return finalArgs, append([]string(nil), currentScopeTargets...), false, consumed, nil
 	case "--contains":
 		if err := validateCurrentScopeFlagAddition(currentArgs, "--contains"); err != nil {
 			return nil, append([]string(nil), currentScopeTargets...), false, 0, err
@@ -1651,7 +1693,7 @@ func startupLooksLikeLiteralFileSetPattern(value string) bool {
 }
 
 func startupFileSetQueryMatchesExistingPath(currentArgs []string, value string) bool {
-	cfg, err := parseArgs(currentArgs)
+	cfg, err := parseArgsAllowImplicitDot(currentArgs)
 	if err != nil {
 		return false
 	}

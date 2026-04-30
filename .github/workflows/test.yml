@@ -1,0 +1,66 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  RIPGREP_VERSION: 14.1.1
+  FZF_VERSION: 0.71.0
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Install bundled tools (rg, fzf)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bin
+          case "${{ runner.os }}-${{ runner.arch }}" in
+            macOS-X64)    rg_triple="x86_64-apple-darwin";       rg_ext="tar.gz"; fzf_target="darwin_amd64";  fzf_ext="tar.gz"; bin_ext="" ;;
+            macOS-ARM64)  rg_triple="aarch64-apple-darwin";      rg_ext="tar.gz"; fzf_target="darwin_arm64";  fzf_ext="tar.gz"; bin_ext="" ;;
+            Linux-X64)    rg_triple="x86_64-unknown-linux-musl"; rg_ext="tar.gz"; fzf_target="linux_amd64";   fzf_ext="tar.gz"; bin_ext="" ;;
+            Windows-X64)  rg_triple="x86_64-pc-windows-msvc";    rg_ext="zip";    fzf_target="windows_amd64"; fzf_ext="zip";    bin_ext=".exe" ;;
+            *) echo "unsupported runner: ${{ runner.os }}-${{ runner.arch }}" >&2; exit 1 ;;
+          esac
+
+          rg_dir="ripgrep-${RIPGREP_VERSION}-${rg_triple}"
+          rg_archive="${rg_dir}.${rg_ext}"
+          curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RIPGREP_VERSION}/${rg_archive}" -o "$rg_archive"
+          if [[ "$rg_ext" == "zip" ]]; then
+            7z x -bd "$rg_archive" >/dev/null
+            cp "${rg_dir}/rg.exe" "bin/rg.exe"
+          else
+            tar -xzf "$rg_archive"
+            cp "${rg_dir}/rg" "bin/rg"
+            chmod +x "bin/rg"
+          fi
+
+          fzf_archive="fzf-${FZF_VERSION}-${fzf_target}.${fzf_ext}"
+          curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}/${fzf_archive}" -o "$fzf_archive"
+          mkdir -p fzf-extract
+          if [[ "$fzf_ext" == "zip" ]]; then
+            7z x -bd "$fzf_archive" -ofzf-extract >/dev/null
+            cp "fzf-extract/fzf.exe" "bin/fzf.exe"
+          else
+            tar -xzf "$fzf_archive" -C fzf-extract
+            cp "fzf-extract/fzf" "bin/fzf"
+            chmod +x "bin/fzf"
+          fi
+
+          "bin/rg${bin_ext}" --version
+          "bin/fzf${bin_ext}" --version
+
+      - name: go test
+        run: go test ./...

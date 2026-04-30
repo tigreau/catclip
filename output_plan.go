@@ -1,6 +1,10 @@
 package catclip
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 type outputSectionKind string
 
@@ -20,12 +24,14 @@ type outputPlanSection struct {
 }
 
 type outputPlanItem struct {
-	kind      outputSectionKind
-	unit      preparedFileUnit
-	entry     fileEntry
-	relPath   string
-	mode      entryMode
-	bodyBytes int64
+	kind       outputSectionKind
+	unit       preparedFileUnit
+	entry      fileEntry
+	relPath    string
+	mode       entryMode
+	bodyBytes  int64
+	linesStart int
+	linesEnd   int
 }
 
 type evaluatedOutputScope struct {
@@ -56,12 +62,14 @@ func buildOutputPlan(units []preparedFileUnit) outputPlan {
 
 func newFileOutputPlanItem(unit preparedFileUnit) outputPlanItem {
 	return outputPlanItem{
-		kind:      outputSectionKindFiles,
-		unit:      unit,
-		entry:     unit.Entry,
-		relPath:   unit.Entry.RelPath,
-		mode:      unit.Entry.Mode,
-		bodyBytes: unit.BodyBytes,
+		kind:       outputSectionKindFiles,
+		unit:       unit,
+		entry:      unit.Entry,
+		relPath:    unit.Entry.RelPath,
+		mode:       unit.Entry.Mode,
+		bodyBytes:  unit.BodyBytes,
+		linesStart: unit.Entry.LinesStart,
+		linesEnd:   unit.Entry.LinesEnd,
 	}
 }
 
@@ -172,15 +180,26 @@ func dedupeScopedFileCandidates(candidates []scopedFileCandidate, preserveOrder 
 
 	if preserveOrder {
 		out := make([]scopedFileCandidate, 0, len(candidates))
-		indexByPath := make(map[string]int, len(candidates))
+		indicesByPath := make(map[string][]int, len(candidates))
 		for _, candidate := range candidates {
-			idx, ok := indexByPath[candidate.entry.RelPath]
+			indices, ok := indicesByPath[candidate.entry.RelPath]
 			if !ok {
-				indexByPath[candidate.entry.RelPath] = len(out)
+				indicesByPath[candidate.entry.RelPath] = []int{len(out)}
 				out = append(out, candidate)
 				continue
 			}
-			mergeScopedFileCandidate(&out[idx], candidate)
+			merged := false
+			for _, idx := range indices {
+				if !linesEntriesShouldCoexist(out[idx].entry, candidate.entry) {
+					mergeScopedFileCandidate(&out[idx], candidate)
+					merged = true
+					break
+				}
+			}
+			if !merged {
+				indicesByPath[candidate.entry.RelPath] = append(indices, len(out))
+				out = append(out, candidate)
+			}
 		}
 		return out
 	}
@@ -198,7 +217,17 @@ func dedupeScopedFileCandidates(candidates []scopedFileCandidate, preserveOrder 
 			out = append(out, candidate)
 			continue
 		}
-		mergeScopedFileCandidate(&out[len(out)-1], candidate)
+		merged := false
+		for i := len(out) - 1; i >= 0 && out[i].entry.RelPath == candidate.entry.RelPath; i-- {
+			if !linesEntriesShouldCoexist(out[i].entry, candidate.entry) {
+				mergeScopedFileCandidate(&out[i], candidate)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			out = append(out, candidate)
+		}
 	}
 	return out
 }
@@ -279,11 +308,17 @@ func (p outputPlan) SummaryCountWord() (int, string) {
 	}
 }
 
+type previewLinesRange struct {
+	start int
+	end   int
+}
+
 func (p outputPlan) PreviewModeTags(statuses map[string]string) map[string]string {
 	type presence struct {
-		hasPath bool
-		hasFile bool
-		mode    entryMode
+		hasPath     bool
+		hasFile     bool
+		mode        entryMode
+		linesRanges []previewLinesRange
 	}
 
 	seen := make(map[string]presence)
@@ -298,6 +333,12 @@ func (p outputPlan) PreviewModeTags(statuses map[string]string) map[string]strin
 			if mode == entryModeDiff && statuses[item.relPath] == "?" {
 				mode = entryModeFull
 			}
+			if mode == entryModeLines {
+				state.linesRanges = append(state.linesRanges, previewLinesRange{
+					start: item.linesStart,
+					end:   item.linesEnd,
+				})
+			}
 			if entryModePriority(mode) >= entryModePriority(state.mode) {
 				state.mode = mode
 			}
@@ -307,22 +348,57 @@ func (p outputPlan) PreviewModeTags(statuses map[string]string) map[string]strin
 
 	tags := make(map[string]string)
 	for relPath, state := range seen {
+		modeTag := ""
+		switch state.mode {
+		case entryModeSnippet:
+			modeTag = "snippet"
+		case entryModeDiff:
+			modeTag = "diff"
+		case entryModeLines:
+			modeTag = linesTagFromRanges(state.linesRanges)
+		}
+
 		switch {
 		case state.hasPath && !state.hasFile:
 			tags[relPath] = "path only"
-		case state.hasPath && state.mode == entryModeSnippet:
-			tags[relPath] = "path + snippet"
-		case state.hasPath && state.mode == entryModeDiff:
-			tags[relPath] = "path + diff"
+		case state.hasPath && modeTag != "":
+			tags[relPath] = "path + " + modeTag
 		case state.hasPath && state.hasFile:
 			tags[relPath] = "path + file"
-		case state.mode == entryModeSnippet:
-			tags[relPath] = "snippet only"
-		case state.mode == entryModeDiff:
-			tags[relPath] = "diff only"
+		case state.mode == entryModeLines:
+			tags[relPath] = modeTag
+		case modeTag != "":
+			tags[relPath] = modeTag + " only"
 		}
 	}
 	return tags
+}
+
+func linesTagFromRanges(ranges []previewLinesRange) string {
+	if len(ranges) == 0 {
+		return "numbered"
+	}
+	// Bare lines (start == 0) means full file numbered — absorbs any ranges.
+	for _, r := range ranges {
+		if r.start == 0 {
+			return "numbered"
+		}
+	}
+	if len(ranges) == 1 {
+		return formatLinesRange(ranges[0].start, ranges[0].end)
+	}
+	parts := make([]string, len(ranges))
+	for i, r := range ranges {
+		parts[i] = formatLinesRange(r.start, r.end)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatLinesRange(start, end int) string {
+	if end > 0 {
+		return fmt.Sprintf("lines %d-%d", start, end)
+	}
+	return fmt.Sprintf("lines %d-", start)
 }
 
 // PayloadSizes returns emitted payload bytes keyed by relPath.

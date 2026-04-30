@@ -72,6 +72,18 @@ package catclip
 //      should not silently fall back to arbitrary PATH copies, because PATH
 //      fallback reintroduces version drift, machine-specific behavior, weaker
 //      install guarantees, and harder debugging/support
+//  18. Picker Previews Stay POSIX-Free:
+//      any command string handed to fzf — preview commands, `start:reload:` /
+//      `change:reload:` bindings, future bind actions — must be a straight
+//      pipeline of program invocations with placeholder substitution, never a
+//      POSIX shell script. fzf forwards these to `cmd /s /c` on Windows by
+//      default, so `set --`, `"$@"`, `if [ -n "$x" ]`, `for v in {+2}`, and
+//      shell variable assignments (`name={N}`) all silently break previews
+//      under cmd.exe. Push any conditional logic into Go-side `--internal-*`
+//      subcommands instead, and verify the placeholders ({2}, {3}, {+2}, {q})
+//      can be inlined directly. The working reference shapes are
+//      `fzfPreviewCommand`, `recentPickerPreviewCommand`, and
+//      `startupModifierCurrentScopePreviewCommand`.
 //
 // WHY THE ROOT PACKAGE IS STILL BROAD:
 //   - resolver, discovery, ignore, git, and rendering still share many internal
@@ -155,6 +167,8 @@ package catclip
 //      - `--depth N` removes files deeper than N path segments from cwd
 //      - `--contains` filters by content match (regex, rg-backed)
 //      - `--snippet` extracts blank-line-bounded blocks matching regex
+//      - `--lines [START [END]]` slices each surviving file to that 1-based
+//        line range
 //      - git selectors (`--changed`, `--staged`, `--unstaged`, `--untracked`)
 //      - output shape: `--paths` (terminal), `--*-diff`, or default full-file
 //      - `--only -`, `--exclude -`, `--include -` read exact paths from stdin
@@ -179,9 +193,12 @@ package catclip
 //  10. Emit output to stdout or the clipboard sink:
 //      - default: full file contents in <file path="..."> wrappers
 //      - `--paths`: bare relative paths, one per line
-//      - `--snippet`: matched blocks in <file path="..." snippet="L-L"> wrappers
+//      - `--snippet`: matched blocks in <file path="..." lines="L-L"> wrappers
+//      - `--lines`: line-sliced bodies in <file path="..." lines="L-L"> wrappers
 //      - `--*-diff`: unified diff patches in <file path="..." type="diff"> wrappers
-//      - `--raw` (`-r`): single file body without wrappers (requires `-p`)
+//      - `--raw` (`-r`): bare file bodies, no wrappers; multi-file concatenates
+//        contiguously like `cat a b`; with `--lines`, line-number prefixes are
+//        stripped (numbered-but-unwrapped is unsafe across files)
 //      - unresolvable targets: warn on stderr (even with `-q`), emit what
 //        resolved, exit 1
 //
@@ -292,6 +309,12 @@ package catclip
 //     `--include`, `--only`, `--exclude`, `--contains`, and bare `--`
 //   - repeated bare `--` placeholders are allowed and each inserts one more
 //     modifier stage
+//   - `--headless` is the explicit no-prompt switch:
+//     it forbids any interactive picker (startup recovery, target picker,
+//     modifier value pickers) and requires explicit targets up front; agents
+//     and scripts pass it to guarantee fzf never opens, and any code path
+//     that reaches a prompt under `--headless` is a bug, not a fallback.
+//     `-q` is independent and does not by itself disable prompts
 //   - git selectors chosen from startup recovery may open follow-up file-set
 //     pickers, but the canonical resolved command still compiles back to normal
 //     CLI syntax
@@ -372,9 +395,9 @@ type runConfig struct {
 
 	Verbose          bool
 	Quiet            bool
+	Headless         bool
 	WithBinaries     bool
 	Yes              bool
-	Print            bool
 	Raw              bool
 	Preview          bool
 	NoTree           bool
@@ -401,6 +424,9 @@ type executionScope struct {
 	Exclude         []string
 	Contains        string
 	SnippetPattern  string
+	Lines           bool
+	LinesStart      int
+	LinesEnd        int
 	Stages          []scopeStage
 	Paths           bool
 	Snippet         bool
@@ -417,6 +443,9 @@ func executionScopeOutputMode(s executionScope) entryMode {
 	}
 	if s.Snippet {
 		return entryModeSnippet
+	}
+	if s.Lines {
+		return entryModeLines
 	}
 	return entryModeFull
 }
@@ -477,6 +506,7 @@ const (
 	scopeStageChangedDiff  scopeStageKind = "changed-diff"
 	scopeStageStagedDiff   scopeStageKind = "staged-diff"
 	scopeStageUnstagedDiff scopeStageKind = "unstaged-diff"
+	scopeStageLines        scopeStageKind = "lines"
 )
 
 type scopeStage struct {
@@ -494,6 +524,9 @@ type fileEntry struct {
 	GitVisible       bool
 	Mode             entryMode
 	SnippetPattern   string
+	Lines            bool
+	LinesStart       int
+	LinesEnd         int
 	DiffWantStaged   bool
 	DiffWantUnstaged bool
 	AllowedByInclude bool
@@ -591,6 +624,7 @@ type entryMode string
 
 const (
 	entryModeFull    entryMode = "full"
+	entryModeLines   entryMode = "lines"
 	entryModeSnippet entryMode = "snippet"
 	entryModeDiff    entryMode = "diff"
 )
@@ -619,6 +653,10 @@ func newExitError(code int, message string) error {
 
 // Main parses the CLI and runs the selected action.
 func Main() {
+	if err := ensureRequiredTools(os.Stderr); err != nil {
+		os.Exit(1)
+		return
+	}
 	args := os.Args[1:]
 	normResult, err := normalizePositionalGlobArgs(args, positionalGlobArgsQuiet(args))
 	if err != nil {
@@ -664,18 +702,13 @@ func Main() {
 	}
 }
 
-func rawArgsHeadlessStdoutMode(args []string) bool {
-	quiet := false
-	print := false
+func rawArgsHasHeadless(args []string) bool {
 	for _, arg := range args {
-		switch arg {
-		case "-q", "--quiet":
-			quiet = true
-		case "-p", "--print":
-			print = true
+		if arg == "--headless" {
+			return true
 		}
 	}
-	return quiet && print
+	return false
 }
 
 func rawArgsUseStdinPathValues(args []string) bool {
@@ -701,7 +734,7 @@ func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
 }
 
 func formatResolvedStartupCommand(args []string) string {
-	if cfg, err := parseArgs(args); err == nil {
+	if cfg, err := parseArgsAllowImplicitDot(args); err == nil {
 		return formatCanonicalResolvedCommand(args, cfg)
 	}
 	parts := make([]string, 0, len(args)+1)

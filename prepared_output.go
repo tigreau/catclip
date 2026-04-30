@@ -1,6 +1,7 @@
 package catclip
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"os"
@@ -62,6 +63,14 @@ func prepareFileUnit(gitCtx gitContext, entry fileEntry) (preparedFileUnit, bool
 		unit.BodyBytes = bodyBytes
 		return unit, true, nil
 	default:
+		if entry.Mode == entryModeLines && (entry.LinesStart > 0 || entry.LinesEnd > 0) {
+			bodyBytes, err := slicedLinesBodySize(entry.AbsPath, entry.LinesStart, entry.LinesEnd)
+			if err != nil {
+				return preparedFileUnit{}, false, err
+			}
+			unit.BodyBytes = bodyBytes
+			return unit, true, nil
+		}
 		bodyBytes, err := fileBodySize(entry.AbsPath)
 		if err != nil {
 			return preparedFileUnit{}, false, err
@@ -69,6 +78,33 @@ func prepareFileUnit(gitCtx gitContext, entry fileEntry) (preparedFileUnit, bool
 		unit.BodyBytes = bodyBytes
 		return unit, true, nil
 	}
+}
+
+func slicedLinesBodySize(absPath string, start, end int) (int64, error) {
+	f, err := os.Open(absPath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, readBufferSize()), 10*1024*1024)
+	var total int64
+	lineNum := 0
+	for scanner.Scan() {
+		lineNum++
+		if start > 0 && lineNum < start {
+			continue
+		}
+		if end > 0 && lineNum > end {
+			break
+		}
+		total += int64(len(scanner.Bytes())) + 1
+	}
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+	return total, nil
 }
 
 func buildPreparedSnippetPayload(entry fileEntry) ([]byte, int64, error) {
@@ -87,7 +123,7 @@ func buildPreparedSnippetPayload(entry fileEntry) ([]byte, int64, error) {
 	var payload bytes.Buffer
 	var bodyBytes int64
 	for _, r := range snippet.Ranges {
-		if _, err := fmt.Fprintf(&payload, "<file path=\"%s\" snippet=\"%d-%d\">\n", entry.RelPath, r.Start, r.End); err != nil {
+		if _, err := fmt.Fprintf(&payload, "<file path=\"%s\" lines=\"%d-%d\">\n", entry.RelPath, r.Start, r.End); err != nil {
 			return nil, 0, err
 		}
 		for i := r.Start - 1; i < r.End; i++ {

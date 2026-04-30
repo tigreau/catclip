@@ -109,7 +109,7 @@ func contentMatchRowsForScope(cfg runConfig) ([]contentMatchRow, error) {
 func contentMatchPathsForArgs(currentArgs []string, flag, query string) ([]string, error) {
 	args := append([]string(nil), currentArgs...)
 	args = append(args, flag, query)
-	cfg, err := parseArgs(args)
+	cfg, err := parseArgsAllowImplicitDot(args)
 	if err != nil {
 		return nil, err
 	}

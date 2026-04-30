@@ -1,6 +1,9 @@
 package catclip
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+)
 
 func validateStartupPreflightArgs(args []string) error {
 	_, err := startupPreflightCommandSpec(args)
@@ -181,6 +184,41 @@ func startupPreflightCommandSpec(args []string) (commandSpec, error) {
 			if i+1 < len(args) && !isModifierBoundaryToken(args[i+1]) {
 				return commandSpec{}, noValueModifierError(arg)
 			}
+			continue
+		case "--lines":
+			inModifierMode = true
+			if err := stageState.apply(scopeStageLines); err != nil {
+				return commandSpec{}, err
+			}
+			current.Lines = true
+			var start, end int
+			if i+1 < len(args) {
+				next := args[i+1]
+				if n, err := strconv.Atoi(next); err == nil {
+					if n < 1 {
+						return commandSpec{}, newUsageError("Error: --lines start must be >= 1 (got %d).\n  Line numbers are 1-based, matching editors and compiler output.", n)
+					}
+					start = n
+					i++
+					if i+1 < len(args) {
+						next2 := args[i+1]
+						if n2, err := strconv.Atoi(next2); err == nil {
+							if n2 < start {
+								return commandSpec{}, newUsageError("Error: --lines end (%d) must be >= start (%d).\n  Use: --lines START END where END >= START.", n2, start)
+							}
+							end = n2
+							i++
+						} else if !strings.HasPrefix(next2, "-") {
+							return commandSpec{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next2)
+						}
+					}
+				} else if !strings.HasPrefix(next, "-") {
+					return commandSpec{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next)
+				}
+			}
+			current.LinesStart = start
+			current.LinesEnd = end
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageLines})
 			continue
 		case "--contains", "--snippet":
 			inModifierMode = true

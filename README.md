@@ -3,7 +3,7 @@
 Copy code context for AI assistants. One command, smart defaults, no setup.
 
 ```bash
-catclip src
+catclip src                # copy src/ to your clipboard
 ```
 
 ---
@@ -43,18 +43,18 @@ catclip src --contains TODO          # files mentioning TODO
 catclip src --snippet TODO           # only the matching blocks
 
 # Git
-catclip --changed                    # all changed files
-catclip --changed-diff               # changes as patches
-catclip --staged-diff                # staged changes as patches
+catclip . --changed                  # all uncommitted files
+catclip . --changed-diff             # uncommitted changes as patches
+catclip . --staged-diff              # staged changes as patches
 
 # Output
 catclip src --paths                  # bare file paths, one per line
 catclip src -p                       # print to stdout instead of clipboard
-catclip src/main.go -r -p            # raw file body, no wrappers
+catclip src/main.go -r               # raw file body, no wrappers
 
 # Scopes — like running two catclip commands and combining results
 catclip . --paths --then src         # repo structure + full files from src
-catclip src --only "*.ts" --then docs --recent 5
+catclip src --only "*.ts" --then docs --recent 5  # .ts files from src/, plus 5 newest from docs/
 ```
 
 Filters run left to right. Order matters:
@@ -93,7 +93,7 @@ catclip bundles its own `fzf` and `ripgrep` — no external dependencies needed.
 
 #### Manual install (Windows release bundle)
 
-Download `catclip_windows_amd64.zip` or `catclip_windows_arm64.zip` from releases.
+Download `catclip_windows_amd64.zip` from releases.
 
 ```powershell
 $InstallRoot = Join-Path $env:LOCALAPPDATA "Programs\catclip"

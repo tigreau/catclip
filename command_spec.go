@@ -24,6 +24,9 @@ type commandScopeSpec struct {
 	hasPathsOutput    bool
 	hasSnippetOutput  bool
 	snippetPattern    string
+	hasLinesOutput    bool
+	linesStart        int
+	linesEnd          int
 	outputMode        entryMode
 
 	changed         bool
@@ -60,6 +63,11 @@ func executionScopeFromCommandScopeSpec(s commandScopeSpec) executionScope {
 	if s.HasSnippetOutput() {
 		out.Snippet = true
 		out.SnippetPattern = s.SnippetPattern()
+	}
+	if s.HasLinesOutput() {
+		out.Lines = true
+		out.LinesStart = s.LinesStart()
+		out.LinesEnd = s.LinesEnd()
 	}
 	if s.OutputMode() == entryModeDiff {
 		out.Diff = true
@@ -107,6 +115,9 @@ func commandScopeSpecFromExecutionScope(s executionScope) commandScopeSpec {
 		hasPathsOutput:    s.Paths || executionScopeHasStage(s, scopeStagePaths),
 		hasSnippetOutput:  s.Snippet || executionScopeHasStage(s, scopeStageSnippet),
 		snippetPattern:    s.SnippetPattern,
+		hasLinesOutput:    s.Lines || executionScopeHasStage(s, scopeStageLines),
+		linesStart:        s.LinesStart,
+		linesEnd:          s.LinesEnd,
 		outputMode:        executionScopeOutputMode(s),
 		changed:           s.Changed,
 		staged:            s.Staged,
@@ -166,6 +177,18 @@ func (s commandScopeSpec) HasSnippetOutput() bool {
 
 func (s commandScopeSpec) SnippetPattern() string {
 	return s.snippetPattern
+}
+
+func (s commandScopeSpec) HasLinesOutput() bool {
+	return s.hasLinesOutput
+}
+
+func (s commandScopeSpec) LinesStart() int {
+	return s.linesStart
+}
+
+func (s commandScopeSpec) LinesEnd() int {
+	return s.linesEnd
 }
 
 func (s commandScopeSpec) OutputMode() entryMode {

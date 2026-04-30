@@ -166,6 +166,14 @@ var scopeModifierFlagSpecs = []flagSpec{
 		BoundaryPolicy: scopeStageBoundarySnippet,
 		Recoverability: flagRecoverabilityRequiredValue,
 	},
+	{
+		Flag:           "--lines",
+		StageKind:      scopeStageLines,
+		Arity:          flagArityNone,
+		Family:         flagFamilyOutputMode,
+		BoundaryPolicy: scopeStageBoundaryTerminal,
+		Recoverability: flagRecoverabilityNoValue,
+	},
 }
 
 var scopeModifierFlagSpecsByFlag = buildScopeModifierFlagSpecsByFlag()
@@ -233,7 +241,7 @@ func isModifierBoundaryToken(arg string) bool {
 	switch arg {
 	case "--changed", "--staged", "--unstaged", "--untracked",
 		"--changed-diff", "--staged-diff", "--unstaged-diff",
-		"--recent",
+		"--recent", "--lines",
 		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
 		"--preview", "--with-binaries",
 		"-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":

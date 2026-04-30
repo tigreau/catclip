@@ -5,7 +5,7 @@ func containsMissingPatternError(args []string, containsIndex int) error {
 	if !ok {
 		return validationFailure{Reason: validationReasonRequiredValue, Flag: "--contains"}
 	}
-	if _, err := parseArgs(suggestionArgs); err != nil {
+	if _, err := parseArgsAllowImplicitDot(suggestionArgs); err != nil {
 		return validationFailure{Reason: validationReasonRequiredValue, Flag: "--contains"}
 	}
 	return validationFailure{Reason: validationReasonRequiredValue, Flag: "--contains", Suggestion: formatResolvedStartupCommand(suggestionArgs)}
