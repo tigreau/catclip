@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -3029,7 +3030,7 @@ func TestRunHeadlessAmbiguousTargetFailsWithGuidance(t *testing.T) {
 		"lib/common/b.ts": "export const b = 2\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "common"})
+	cfg := parseInProject(t, project, []string{"--headless", "--quiet", "--print", "common"})
 
 	var stdout, stderr bytes.Buffer
 	err := run(cfg, &stdout, &stderr)
@@ -4262,7 +4263,7 @@ func TestWithPayloadWriterDoesNotBlockOnResidentWaylandClipboard(t *testing.T) {
 		t.Fatalf("write fake wl-copy: %v", err)
 	}
 
-	t.Setenv("PATH", dir)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	t.Setenv("XDG_SESSION_TYPE", "wayland")
 	t.Setenv("CATCLIP_CLIPBOARD_WAIT_MS", "10")
@@ -4442,6 +4443,16 @@ printf '%s\n' "$input"
 
 func installScriptFzf(t *testing.T, script string) string {
 	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake-fzf cannot run on Windows (no /bin/sh); revisit when Go-binary fake-fzf lands")
+	}
+
+	// Several fake-fzf scripts use `$'\t'` ANSI-C quoting to embed tabs in
+	// grep patterns. macOS /bin/sh is bash 3.2 (which expands `$'...'`),
+	// but Ubuntu /bin/sh is dash (which does not). Force bash so the same
+	// scripts run identically on both runners.
+	script = strings.Replace(script, "#!/bin/sh", "#!/bin/bash", 1)
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fake-fzf")

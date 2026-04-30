@@ -190,7 +190,7 @@ jobs:
           ./catclip${ext} --help-all >/dev/null
           ./catclip${ext} . --paths -q -p >/dev/null
           ./catclip${ext} . --depth 1 --paths -q -p >/dev/null
-          ./catclip${ext} README.md -r -q -p >/dev/null
+          ./catclip${ext} VERSION -r -q -p >/dev/null
 
           # warn-and-continue: nonexistent target → exit 1, warning on stderr
           set +e
@@ -202,8 +202,8 @@ jobs:
             cat err.log
             exit 1
           fi
-          if ! grep -qi "not found" err.log; then
-            echo "expected 'not found' on stderr"
+          if ! grep -qi "No file" err.log; then
+            echo "expected target-not-found warning on stderr"
             cat err.log
             exit 1
           fi
