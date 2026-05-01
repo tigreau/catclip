@@ -354,15 +354,14 @@ func writeVerboseOutputMetrics(w io.Writer, metrics verboseOutputMetrics, emitSt
 		throughputMiB = float64(metrics.PayloadBytes) / (1024 * 1024) / outputDuration.Seconds()
 	}
 
-	if emitStats.GenerateDuration > 0 {
-		fmt.Fprintf(w, "[verbose] emit generate: %s\n", formatDuration(emitStats.GenerateDuration))
-	}
-	if emitStats.SinkFinalizeDuration > 0 {
-		if emitStats.ClipboardWaitDuration > 0 {
-			fmt.Fprintf(w, "[verbose] clipboard flush/close (%s): %s\n", emitStats.SinkName, formatDuration(emitStats.SinkFinalizeDuration))
-		} else {
-			fmt.Fprintf(w, "[verbose] emit flush (%s): %s\n", emitStats.SinkName, formatDuration(emitStats.SinkFinalizeDuration))
-		}
+	// Always emit; Windows monotonic clock can round sub-millisecond operations
+	// to 0 and we still want the row in the verbose log for parity with
+	// macOS/Linux output.
+	fmt.Fprintf(w, "[verbose] emit generate: %s\n", formatDuration(emitStats.GenerateDuration))
+	if emitStats.ClipboardWaitDuration > 0 {
+		fmt.Fprintf(w, "[verbose] clipboard flush/close (%s): %s\n", emitStats.SinkName, formatDuration(emitStats.SinkFinalizeDuration))
+	} else {
+		fmt.Fprintf(w, "[verbose] emit flush (%s): %s\n", emitStats.SinkName, formatDuration(emitStats.SinkFinalizeDuration))
 	}
 	if emitStats.ClipboardWaitDuration > 0 {
 		fmt.Fprintf(w, "[verbose] clipboard wait (%s): %s\n", emitStats.SinkName, formatDuration(emitStats.ClipboardWaitDuration))

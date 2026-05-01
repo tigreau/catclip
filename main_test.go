@@ -4256,6 +4256,9 @@ func TestClipboardCommandShowsInstallHint(t *testing.T) {
 }
 
 func TestWithPayloadWriterDoesNotBlockOnResidentWaylandClipboard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("wayland clipboard handoff is a Linux protocol; Windows has no /bin/sh to run the fake wl-copy stub")
+	}
 	dir := t.TempDir()
 	wlCopy := filepath.Join(dir, "wl-copy")
 	script := "#!/bin/sh\ncat >/dev/null\nsleep 2\n"

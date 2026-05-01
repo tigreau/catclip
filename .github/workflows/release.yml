@@ -188,13 +188,13 @@ jobs:
           ext="${{ matrix.bin_ext }}"
           ./catclip${ext} --version
           ./catclip${ext} --help-all >/dev/null
-          ./catclip${ext} . --paths -q -p >/dev/null
-          ./catclip${ext} . --depth 1 --paths -q -p >/dev/null
-          ./catclip${ext} VERSION -r -q -p >/dev/null
+          ./catclip${ext} . --paths -q -p --headless >/dev/null
+          ./catclip${ext} . --depth 1 --paths -q -p --headless >/dev/null
+          ./catclip${ext} VERSION -r -q -p --headless >/dev/null
 
           # warn-and-continue: nonexistent target → exit 1, warning on stderr
           set +e
-          ./catclip${ext} nonexistent -q -p >/dev/null 2>err.log
+          ./catclip${ext} nonexistent -q -p --headless >/dev/null 2>err.log
           rc=$?
           set -e
           if [[ $rc -ne 1 ]]; then

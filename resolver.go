@@ -115,7 +115,11 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 		diagnostics = append(diagnostics, targetDiagnostics...)
 		notices = append(notices, targetNotices...)
 		entries = append(entries, discovered...)
-		if len(discovered) > 0 {
+		if len(discovered) > 0 && !hasGlobChars(target) {
+			// selectedPaths tracks resolved single-path targets so that later
+			// targets covered by the same selection can dedupe. Glob targets
+			// aren't paths — they expand to multiple entries, and on Windows
+			// os.Stat with `*` returns ERROR_INVALID_NAME, not ENOENT.
 			normalized := normalizeRelPath(target)
 			if normalized == "" {
 				normalized = "."
