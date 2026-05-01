@@ -1386,6 +1386,9 @@ func (r *scopeResolver) interactiveQueryCoveredBySelection(query string, selecte
 	if query == "" || len(selectedPaths) == 0 {
 		return false, nil
 	}
+	if hasGlobChars(query) {
+		return false, nil
+	}
 	if selectionContainsAll(selectedPaths) {
 		return true, nil
 	}
