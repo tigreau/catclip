@@ -15,6 +15,11 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Suppress Invoke-WebRequest's progress bar — it redraws on every byte and
+# can slow downloads 10-50x in interactive PowerShell sessions. The bar
+# carries no useful information for a scripted installer.
+$ProgressPreference = 'SilentlyContinue'
+
 $ProgramName = 'catclip'
 $TreeProgramName = 'catclip-tree'
 $BinDir = Join-Path $InstallRoot 'bin'
