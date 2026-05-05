@@ -82,7 +82,7 @@ curl -fsSL https://raw.githubusercontent.com/tigreau/catclip/main/install.sh | b
 
 ### Windows (PowerShell)
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/tigreau/catclip/main/install.ps1 | iex"
+irm https://raw.githubusercontent.com/tigreau/catclip/main/install.ps1 | iex
 ```
 
 Clipboard tool required: `pbcopy` (macOS, built-in), `xclip`/`xsel`/`wl-clipboard` (Linux), `clip.exe` (Windows, built-in).
@@ -150,7 +150,7 @@ curl -fsSL https://raw.githubusercontent.com/tigreau/catclip/main/uninstall.sh |
 
 Uninstall (Windows PowerShell):
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/tigreau/catclip/main/uninstall.ps1 | iex"
+irm https://raw.githubusercontent.com/tigreau/catclip/main/uninstall.ps1 | iex
 ```
 
 For a checkout-local install, run `./uninstall.sh` from the repo root instead.

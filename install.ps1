@@ -118,12 +118,26 @@ function Add-UserPathEntry {
     param([string]$Entry)
 
     $entries = Get-UserPathEntries
-    if (Test-PathEntryPresent $entries $Entry) {
-        return 'already'
+    $alreadyInRegistry = Test-PathEntryPresent $entries $Entry
+
+    if (-not $alreadyInRegistry) {
+        $updatedEntries = @($entries + (Normalize-PathEntry $Entry))
+        [Environment]::SetEnvironmentVariable('Path', [string]::Join(';', $updatedEntries), 'User')
     }
 
-    $updatedEntries = @($entries + (Normalize-PathEntry $Entry))
-    [Environment]::SetEnvironmentVariable('Path', [string]::Join(';', $updatedEntries), 'User')
+    # Also update the current session's $env:Path so `catclip --version` works
+    # immediately after `irm ... | iex` finishes — matching the macOS/Linux
+    # install.sh experience where /usr/local/bin is already on PATH. This is a
+    # no-op when the script ran in a child process (e.g. `powershell -Command`),
+    # since the change dies with that process.
+    $sessionEntries = @($env:Path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if (-not (Test-PathEntryPresent $sessionEntries $Entry)) {
+        $env:Path = (Normalize-PathEntry $Entry) + ';' + $env:Path
+    }
+
+    if ($alreadyInRegistry) {
+        return 'already'
+    }
     return 'added'
 }
 
@@ -548,10 +562,10 @@ try {
         $pathStatus = Add-UserPathEntry $BinDir
         switch ($pathStatus) {
             'added' {
-                Note "Added $BinDir to your user PATH. Start a new PowerShell or CMD session before running catclip by name."
+                Note "Added $BinDir to your user PATH (current session updated; new sessions inherit it from the registry)."
             }
             'already' {
-                Note "$BinDir is already present on your user PATH. Start a new PowerShell or CMD session if this shell does not see catclip yet."
+                Note "$BinDir is already on your user PATH; current session refreshed."
             }
         }
     }
