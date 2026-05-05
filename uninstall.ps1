@@ -95,18 +95,33 @@ function Remove-UserPathEntry {
     param([string]$Entry)
 
     $entries = Get-UserPathEntries
-    if (-not (Test-PathEntryPresent $entries $Entry)) {
-        return $false
-    }
+    $present = Test-PathEntryPresent $entries $Entry
 
     $normalizedTarget = Normalize-PathEntry $Entry
-    $updatedEntries = @(
-        $entries | Where-Object {
+
+    if ($present) {
+        $updatedEntries = @(
+            $entries | Where-Object {
+                -not [string]::Equals((Normalize-PathEntry $_), $normalizedTarget, [System.StringComparison]::OrdinalIgnoreCase)
+            }
+        )
+        [Environment]::SetEnvironmentVariable('Path', [string]::Join(';', $updatedEntries), 'User')
+    }
+
+    # Mirror install.ps1: also strip the entry from the current session's
+    # $env:Path so a stale reference doesn't outlive the binary it pointed to.
+    # No-op if the script ran in a child process.
+    $sessionEntries = @($env:Path -split ';' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $filtered = @(
+        $sessionEntries | Where-Object {
             -not [string]::Equals((Normalize-PathEntry $_), $normalizedTarget, [System.StringComparison]::OrdinalIgnoreCase)
         }
     )
-    [Environment]::SetEnvironmentVariable('Path', [string]::Join(';', $updatedEntries), 'User')
-    return $true
+    if ($filtered.Count -ne $sessionEntries.Count) {
+        $env:Path = [string]::Join(';', $filtered)
+    }
+
+    return $present
 }
 
 function Remove-PathIfPresent {
@@ -152,7 +167,7 @@ if (Should-ManageUserPath $InstallRoot) {
     if (Skip-UserPathUpdateRequested) {
         Write-Host 'Note: skipped automatic user PATH cleanup because CATCLIP_SKIP_PATH_UPDATE is set.'
     } elseif (Remove-UserPathEntry $BinDir) {
-        Write-Host "Removed $BinDir from your user PATH. Start a new PowerShell or CMD session to refresh PATH."
+        Write-Host "Removed $BinDir from your user PATH (current session updated; new sessions will reflect the change automatically)."
     }
 }
 
