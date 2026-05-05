@@ -414,7 +414,14 @@ function Install-File {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
-$scriptPath = $MyInvocation.MyCommand.Path
+# When the script is invoked via `irm ... | iex`, $MyInvocation.MyCommand is
+# an InternalCommand with no Path property — under Set-StrictMode -Version
+# Latest, dotting into it throws PropertyNotFoundStrict. Guard the lookup so
+# the piped-from-the-web entry point works the same as a local .\install.ps1.
+$scriptPath = ''
+if ($MyInvocation.MyCommand.PSObject.Properties.Name -contains 'Path') {
+    $scriptPath = [string]$MyInvocation.MyCommand.Path
+}
 $sourceDir = Find-LocalSourceDir $scriptPath
 $releaseDir = $null
 if (-not $sourceDir) {

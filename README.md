@@ -136,19 +136,24 @@ Requires Go (version in `go.mod`), `rg`, and `fzf` at install time.
 
 #### Updating & uninstalling
 
-```bash
-# Homebrew
-brew upgrade catclip
-brew uninstall catclip
+To update, re-run the install one-liner — it always fetches the latest release.
 
-# macOS / Linux script install
-./uninstall.sh
+Uninstall (Homebrew):
+```bash
+brew uninstall catclip
 ```
 
+Uninstall (macOS / Linux):
+```bash
+curl -fsSL https://raw.githubusercontent.com/tigreau/catclip/main/uninstall.sh | bash
+```
+
+Uninstall (Windows PowerShell):
 ```powershell
-# Windows
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/tigreau/catclip/main/uninstall.ps1 | iex"
 ```
+
+For a checkout-local install, run `./uninstall.sh` from the repo root instead.
 
 </details>
 
