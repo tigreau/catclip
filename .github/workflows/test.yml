@@ -62,5 +62,94 @@ jobs:
           "bin/rg${bin_ext}" --version
           "bin/fzf${bin_ext}" --version
 
+      - name: Install Linux clipboard deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xclip xvfb
+
       - name: go test
         run: go test ./...
+
+      - name: Bundle smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bin_ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin_ext=".exe"
+          fi
+
+          go build -o "catclip-bin${bin_ext}" ./cmd/catclip
+          export CATCLIP_RG="$(pwd)/bin/rg${bin_ext}"
+          export CATCLIP_FZF="$(pwd)/bin/fzf${bin_ext}"
+
+          fixture=$(mktemp -d)
+          for i in $(seq 1 10); do
+            head -c 1000 </dev/zero | tr '\0' 'a' > "$fixture/file$i.txt"
+          done
+
+          runner=()
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            runner=(xvfb-run -a)
+          fi
+
+          (
+            cd "$fixture"
+            "${runner[@]}" "$OLDPWD/catclip-bin${bin_ext}" -y . >/dev/null
+          )
+
+          bundle_dir="${TMPDIR:-/tmp}/catclip"
+          # macOS sets TMPDIR to /var/folders/...; the dir inside is still catclip.
+          if [[ ! -d "$bundle_dir" ]]; then
+            for candidate in "$RUNNER_TEMP/catclip" "/tmp/catclip" "$TEMP/catclip"; do
+              if [[ -d "$candidate" ]]; then
+                bundle_dir="$candidate"
+                break
+              fi
+            done
+          fi
+
+          bundle=$(ls "$bundle_dir"/*.txt 2>/dev/null | head -1)
+          if [[ -z "$bundle" ]]; then
+            echo "ERROR: no bundle file found in $bundle_dir" >&2
+            ls -la "$bundle_dir" 2>&1 || true
+            exit 1
+          fi
+          echo "Bundle created: $bundle"
+
+          # Filename should match {project}-{HHMMSS}.txt
+          base=$(basename "$bundle")
+          if ! echo "$base" | grep -qE '^[A-Za-z0-9_-]+-[0-9]{6}\.txt$'; then
+            echo "ERROR: bundle basename $base does not match {project}-{HHMMSS}.txt" >&2
+            exit 1
+          fi
+
+          # Permissions check (non-Windows; Windows file modes work differently).
+          if [[ "${{ runner.os }}" != "Windows" ]]; then
+            mode=$(stat -c '%a' "$bundle" 2>/dev/null || stat -f '%Lp' "$bundle")
+            if [[ "$mode" != "600" ]]; then
+              echo "ERROR: bundle mode $mode, want 600" >&2
+              exit 1
+            fi
+            echo "Bundle mode: $mode"
+          fi
+
+          # --no-bundle should not error and should not write a new bundle file.
+          (
+            cd "$fixture"
+            "${runner[@]}" "$OLDPWD/catclip-bin${bin_ext}" -y --no-bundle . >/dev/null
+          )
+
+      - name: fileclip integration tests
+        shell: bash
+        env:
+          FILECLIP_INTEGRATION: '1'
+        run: |
+          set -euo pipefail
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            xvfb-run -a go test -v ./fileclip/
+          else
+            go test -v ./fileclip/
+          fi

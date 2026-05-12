@@ -350,7 +350,7 @@ func startupHasUnresolvedScope(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
 			continue
 		case "--then":
 			if !scopeHasExplicitTarget {
@@ -479,7 +479,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 		case "--then":
 			continue
 		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-			"--preview", "--changed", "--staged", "--unstaged", "--untracked",
+			"--no-bundle", "--preview", "--changed", "--staged", "--unstaged", "--untracked",
 			"--changed-diff", "--staged-diff", "--unstaged-diff", "--", "--diff":
 			continue
 		}
@@ -543,7 +543,7 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 		seenModifier = true
 		switch tokens[i] {
 		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-			"--preview", "--changed", "--staged", "--unstaged", "--untracked",
+			"--no-bundle", "--preview", "--changed", "--staged", "--unstaged", "--untracked",
 			"--changed-diff", "--staged-diff", "--unstaged-diff", "--paths":
 			parsed.modifiers = append(parsed.modifiers, tokens[i])
 		case "--lines":
@@ -905,7 +905,7 @@ func resolveStartupArgsWithMode(resolver *scopeResolver, args []string, requireS
 		}
 
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
 			finalArgs = append(finalArgs, arg)
 			i++
 		case "--then":
@@ -1037,7 +1037,7 @@ func startupLeadingModifierNeedsInitialScope(arg string) bool {
 	switch arg {
 	case "--then":
 		return false
-	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--preview":
+	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
 		return true
 	case "--", "--include", "--only", "--exclude", "--contains", "--snippet", "--recent", "--depth", "--paths",
 		"--changed", "--staged", "--unstaged", "--untracked",

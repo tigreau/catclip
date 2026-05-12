@@ -126,6 +126,7 @@ func shortHelpText(version string, colors colorPalette) string {
 		{Left: "--headless", Right: "Agent contract: stdout, quiet, no prompts (see --help-all)"},
 		{Left: "-y, --yes", Right: "Skip confirmation for large copies"},
 		{Left: "-t, --no-tree", Right: "Skip the file tree preview"},
+		{Left: "--no-bundle", Right: "Force text clipboard; skip bundle for large output"},
 		{Left: "-v, --verbose", Right: "Debug info and timings"},
 		{Left: "--hiss-reset", Right: "Restore ignore rules to defaults"},
 	})
@@ -387,6 +388,22 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("    (requires exactly one surviving full-file item)\n\n")
 	b.WriteString("  Diff type attributes: type=\"diff\", type=\"staged-diff\", type=\"unstaged-diff\", type=\"untracked\"\n\n")
 
+	// ── Clipboard delivery ──────────────────────────────────────────────
+	b.WriteString("CLIPBOARD DELIVERY\n\n")
+	b.WriteString("  catclip auto-selects the clipboard delivery mode based on payload size:\n\n")
+	b.WriteString("    < 4096 bytes   text clipboard (pbcopy / xclip / wl-copy / clip.exe)\n")
+	b.WriteString("                   pastes anywhere — terminals, editors, web UIs, etc.\n")
+	b.WriteString("    ≥ 4096 bytes   bundle file at {TempDir}/catclip/{project}-{HHMMSS}.txt\n")
+	b.WriteString("                   placed on the clipboard as a file reference; pastes as\n")
+	b.WriteString("                   an attachment in web UIs (Claude, ChatGPT, etc.) and\n")
+	b.WriteString("                   as a file in file managers (Finder, Explorer). Does NOT\n")
+	b.WriteString("                   paste as text in terminals or editors.\n\n")
+	b.WriteString("  --no-bundle      Force text clipboard regardless of size. Use when you\n")
+	b.WriteString("                   want to paste raw text into a terminal or editor and\n")
+	b.WriteString("                   the output would otherwise exceed 4KB.\n\n")
+	b.WriteString("  Bundle file contents are byte-identical to -p (stdout) output.\n")
+	b.WriteString("  --headless implies stdout, so bundling never applies in headless mode.\n\n")
+
 	// ── Exit codes ──────────────────────────────────────────────────────
 	b.WriteString("EXIT CODES\n\n")
 	b.WriteString("  0    Success — all targets resolved, output was emitted\n")
@@ -448,6 +465,7 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("    -r, --raw              Bare file body, no wrappers or numbers\n")
 	b.WriteString("    -y, --yes              Skip confirmation\n")
 	b.WriteString("    -t, --no-tree          Skip tree preview\n")
+	b.WriteString("    --no-bundle            Force text clipboard; skip bundle file for ≥4KB output\n")
 	b.WriteString("    -v, --verbose          Debug info and timings\n")
 	b.WriteString("    --preview              See what would be copied\n")
 	b.WriteString("    --with-binaries        Include binary files in discovery\n")

@@ -258,7 +258,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			writeVerboseOutputMetrics(stderr, outputMetrics, emitStats, len(outputPlan.items), outputDuration)
 		}
 		if cfg.OutputMode == outputModeClipboard && !cfg.Quiet {
-			if err := writeClipboardSuccess(stderr, outputPlan, colors); err != nil {
+			if err := writeClipboardSuccess(stderr, outputPlan, emitStats, colors); err != nil {
 				return err
 			}
 		}
@@ -777,6 +777,8 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 			cfg.WithBinaries = true
 		case "-t", "--no-tree":
 			cfg.NoTree = true
+		case "--no-bundle":
+			cfg.NoBundle = true
 		case "--preview":
 			cfg.Preview = true
 		case "--internal-tree-payload":

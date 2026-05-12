@@ -139,7 +139,7 @@ func writeSummary(w io.Writer, report outputReport, colors colorPalette) error {
 	}, colors)
 }
 
-func writeClipboardSuccess(w io.Writer, plan outputPlan, colors colorPalette) error {
+func writeClipboardSuccess(w io.Writer, plan outputPlan, stats emitStats, colors colorPalette) error {
 	relPaths := plan.DistinctRelPaths()
 	if len(relPaths) == 0 {
 		return nil
@@ -147,6 +147,10 @@ func writeClipboardSuccess(w io.Writer, plan outputPlan, colors colorPalette) er
 	count, word := plan.SummaryCountWord()
 	first := relPaths[0]
 	last := relPaths[len(relPaths)-1]
+
+	if stats.SinkName == "bundle" {
+		return writeBundleSuccess(w, count, word, stats, colors)
+	}
 
 	switch {
 	case count == 1:
@@ -158,6 +162,37 @@ func writeClipboardSuccess(w io.Writer, plan outputPlan, colors colorPalette) er
 	default:
 		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s %s(%s ... %s)%s\n", colors.OK, colors.Reset, colors.Bold, count, word, colors.Reset, colors.OK, colors.Reset, colors.Dim, first, last, colors.Reset)
 		return err
+	}
+}
+
+func writeBundleSuccess(w io.Writer, count int, word string, stats emitStats, colors colorPalette) error {
+	size := humanByteSize(stats.PayloadBytes)
+	path := displayPath(stats.BundlePath)
+	_, err := fmt.Fprintf(w,
+		"\n%sBundled%s %s%d %s%s %s→%s %s%s%s %s(%s)%s\n%sPaste attaches a file — works in web UIs and file managers, not terminals.%s\n%sUse --no-bundle to copy text instead.%s\n",
+		colors.OK, colors.Reset,
+		colors.Bold, count, word, colors.Reset,
+		colors.OK, colors.Reset,
+		colors.Bold, path, colors.Reset,
+		colors.Dim, size, colors.Reset,
+		colors.Dim, colors.Reset,
+		colors.Dim, colors.Reset,
+	)
+	return err
+}
+
+func humanByteSize(n int64) string {
+	const (
+		kb = 1024
+		mb = 1024 * 1024
+	)
+	switch {
+	case n >= mb:
+		return fmt.Sprintf("%.1fMB", float64(n)/float64(mb))
+	case n >= kb:
+		return fmt.Sprintf("%dKB", n/kb)
+	default:
+		return fmt.Sprintf("%dB", n)
 	}
 }
 

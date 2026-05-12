@@ -4449,7 +4449,7 @@ func TestHelpTextIncludesShellParitySections(t *testing.T) {
 			t.Fatalf("expected short help to contain %q, got:\n%s", want, help)
 		}
 	}
-	for _, want := range []string{"Agent Reference", "OPERATIONS", "TARGETING", "FILTERING", "PIPELINE MODEL", "AUTHORIZATION", "OUTPUT FORMAT", "EXIT CODES", "COMMON ERRORS", "MODIFIER REFERENCE", displayPath(globalHissPath())} {
+	for _, want := range []string{"Agent Reference", "OPERATIONS", "TARGETING", "FILTERING", "PIPELINE MODEL", "AUTHORIZATION", "OUTPUT FORMAT", "CLIPBOARD DELIVERY", "EXIT CODES", "COMMON ERRORS", "MODIFIER REFERENCE", displayPath(globalHissPath())} {
 		if !strings.Contains(full, want) {
 			t.Fatalf("expected full help to contain %q, got:\n%s", want, full)
 		}
@@ -7760,6 +7760,17 @@ exit 91
 		t.Fatal("expected bare -y to still go through safe-target picker flow")
 	}
 	if got, want := strings.Join(args, "\n"), "-y\n."; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+
+	args, _, usedFzf, err = resolveStartupArgs(resolver, []string{"--no-bundle"})
+	if err != nil {
+		t.Fatalf("resolveStartupArgs returned error for bare --no-bundle: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected bare --no-bundle to go through safe-target picker flow")
+	}
+	if got, want := strings.Join(args, "\n"), "--no-bundle\n."; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }

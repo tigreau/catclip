@@ -66,7 +66,7 @@ func startupPreflightCommandSpec(args []string) (commandSpec, error) {
 		switch arg {
 		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
 			continue
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
 			continue
 		case "--then":
 			if err := appendCurrentScope(); err != nil {

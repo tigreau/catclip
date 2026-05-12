@@ -243,7 +243,7 @@ func isModifierBoundaryToken(arg string) bool {
 		"--changed-diff", "--staged-diff", "--unstaged-diff",
 		"--recent", "--lines",
 		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-		"--preview", "--with-binaries",
+		"--no-bundle", "--preview", "--with-binaries",
 		"-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
 		return true
 	}

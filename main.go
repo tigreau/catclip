@@ -433,6 +433,7 @@ type runConfig struct {
 	Raw              bool
 	Preview          bool
 	NoTree           bool
+	NoBundle         bool
 	TreePayload      bool
 	TreeTarget       string
 	TreeKind         string
@@ -853,7 +854,7 @@ func resolvedCommandGlobalFlags(rawArgs []string) []string {
 	out := make([]string, 0, 6)
 	for _, arg := range rawArgs {
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--preview", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 			out = append(out, arg)
 		}
 	}

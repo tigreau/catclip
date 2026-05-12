@@ -12,7 +12,11 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tigreau/catclip/fileclip"
 )
+
+var fileclipCopy = fileclip.Copy
 
 var (
 	fileCloseTag            = []byte("</file>\n\n")
@@ -25,6 +29,55 @@ type emitStats struct {
 	SinkFinalizeDuration  time.Duration
 	ClipboardWaitDuration time.Duration
 	SinkName              string
+	BundlePath            string
+}
+
+const bundleThreshold = 4096
+
+func bundleTempDir() string {
+	return filepath.Join(os.TempDir(), "catclip")
+}
+
+func bundleProjectName(workingDir string) string {
+	base := filepath.Base(workingDir)
+	if base == "." || base == string(filepath.Separator) || base == "" {
+		return "bundle"
+	}
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	name := strings.Trim(b.String(), "-")
+	if name == "" {
+		return "bundle"
+	}
+	if len(name) > 32 {
+		name = name[:32]
+	}
+	return name
+}
+
+func bundleTempPath(dir, projectName string, now time.Time) string {
+	stamp := now.Format("150405")
+	return filepath.Join(dir, fmt.Sprintf("%s-%s.txt", projectName, stamp))
+}
+
+func clearPriorBundles(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		_ = os.Remove(filepath.Join(dir, entry.Name()))
+	}
 }
 
 type countingWriter struct {
@@ -675,9 +728,36 @@ func withPayloadWriter(cfg runConfig, stdout io.Writer, colors colorPalette, fn 
 		}, nil
 	}
 
-	// Clipboard mode streams directly into the platform tool. That keeps the Go
-	// path closer to the shell's "generate once, send to sink" behavior and
-	// avoids buffering a second full copy of the payload in memory.
+	// Clipboard mode has two paths. With --no-bundle the user has opted out of
+	// bundle dispatch entirely, so we preserve the old behavior: stream the
+	// generator straight into the clipboard subprocess. Without --no-bundle we
+	// have to materialize the payload first because the bundle/text decision
+	// depends on its size.
+	if cfg.NoBundle {
+		return streamToTextClipboard(cfg, fn, colors, bufferSize)
+	}
+
+	var payloadBuf bytes.Buffer
+	counted := &countingWriter{w: &payloadBuf}
+	buffered := bufio.NewWriterSize(counted, bufferSize)
+	generateStarted := time.Now()
+	if err := fn(buffered); err != nil {
+		return emitStats{}, err
+	}
+	if err := buffered.Flush(); err != nil {
+		return emitStats{}, err
+	}
+	generateDuration := time.Since(generateStarted)
+	payload := payloadBuf.Bytes()
+
+	if len(payload) >= bundleThreshold {
+		return emitBundle(cfg, payload, generateDuration)
+	}
+
+	return emitBufferedToTextClipboard(cfg, payload, generateDuration, colors)
+}
+
+func streamToTextClipboard(cfg runConfig, fn func(io.Writer) error, colors colorPalette, bufferSize int) (emitStats, error) {
 	cmd, err := clipboardCommand(cfg.Platform, colors)
 	if err != nil {
 		return emitStats{}, err
@@ -728,6 +808,79 @@ func withPayloadWriter(cfg runConfig, stdout io.Writer, colors colorPalette, fn 
 		SinkFinalizeDuration:  finalizeDuration,
 		ClipboardWaitDuration: waitDuration,
 		SinkName:              filepath.Base(cmd.Path),
+	}, nil
+}
+
+func emitBufferedToTextClipboard(cfg runConfig, payload []byte, generateDuration time.Duration, colors colorPalette) (emitStats, error) {
+	cmd, err := clipboardCommand(cfg.Platform, colors)
+	if err != nil {
+		return emitStats{}, err
+	}
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return emitStats{}, err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return emitStats{}, err
+	}
+
+	finalizeStarted := time.Now()
+	_, writeErr := stdin.Write(payload)
+	closeErr := stdin.Close()
+	finalizeDuration := time.Since(finalizeStarted)
+	waitStarted := time.Now()
+	waitErr := waitClipboardCommand(cmd, cfg.Platform)
+	waitDuration := time.Since(waitStarted)
+
+	if writeErr != nil {
+		return emitStats{}, writeErr
+	}
+	if closeErr != nil {
+		return emitStats{}, closeErr
+	}
+	if waitErr != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return emitStats{}, fmt.Errorf("Error: clipboard command failed: %s", msg)
+		}
+		return emitStats{}, fmt.Errorf("Error: clipboard command failed: %w", waitErr)
+	}
+	return emitStats{
+		PayloadBytes:          int64(len(payload)),
+		GenerateDuration:      generateDuration,
+		SinkFinalizeDuration:  finalizeDuration,
+		ClipboardWaitDuration: waitDuration,
+		SinkName:              filepath.Base(cmd.Path),
+	}, nil
+}
+
+func emitBundle(cfg runConfig, payload []byte, generateDuration time.Duration) (emitStats, error) {
+	dir := bundleTempDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return emitStats{}, fmt.Errorf("Error: bundle directory: %w", err)
+	}
+	clearPriorBundles(dir)
+
+	finalizeStarted := time.Now()
+	tmpPath := bundleTempPath(dir, bundleProjectName(cfg.WorkingDir), time.Now())
+	if err := os.WriteFile(tmpPath, payload, 0600); err != nil {
+		return emitStats{}, fmt.Errorf("Error: bundle write: %w", err)
+	}
+	if err := fileclipCopy(tmpPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return emitStats{}, fmt.Errorf("Error: clipboard command failed: %w", err)
+	}
+	finalizeDuration := time.Since(finalizeStarted)
+
+	return emitStats{
+		PayloadBytes:         int64(len(payload)),
+		GenerateDuration:     generateDuration,
+		SinkFinalizeDuration: finalizeDuration,
+		SinkName:             "bundle",
+		BundlePath:           tmpPath,
 	}, nil
 }
 
