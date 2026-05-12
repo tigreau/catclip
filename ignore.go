@@ -2,18 +2,20 @@ package catclip
 
 import (
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
 
-const defaultHissContents = `# catclip ignore config — gitignore-inspired syntax
+const defaultHissContents = `# catclip ignore config — gitignore syntax (handed to ripgrep verbatim)
 #
-# test/test.js  → specific file in specific directory
-# *.test.js     → pattern, matches anywhere
-# test/         → directory (trailing slash)
-# test          → file named test
+# *.log          → pattern, matches anywhere
+# build/         → directory named "build", anywhere
+# secrets.yaml   → file named "secrets.yaml", anywhere
+# /config.json   → file at project root only (leading slash anchors)
+# src/index.js   → anchored: matches src/index.js, not foo/src/index.js
+# **/snap.png    → matches at any depth
+# !keep.log      → re-include after an earlier rule excluded it
 #
 # Edit with: catclip --hiss
 
@@ -47,9 +49,17 @@ credentials.json
 *.swp
 *.swo
 
-# Text-encoded assets (XML/JSON formats unlikely to be useful as clipboard content)
+# Text-encoded assets (XML/JSON/legacy formats unlikely to be useful as clipboard content)
 *.svg
 *.map
+*.xpm
+*.hex
+*.pbm
+*.ppm
+*.rtf
+*.inf
+*.eslintcache
+desktop.ini
 
 # IDEs & Editors
 .idea/
@@ -110,30 +120,6 @@ Cargo.lock
 go.sum
 `
 
-func loadIgnoreRules() ([]ignoreRule, error) {
-	path, err := ensureGlobalHiss()
-	if err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	return parseHiss(string(data))
-}
-
-func loadProjectGitignoreRules(workingDir string) ([]ignoreRule, error) {
-	path := filepath.Join(workingDir, ".gitignore")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return parseProjectGitignore(string(data))
-}
-
 func ensureGlobalHiss() (string, error) {
 	path := globalHissPath()
 	if _, err := os.Stat(path); err == nil {
@@ -162,114 +148,11 @@ func globalHissPath() string {
 	return filepath.Join(home, ".config", "catclip", ".hiss")
 }
 
-func parseHiss(contents string) ([]ignoreRule, error) {
-	lines := strings.Split(contents, "\n")
-	rules := make([]ignoreRule, 0, len(lines))
-	for _, line := range lines {
-		if idx := strings.Index(line, "#"); idx >= 0 {
-			line = line[:idx]
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasSuffix(line, "/") {
-			rules = append(rules, ignoreRule{
-				Raw:     line,
-				Kind:    ignoreRuleDir,
-				Pattern: strings.TrimSuffix(line, "/"),
-			})
-			continue
-		}
-		rules = append(rules, ignoreRule{
-			Raw:     line,
-			Kind:    ignoreRuleFile,
-			Pattern: line,
-		})
-	}
-	return rules, nil
-}
-
-func parseProjectGitignore(contents string) ([]ignoreRule, error) {
-	lines := strings.Split(contents, "\n")
-	rules := make([]ignoreRule, 0, len(lines))
-	for _, line := range lines {
-		if idx := strings.Index(line, "#"); idx >= 0 {
-			line = line[:idx]
-		}
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "!") {
-			// The local non-git fallback intentionally ignores negate rules for
-			// now. catclip only needs a conservative ignored-target model here.
-			continue
-		}
-		line = strings.TrimPrefix(line, "/")
-		if line == "" {
-			continue
-		}
-		rules = append(rules, makeIgnoreRule(line))
-	}
-	return rules, nil
-}
-
-// buildScopeMatcher compiles global ignore rules into the matcher used during
-// discovery and direct-target checks. Scope-level modifier stages are applied
-// later in evaluation order, not baked into discovery.
-func buildScopeMatcher(baseRules []ignoreRule, s executionScope) (scopeMatcher, error) {
-	rules := append([]ignoreRule(nil), baseRules...)
-
-	matcher := scopeMatcher{}
-	for _, rule := range rules {
-		switch rule.Kind {
-		case ignoreRuleFile:
-			compiled, err := compileGlob(rule.Pattern)
-			if err != nil {
-				return scopeMatcher{}, newUsageError("Error: invalid ignore glob %q.", rule.Raw)
-			}
-			matcher.ignoreFiles = append(matcher.ignoreFiles, compiledGlob{raw: rule.Raw, re: compiled})
-		case ignoreRuleDir:
-			compiled, err := compileDirRule(rule.Pattern)
-			if err != nil {
-				return scopeMatcher{}, newUsageError("Error: invalid ignore glob %q.", rule.Raw)
-			}
-			compiled.raw = rule.Raw
-			matcher.ignoreDirs = append(matcher.ignoreDirs, compiled)
-		}
-	}
-	return matcher, nil
-}
-
-func makeIgnoreRule(pattern string) ignoreRule {
-	if strings.HasSuffix(pattern, "/") {
-		return ignoreRule{Raw: pattern, Kind: ignoreRuleDir, Pattern: normalizeRulePattern(strings.TrimSuffix(pattern, "/"))}
-	}
-	return ignoreRule{Raw: pattern, Kind: ignoreRuleFile, Pattern: normalizeRulePattern(pattern)}
-}
-
+// compileGlob compiles a shell-style glob (used by --only/--exclude scope
+// stages) into a regexp. The translator keeps "*" matching across path
+// separators, mirroring the original Bash case semantics.
 func compileGlob(pattern string) (*regexp.Regexp, error) {
-	// Preserve the shell-style glob subset used by catclip matching:
-	// * ? and [...] . The translator keeps "*" matching across path separators,
-	// which is closer to the original Bash case semantics than filepath.Match.
 	return compileGlobWithStar(pattern, ".*")
-}
-
-func normalizeRulePattern(pattern string) string {
-	pattern = strings.ReplaceAll(pattern, "\\", "/")
-	pattern = strings.TrimPrefix(pattern, "./")
-	pattern = path.Clean(pattern)
-	if pattern == "." {
-		return ""
-	}
-	return pattern
-}
-
-func compileSegmentGlob(pattern string) (*regexp.Regexp, error) {
-	// Directory rules are matched segment-by-segment, so "*" and "?" must stay
-	// inside one path segment instead of spanning slashes.
-	return compileGlobWithStar(pattern, "[^/]*")
 }
 
 func compileGlobWithStar(pattern, star string) (*regexp.Regexp, error) {
@@ -308,97 +191,4 @@ func compileGlobWithStar(pattern, star string) (*regexp.Regexp, error) {
 	}
 	b.WriteString("$")
 	return regexp.Compile(b.String())
-}
-
-func compileDirRule(pattern string) (compiledDirRule, error) {
-	normalized := normalizeRulePattern(pattern)
-	if normalized == "" {
-		return compiledDirRule{}, newUsageError("Error: invalid empty directory glob.")
-	}
-
-	parts := strings.Split(normalized, "/")
-	segments := make([]*regexp.Regexp, 0, len(parts))
-	for _, part := range parts {
-		if part == "" || part == "." {
-			continue
-		}
-		compiled, err := compileSegmentGlob(part)
-		if err != nil {
-			return compiledDirRule{}, err
-		}
-		segments = append(segments, compiled)
-	}
-	if len(segments) == 0 {
-		return compiledDirRule{}, newUsageError("Error: invalid empty directory glob.")
-	}
-	return compiledDirRule{raw: pattern, segments: segments}, nil
-}
-
-func matchDirRule(relPath string, rule compiledDirRule) bool {
-	if relPath == "." || relPath == "" {
-		return false
-	}
-
-	parts := strings.Split(normalizeRelPath(relPath), "/")
-	if len(parts) < len(rule.segments) {
-		return false
-	}
-	for start := 0; start+len(rule.segments) <= len(parts); start++ {
-		matched := true
-		for i, segment := range rule.segments {
-			if !segment.MatchString(parts[start+i]) {
-				matched = false
-				break
-			}
-		}
-		if matched {
-			return true
-		}
-	}
-	return false
-}
-
-func (m scopeMatcher) fileIgnoredByFileRule(relPath string) (bool, string) {
-	basename := path.Base(relPath)
-	for _, rule := range m.ignoreFiles {
-		if rule.re.MatchString(basename) || rule.re.MatchString(relPath) {
-			return true, rule.raw
-		}
-	}
-	return false, ""
-}
-
-func (m scopeMatcher) dirRuleBlockingFile(relPath string) (bool, string) {
-	dirPart := path.Dir(relPath)
-	if dirPart == "." || dirPart == "" {
-		return false, ""
-	}
-	for _, rule := range m.ignoreDirs {
-		if matchDirRule(dirPart, rule) {
-			return true, rule.raw
-		}
-	}
-	return false, ""
-}
-
-func (m scopeMatcher) fileIgnored(relPath string) (bool, string) {
-	if ignored, rule := m.fileIgnoredByFileRule(relPath); ignored {
-		return true, rule
-	}
-	if ignored, rule := m.dirRuleBlockingFile(relPath); ignored {
-		return true, rule
-	}
-	return false, ""
-}
-
-func (m scopeMatcher) dirIgnored(relPath string) (bool, string) {
-	if relPath == "." || relPath == "" {
-		return false, ""
-	}
-	for _, rule := range m.ignoreDirs {
-		if matchDirRule(relPath, rule) {
-			return true, rule.raw
-		}
-	}
-	return false, ""
 }

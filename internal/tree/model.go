@@ -20,7 +20,6 @@ const (
 
 	TargetStateOK             = "ok"
 	TargetStateText           = "text"
-	TargetStateEmpty          = "empty"
 	TargetStateNoTextChildren = "no_text_children"
 	TargetStateNonText        = "non_text"
 )
@@ -52,7 +51,6 @@ type DocumentEntry struct {
 	ModeTag          string
 	TargetRoot       string
 	AllowedByInclude bool
-	BlockRule        string
 	BlockSource      string
 }
 
@@ -155,7 +153,7 @@ func NormalizeTargetKind(kind string) string {
 // NormalizeTargetState normalizes supported target states and rejects others.
 func NormalizeTargetState(state string) string {
 	switch strings.TrimSpace(state) {
-	case TargetStateOK, TargetStateText, TargetStateEmpty, TargetStateNoTextChildren, TargetStateNonText:
+	case TargetStateOK, TargetStateText, TargetStateNoTextChildren, TargetStateNonText:
 		return state
 	default:
 		return ""

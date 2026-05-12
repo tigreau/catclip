@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -38,12 +37,10 @@ type includedTargetSet struct {
 type scopeResolver struct {
 	cfg                  runConfig
 	gitCtx               gitContext
-	matcher              scopeMatcher
-	projectIgnore        scopeMatcher
-	useProjectIgnore     bool
 	allowFileSymlinks    bool
 	textFileCache        map[string]bool
-	useGitIgnore         bool
+	textFileSet          map[string]struct{}
+	textFileSetReady     bool
 	withBinaries         bool
 	includedTargets      includedTargetSet
 	wantedBasenames      map[string]struct{}
@@ -57,42 +54,25 @@ type scopeResolver struct {
 	visibleFilesReady    bool
 	visibleFileList      []fileEntry
 	visibleFileListReady bool
+	visibleAll           map[string]struct{}
+	visibleWithHiss      map[string]struct{}
+	visibleAllDirs       map[string]struct{}
+	visibleWithHissDirs  map[string]struct{}
+	ignoreSetsReady      bool
 }
 
-func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s executionScope, baseRules []ignoreRule, stderr io.Writer, colors colorPalette) ([]fileEntry, []diagnostic, []string, bool, error) {
+func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s executionScope, stderr io.Writer, colors colorPalette) ([]fileEntry, []diagnostic, []string, bool, error) {
 	mode := executionScopeOutputMode(s)
 
-	includeAll := includeTargetsContainWildcard(s.IncludedTargets)
-
-	var matcher scopeMatcher
-	if includeAll {
-		matcher = scopeMatcher{}
-	} else {
-		var err error
-		matcher, err = buildScopeMatcher(baseRules, s)
-		if err != nil {
-			return nil, nil, nil, false, err
-		}
-	}
-	projectIgnore, useProjectIgnore, err := buildProjectIgnoreMatcher(cfg.WorkingDir, gitCtx.Enabled)
-	if err != nil {
-		return nil, nil, nil, false, err
-	}
-	if includeAll {
-		useProjectIgnore = false
-	}
 	resolver := scopeResolver{
 		cfg:               cfg,
 		gitCtx:            gitCtx,
-		matcher:           matcher,
-		projectIgnore:     projectIgnore,
-		useProjectIgnore:  useProjectIgnore,
 		allowFileSymlinks: false,
-		useGitIgnore:      gitCtx.Enabled && !includeAll,
 		withBinaries:      cfg.WithBinaries,
 		includedTargets:   buildIncludedTargetSet(cfg.WorkingDir, s.IncludedTargets),
 		wantedBasenames:   collectWantedBasenames(s.Targets),
 	}
+	var err error
 
 	var diagnostics []diagnostic
 	var notices []string
@@ -137,15 +117,18 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 
 	entries = dedupeEntriesByPath(entries)
 
-	if gitCtx.Enabled {
-		entries, err = filterGitIgnoredEntries(gitCtx, entries)
-		if err != nil {
-			return nil, diagnostics, notices, hadSelectionCancel, err
-		}
-	}
-
 	if executionScopeHasGitSelection(s) && !gitCtx.Enabled {
-		diagnostics = append(diagnostics, diagnostic{message: "Warning: --changed/--staged/--unstaged/--untracked require a git repo."})
+		// Hard-fail this scope: the user requested a git-only selection
+		// without a git context. Emit an error-class diagnostic and drop
+		// entries so siblings of a --then chain can still proceed; the
+		// per-scope loop in cli.go converts this into exit 2 (single
+		// scope or all scopes unsatisfiable) or exit 1 (mixed success).
+		// See docs/versions/v0.5.0/reports/ACTIVE_BUG_git_selection_silently_dropped_no_git.md.
+		diagnostics = append(diagnostics, diagnostic{
+			message:              gitSelectionRequiresGitRepoMessage(),
+			isScopeUnsatisfiable: true,
+		})
+		return nil, diagnostics, dedupePreserveOrder(notices), hadSelectionCancel, nil
 	}
 
 	entries, err = applyScopeStages(&resolver, gitCtx, s, entries)
@@ -198,66 +181,82 @@ func buildIncludedTargetSet(workingDir string, targets []string) includedTargetS
 	return set
 }
 
-func buildProjectIgnoreMatcher(workingDir string, gitEnabled bool) (scopeMatcher, bool, error) {
-	if gitEnabled {
-		return scopeMatcher{}, false, nil
-	}
-	rules, err := loadProjectGitignoreRules(workingDir)
-	if err != nil {
-		return scopeMatcher{}, false, err
-	}
-	if len(rules) == 0 {
-		return scopeMatcher{}, false, nil
-	}
-	matcher, err := buildScopeMatcher(rules, executionScope{})
-	if err != nil {
-		return scopeMatcher{}, false, err
-	}
-	return matcher, true, nil
-}
-
-func (r *scopeResolver) ensureProjectIgnoreMatcher() error {
-	if r.useGitIgnore || r.useProjectIgnore || r.includedTargets.wildcard {
+// ensureIgnoreSets populates the cached rg-derived visible-file sets used
+// for ignore attribution. visibleAll respects .gitignore only; visibleWithHiss
+// layers the global .hiss on top. The dir maps are derived by walking the
+// path.Dir chain of each file. When --include '*' is active the caller
+// short-circuits without consulting either set.
+func (r *scopeResolver) ensureIgnoreSets() error {
+	if r.ignoreSetsReady {
 		return nil
 	}
-	matcher, ok, err := buildProjectIgnoreMatcher(r.cfg.WorkingDir, false)
+	visibleAll, visibleWithHiss, err := r.resolveIgnoreSets()
 	if err != nil {
 		return err
 	}
-	if ok {
-		r.projectIgnore = matcher
-		r.useProjectIgnore = true
-	}
+	r.visibleAll = visibleAll
+	r.visibleWithHiss = visibleWithHiss
+	r.visibleAllDirs = dirsContainingFiles(visibleAll)
+	r.visibleWithHissDirs = dirsContainingFiles(visibleWithHiss)
+	r.ignoreSetsReady = true
 	return nil
 }
 
-func (r *scopeResolver) projectDirIgnored(relPath string) (bool, string, error) {
-	if err := r.ensureProjectIgnoreMatcher(); err != nil {
-		return false, "", err
+// dirBlockedBy reports the ignore source blocking a directory's contents,
+// or nil if visible. When neither cached set covers the dir we probe rg
+// with --no-ignore: empty dirs return nothing (treated as not blocked),
+// while dirs whose descendants are all gitignored return paths. With
+// --include '*', the caller routes through the bypass path; here we
+// synthesize a block so callers that branch on block != nil pick that path.
+func (r *scopeResolver) dirBlockedBy(relPath string) (*blockInfo, error) {
+	if r.includedTargets.wildcard {
+		return &blockInfo{Source: ""}, nil
 	}
-	if !r.useProjectIgnore {
-		return false, "", nil
+	if relPath == "." || relPath == "" {
+		return nil, nil
 	}
-	if ignored, rule := r.projectIgnore.dirIgnored(relPath); ignored {
-		return true, rule, nil
+	if err := r.ensureIgnoreSets(); err != nil {
+		return nil, err
 	}
-	return false, "", nil
+	if _, ok := r.visibleWithHissDirs[relPath]; ok {
+		return nil, nil
+	}
+	if _, ok := r.visibleAllDirs[relPath]; ok {
+		return &blockInfo{Source: ".hiss"}, nil
+	}
+	paths, err := runRipgrepFiles(r.cfg.WorkingDir, ripgrepFileOptions{
+		NoIgnore: true,
+		Paths:    []string{relPath},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	return &blockInfo{Source: ".gitignore"}, nil
 }
 
-func (r *scopeResolver) projectFileIgnored(relPath string) (bool, string, error) {
-	if err := r.ensureProjectIgnoreMatcher(); err != nil {
-		return false, "", err
+// fileBlockedBy reports the ignore source blocking a specific file, or nil
+// if the file is visible. Wildcard --include synthesizes a block so callers
+// route the file through the bypass path uniformly with directories.
+func (r *scopeResolver) fileBlockedBy(relPath string) (*blockInfo, error) {
+	if relPath == "." || relPath == "" {
+		return nil, nil
 	}
-	if !r.useProjectIgnore {
-		return false, "", nil
+	if r.includedTargets.wildcard {
+		return &blockInfo{Source: ""}, nil
 	}
-	if ignored, rule := r.projectIgnore.fileIgnoredByFileRule(relPath); ignored {
-		return true, rule, nil
+	if err := r.ensureIgnoreSets(); err != nil {
+		return nil, err
 	}
-	if ignored, rule := r.projectIgnore.dirRuleBlockingFile(relPath); ignored {
-		return true, rule, nil
+	if _, ok := r.visibleWithHiss[relPath]; ok {
+		return nil, nil
 	}
-	return false, "", nil
+	if _, ok := r.visibleAll[relPath]; ok {
+		return &blockInfo{Source: ".hiss"}, nil
+	}
+	return &blockInfo{Source: ".gitignore"}, nil
 }
 
 func (r *scopeResolver) targetIncluded(target string) bool {
@@ -415,7 +414,7 @@ func (r *scopeResolver) canResolveScopedTargetWithoutPrompt(normalizedTarget str
 		return false, err
 	}
 	if blockedDir != nil {
-		discovered, err := discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.matcher, r.classifyTextFile, blockedDir, r.withBinaries)
+		discovered, err := discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.classifyTextFile, blockedDir)
 		if err != nil {
 			return false, err
 		}
@@ -493,7 +492,7 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 			return nil, diagnostics, notices, false, err
 		}
 		if blockedDir != nil {
-			discovered, err = discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.matcher, r.classifyTextFile, blockedDir, r.withBinaries)
+			discovered, err = discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.classifyTextFile, blockedDir)
 		} else {
 			var skipped []skippedMatch
 			discovered, skipped, err = r.resolveVisibleFilesByBasename(resolvedDir, baseName)
@@ -808,33 +807,15 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 
 	if info.IsDir() {
 		hasIncludes := len(r.includedTargets.exact) > 0
-		if ignored, rule := r.matcher.dirIgnored(relTarget); ignored {
-			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, rule, ".hiss", hasIncludes, colors), isError: true}, nil
-			}
-			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: rule, Source: ".hiss"}, r.withBinaries)
-			return withTargetRoot(files, relTarget), true, nil, err
-		}
-		projectIgnored, projectRule, err := r.projectDirIgnored(relTarget)
+		block, err := r.dirBlockedBy(relTarget)
 		if err != nil {
 			return nil, true, nil, err
 		}
-		if projectIgnored {
+		if block != nil {
 			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, projectRule, ".gitignore", hasIncludes, colors), isError: true}, nil
+				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, block.Source, hasIncludes, colors), isError: true}, nil
 			}
-			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: projectRule, Source: ".gitignore"}, r.withBinaries)
-			return withTargetRoot(files, relTarget), true, nil, err
-		}
-		gitIgnored, err := r.gitIgnored(relTarget)
-		if err != nil {
-			return nil, true, nil, err
-		}
-		if gitIgnored {
-			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, ".gitignore", ".gitignore", hasIncludes, colors), isError: true}, nil
-			}
-			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.matcher, r.classifyTextFile, &blockInfo{Rule: ".gitignore", Source: ".gitignore"}, r.withBinaries)
+			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.classifyTextFile, block)
 			return withTargetRoot(files, relTarget), true, nil, err
 		}
 		files, err := r.discoverVisibleFilesUnder(relTarget)
@@ -842,9 +823,6 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 	}
 
 	if !info.Mode().IsRegular() {
-		return nil, true, nil, nil
-	}
-	if !r.withBinaries && excludedTextLikeAsset(relTarget) {
 		return nil, true, nil, nil
 	}
 	text, err := r.classifyTextFile(relTarget, absTarget)
@@ -864,49 +842,46 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 		entry.TargetRoot = dir
 	}
 	hasIncludes := len(r.includedTargets.exact) > 0
-	if ignored, rule := r.matcher.fileIgnored(relTarget); ignored {
+	block, err := r.fileBlockedBy(relTarget)
+	if err != nil {
+		return nil, true, nil, err
+	}
+	if block != nil {
 		if !r.targetIncluded(relTarget) {
-			return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, rule, ".hiss", fromChained, hasIncludes, colors), isError: true}, nil
+			return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, block.Source, fromChained, hasIncludes, colors), isError: true}, nil
 		}
-		entry = withAllowedByInclude(entry, blockInfo{Rule: rule, Source: ".hiss"})
-	} else {
-		projectIgnored, projectRule, err := r.projectFileIgnored(relTarget)
-		if err != nil {
-			return nil, true, nil, err
-		}
-		if projectIgnored {
-			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, projectRule, ".gitignore", fromChained, hasIncludes, colors), isError: true}, nil
-			}
-			entry = withAllowedByInclude(entry, blockInfo{Rule: projectRule, Source: ".gitignore"})
-		} else {
-			gitIgnored, err := r.gitIgnored(relTarget)
-			if err != nil {
-				return nil, true, nil, err
-			}
-			if gitIgnored {
-				if !r.targetIncluded(relTarget) {
-					return nil, true, &diagnostic{message: ignoredFileMessage(relTarget, ".gitignore", ".gitignore", fromChained, hasIncludes, colors), isError: true}, nil
-				}
-				entry = withAllowedByInclude(entry, blockInfo{Rule: ".gitignore", Source: ".gitignore"})
-			}
-		}
+		entry = withAllowedByInclude(entry, *block)
 	}
 	return []fileEntry{entry}, true, nil, nil
 }
 
-func (r *scopeResolver) gitIgnored(relPath string) (bool, error) {
-	if relPath == "." || relPath == "" {
-		return false, nil
+
+// ensureTextFileSet pulls the rg-derived NUL-free file set for the resolver's
+// working directory from the process-level cache. The cache amortizes one rg
+// scan across every resolver in a catclip run; without it, each resolver
+// (current scope, ignored-target probe, etc.) would re-scan independently.
+func (r *scopeResolver) ensureTextFileSet() error {
+	if r.textFileSetReady {
+		return nil
 	}
-	if !r.useGitIgnore {
-		return false, nil
-	}
-	lines, err := runGitLines(r.gitCtx.Root, []string{r.gitCtx.toRepoPath(relPath)}, "check-ignore", "--stdin")
+	set, err := resolveTextFileSet(r.cfg.WorkingDir)
 	if err != nil {
-		return false, err
+		return err
 	}
-	return len(lines) > 0, nil
+	r.textFileSet = set
+	r.textFileSetReady = true
+	return nil
+}
+
+// isTextFromSet reports whether rel is in the rg-derived text-file set.
+// knownTextLikeFile short-circuits "obvious text by extension/basename" so
+// `--with-binaries` and known-text overrides still apply uniformly.
+func (r *scopeResolver) isTextFromSet(rel string) bool {
+	if r.withBinaries || knownTextLikeFile(rel) {
+		return true
+	}
+	_, ok := r.textFileSet[rel]
+	return ok
 }
 
 func (r *scopeResolver) classifyTextFile(relPath, absPath string) (bool, error) {
@@ -915,6 +890,28 @@ func (r *scopeResolver) classifyTextFile(relPath, absPath string) (bool, error) 
 	}
 	if knownTextLikeFile(relPath) {
 		return true, nil
+	}
+	// Consult the rg-derived NUL-free file set first. The set covers every
+	// candidate the discovery pipeline can see (rg runs with --no-ignore
+	// --hidden), is computed once per process, and is shared across every
+	// resolver in the run. Hitting the set replaces the per-file 8KB read
+	// in isProbablyTextFile and is the load-bearing perf win on large
+	// repos. Falling through to isProbablyTextFile only happens when the
+	// rg scan failed entirely (errRipgrepUnavailable, etc.).
+	rel := normalizeRelPath(relPath)
+	if rel != "" && rel != "." {
+		if err := r.ensureTextFileSet(); err == nil {
+			if _, ok := r.textFileSet[rel]; ok {
+				return true, nil
+			}
+			// rg covered the workdir but did not list this path → binary.
+			// Empty set indicates the rg scan returned nothing (workdir
+			// has no text files at all, or rg failed cleanly with exit 1);
+			// fall through to per-file detection in that case.
+			if len(r.textFileSet) > 0 {
+				return false, nil
+			}
+		}
 	}
 	if absPath == "" {
 		absPath = filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(relPath))
@@ -935,25 +932,7 @@ func (r *scopeResolver) classifyTextFile(relPath, absPath string) (bool, error) 
 }
 
 func (r *scopeResolver) blockInfoForDir(relPath string) (*blockInfo, error) {
-	if relPath == "." || relPath == "" {
-		return nil, nil
-	}
-	if ignored, rule := r.matcher.dirIgnored(relPath); ignored {
-		return &blockInfo{Rule: rule, Source: ".hiss"}, nil
-	}
-	if ignored, rule, err := r.projectDirIgnored(relPath); err != nil {
-		return nil, err
-	} else if ignored {
-		return &blockInfo{Rule: rule, Source: ".gitignore"}, nil
-	}
-	gitIgnored, err := r.gitIgnored(relPath)
-	if err != nil {
-		return nil, err
-	}
-	if gitIgnored {
-		return &blockInfo{Rule: ".gitignore", Source: ".gitignore"}, nil
-	}
-	return nil, nil
+	return r.dirBlockedBy(relPath)
 }
 
 func (r *scopeResolver) resolveChainedDir(relPath string, stderr io.Writer, colors colorPalette) (string, error) {
@@ -1535,86 +1514,89 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 	if r.ignoredTargetsOk {
 		return append([]targetMatch(nil), r.ignoredTargets...), nil
 	}
-	if err := r.ensureProjectIgnoreMatcher(); err != nil {
-		return nil, err
-	}
 
 	rgPaths, err := runRipgrepFiles(r.cfg.WorkingDir, ripgrepFileOptions{NoIgnore: true})
 	if err != nil {
 		return nil, err
 	}
-
-	dirSet, err := collectAllDirPaths(r.cfg.WorkingDir)
-	if err != nil {
+	if err := r.ensureTextFileSet(); err != nil {
 		return nil, err
 	}
+
 	filePaths := make([]string, 0, len(rgPaths))
-	dirHasChild := make(map[string]bool, len(dirSet))
-	dirHasText := make(map[string]bool, len(dirSet))
+	dirSet := make(map[string]struct{}, len(rgPaths)/2)
+	dirHasText := make(map[string]bool, len(rgPaths)/2)
 	for _, rel := range rgPaths {
 		rel = normalizeRelPath(rel)
 		if rel == "" || rel == "." {
 			continue
 		}
-		parent := normalizeRelPath(path.Dir(rel))
-		if parent != "" && parent != "." {
-			dirHasChild[parent] = true
+		for d := normalizeRelPath(path.Dir(rel)); d != "" && d != "."; d = normalizeRelPath(path.Dir(d)) {
+			dirSet[d] = struct{}{}
 		}
 
-		if !r.withBinaries && excludedTextLikeAsset(rel) {
+		if !r.isTextFromSet(rel) {
 			continue
 		}
-		text, err := r.classifyTextFile(rel, "")
-		if err != nil {
-			return nil, err
-		}
-		if text {
-			filePaths = append(filePaths, rel)
-			for d := parent; d != "" && d != "."; d = normalizeRelPath(path.Dir(d)) {
-				dirHasText[d] = true
-			}
+		filePaths = append(filePaths, rel)
+		for d := normalizeRelPath(path.Dir(rel)); d != "" && d != "."; d = normalizeRelPath(path.Dir(d)) {
+			dirHasText[d] = true
 		}
 	}
 
 	dirPaths := make([]string, 0, len(dirSet))
 	for d := range dirSet {
 		dirPaths = append(dirPaths, d)
-		if parent := normalizeRelPath(path.Dir(d)); parent != "" && parent != "." {
-			dirHasChild[parent] = true
-		}
 	}
 	sort.Strings(dirPaths)
 
-	relPaths := make([]string, 0, len(dirPaths)+len(filePaths))
-	relPaths = append(relPaths, dirPaths...)
-	relPaths = append(relPaths, filePaths...)
-
-	gitIgnored := map[string]gitIgnoreMatch{}
-	if r.useGitIgnore {
-		gitIgnored, err = collectGitIgnoreMatchesForRelPaths(r.gitCtx, relPaths)
+	// Source attribution via two rg-derived visible-file sets:
+	//   visibleAll      = excluded by .gitignore only
+	//   visibleWithHiss = excluded by .gitignore + .hiss overlay
+	// A path missing from visibleWithHiss but present in visibleAll is
+	// blocked by .hiss only. Missing from visibleAll → blocked by
+	// .gitignore (precedence). When --include '*', skip the diff: nothing
+	// counts as ignored.
+	ignoredFiles := map[string]string{}
+	ignoredDirs := map[string]string{}
+	if !r.includedTargets.wildcard {
+		visibleAll, visibleWithHiss, err := r.resolveIgnoreSets()
 		if err != nil {
 			return nil, err
 		}
+		visibleAllDirs := dirsContainingFiles(visibleAll)
+		visibleWithHissDirs := dirsContainingFiles(visibleWithHiss)
+
+		for _, rel := range filePaths {
+			if _, ok := visibleWithHiss[rel]; ok {
+				continue
+			}
+			if _, ok := visibleAll[rel]; ok {
+				ignoredFiles[rel] = ".hiss"
+			} else {
+				ignoredFiles[rel] = ".gitignore"
+			}
+		}
+		for _, rel := range dirPaths {
+			if _, ok := visibleWithHissDirs[rel]; ok {
+				continue
+			}
+			if _, ok := visibleAllDirs[rel]; ok {
+				ignoredDirs[rel] = ".hiss"
+			} else {
+				ignoredDirs[rel] = ".gitignore"
+			}
+		}
 	}
 
-	targets := make([]targetMatch, 0, len(dirPaths)+len(filePaths))
+	targets := make([]targetMatch, 0, len(ignoredDirs)+len(ignoredFiles))
 	for _, rel := range dirPaths {
 		match := targetMatch{Path: rel, Kind: "dir", State: treeTargetStateOK}
-		if ignored, _ := r.matcher.dirIgnored(rel); ignored {
+		if source, ok := ignoredDirs[rel]; ok {
 			match.Ignored = true
-			match.IgnoreSource = ".hiss"
-		} else if _, ok := gitIgnored[rel]; ok {
-			match.Ignored = true
-			match.IgnoreSource = ".gitignore"
-		} else if ignored, _, err := r.projectDirIgnored(rel); err != nil {
-			return nil, err
-		} else if ignored {
-			match.Ignored = true
-			match.IgnoreSource = ".gitignore"
+			match.IgnoreSource = source
 		}
-		if !dirHasChild[rel] {
-			match.State = treeTargetStateEmpty
-		} else if !dirHasText[rel] {
+		if !dirHasText[rel] {
 			match.State = treeTargetStateNoTextChildren
 		}
 		if match.Ignored {
@@ -1623,17 +1605,9 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 	}
 	for _, rel := range filePaths {
 		match := targetMatch{Path: rel, Kind: "file", State: treeTargetStateText}
-		if ignored, _ := r.matcher.fileIgnored(rel); ignored {
+		if source, ok := ignoredFiles[rel]; ok {
 			match.Ignored = true
-			match.IgnoreSource = ".hiss"
-		} else if _, ok := gitIgnored[rel]; ok {
-			match.Ignored = true
-			match.IgnoreSource = ".gitignore"
-		} else if ignored, _, err := r.projectFileIgnored(rel); err != nil {
-			return nil, err
-		} else if ignored {
-			match.Ignored = true
-			match.IgnoreSource = ".gitignore"
+			match.IgnoreSource = source
 		}
 		if match.Ignored {
 			targets = append(targets, match)
@@ -1655,34 +1629,29 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 	return append([]targetMatch(nil), targets...), nil
 }
 
-func collectAllDirPaths(root string) (map[string]struct{}, error) {
-	dirs := make(map[string]struct{}, 256)
-	var walk func(absDir, relDir string) error
-	walk = func(absDir, relDir string) error {
-		entries, err := os.ReadDir(absDir)
-		if err != nil {
-			return nil
-		}
-		for _, entry := range entries {
-			if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
-				continue
-			}
-			name := entry.Name()
-			childRel := name
-			if relDir != "" {
-				childRel = relDir + "/" + name
-			}
-			dirs[childRel] = struct{}{}
-			if err := walk(filepath.Join(absDir, name), childRel); err != nil {
-				return err
-			}
-		}
-		return nil
+// readableHissPath returns the global .hiss path, materializing the
+// default contents if the file doesn't exist yet. A broken or unreadable
+// .hiss is fatal: rg's --ignore-file silently warns and continues if the
+// file can't be opened, which would let users sit with a degraded ignore
+// view they didn't realize was happening. Bubble the error up instead.
+func readableHissPath() (string, error) {
+	hissPath, err := ensureGlobalHiss()
+	if err != nil {
+		return "", fmt.Errorf("hiss: %w", err)
 	}
-	if err := walk(root, ""); err != nil {
-		return nil, err
+	info, err := os.Stat(hissPath)
+	if err != nil {
+		return "", fmt.Errorf("hiss: stat %s: %w", hissPath, err)
 	}
-	return dirs, nil
+	if info.IsDir() {
+		return "", fmt.Errorf("hiss: %s is a directory, expected a file", hissPath)
+	}
+	f, err := os.Open(hissPath)
+	if err != nil {
+		return "", fmt.Errorf("hiss: open %s: %w", hissPath, err)
+	}
+	f.Close()
+	return hissPath, nil
 }
 
 func (r *scopeResolver) resolveTargetMatches(matches []targetMatch, colors colorPalette) ([]fileEntry, error) {
@@ -1706,21 +1675,10 @@ func (r *scopeResolver) dirVisible(relPath string) (bool, error) {
 	if relPath == "." || relPath == "" {
 		return true, nil
 	}
-	if ignored, _ := r.matcher.dirIgnored(relPath); ignored {
-		return false, nil
-	}
-	if ignored, _, err := r.projectDirIgnored(relPath); err != nil {
-		return false, err
-	} else if ignored {
-		return false, nil
-	}
-	if !r.useGitIgnore {
-		return true, nil
-	}
-	if err := r.buildVisibleDirIndex(); err != nil {
+	if err := r.ensureIgnoreSets(); err != nil {
 		return false, err
 	}
-	_, ok := r.visibleDirs.set[relPath]
+	_, ok := r.visibleWithHissDirs[relPath]
 	return ok, nil
 }
 
@@ -1763,9 +1721,6 @@ func (r *scopeResolver) buildVisibleFileIndex() error {
 	if r.visibleFilesReady {
 		return nil
 	}
-	if err := r.ensureProjectIgnoreMatcher(); err != nil {
-		return err
-	}
 	if len(r.wantedBasenames) == 0 {
 		r.visibleFiles = visibleFileIndex{
 			byBase:        map[string][]fileEntry{},
@@ -1782,17 +1737,14 @@ func (r *scopeResolver) buildVisibleFileIndex() error {
 	if err != nil {
 		return err
 	}
-	candidates, err := r.textEntriesFromRipgrepPaths(paths, false)
+	candidates, err := r.textEntriesFromRipgrepPaths(paths)
 	if err != nil {
 		return err
 	}
 
-	gitIgnored := map[string]gitIgnoreMatch{}
-	if r.useGitIgnore {
-		gitIgnored, err = collectGitIgnoreMatches(r.gitCtx, candidates)
-		if err != nil {
-			return err
-		}
+	visibleAll, visibleWithHiss, err := r.resolveIgnoreSets()
+	if err != nil {
+		return err
 	}
 	sort.Slice(candidates, func(i, j int) bool {
 		return candidates[i].RelPath < candidates[j].RelPath
@@ -1802,66 +1754,24 @@ func (r *scopeResolver) buildVisibleFileIndex() error {
 	skippedByBase := make(map[string][]skippedMatch, len(candidates))
 	for _, entry := range candidates {
 		base := path.Base(entry.RelPath)
-		if ignored, rule := r.matcher.dirRuleBlockingFile(entry.RelPath); ignored {
-			skippedByBase[base] = append(skippedByBase[base], skippedMatch{
-				RelPath:     entry.RelPath,
-				BlockRule:   rule,
-				BlockSource: ".hiss",
-				BlockKind:   "directory",
-			})
+		if r.includedTargets.wildcard {
+			entry.GitVisible = true
+			byBase[base] = append(byBase[base], entry)
 			continue
 		}
-		if r.useProjectIgnore {
-			if ignored, rule := r.projectIgnore.dirRuleBlockingFile(entry.RelPath); ignored {
-				skippedByBase[base] = append(skippedByBase[base], skippedMatch{
-					RelPath:     entry.RelPath,
-					BlockRule:   rule,
-					BlockSource: ".gitignore",
-					BlockKind:   "directory",
-				})
-				continue
-			}
-		}
-		if gitMatch, ok := gitIgnored[entry.RelPath]; ok && gitMatch.DirRule {
-			skippedByBase[base] = append(skippedByBase[base], skippedMatch{
-				RelPath:     entry.RelPath,
-				BlockRule:   gitMatch.Rule,
-				BlockSource: ".gitignore",
-				BlockKind:   "directory",
-			})
+		if _, ok := visibleWithHiss[entry.RelPath]; ok {
+			entry.GitVisible = true
+			byBase[base] = append(byBase[base], entry)
 			continue
 		}
-		if ignored, rule := r.matcher.fileIgnoredByFileRule(entry.RelPath); ignored {
-			skippedByBase[base] = append(skippedByBase[base], skippedMatch{
-				RelPath:     entry.RelPath,
-				BlockRule:   rule,
-				BlockSource: ".hiss",
-				BlockKind:   "file",
-			})
-			continue
+		source := ".gitignore"
+		if _, ok := visibleAll[entry.RelPath]; ok {
+			source = ".hiss"
 		}
-		if r.useProjectIgnore {
-			if ignored, rule := r.projectIgnore.fileIgnoredByFileRule(entry.RelPath); ignored {
-				skippedByBase[base] = append(skippedByBase[base], skippedMatch{
-					RelPath:     entry.RelPath,
-					BlockRule:   rule,
-					BlockSource: ".gitignore",
-					BlockKind:   "file",
-				})
-				continue
-			}
-		}
-		if gitMatch, ok := gitIgnored[entry.RelPath]; ok {
-			skippedByBase[base] = append(skippedByBase[base], skippedMatch{
-				RelPath:     entry.RelPath,
-				BlockRule:   gitMatch.Rule,
-				BlockSource: ".gitignore",
-				BlockKind:   "file",
-			})
-			continue
-		}
-		entry.GitVisible = true
-		byBase[base] = append(byBase[base], entry)
+		skippedByBase[base] = append(skippedByBase[base], skippedMatch{
+			RelPath:     entry.RelPath,
+			BlockSource: source,
+		})
 	}
 
 	r.visibleFiles = visibleFileIndex{
@@ -1872,15 +1782,42 @@ func (r *scopeResolver) buildVisibleFileIndex() error {
 	return nil
 }
 
+// resolveIgnoreSets fetches the cached visible-file sets used for
+// rg-driven ignore attribution: visibleAll respects .gitignore only;
+// visibleWithHiss layers the global .hiss on top. When --include '*' is
+// active the caller short-circuits without consulting either set.
+func (r *scopeResolver) resolveIgnoreSets() (map[string]struct{}, map[string]struct{}, error) {
+	visibleAll, err := resolveVisibleFileSet(r.cfg.WorkingDir, "")
+	if err != nil {
+		return nil, nil, err
+	}
+	visibleWithHiss := visibleAll
+	hissPath, err := readableHissPath()
+	if err != nil {
+		return nil, nil, err
+	}
+	if hissPath != "" {
+		visibleWithHiss, err = resolveVisibleFileSet(r.cfg.WorkingDir, hissPath)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	return visibleAll, visibleWithHiss, nil
+}
+
 func (r *scopeResolver) buildVisibleFileList() error {
 	if r.visibleFileListReady {
 		return nil
 	}
-	paths, err := runRipgrepFiles(r.cfg.WorkingDir, ripgrepFileOptions{NoIgnore: !r.useGitIgnore})
+	hissPath, err := readableHissPath()
 	if err != nil {
 		return err
 	}
-	entries, err := r.textEntriesFromRipgrepPaths(paths, true)
+	paths, err := runRipgrepFiles(r.cfg.WorkingDir, ripgrepFileOptions{HissPath: hissPath})
+	if err != nil {
+		return err
+	}
+	entries, err := r.textEntriesFromRipgrepPaths(paths)
 	if err != nil {
 		return err
 	}
@@ -1893,8 +1830,8 @@ func (r *scopeResolver) buildVisibleFileList() error {
 	return nil
 }
 
-func (r *scopeResolver) textEntriesFromRipgrepPaths(relPaths []string, applyIgnore bool) ([]fileEntry, error) {
-	if err := r.ensureProjectIgnoreMatcher(); err != nil {
+func (r *scopeResolver) textEntriesFromRipgrepPaths(relPaths []string) ([]fileEntry, error) {
+	if err := r.ensureTextFileSet(); err != nil {
 		return nil, err
 	}
 	entries := make([]fileEntry, 0, len(relPaths))
@@ -1903,25 +1840,7 @@ func (r *scopeResolver) textEntriesFromRipgrepPaths(relPaths []string, applyIgno
 		if rel == "" || rel == "." || coveredBySelection(rel, r.visibleDirs.symlinkDirs) {
 			continue
 		}
-		if applyIgnore {
-			if ignored, _ := r.matcher.fileIgnored(rel); ignored {
-				continue
-			}
-			if r.useProjectIgnore {
-				if ignored, _ := r.projectIgnore.fileIgnored(rel); ignored {
-					continue
-				}
-			}
-		}
-		if !r.withBinaries && excludedTextLikeAsset(rel) {
-			continue
-		}
-
-		text, err := r.classifyTextFile(rel, "")
-		if err != nil {
-			return nil, err
-		}
-		if !text {
+		if !r.isTextFromSet(rel) {
 			continue
 		}
 
@@ -1932,9 +1851,11 @@ func (r *scopeResolver) textEntriesFromRipgrepPaths(relPaths []string, applyIgno
 
 func (r *scopeResolver) discoverVisibleFilesUnder(rootRel string) ([]fileEntry, error) {
 	rootRel = normalizeRelPath(rootRel)
-	opts := ripgrepFileOptions{
-		NoIgnore: !r.useGitIgnore,
+	hissPath, err := readableHissPath()
+	if err != nil {
+		return nil, err
 	}
+	opts := ripgrepFileOptions{HissPath: hissPath}
 	if rootRel != "." && rootRel != "" {
 		opts.Paths = []string{rootRel}
 	}
@@ -1942,7 +1863,7 @@ func (r *scopeResolver) discoverVisibleFilesUnder(rootRel string) ([]fileEntry, 
 	if err != nil {
 		return nil, err
 	}
-	entries, err := r.textEntriesFromRipgrepPaths(paths, true)
+	entries, err := r.textEntriesFromRipgrepPaths(paths)
 	if err != nil {
 		return nil, err
 	}
@@ -2002,107 +1923,6 @@ func (r *scopeResolver) lookupVisibleFilesByExactBasename(baseName string) ([]fi
 	return clone.resolveVisibleFilesByBasename(".", baseName)
 }
 
-func collectGitIgnoredPaths(gitCtx gitContext, entries []fileEntry) (map[string]struct{}, error) {
-	if !gitCtx.Enabled || len(entries) == 0 {
-		return nil, nil
-	}
-
-	repoPaths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		repoPaths = append(repoPaths, gitCtx.toRepoPath(entry.RelPath))
-	}
-
-	ignoredRepoPaths, err := runGitLines(gitCtx.Root, repoPaths, "check-ignore", "--stdin")
-	if err != nil {
-		return nil, err
-	}
-	ignored := make(map[string]struct{}, len(ignoredRepoPaths))
-	for _, repoPath := range ignoredRepoPaths {
-		workPath := gitCtx.toWorkPath(repoPath)
-		if workPath == "" {
-			workPath = normalizeRelPath(repoPath)
-		}
-		ignored[normalizeRelPath(workPath)] = struct{}{}
-	}
-	return ignored, nil
-}
-
-func collectGitIgnoreMatches(gitCtx gitContext, entries []fileEntry) (map[string]gitIgnoreMatch, error) {
-	if len(entries) == 0 {
-		return nil, nil
-	}
-
-	relPaths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		relPaths = append(relPaths, entry.RelPath)
-	}
-	return collectGitIgnoreMatchesForRelPaths(gitCtx, relPaths)
-}
-
-func collectGitIgnoreMatchesForRelPaths(gitCtx gitContext, relPaths []string) (map[string]gitIgnoreMatch, error) {
-	if !gitCtx.Enabled || len(relPaths) == 0 {
-		return nil, nil
-	}
-
-	repoPaths := make([]string, 0, len(relPaths))
-	seen := make(map[string]struct{}, len(relPaths))
-	for _, relPath := range relPaths {
-		relPath = normalizeRelPath(relPath)
-		if relPath == "" || relPath == "." {
-			continue
-		}
-		repoPath := gitCtx.toRepoPath(relPath)
-		if _, ok := seen[repoPath]; ok {
-			continue
-		}
-		seen[repoPath] = struct{}{}
-		repoPaths = append(repoPaths, repoPath)
-	}
-	if len(repoPaths) == 0 {
-		return nil, nil
-	}
-
-	cmd := exec.Command("git", "check-ignore", "-v", "--stdin")
-	cmd.Dir = gitCtx.Root
-	cmd.Stdin = strings.NewReader(strings.Join(repoPaths, "\n") + "\n")
-	out, err := cmd.Output()
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return nil, nil
-		}
-		return nil, err
-	}
-	text := strings.TrimSpace(string(out))
-	if text == "" {
-		return nil, nil
-	}
-
-	matches := make(map[string]gitIgnoreMatch)
-	for _, line := range strings.Split(text, "\n") {
-		parts := strings.SplitN(line, "\t", 2)
-		if len(parts) != 2 {
-			continue
-		}
-		meta := parts[0]
-		repoPath := normalizeRelPath(parts[1])
-		workPath := gitCtx.toWorkPath(repoPath)
-		if workPath == "" {
-			workPath = repoPath
-		}
-
-		metaParts := strings.SplitN(meta, ":", 3)
-		if len(metaParts) != 3 {
-			continue
-		}
-		rule := metaParts[2]
-		matches[normalizeRelPath(workPath)] = gitIgnoreMatch{
-			Rule:    rule,
-			DirRule: strings.HasSuffix(rule, "/"),
-		}
-	}
-	return matches, nil
-}
-
 func (r *scopeResolver) fuzzySearchDirs(baseRel, needle string) ([]string, error) {
 	if err := r.buildVisibleDirIndex(); err != nil {
 		return nil, err
@@ -2157,7 +1977,7 @@ func (r *scopeResolver) fuzzySearchFilesUnder(baseRel, needle string, rootBypass
 	}
 
 	rootAbs := filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(baseRel))
-	entries, err := discoverFilesUnder(r.cfg.WorkingDir, rootAbs, baseRel, r.matcher, r.classifyTextFile, rootBypass, r.withBinaries)
+	entries, err := discoverFilesUnder(r.cfg.WorkingDir, rootAbs, baseRel, r.classifyTextFile, rootBypass)
 	if err != nil {
 		return nil, err
 	}
@@ -2765,26 +2585,26 @@ func targetNotFoundWarning(target string, scopeIndex int, colors colorPalette) s
 		colors.Dim, colors.Reset)
 }
 
-func ignoredDirMessage(relTarget, rule, source string, includesActive bool, colors colorPalette) string {
+func ignoredDirMessage(relTarget, source string, includesActive bool, colors colorPalette) string {
 	if includesActive {
-		return fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
-			colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
+		return fmt.Sprintf("\n%sError: %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+			colors.Err, singleQuoted(relTarget), source, colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
 			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
 	}
-	return fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
-		colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
+	return fmt.Sprintf("\n%sError: %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+		colors.Err, singleQuoted(relTarget), source, colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
 }
 
-func ignoredFileMessage(relTarget, rule, source string, fromChained, includesActive bool, colors colorPalette) string {
+func ignoredFileMessage(relTarget, source string, fromChained, includesActive bool, colors colorPalette) string {
 	if includesActive {
-		message := fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s",
-			colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
+		message := fmt.Sprintf("\n%sError: %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s",
+			colors.Err, singleQuoted(relTarget), source, colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset)
 		if fromChained {
@@ -2793,8 +2613,8 @@ func ignoredFileMessage(relTarget, rule, source string, fromChained, includesAct
 		return message + fmt.Sprintf("\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
 			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
 	}
-	message := fmt.Sprintf("\n%sError: %s is ignored by rule %s in %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
-		colors.Err, singleQuoted(relTarget), singleQuoted(rule), source, colors.Reset,
+	message := fmt.Sprintf("\n%sError: %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
+		colors.Err, singleQuoted(relTarget), source, colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset)
 	if fromChained {
@@ -2845,7 +2665,6 @@ func prefersDirectFileLookup(target string) bool {
 
 func withAllowedByInclude(entry fileEntry, block blockInfo) fileEntry {
 	entry.AllowedByInclude = true
-	entry.BlockRule = block.Rule
 	entry.BlockSource = block.Source
 	return entry
 }
@@ -2901,11 +2720,7 @@ func formatSkippedMatchesWarning(matches []skippedMatch) []string {
 	}
 	lines := []string{fmt.Sprintf("Warning: %d %s skipped by ignore rules:", len(matches), label)}
 	for _, match := range matches {
-		rule := match.BlockRule
-		if rule == "" {
-			rule = match.BlockSource
-		}
-		lines = append(lines, fmt.Sprintf("  %s  [%s]", match.RelPath, rule))
+		lines = append(lines, fmt.Sprintf("  %s  [%s]", match.RelPath, match.BlockSource))
 	}
 	return []string{strings.Join(lines, "\n")}
 }

@@ -15,7 +15,8 @@ const (
 )
 
 func themedFzfRequest(req picker.Request) picker.Request {
-	req.ColorSpecs = fzfColorSpecs(activeColorPalette(), req.PreviewCommand != "")
+	hasPreview := req.PreviewCommand != "" || req.PreviewWindow != ""
+	req.ColorSpecs = fzfColorSpecs(activeColorPalette(), hasPreview)
 	return req
 }
 

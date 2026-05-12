@@ -25,14 +25,9 @@ func resolvedCurrentScopeViewForConfig(cfg runConfig) (resolvedScopeView, error)
 	}
 
 	gitCtx := detectGitContext(cfg.WorkingDir)
-	baseRules, err := loadIgnoreRules()
-	if err != nil {
-		return resolvedScopeView{}, err
-	}
-
 	scopeIndex := len(scopeSpecs) - 1
 	currentScope := executionScopeFromCommandScopeSpec(scopeSpecs[scopeIndex])
-	entries, _, _, _, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, baseRules, io.Discard, colorPalette{})
+	entries, _, _, _, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
 	if err != nil {
 		return resolvedScopeView{}, err
 	}

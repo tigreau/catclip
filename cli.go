@@ -64,11 +64,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		colors := activeColorPalette()
 		started := time.Now()
 		gitCtx := detectGitContext(cfg.WorkingDir)
-		baseRules, err := loadIgnoreRules()
-		if err != nil {
-			return err
-		}
-		if proceed, err := warnDirectoryPatternSemantics(cfg, baseRules, stderr, colors); err != nil {
+		if proceed, err := warnDirectoryPatternSemantics(cfg, stderr, colors); err != nil {
 			return err
 		} else if !proceed {
 			return nil
@@ -96,7 +92,7 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		for i, scopeSpec := range commandScopes {
 			scopeStarted := time.Now()
 			s := executionScopeFromCommandScopeSpec(scopeSpec)
-			entries, scopeDiagnostics, scopeNotices, scopeSelectionCancel, err := evaluateScope(cfg, gitCtx, i, s, baseRules, stderr, colors)
+			entries, scopeDiagnostics, scopeNotices, scopeSelectionCancel, err := evaluateScope(cfg, gitCtx, i, s, stderr, colors)
 			if err != nil {
 				discoverySpinnerStop()
 				return err
@@ -114,28 +110,20 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			hadSelectionCancel = hadSelectionCancel || scopeSelectionCancel
 		}
 		discoverySpinnerStop()
-		usePathsOutput := commandScopesUsePathsStage(commandScopes)
-		var outputPlan outputPlan
-		if usePathsOutput {
-			outputPlan, err = prepareSectionedOutputPlan(gitCtx, evaluatedScopes, commandScopesUseRecentStage(commandScopes))
-			if err != nil {
-				return err
-			}
-		} else {
-			if commandScopesUseRecentStage(commandScopes) {
-				allEntries = dedupeEntriesByPathPreserveOrder(allEntries)
-			} else {
-				allEntries = dedupeEntriesByPath(allEntries)
-			}
-			outputPlan, err = prepareOutputPlan(gitCtx, allEntries)
-			if err != nil {
-				return err
-			}
+		outputPlan, err := buildOutputPlanForCfg(cfg, gitCtx, evaluatedScopes, allEntries)
+		if err != nil {
+			return err
 		}
 		if cfg.TreePayload {
 			hadErrorDiagnostic := false
 			hadTargetNotFound := false
+			hadScopeUnsatisfiable := false
 			for _, diag := range diagnostics {
+				if diag.isScopeUnsatisfiable {
+					hadScopeUnsatisfiable = true
+					fmt.Fprintln(stderr, diag.message)
+					continue
+				}
 				if diag.isTargetNotFound {
 					hadTargetNotFound = true
 					fmt.Fprintln(stderr, diag.message)
@@ -150,32 +138,28 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			if hadErrorDiagnostic {
 				return newExitError(1, "")
 			}
-			if len(outputPlan.items) == 0 {
-				doc, ok := buildEmptyTreeDocument(cfg)
-				if !ok {
+			reportStarted := time.Now()
+			err := encodeTreePayloadFromPlan(stdout, cfg, gitCtx, outputPlan, notices)
+			if err != nil {
+				if errors.Is(err, errTreePayloadEmptyNoTarget) {
 					if err := writeNoFilesMatchedMessage(cfg, stderr, colors, hadSelectionCancel); err != nil {
 						return err
 					}
+					if hadScopeUnsatisfiable {
+						return newExitError(2, "")
+					}
 					return newExitError(1, "")
 				}
-				if err := encodeTreePayload(stdout, doc); err != nil {
-					return err
-				}
-				if hadTargetNotFound {
-					return newExitError(1, "")
-				}
-				return nil
-			}
-			reportStarted := time.Now()
-			report, err := buildOutputReportForPlan(cfg, gitCtx, outputPlan, dedupePreserveOrder(notices))
-			if err != nil {
 				return err
 			}
 			if cfg.Verbose {
 				fmt.Fprintf(stderr, "[verbose] report: %s\n", formatDuration(time.Since(reportStarted)))
 			}
-			if err := encodeTreePayload(stdout, buildTreeDocumentFromPreview(cfg, outputPlan, report)); err != nil {
-				return err
+			if hadScopeUnsatisfiable {
+				if len(outputPlan.items) == 0 {
+					return newExitError(2, "")
+				}
+				return newExitError(1, "")
 			}
 			if hadTargetNotFound {
 				return newExitError(1, "")
@@ -183,12 +167,16 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			return nil
 		}
 		hadTargetNotFound := false
+		hadScopeUnsatisfiable := false
 		for _, diag := range diagnostics {
-			if diag.isError || diag.isTargetNotFound || !cfg.Quiet {
+			if diag.isError || diag.isTargetNotFound || diag.isScopeUnsatisfiable || !cfg.Quiet {
 				fmt.Fprintln(stderr, diag.message)
 			}
 			if diag.isTargetNotFound {
 				hadTargetNotFound = true
+			}
+			if diag.isScopeUnsatisfiable {
+				hadScopeUnsatisfiable = true
 			}
 		}
 		if len(outputPlan.items) == 0 {
@@ -199,6 +187,9 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			}
 			if err := writeNoFilesMatchedMessage(cfg, stderr, colors, hadSelectionCancel); err != nil {
 				return err
+			}
+			if hadScopeUnsatisfiable {
+				return newExitError(2, "")
 			}
 			return newExitError(1, "")
 		}
@@ -219,6 +210,9 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 			if cfg.Verbose {
 				fmt.Fprintf(stderr, "[verbose] preview: %s\n", formatDuration(time.Since(renderStarted)))
 				fmt.Fprintf(stderr, "[verbose] total: %s\n", formatDuration(time.Since(started)))
+			}
+			if hadScopeUnsatisfiable {
+				return newExitError(1, "")
 			}
 			if hadTargetNotFound {
 				return newExitError(1, "")
@@ -270,6 +264,9 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		}
 		if cfg.Verbose {
 			fmt.Fprintf(stderr, "[verbose] total: %s\n", formatDuration(time.Since(started)))
+		}
+		if hadScopeUnsatisfiable {
+			return newExitError(1, "")
 		}
 		if hadTargetNotFound {
 			return newExitError(1, "")
@@ -1141,7 +1138,7 @@ func readNormalizedStdinPaths(stdin io.Reader) ([]string, error) {
 	return paths, nil
 }
 
-func warnDirectoryPatternSemantics(cfg runConfig, baseRules []ignoreRule, stderr io.Writer, colors colorPalette) (bool, error) {
+func warnDirectoryPatternSemantics(cfg runConfig, stderr io.Writer, colors colorPalette) (bool, error) {
 	return true, nil
 }
 

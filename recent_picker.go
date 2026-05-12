@@ -56,12 +56,7 @@ func startupRecentPickerEntries(currentArgs []string) ([]fileEntry, error) {
 	currentScope := executionScopeFromCommandScopeSpec(scopeSpecs[scopeIndex])
 
 	gitCtx := detectGitContext(cfg.WorkingDir)
-	baseRules, err := loadIgnoreRules()
-	if err != nil {
-		return nil, err
-	}
-
-	entries, _, _, _, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, baseRules, io.Discard, colorPalette{})
+	entries, _, _, _, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
 	if err != nil {
 		return nil, err
 	}

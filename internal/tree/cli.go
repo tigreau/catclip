@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
@@ -42,6 +43,7 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 		previewTheme string
 		maxLines     int
 		showVer      bool
+		inputFile    string
 	)
 
 	fs := flag.NewFlagSet("catclip-tree", flag.ContinueOnError)
@@ -55,6 +57,7 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 	fs.StringVar(&previewTheme, "preview-theme", "", "internal preview theme")
 	fs.IntVar(&maxLines, "max-lines", 0, "maximum rendered lines for file preview mode (0 = unlimited)")
 	fs.BoolVar(&showVer, "version", false, "show version")
+	fs.StringVar(&inputFile, "input-file", "", "read payload from PATH instead of stdin")
 	fs.Usage = func() {
 		_, _ = io.WriteString(stderr, helpText(version))
 	}
@@ -107,7 +110,17 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 		return err
 	}
 
-	doc, err := DecodePayload(stdin)
+	payload := stdin
+	if inputFile != "" {
+		f, err := os.Open(inputFile)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		payload = f
+	}
+
+	doc, err := DecodePayload(payload)
 	if err != nil {
 		if opts.Bare && errors.Is(err, ErrEmptyPayload) {
 			return renderBareEmptyPreview(stdout, colors)
@@ -152,6 +165,7 @@ func helpText(version string) string {
 	b.WriteString("  --tokens          Show token estimate in the summary\n")
 	b.WriteString("  --color MODE      auto, always, or never\n")
 	b.WriteString("  --max-lines N     Maximum lines in file preview mode (0 = unlimited)\n")
+	b.WriteString("  --input-file PATH Read payload from PATH instead of stdin\n")
 	b.WriteString("  --version         Show version\n")
 	b.WriteString("  -h, --help        Show this help\n")
 	return b.String()

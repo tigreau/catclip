@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -190,25 +192,6 @@ func TestRunCLIBareEmptyPayloadShowsFriendlyMessage(t *testing.T) {
 	}
 }
 
-func TestRunCLIBareRendersEmptyDirectoryTargetState(t *testing.T) {
-	payload := strings.Join([]string{
-		`{"type":"meta","version":1,"mode":"tree"}`,
-		`{"type":"target","path":"src/cache","kind":"dir","state":"empty"}`,
-		"",
-	}, "\n")
-
-	stdout, _, err := runCLIForTest(t, []string{"--bare"}, payload)
-	if err != nil {
-		t.Fatalf("RunCLI returned error: %v", err)
-	}
-	if !strings.Contains(stdout, "cache/") {
-		t.Fatalf("expected bare empty directory label, got:\n%s", stdout)
-	}
-	if !strings.Contains(stdout, "empty directory") {
-		t.Fatalf("expected empty directory state, got:\n%s", stdout)
-	}
-}
-
 func TestRunCLIBareRendersNoTextDirectoryTargetState(t *testing.T) {
 	payload := strings.Join([]string{
 		`{"type":"meta","version":1,"mode":"tree"}`,
@@ -232,5 +215,40 @@ func TestRunCLIRichEmptyPayloadStillErrors(t *testing.T) {
 	_, _, err := runCLIForTest(t, nil, "")
 	if !errors.Is(err, ErrEmptyPayload) {
 		t.Fatalf("expected empty tree payload error, got: %v", err)
+	}
+}
+
+func TestRunCLIInputFileMatchesStdin(t *testing.T) {
+	payload := strings.Join([]string{
+		`{"type":"meta","version":1,"mode":"tree","root":"src/components"}`,
+		`{"type":"entry","path":"src/components/Editor/Editor.tsx","kind":"file","size":73216,"git":"M"}`,
+		`{"type":"entry","path":"src/components/Editor/Toolbar.tsx","kind":"file","size":3276}`,
+		`{"type":"summary","count":2,"bytes":76492,"human_size":"74.74KB","tokens":19123,"file_word":"files"}`,
+		"",
+	}, "\n")
+
+	stdinOut, _, err := runCLIForTest(t, nil, payload)
+	if err != nil {
+		t.Fatalf("stdin RunCLI returned error: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "payload.json")
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatalf("write payload file: %v", err)
+	}
+
+	fileOut, _, err := runCLIForTest(t, []string{"--input-file", path}, "")
+	if err != nil {
+		t.Fatalf("--input-file RunCLI returned error: %v", err)
+	}
+	if stdinOut != fileOut {
+		t.Fatalf("--input-file output diverges from stdin output:\nstdin:\n%s\nfile:\n%s", stdinOut, fileOut)
+	}
+}
+
+func TestRunCLIInputFileMissingReturnsError(t *testing.T) {
+	_, _, err := runCLIForTest(t, []string{"--input-file", filepath.Join(t.TempDir(), "nope.json")}, "")
+	if err == nil {
+		t.Fatal("expected error for missing --input-file path, got nil")
 	}
 }

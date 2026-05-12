@@ -2,8 +2,6 @@ package catclip
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -45,19 +43,17 @@ func TestRunInternalTreePayloadOutputsStructuredPreview(t *testing.T) {
 	}
 }
 
-func TestRunInternalTreePayloadOutputsStructuredEmptyDirectoryState(t *testing.T) {
+func TestRunInternalTreePayloadOutputsStructuredNoTextChildrenDirectoryState(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		".gitignore": "blocked/\n",
+		".gitignore":  "blocked/\n",
+		"blocked/bin": "\x00\x01\x02",
 	})
-	if err := os.MkdirAll(filepath.Join(project, "blocked"), 0o755); err != nil {
-		t.Fatalf("MkdirAll blocked: %v", err)
-	}
 
 	cfg := parseInProject(t, project, []string{
 		"--internal-tree-payload",
 		"--internal-tree-target", "blocked",
 		"--internal-tree-kind", "dir",
-		"--internal-tree-state", "empty",
+		"--internal-tree-state", "no_text_children",
 		"blocked",
 		"--include", "blocked",
 	})
@@ -72,8 +68,8 @@ func TestRunInternalTreePayloadOutputsStructuredEmptyDirectoryState(t *testing.T
 	if err != nil {
 		t.Fatalf("decodeTreePayload returned error: %v", err)
 	}
-	if doc.Target == nil || doc.Target.Path != "blocked" || doc.Target.Kind != treeTargetKindDir || doc.Target.State != treeTargetStateEmpty {
-		t.Fatalf("payload target = %#v, want blocked dir empty", doc.Target)
+	if doc.Target == nil || doc.Target.Path != "blocked" || doc.Target.Kind != treeTargetKindDir || doc.Target.State != treeTargetStateNoTextChildren {
+		t.Fatalf("payload target = %#v, want blocked dir no_text_children", doc.Target)
 	}
 	if len(doc.Entries) != 0 {
 		t.Fatalf("payload entries = %d, want 0", len(doc.Entries))

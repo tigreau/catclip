@@ -2,6 +2,7 @@ package catclip
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -1884,7 +1885,7 @@ func TestRunIncludeGlobPatternErrors(t *testing.T) {
 func TestRunWithBinariesIncludesBinaryFiles(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":    "console.log('ok')\n",
-		"assets/icon.png": "\x89PNG\r\n\x1a\n fake png data",
+		"assets/icon.png": "\x89PNG\r\n\x1a\n\x00\x00\x00fake png data",
 		"data/dump.bin":   "\x00\x01\x02binary data",
 	})
 
@@ -1909,7 +1910,7 @@ func TestRunWithBinariesIncludesBinaryFiles(t *testing.T) {
 func TestRunWithBinariesNotSetExcludesBinaryFiles(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":    "console.log('ok')\n",
-		"assets/icon.png": "\x89PNG\r\n\x1a\n fake png data",
+		"assets/icon.png": "\x89PNG\r\n\x1a\n\x00\x00\x00fake png data",
 	})
 
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", ".", "--paths"})
@@ -2064,7 +2065,7 @@ func TestRunExcludeFromStdinMatchesExactPathsWithoutPrefixMatch(t *testing.T) {
 	}
 }
 
-func TestRunMatchesMultiSegmentDirectoryRulesAsContiguousPathFragments(t *testing.T) {
+func TestRunMatchesMultiSegmentDirectoryRulesWithGitignoreAnchoring(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"config/catclip/.hiss": "foo/bar/\n",
 		"foo/bar/hidden.ts":    "hidden\n",
@@ -2081,8 +2082,11 @@ func TestRunMatchesMultiSegmentDirectoryRulesAsContiguousPathFragments(t *testin
 	}
 
 	out := stdout.String()
-	if strings.Contains(out, "foo/bar/hidden.ts") || strings.Contains(out, "qux/foo/bar/deep.ts") {
-		t.Fatalf("expected foo/bar/ to match as a contiguous directory fragment, got:\n%s", out)
+	if strings.Contains(out, "foo/bar/hidden.ts") {
+		t.Fatalf("expected root-anchored foo/bar/ to be ignored, got:\n%s", out)
+	}
+	if !strings.Contains(out, "qux/foo/bar/deep.ts") {
+		t.Fatalf("expected nested qux/foo/bar/ to remain visible (gitignore anchors mid-pattern slashes to root), got:\n%s", out)
 	}
 	if !strings.Contains(out, "foo/baz/keep.ts") || !strings.Contains(out, "foo/barista/live.ts") {
 		t.Fatalf("expected unrelated paths to remain visible, got:\n%s", out)
@@ -2623,18 +2627,9 @@ func TestAllIgnoredTargetsIncludesIgnoredEntries(t *testing.T) {
 	})
 
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "."})
-	baseRules, err := loadIgnoreRules()
-	if err != nil {
-		t.Fatalf("loadIgnoreRules returned error: %v", err)
-	}
-	matcher, err := buildScopeMatcher(baseRules, executionScope{})
-	if err != nil {
-		t.Fatalf("buildScopeMatcher returned error: %v", err)
-	}
 
 	resolver := scopeResolver{
 		cfg:               cfg,
-		matcher:           matcher,
 		allowFileSymlinks: false,
 	}
 
@@ -2665,7 +2660,7 @@ func TestAllIgnoredTargetsIncludesIgnoredEntries(t *testing.T) {
 	}
 }
 
-func TestAllIgnoredTargetsTracksEmptyAndNoTextDirectoryState(t *testing.T) {
+func TestAllIgnoredTargetsTracksNoTextDirectoryState(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		".gitignore":       "blocked-empty/\nblocked-binary/\n",
 		"src/app.ts":       "export const app = true\n",
@@ -2677,21 +2672,11 @@ func TestAllIgnoredTargetsTracksEmptyAndNoTextDirectoryState(t *testing.T) {
 	initGitRepo(t, project)
 
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "."})
-	baseRules, err := loadIgnoreRules()
-	if err != nil {
-		t.Fatalf("loadIgnoreRules returned error: %v", err)
-	}
-	matcher, err := buildScopeMatcher(baseRules, executionScope{})
-	if err != nil {
-		t.Fatalf("buildScopeMatcher returned error: %v", err)
-	}
 
 	resolver := scopeResolver{
 		cfg:               cfg,
 		gitCtx:            detectGitContext(project),
-		matcher:           matcher,
 		allowFileSymlinks: false,
-		useGitIgnore:      true,
 	}
 
 	targets, err := resolver.allIgnoredTargets()
@@ -2704,8 +2689,8 @@ func TestAllIgnoredTargetsTracksEmptyAndNoTextDirectoryState(t *testing.T) {
 		lookup[target.Path] = target
 	}
 
-	if got, ok := lookup["blocked-empty"]; !ok || got.State != treeTargetStateEmpty {
-		t.Fatalf("expected blocked-empty to be marked empty, got %#v (present=%v)", got, ok)
+	if got, ok := lookup["blocked-empty"]; ok {
+		t.Fatalf("expected truly empty directory to be invisible (rg emits no files for it), got %#v", got)
 	}
 	if got, ok := lookup["blocked-binary"]; !ok || got.State != treeTargetStateNoTextChildren {
 		t.Fatalf("expected blocked-binary to be marked no_text_children, got %#v (present=%v)", got, ok)
@@ -2720,21 +2705,11 @@ func TestAllIgnoredTargetsIncludesGitignoreEntriesWithoutGitRepo(t *testing.T) {
 	})
 
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "."})
-	baseRules, err := loadIgnoreRules()
-	if err != nil {
-		t.Fatalf("loadIgnoreRules returned error: %v", err)
-	}
-	matcher, err := buildScopeMatcher(baseRules, executionScope{})
-	if err != nil {
-		t.Fatalf("buildScopeMatcher returned error: %v", err)
-	}
 
 	resolver := scopeResolver{
 		cfg:               cfg,
 		gitCtx:            detectGitContext(project),
-		matcher:           matcher,
 		allowFileSymlinks: false,
-		useGitIgnore:      false,
 	}
 
 	targets, err := resolver.allIgnoredTargets()
@@ -2753,6 +2728,188 @@ func TestAllIgnoredTargetsIncludesGitignoreEntriesWithoutGitRepo(t *testing.T) {
 	if got, ok := lookup["blocked/a.ts"]; !ok || !got.Ignored || got.IgnoreSource != ".gitignore" || got.Kind != "file" {
 		t.Fatalf("expected blocked file to appear as ignored .gitignore entry outside git repo, got %#v (present=%v)", got, ok)
 	}
+}
+
+func TestHasScopedIgnoredTargetsStreamingShallowGitignore(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":   "blocked/\n",
+		"blocked/a.ts": "export const blocked = true\n",
+		"src/main.ts":  "export const main = true\n",
+	})
+	hissPath := mustHissPath(t)
+
+	got, err := hasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"."}, hissPath)
+	if err != nil {
+		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
+	}
+	if !got {
+		t.Fatalf("expected true for shallow gitignored dir under root scope, got false")
+	}
+}
+
+func TestHasScopedIgnoredTargetsStreamingNoIgnores(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":  "export const main = true\n",
+		"src/lib/a.ts": "export const a = true\n",
+	})
+	hissPath := mustHissPath(t)
+
+	got, err := hasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"."}, hissPath)
+	if err != nil {
+		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
+	}
+	if got {
+		t.Fatalf("expected false when scope has no ignored entries, got true")
+	}
+}
+
+func TestHasScopedIgnoredTargetsStreamingMidDepthIgnore(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":     "a/b/secret.txt\n",
+		"a/b/visible.ts": "export const visible = true\n",
+		"a/b/secret.txt": "secret\n",
+	})
+	hissPath := mustHissPath(t)
+
+	got, err := hasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"."}, hissPath)
+	if err != nil {
+		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
+	}
+	if !got {
+		t.Fatalf("expected true for ignored file at depth 3 from root scope, got false")
+	}
+}
+
+func TestHasScopedIgnoredTargetsStreamingDeepIgnoreStillSurfaces(t *testing.T) {
+	// Ignored entry deeper than the previously-rejected B = 3 bound.
+	// Must still return true: false negatives at any depth would hide
+	// `--include` from the modifier menu for menu-only users.
+	project := setupTestProject(t, map[string]string{
+		".gitignore":                   "packages/foo/bar/dist/\n",
+		"packages/foo/bar/src/main.ts": "export const main = true\n",
+		"packages/foo/bar/dist/out.js": "module.exports = {}\n",
+	})
+	hissPath := mustHissPath(t)
+
+	got, err := hasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"."}, hissPath)
+	if err != nil {
+		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
+	}
+	if !got {
+		t.Fatalf("expected true for deep ignored entry (no false negatives at any depth), got false")
+	}
+}
+
+func TestHasScopedIgnoredTargetsStreamingDeepTargetWithIgnoredChild(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"a/b/c/file.ts":      "export const a = true\n",
+		"a/b/c/d/.gitignore": "blocked.ts\n",
+		"a/b/c/d/blocked.ts": "blocked\n",
+		"a/b/c/d/visible.ts": "visible\n",
+	})
+	hissPath := mustHissPath(t)
+
+	got, err := hasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"a/b/c/d"}, hissPath)
+	if err != nil {
+		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
+	}
+	if !got {
+		t.Fatalf("expected true for ignored child under a deep scope target, got false")
+	}
+}
+
+func TestHasScopedIgnoredTargetsStreamingHardErrorPropagates(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "export const main = true\n",
+	})
+	hissPath := mustHissPath(t)
+
+	got, err := hasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"does-not-exist"}, hissPath)
+	if err == nil {
+		t.Fatalf("expected error for non-existent scope target, got nil (got=%v)", got)
+	}
+	if got {
+		t.Fatalf("expected (false, err) on hard rg error, got (true, %v)", err)
+	}
+}
+
+// TestCollectChangedRepoPathsUnionEqualsAllThree pins the equality the
+// modifier-menu Phase 2 dedupe relies on: `staged ∪ unstaged ∪ untracked`
+// is the same set as the old `executionScope{}` call (which spawned a
+// fourth `git diff HEAD` subprocess). If anyone changes one of the
+// individual collectors, this test fails before the menu silently
+// disagrees with itself.
+func TestCollectChangedRepoPathsUnionEqualsAllThree(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"committed.ts": "export const c = 1\n",
+		"modified.ts":  "export const m = 1\n",
+	})
+	initGitRepo(t, project)
+
+	writeProjectFile(t, project, "modified.ts", "export const m = 2\n")
+	runGit(t, project, "add", "modified.ts")
+	writeProjectFile(t, project, "modified.ts", "export const m = 3\n")
+	writeProjectFile(t, project, "untracked.ts", "export const u = 1\n")
+
+	gitCtx := detectGitContext(project)
+	if !gitCtx.Enabled {
+		t.Fatal("expected git context to be enabled for the project")
+	}
+
+	staged, err := collectChangedRepoPaths(gitCtx, executionScope{Staged: true})
+	if err != nil {
+		t.Fatalf("staged: %v", err)
+	}
+	unstaged, err := collectChangedRepoPaths(gitCtx, executionScope{Unstaged: true})
+	if err != nil {
+		t.Fatalf("unstaged: %v", err)
+	}
+	untracked, err := collectChangedRepoPaths(gitCtx, executionScope{Untracked: true})
+	if err != nil {
+		t.Fatalf("untracked: %v", err)
+	}
+	all, err := collectChangedRepoPaths(gitCtx, executionScope{})
+	if err != nil {
+		t.Fatalf("all-three: %v", err)
+	}
+
+	want := map[string]struct{}{}
+	for _, p := range staged {
+		want[p] = struct{}{}
+	}
+	for _, p := range unstaged {
+		want[p] = struct{}{}
+	}
+	for _, p := range untracked {
+		want[p] = struct{}{}
+	}
+	got := map[string]struct{}{}
+	for _, p := range all {
+		got[p] = struct{}{}
+	}
+
+	if len(want) != len(got) {
+		t.Fatalf("union mismatch: staged∪unstaged∪untracked=%v all-three=%v", staged, all)
+	}
+	for p := range want {
+		if _, ok := got[p]; !ok {
+			t.Fatalf("path %q in union but missing from all-three (staged=%v unstaged=%v untracked=%v all=%v)", p, staged, unstaged, untracked, all)
+		}
+	}
+	for p := range got {
+		if _, ok := want[p]; !ok {
+			t.Fatalf("path %q in all-three but missing from union (staged=%v unstaged=%v untracked=%v all=%v)", p, staged, unstaged, untracked, all)
+		}
+	}
+}
+
+func mustHissPath(t *testing.T) string {
+	t.Helper()
+	path, err := readableHissPath()
+	if err != nil {
+		t.Fatalf("readableHissPath: %v", err)
+	}
+	return path
 }
 
 func TestRunScopedFzfFileSearchStaysWithinResolvedDirectory(t *testing.T) {
@@ -2934,8 +3091,8 @@ func TestRunBroadDiscoverySkipsTextLikeImageAssets(t *testing.T) {
 		"assets/logo.svg":     "<svg><text>logo</text></svg>\n",
 		"assets/icon.xpm":     "/* XPM */\nstatic char * icon[] = {};\n",
 		"assets/readme.txt":   "plain text\n",
-		"assets/avatar.jpg":   "not really a jpg\n",
-		"assets/custom.woff2": "not really a font\n",
+		"assets/avatar.jpg":   "\xff\xd8\xff\xe0\x00\x10JFIF",
+		"assets/custom.woff2": "wOF2\x00\x01\x00\x00",
 	})
 
 	cfg := parseInProject(t, project, []string{"--print", "."})
@@ -2961,7 +3118,7 @@ func TestRunBroadDiscoverySkipsShellBlockedTextEncodedFormats(t *testing.T) {
 		"assets/logo.pbm":            "P1\n# comment\n2 2\n0 1\n1 0\n",
 		"assets/logo.ppm":            "P3\n# comment\n1 1\n255\n0 0 0\n",
 		"cfg/good.bconf":             "key = value\n",
-		"cfg/bad-nonprintable.bconf": "bad\x01value\n",
+		"cfg/bad-nonprintable.bconf": "bad\x00value\n",
 	})
 
 	cfg := parseInProject(t, project, []string{"--print", "."})
@@ -3005,10 +3162,10 @@ func TestRunDirectTargetSkipsShellBlockedTextEncodedFormats(t *testing.T) {
 	}
 }
 
-func TestRunTreatsSingleDotDotfilesAsExtensionlessForParity(t *testing.T) {
+func TestRunBlocksDefaultHissNoiseAndSurfacesUnderInclude(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		".eslintcache": "{}",
-		"src/app.ts":   "export const ok = true\n",
+		"assets/icon.xpm": "/* XPM */\nstatic char * icon[] = {};\n",
+		"src/app.ts":      "export const ok = true\n",
 	})
 
 	cfg := parseInProject(t, project, []string{"--print", "."})
@@ -3019,8 +3176,22 @@ func TestRunTreatsSingleDotDotfilesAsExtensionlessForParity(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, `<file path=".eslintcache">`) {
-		t.Fatalf("expected .eslintcache to match shell parity, got:\n%s", out)
+	if strings.Contains(out, "assets/icon.xpm") {
+		t.Fatalf("expected default .hiss to block *.xpm, got:\n%s", out)
+	}
+	if !strings.Contains(out, "src/app.ts") {
+		t.Fatalf("expected text files to still appear, got:\n%s", out)
+	}
+
+	cfg = parseInProject(t, project, []string{"--print", ".", "--include", "assets/icon.xpm"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	out = stdout.String()
+	if !strings.Contains(out, `<file path="assets/icon.xpm">`) {
+		t.Fatalf("expected --include to surface .hiss-blocked *.xpm, got:\n%s", out)
 	}
 }
 
@@ -3530,48 +3701,24 @@ func TestRunVerboseShowsUnavailableGitFileStateMetricsWhenRepoHasNoTrackedFiles(
 	}
 }
 
-func TestFilterGitIgnoredEntriesSkipsGitVisibleEntries(t *testing.T) {
-	entries := []fileEntry{{
-		RelPath:    "src/main.ts",
-		GitVisible: true,
-	}}
-
-	out, err := filterGitIgnoredEntries(gitContext{
-		Enabled: true,
-		Root:    "/definitely/missing/repo",
-	}, entries)
-	if err != nil {
-		t.Fatalf("expected git-visible entries to bypass git check-ignore, got error: %v", err)
-	}
-	if len(out) != 1 || out[0].RelPath != "src/main.ts" {
-		t.Fatalf("unexpected filtered entries: %#v", out)
-	}
-}
-
 func TestBuildVisibleDirIndexDerivesDirsFromVisibleFiles(t *testing.T) {
 
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":           "export const main = true\n",
 		"pkg/util/helpers.txt":  "helpers\n",
 		"notes/README.md":       "# notes\n",
-		"images/logo.png":       "not really png\n",
-		"docs-empty/.keep.bin":  "binary",
-		"nested-empty/icon.png": "not really png\n",
+		"images/logo.png":       "\x89PNG\r\n\x1a\n\x00\x00\x00",
+		"docs-empty/.keep.bin":  "\x00binary",
+		"nested-empty/icon.png": "\x89PNG\r\n\x1a\n\x00\x00\x00",
 	})
 	if err := os.MkdirAll(filepath.Join(project, "truly-empty"), 0o755); err != nil {
 		t.Fatalf("mkdir truly-empty: %v", err)
-	}
-
-	matcher, err := buildScopeMatcher(nil, executionScope{})
-	if err != nil {
-		t.Fatalf("buildScopeMatcher: %v", err)
 	}
 
 	resolver := scopeResolver{
 		cfg: runConfig{
 			WorkingDir: project,
 		},
-		matcher: matcher,
 	}
 
 	if err := resolver.buildVisibleDirIndex(); err != nil {
@@ -3774,7 +3921,7 @@ func TestRunChangedSelectors(t *testing.T) {
 	}
 }
 
-func TestRunChangedWarnsOutsideGit(t *testing.T) {
+func TestRunChangedHardFailsOutsideGit(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('ok')\n",
 	})
@@ -3782,15 +3929,84 @@ func TestRunChangedWarnsOutsideGit(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"--print", ".", "--changed"})
 
 	var stdout, stderr bytes.Buffer
-	if err := run(cfg, &stdout, &stderr); err != nil {
-		t.Fatalf("run returned error: %v", err)
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected non-zero exit when --changed is used outside a git repo")
 	}
+	var exitErr exitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected exitError, got %T: %v", err, err)
+	}
+	if exitErr.code != 2 {
+		t.Fatalf("expected exit code 2 for single-scope unsatisfiable, got %d", exitErr.code)
+	}
+	if !strings.Contains(stderr.String(), "require a git repository") {
+		t.Fatalf("expected git-required error on stderr, got:\n%s", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "src/main.ts") {
+		t.Fatalf("expected no file output when git selection is unsatisfiable, got:\n%s", stdout.String())
+	}
+}
 
-	if !strings.Contains(stderr.String(), "--changed/--staged/--unstaged/--untracked require a git repo") {
-		t.Fatalf("expected git warning, got %q", stderr.String())
+func TestRunChangedDiffHardFailsOutsideGit(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('ok')\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", ".", "--changed-diff"})
+
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected non-zero exit when --changed-diff is used outside a git repo")
 	}
-	if !strings.Contains(stdout.String(), "src/main.ts") {
-		t.Fatalf("expected file to remain in output outside git repo, got:\n%s", stdout.String())
+	var exitErr exitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected exitError, got %T: %v", err, err)
+	}
+	if exitErr.code != 2 {
+		t.Fatalf("expected exit code 2 for single-scope unsatisfiable, got %d", exitErr.code)
+	}
+	if !strings.Contains(stderr.String(), "require a git repository") {
+		t.Fatalf("expected git-required error on stderr, got:\n%s", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "[diff only]") || strings.Contains(stdout.String(), "src/main.ts") {
+		t.Fatalf("expected no file output when --changed-diff is unsatisfiable, got:\n%s", stdout.String())
+	}
+}
+
+func TestRunChangedWithThenLetsSiblingScopeProceed(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('ok')\n",
+		"docs/intro.md": "hello\n",
+	})
+
+	cfg := parseInProject(t, project, []string{
+		"--quiet", "--print",
+		"src", "--changed",
+		"--then", "docs",
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected non-zero exit when one scope of --then chain is unsatisfiable")
+	}
+	var exitErr exitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected exitError, got %T: %v", err, err)
+	}
+	if exitErr.code != 1 {
+		t.Fatalf("expected exit code 1 for mixed-success multi-scope, got %d", exitErr.code)
+	}
+	if !strings.Contains(stderr.String(), "require a git repository") {
+		t.Fatalf("expected git-required error on stderr (printed even with -q), got:\n%s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "docs/intro.md") {
+		t.Fatalf("expected sibling scope (docs) to still produce output, got:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "src/main.ts") {
+		t.Fatalf("did not expect unsatisfiable scope's files in output, got:\n%s", stdout.String())
 	}
 }
 
@@ -3857,7 +4073,6 @@ func TestAllowedByIncludeDirectoryLabelColorsEntireIncludedSubtree(t *testing.T)
 		RelPath:          "node_modules/.cache/babel-loader/abc123.json",
 		TargetRoot:       "node_modules",
 		AllowedByInclude: true,
-		BlockRule:        "node_modules/",
 	}
 
 	for _, relDir := range []string{
@@ -5666,13 +5881,10 @@ func TestStartupAvailableModifierChoicesUseCurrentScopeGitState(t *testing.T) {
 			t.Fatalf("%s should be hidden for current unstaged-only scope: %#v", key, startupModifierChoiceKeys(choices))
 		}
 	}
-	for _, key := range []string{"unstaged-diff", "contains", "snippet", "only", "exclude", "recent", "paths", "then"} {
+	for _, key := range []string{"unstaged-diff", "contains", "snippet", "only", "exclude", "recent", "paths", "then", "depth"} {
 		if !startupModifierChoiceKeysContain(choices, key) {
 			t.Fatalf("%s should remain available for current unstaged-only scope: %#v", key, startupModifierChoiceKeys(choices))
 		}
-	}
-	if startupModifierChoiceKeysContain(choices, "depth") {
-		t.Fatalf("depth should be hidden for current unstaged-only scope because max depth is already 1: %#v", startupModifierChoiceKeys(choices))
 	}
 }
 
@@ -8841,6 +9053,74 @@ func TestFormatResolvedStartupCommandShellQuotesArgs(t *testing.T) {
 	want := `catclip src --contains "TODO items" --only "src/a test.ts"`
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestFormatResolvedStartupCommandPreservesLinesModifier(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "lines with start and end",
+			args: []string{"src", "--recent", "5", "--lines", "1", "5"},
+			want: "catclip src --recent 5 --lines 1 5",
+		},
+		{
+			name: "lines with start only",
+			args: []string{"src", "--lines", "10"},
+			want: "catclip src --lines 10",
+		},
+		{
+			name: "lines bare",
+			args: []string{"src", "--lines"},
+			want: "catclip src --lines",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := formatResolvedStartupCommand(tc.args)
+			if got != tc.want {
+				t.Fatalf("expected %q, got %q", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestCanonicalScopeArgsCoversAllStageKinds enforces the
+// resolver-equals-executed invariant: every modifier flag listed in
+// scopeModifierFlagSpecs must round-trip through canonicalScopeArgs.
+// Without this, adding a new stage flag without updating the canonical
+// builder silently drops it from the "Resolved command:" header — a
+// trust-eroding mismatch (see RESOLVED_BUG_resolved_command_drops_lines).
+func TestCanonicalScopeArgsCoversAllStageKinds(t *testing.T) {
+	for _, spec := range scopeModifierFlagSpecs {
+		t.Run(string(spec.StageKind), func(t *testing.T) {
+			s := executionScope{
+				Stages: []scopeStage{{Kind: spec.StageKind}},
+			}
+			// Stages that read from sibling fields on executionScope
+			// rather than from stage.Values/stage.Limit need those
+			// fields populated, otherwise the canonical builder
+			// emits an incomplete (but still flagged) form. We just
+			// need the flag itself to appear.
+			switch spec.StageKind {
+			case scopeStageRecent, scopeStageDepth:
+				limit := 5
+				s.Stages[0].Limit = &limit
+			case scopeStageInclude, scopeStageOnly, scopeStageExclude, scopeStageContains, scopeStageSnippet:
+				s.Stages[0].Values = []string{"x"}
+			case scopeStageLines:
+				s.LinesStart = 1
+				s.LinesEnd = 5
+			}
+			args := canonicalScopeArgs(s)
+			joined := strings.Join(args, " ")
+			if !strings.Contains(joined, spec.Flag) {
+				t.Fatalf("canonicalScopeArgs missing case for %s (kind=%s); got %q", spec.Flag, spec.StageKind, joined)
+			}
+		})
 	}
 }
 

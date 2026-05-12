@@ -19,6 +19,7 @@ type Request struct {
 	Nth            string
 	Header         string
 	PreviewCommand string
+	PreviewWindow  string
 	ColorSpecs     []string
 	Disabled       bool
 	Multi          bool
@@ -41,6 +42,12 @@ const (
 	defaultPreviewWindow = "right:55%:wrap:border-rounded"
 	defaultPreviewLabel  = "Scrollable Preview"
 )
+
+// DefaultPreviewWindow is the standard preview-window layout used by every
+// catclip picker. Callers can pass this verbatim as Request.PreviewWindow when
+// they want the standard layout but want to drive the preview via a binding
+// (e.g. start:preview(...)) instead of the focus-triggered --preview command.
+const DefaultPreviewWindow = defaultPreviewWindow
 
 // Filter runs fzf in --filter mode and returns the matched keys from the
 // provided tab-delimited lines without opening an interactive picker.
@@ -123,8 +130,14 @@ func buildArgs(req Request) []string {
 	if req.Header != "" {
 		args = append(args, "--header", req.Header, "--header-border=rounded")
 	}
+	window := req.PreviewWindow
+	if window == "" {
+		window = defaultPreviewWindow
+	}
 	if req.PreviewCommand != "" {
-		args = append(args, "--preview", req.PreviewCommand, "--preview-window", defaultPreviewWindow, "--preview-label", defaultPreviewLabel)
+		args = append(args, "--preview", req.PreviewCommand, "--preview-window", window, "--preview-label", defaultPreviewLabel)
+	} else if req.PreviewWindow != "" {
+		args = append(args, "--preview-window", window, "--preview-label", defaultPreviewLabel)
 	}
 	if len(req.ColorSpecs) > 0 {
 		for _, spec := range req.ColorSpecs {

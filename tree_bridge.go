@@ -20,7 +20,6 @@ const (
 
 	treeTargetStateOK             = treepkg.TargetStateOK
 	treeTargetStateText           = treepkg.TargetStateText
-	treeTargetStateEmpty          = treepkg.TargetStateEmpty
 	treeTargetStateNoTextChildren = treepkg.TargetStateNoTextChildren
 	treeTargetStateNonText        = treepkg.TargetStateNonText
 )

@@ -27,7 +27,6 @@ type payloadRecord struct {
 	Tag         string `json:"tag,omitempty"`
 	TargetRoot       string `json:"target_root,omitempty"`
 	AllowedByInclude bool   `json:"allowed_by_include,omitempty"`
-	BlockRule        string `json:"block_rule,omitempty"`
 	BlockSource      string `json:"block_source,omitempty"`
 	Content     string `json:"content,omitempty"`
 	Highlight   string `json:"highlight,omitempty"`
@@ -93,7 +92,6 @@ func EncodePayload(w io.Writer, doc Document) error {
 				Tag:              entry.ModeTag,
 				TargetRoot:       entry.TargetRoot,
 				AllowedByInclude: entry.AllowedByInclude,
-				BlockRule:        entry.BlockRule,
 				BlockSource:      entry.BlockSource,
 			}
 			if entry.Size != nil {
@@ -189,7 +187,6 @@ func DecodePayload(r io.Reader) (Document, error) {
 				ModeTag:          record.Tag,
 				TargetRoot:       normalizeRelPath(record.TargetRoot),
 				AllowedByInclude: record.AllowedByInclude,
-				BlockRule:        record.BlockRule,
 				BlockSource:      record.BlockSource,
 			})
 		case "summary":

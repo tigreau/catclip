@@ -1,8 +1,6 @@
 package catclip
 
 import (
-	"io/fs"
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -11,148 +9,100 @@ import (
 
 type textClassifier func(relPath, absPath string) (bool, error)
 
-func discoverFilesUnder(workingDir, rootAbs, rootRel string, matcher scopeMatcher, classifyText textClassifier, rootBypass *blockInfo, withBinaries bool) ([]fileEntry, error) {
+// discoverFilesUnder enumerates text files under rootAbs using ripgrep.
+// When rootBypass is set the call switches to --no-ignore so callers acting
+// on an --include'd subtree can recover paths blocked by .hiss/.gitignore.
+func discoverFilesUnder(workingDir, rootAbs, rootRel string, classifyText textClassifier, rootBypass *blockInfo) ([]fileEntry, error) {
 	rootRel = normalizeRelPath(rootRel)
-	var files []fileEntry
-	err := filepath.WalkDir(rootAbs, func(current string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-
-		rel, err := filepath.Rel(workingDir, current)
-		if err != nil {
-			return err
-		}
-		rel = normalizeRelPath(rel)
-
-		if d.IsDir() {
-			if rootBypass == nil && rel != rootRel {
-				if ignored, _ := matcher.dirIgnored(rel); ignored {
-					return fs.SkipDir
-				}
-			}
-			return nil
-		}
-		info, err := os.Stat(current)
-		if err != nil {
-			return nil
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-
-		entry := fileEntry{
-			AbsPath: current,
-			RelPath: rel,
-			ModTime: info.ModTime(),
-		}
-
-		if rootBypass == nil {
-			if ignored, _ := matcher.fileIgnored(rel); ignored {
-				return nil
-			}
-		}
-		if rootBypass != nil {
-			entry = withAllowedByInclude(entry, *rootBypass)
-		}
-		if !withBinaries && excludedTextLikeAsset(rel) {
-			return nil
-		}
-
-		text, err := classifyText(rel, current)
-		if err != nil {
-			return err
-		}
-		if text {
-			files = append(files, entry)
-		}
-		return nil
-	})
+	rels, err := ripgrepListUnder(workingDir, rootRel, rootBypass != nil)
 	if err != nil {
 		return nil, err
 	}
-	return files, nil
-}
-
-func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string, matcher scopeMatcher, classifyText textClassifier, rootBypass *blockInfo, withBinaries bool) ([]fileEntry, error) {
-	rootRel = normalizeRelPath(rootRel)
-	var files []fileEntry
-	err := filepath.WalkDir(rootAbs, func(current string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
-		}
-
-		rel, err := filepath.Rel(workingDir, current)
+	files := make([]fileEntry, 0, len(rels))
+	for _, rel := range rels {
+		absPath := filepath.Join(workingDir, filepath.FromSlash(rel))
+		text, err := classifyText(rel, absPath)
 		if err != nil {
-			return err
-		}
-		rel = normalizeRelPath(rel)
-
-		if d.IsDir() {
-			if rootBypass == nil && rel != rootRel {
-				if ignored, _ := matcher.dirIgnored(rel); ignored {
-					return fs.SkipDir
-				}
-			}
-			return nil
-		}
-		if path.Base(rel) != baseName {
-			return nil
-		}
-
-		info, err := os.Stat(current)
-		if err != nil {
-			return nil
-		}
-		if !info.Mode().IsRegular() {
-			return nil
-		}
-		if rootBypass == nil {
-			if ignored, _ := matcher.fileIgnored(rel); ignored {
-				return nil
-			}
-		}
-		if !withBinaries && excludedTextLikeAsset(rel) {
-			return nil
-		}
-
-		text, err := classifyText(rel, current)
-		if err != nil {
-			return err
+			return nil, err
 		}
 		if !text {
-			return nil
+			continue
 		}
-
 		entry := fileEntry{
-			AbsPath: current,
+			AbsPath: absPath,
 			RelPath: rel,
-			ModTime: info.ModTime(),
 		}
 		if rootBypass != nil {
 			entry = withAllowedByInclude(entry, *rootBypass)
 		}
 		files = append(files, entry)
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
+	_ = rootAbs
 	return files, nil
 }
 
-func excludedTextLikeAsset(relPath string) bool {
-	if _, blocked := knownBinaryBasenames[strings.ToLower(path.Base(relPath))]; blocked {
-		return true
+// discoverFilesByBasenameUnder is the basename-filtered variant of
+// discoverFilesUnder.
+func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string, classifyText textClassifier, rootBypass *blockInfo) ([]fileEntry, error) {
+	rootRel = normalizeRelPath(rootRel)
+	rels, err := ripgrepListUnder(workingDir, rootRel, rootBypass != nil)
+	if err != nil {
+		return nil, err
 	}
-	_, blocked := knownBinaryExts[shellStyleExtension(relPath)]
-	return blocked
+	files := make([]fileEntry, 0)
+	for _, rel := range rels {
+		if path.Base(rel) != baseName {
+			continue
+		}
+		absPath := filepath.Join(workingDir, filepath.FromSlash(rel))
+		text, err := classifyText(rel, absPath)
+		if err != nil {
+			return nil, err
+		}
+		if !text {
+			continue
+		}
+		entry := fileEntry{
+			AbsPath: absPath,
+			RelPath: rel,
+		}
+		if rootBypass != nil {
+			entry = withAllowedByInclude(entry, *rootBypass)
+		}
+		files = append(files, entry)
+	}
+	_ = rootAbs
+	return files, nil
+}
+
+// ripgrepListUnder returns the rg-discovered file list under rootRel.
+// When noIgnore is true rg ignores .gitignore/.hiss; otherwise the global
+// .hiss is layered onto the default gitignore-aware enumeration.
+func ripgrepListUnder(workingDir, rootRel string, noIgnore bool) ([]string, error) {
+	opts := ripgrepFileOptions{NoIgnore: noIgnore}
+	if !noIgnore {
+		hissPath, err := readableHissPath()
+		if err != nil {
+			return nil, err
+		}
+		opts.HissPath = hissPath
+	}
+	if rootRel != "." && rootRel != "" {
+		opts.Paths = []string{rootRel}
+	}
+	rels, err := runRipgrepFiles(workingDir, opts)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		rel = normalizeRelPath(rel)
+		if rel == "" || rel == "." {
+			continue
+		}
+		out = append(out, rel)
+	}
+	return out, nil
 }
 
 func knownTextLikeFile(relPath string) bool {
@@ -172,14 +122,6 @@ func shellStyleExtension(relPath string) string {
 	return base[lastDot+1:]
 }
 
-var knownBinaryBasenames = map[string]struct{}{
-	".ds_store":              {},
-	"thumbs.db":              {},
-	"ehthumbs.db":            {},
-	"desktop.ini":            {},
-	"bad-nonprintable.bconf": {},
-}
-
 var knownTextBasenames = map[string]struct{}{
 	"makefile": {}, "gemfile": {}, "rakefile": {}, "guardfile": {}, "vagrantfile": {}, "berksfile": {}, "capfile": {},
 	"dockerfile": {}, "containerfile": {}, "jenkinsfile": {}, "procfile": {},
@@ -194,22 +136,6 @@ var knownTextBasenames = map[string]struct{}{
 	".htaccess": {}, ".mailmap": {}, ".sequelizerc": {},
 	"license": {}, "licence": {}, "authors": {}, "contributors": {}, "changelog": {}, "todo": {},
 	"codeowners": {}, "version": {}, "readme": {},
-}
-
-var knownBinaryExts = map[string]struct{}{
-	"png": {}, "jpg": {}, "jpeg": {}, "gif": {}, "bmp": {}, "ico": {}, "webp": {}, "tif": {}, "tiff": {}, "psd": {}, "xcf": {}, "heic": {}, "raw": {},
-	"pdf": {}, "docx": {}, "doc": {}, "xlsx": {}, "xls": {}, "pptx": {}, "ppt": {}, "odt": {}, "ods": {}, "odp": {}, "rtf": {},
-	"zip": {}, "tar": {}, "gz": {}, "bz2": {}, "xz": {}, "7z": {}, "rar": {}, "dmg": {}, "iso": {}, "img": {}, "vmdk": {}, "qcow2": {},
-	"exe": {}, "dll": {}, "so": {}, "dylib": {}, "a": {}, "lib": {}, "o": {}, "obj": {}, "pdb": {},
-	"class": {}, "jar": {}, "war": {}, "ear": {}, "pyc": {}, "pyo": {}, "pyd": {}, "wasm": {}, "beam": {}, "rlib": {},
-	"apk": {}, "aab": {}, "ipa": {}, "msi": {}, "cab": {}, "deb": {}, "rpm": {},
-	"pt": {}, "pth": {}, "ckpt": {}, "safetensors": {}, "onnx": {}, "gguf": {}, "h5": {}, "pkl": {}, "parquet": {}, "arrow": {},
-	"mp3": {}, "mp4": {}, "mov": {}, "avi": {}, "mkv": {}, "webm": {}, "flv": {}, "wmv": {}, "m4a": {}, "wav": {}, "flac": {}, "ogg": {}, "3gp": {},
-	"ttf": {}, "otf": {}, "woff": {}, "woff2": {}, "eot": {},
-	"blend": {}, "glb": {}, "fbx": {}, "3ds": {},
-	"db": {}, "sqlite": {}, "sqlite3": {}, "bin": {}, "dat": {}, "hex": {}, "dump": {}, "lockb": {},
-	"pack": {}, "eslintcache": {}, "inf": {}, "pbm": {}, "ppm": {},
-	"icns": {}, "xpm": {}, "scpt": {},
 }
 
 var knownTextExts = map[string]struct{}{
@@ -356,7 +282,6 @@ func mergeFileEntry(dst *fileEntry, incoming fileEntry) {
 	}
 	if incoming.AllowedByInclude && !dst.AllowedByInclude {
 		dst.AllowedByInclude = true
-		dst.BlockRule = incoming.BlockRule
 		dst.BlockSource = incoming.BlockSource
 	}
 	if dst.TargetRoot == "" && incoming.TargetRoot != "" {

@@ -2,6 +2,8 @@ package catclip
 
 import (
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -33,15 +35,22 @@ func validateStartupDepthValue(currentArgs []string, value string) (int, error) 
 }
 
 func chooseStartupDepth(currentArgs []string, query string) (int, bool, error) {
-	info, err := currentScopeDepthInfo(currentArgs)
+	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
 	if err != nil {
 		return 0, false, err
 	}
-	if info.MaxDepth <= 0 {
+	buckets := computeDepthBuckets(uniqueSortedRelPaths(view.Entries))
+	if len(buckets) == 0 {
 		return 0, false, errSelectionCancelled
 	}
+	maxDepth := buckets[len(buckets)-1].Depth
 
-	selected, err := chooseDepthWithFzf(query, startupDepthPickerLines(info.Buckets), depthPickerPreviewCommand(currentArgs))
+	previewCmd, tmpdir := buildDepthPickerPreview(view, buckets)
+	if tmpdir != "" {
+		defer os.RemoveAll(tmpdir)
+	}
+
+	selected, err := chooseDepthWithFzf(query, startupDepthPickerLines(buckets), previewCmd)
 	if err != nil {
 		return 0, true, err
 	}
@@ -49,8 +58,8 @@ func chooseStartupDepth(currentArgs []string, query string) (int, bool, error) {
 	if err != nil {
 		return 0, true, err
 	}
-	if depth > info.MaxDepth {
-		return 0, true, depthExceedsCurrentScopeError(depth, info.MaxDepth)
+	if depth > maxDepth {
+		return 0, true, depthExceedsCurrentScopeError(depth, maxDepth)
 	}
 	return depth, true, nil
 }
@@ -94,6 +103,23 @@ func startupDepthPickerLines(buckets []depthBucket) []string {
 	return lines
 }
 
+func uniqueSortedRelPaths(entries []fileEntry) []string {
+	seen := make(map[string]struct{}, len(entries))
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if e.RelPath == "" {
+			continue
+		}
+		if _, ok := seen[e.RelPath]; ok {
+			continue
+		}
+		seen[e.RelPath] = struct{}{}
+		out = append(out, e.RelPath)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func chooseDepthWithFzf(query string, lines []string, previewCommand string) (string, error) {
 	bin, err := fuzzyResolverBinary()
 	if err != nil {
@@ -132,34 +158,55 @@ func depthPickerHeader() string {
 	)
 }
 
-func depthPickerPreviewCommand(currentArgs []string) string {
+// buildDepthPickerPreview pre-renders one tree payload per bucket into a
+// tmpdir and returns the fzf preview command that reads the per-bucket file.
+// Returns ("", "") on any failure (missing catclip-tree binary, mkdir failure,
+// render failure for any bucket) — the picker still works, just without a
+// preview. The caller owns the tmpdir lifetime via os.RemoveAll.
+func buildDepthPickerPreview(view resolvedScopeView, buckets []depthBucket) (cmd string, tmpdir string) {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
-		return ""
+		return "", ""
 	}
-
-	self, err := os.Executable()
-	if err != nil || strings.TrimSpace(self) == "" {
-		return ""
-	}
-
-	cfg, err := parseArgsAllowImplicitDot(currentArgs)
+	tmpdir, err := os.MkdirTemp("", "catclip-depth-*")
 	if err != nil {
-		return ""
+		return "", ""
 	}
-	scopeSpecs := configCommandScopes(cfg)
-	if len(scopeSpecs) == 0 {
-		return ""
-	}
-	scopeArgs := canonicalScopeArgs(executionScopeFromCommandScopeSpec(scopeSpecs[len(scopeSpecs)-1]))
-	if len(scopeArgs) == 0 {
-		return ""
+	scopes := []evaluatedOutputScope{{Paths: view.Scope.Paths}}
+	for _, b := range buckets {
+		filtered, err := applyDepthStage(view.Entries, b.Depth)
+		if err != nil {
+			_ = os.RemoveAll(tmpdir)
+			return "", ""
+		}
+		scopes[0].Entries = filtered
+		path := filepath.Join(tmpdir, strconv.Itoa(b.Depth)+".json")
+		if err := writeDepthPayloadFile(path, view, scopes, filtered); err != nil {
+			_ = os.RemoveAll(tmpdir)
+			return "", ""
+		}
 	}
 
-	parts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload"}
-	parts = append(parts, scopeArgs...)
-	parts = append(parts, "--depth", "{2}")
-	parts = append(parts, "|", shellQuoteArg(treeBin))
+	parts := []string{shellQuoteArg(treeBin)}
 	parts = append(parts, fzfTreeRenderArgs()...)
-	return strings.Join(parts, " ")
+	// Split the input-file path so the {2} placeholder lives outside any
+	// shell-quoting context. fzf substitutes {2} as a shell-escaped token
+	// (e.g. '2'); concatenating shell-adjacent strings collapses it back
+	// to a bare path component. Quoting the full path that contains {2}
+	// would freeze the apostrophes inside the quotes.
+	inputArg := shellQuoteArg(tmpdir+"/") + "{2}" + shellQuoteArg(".json")
+	parts = append(parts, "--input-file", inputArg)
+	return strings.Join(parts, " "), tmpdir
+}
+
+func writeDepthPayloadFile(path string, view resolvedScopeView, scopes []evaluatedOutputScope, entries []fileEntry) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	if err := encodeTreePayloadFromEntries(f, view.Config, view.GitContext, scopes, entries, nil); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }

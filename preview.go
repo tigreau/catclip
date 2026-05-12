@@ -281,7 +281,6 @@ func allowedByIncludeDirectoryLabel(entry fileEntry, relDir string) bool {
 		Path:             entry.RelPath,
 		TargetRoot:       entry.TargetRoot,
 		AllowedByInclude: entry.AllowedByInclude,
-		BlockRule:        entry.BlockRule,
 		BlockSource:      entry.BlockSource,
 	}, relDir)
 }

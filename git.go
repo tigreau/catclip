@@ -39,40 +39,6 @@ func normalizeGitPrefix(prefix string) string {
 	return strings.ReplaceAll(prefix, "\\", "/")
 }
 
-func filterGitIgnoredEntries(gitCtx gitContext, entries []fileEntry) ([]fileEntry, error) {
-	if len(entries) == 0 {
-		return entries, nil
-	}
-
-	pending := make([]fileEntry, 0, len(entries))
-	for _, entry := range entries {
-		if entry.AllowedByInclude || entry.GitVisible {
-			continue
-		}
-		pending = append(pending, entry)
-	}
-	if len(pending) == 0 {
-		return entries, nil
-	}
-
-	ignored, err := collectGitIgnoredPaths(gitCtx, pending)
-	if err != nil {
-		return nil, err
-	}
-	if len(ignored) == 0 {
-		return entries, nil
-	}
-
-	out := make([]fileEntry, 0, len(entries))
-	for _, entry := range entries {
-		if _, ok := ignored[entry.RelPath]; ok && !entry.AllowedByInclude {
-			continue
-		}
-		out = append(out, entry)
-	}
-	return out, nil
-}
-
 func filterChangedEntries(gitCtx gitContext, s executionScope, entries []fileEntry) ([]fileEntry, error) {
 	changedRepoPaths, err := collectChangedRepoPaths(gitCtx, s)
 	if err != nil {

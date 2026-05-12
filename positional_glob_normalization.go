@@ -386,13 +386,8 @@ func isBareExtensionToken(token string) bool {
 		return false
 	}
 	ext := strings.ToLower(token[1:])
-	if _, ok := knownTextExts[ext]; ok {
-		return true
-	}
-	if _, ok := knownBinaryExts[ext]; ok {
-		return true
-	}
-	return false
+	_, ok := knownTextExts[ext]
+	return ok
 }
 
 func canonicalPatternForToken(token positionalGlobToken) (string, bool) {

@@ -98,11 +98,7 @@ func AllowedByIncludeDirectoryLabel(entry DocumentEntry, relDir string) bool {
 			return true
 		}
 	}
-	if entry.BlockRule == "" || !strings.HasSuffix(entry.BlockRule, "/") {
-		return false
-	}
-	ruleName := path.Base(strings.TrimSuffix(entry.BlockRule, "/"))
-	return path.Base(relDir) == ruleName
+	return false
 }
 
 func renderEmptyTarget(w io.Writer, target *DocumentTarget, opts RenderOptions, colors Palette) error {
@@ -114,18 +110,8 @@ func renderEmptyTarget(w io.Writer, target *DocumentTarget, opts RenderOptions, 
 	}
 
 	message := "no previewable text files"
-	switch target.Kind {
-	case TargetKindDir:
-		switch target.State {
-		case TargetStateEmpty:
-			message = "empty directory"
-		case TargetStateNoTextChildren:
-			message = "no previewable text files"
-		}
-	case TargetKindFile:
-		if target.State == TargetStateNonText {
-			message = "not a previewable text file"
-		}
+	if target.Kind == TargetKindFile && target.State == TargetStateNonText {
+		message = "not a previewable text file"
 	}
 
 	_, err := fmt.Fprintf(w, "%s└── %s%s%s\n", colors.Tree, colors.Dim, message, colors.Reset)

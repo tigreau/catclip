@@ -84,6 +84,37 @@ package catclip
 //      can be inlined directly. The working reference shapes are
 //      `fzfPreviewCommand`, `recentPickerPreviewCommand`, and
 //      `startupModifierCurrentScopePreviewCommand`.
+//  19. Discovery Is the Parent's Job, Once:
+//      every fzf modifier picker (`--depth`, `--recent`, `--only`, …) runs
+//      `evaluateScope` exactly once in the parent and writes the result to a
+//      temp file. The fzf preview command then reads that file and formats —
+//      nothing more. A preview command that invokes `catclip` with
+//      scope-bearing arguments is broken by definition: fzf re-runs preview on
+//      every cursor move, so any path that ends up calling `evaluateScope`
+//      from there means hundreds of milliseconds of rg + classification +
+//      stage application per keystroke. The bug is invisible on small repos
+//      and crippling on large ones, so the rule has to be load-bearing at
+//      design time. `--recent` is the reference: parent serializes entries
+//      via `writeRecentPreviewData`, preview reads the TSV and formats.
+//      Pre-rendered tree payloads per bucket (one file per picker row) are
+//      the same pattern applied to richer rendering.
+//  20. State Lives in the Args String:
+//      modifier chaining is string concatenation; file sets are derived on
+//      demand via a functional `evaluateScope`. The chain a user has built up
+//      is fully represented by `currentArgs []string` carried across picker
+//      iterations — nothing mutable lives between them. This property keeps
+//      hypothetical features (undo, redo, "what if" branching, session
+//      replay, serialization) trivially implementable even though we do not
+//      currently ship them. Caches keyed on *stable* inputs (workingDir,
+//      hissPath, scope targets — like `visibleFileSetCache` and
+//      `textFileSetCache`) are fine; their keys do not change with modifier
+//      chaining. What is forbidden is any cross-iteration cache whose key
+//      includes a modifier value or accumulated stage output — e.g.,
+//      memoizing `(src + --only=*.go) → entries`. That kind of cache turns
+//      the modifier loop into a state machine that has to be invalidated on
+//      undo. If you find yourself wanting to "remember the entries from
+//      before the last stage was applied," you have broken the property —
+//      fix the design.
 //
 // WHY THE ROOT PACKAGE IS STILL BROAD:
 //   - resolver, discovery, ignore, git, and rendering still share many internal
@@ -203,12 +234,13 @@ package catclip
 //        resolved, exit 1
 //
 // GIT / RG PERFORMANCE RULES:
-//   - do not reintroduce git check-ignore into the normal visible-file hot path
-//   - for safe visible discovery, trust rg's .gitignore handling and then apply
-//     .hiss in Go
-//   - git check-ignore is reserved for narrow cases only:
-//     exact ignored-target diagnostics, ignored-target browsing, and other
-//     explicit include / allow-by-include flows
+//   - rg owns ignore semantics. Both .gitignore and .hiss flow through
+//     ripgrep: .gitignore via rg's native engine (with --no-require-git so
+//     it activates outside repos), .hiss via --ignore-file. No Go-side
+//     gitignore matcher; no git check-ignore subprocess
+//   - source attribution (".hiss" vs ".gitignore") comes from a two-call
+//     diff: visibleAll (gitignore-only) vs visibleWithHiss (gitignore +
+//     .hiss). Both calls are cached process-wide
 //   - a previous git cat-file --batch fast-path experiment was benchmarked and
 //     was substantially slower than direct working-tree streaming for catclip's
 //     "wrap and emit many files" workload; do not assume Git blob batching is
@@ -454,37 +486,18 @@ func executionScopeHasGitSelection(s executionScope) bool {
 	return s.Changed || s.Staged || s.Unstaged || s.Untracked
 }
 
+func gitSelectionRequiresGitRepoMessage() string {
+	return "Error: --changed/--staged/--unstaged/--untracked (and -diff variants) require a git repository.\n  cwd is not a git repo or git is not installed."
+}
+
 type executionScopeBuilder struct {
 	executionScope
 	explicitTargets int
 }
 
-type ignoreRuleKind string
-
-const (
-	ignoreRuleFile ignoreRuleKind = "file"
-	ignoreRuleDir  ignoreRuleKind = "dir"
-)
-
-type ignoreRule struct {
-	Raw     string
-	Kind    ignoreRuleKind
-	Pattern string
-}
-
 type compiledGlob struct {
 	raw string
 	re  *regexp.Regexp
-}
-
-type compiledDirRule struct {
-	raw      string
-	segments []*regexp.Regexp
-}
-
-type scopeMatcher struct {
-	ignoreFiles []compiledGlob
-	ignoreDirs  []compiledDirRule
 }
 
 type scopeStageKind string
@@ -530,7 +543,6 @@ type fileEntry struct {
 	DiffWantStaged   bool
 	DiffWantUnstaged bool
 	AllowedByInclude bool
-	BlockRule        string
 	BlockSource      string
 }
 
@@ -584,14 +596,7 @@ type blockInfo struct {
 
 type skippedMatch struct {
 	RelPath     string
-	BlockRule   string
 	BlockSource string
-	BlockKind   string
-}
-
-type gitIgnoreMatch struct {
-	Rule    string
-	DirRule bool
 }
 
 type targetMatch struct {
@@ -615,9 +620,10 @@ type exitError struct {
 // target-by-target flow. Some of them are real "Error:" blocks that should
 // still print under --quiet even when soft warnings are suppressed.
 type diagnostic struct {
-	message          string
-	isError          bool
-	isTargetNotFound bool
+	message              string
+	isError              bool
+	isTargetNotFound     bool
+	isScopeUnsatisfiable bool
 }
 
 type entryMode string
@@ -761,6 +767,15 @@ func formatCanonicalResolvedCommand(rawArgs []string, cfg runConfig) string {
 	return strings.Join(parts, " ")
 }
 
+// canonicalScopeArgs renders an executionScope back into the argv form
+// that produces it. Used to build the "Resolved command:" header.
+//
+// Invariant: the resolved command must equal the executed command.
+// Anything catclip applies to a run must be representable here, and
+// copy/pasting the rendered command must produce the same output.
+// When adding a new scopeStageKind (or execution-affecting field on
+// executionScope), add a case below — TestCanonicalScopeArgsCoversAllStageKinds
+// fails if a flag from scopeModifierFlagSpecs has no case here.
 func canonicalScopeArgs(s executionScope) []string {
 	parts := make([]string, 0, len(s.Targets)+len(s.Stages)*2)
 	for _, target := range s.Targets {
@@ -804,6 +819,14 @@ func canonicalScopeArgs(s executionScope) []string {
 			parts = append(parts, "--snippet")
 			for _, value := range stage.Values {
 				parts = append(parts, shellQuoteArg(value))
+			}
+		case scopeStageLines:
+			parts = append(parts, "--lines")
+			if s.LinesStart > 0 {
+				parts = append(parts, shellQuoteArg(strconv.Itoa(s.LinesStart)))
+				if s.LinesEnd > 0 {
+					parts = append(parts, shellQuoteArg(strconv.Itoa(s.LinesEnd)))
+				}
 			}
 		case scopeStageChanged:
 			parts = append(parts, "--changed")

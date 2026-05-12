@@ -462,7 +462,6 @@ func (p outputPlan) TreeEntries(report outputReport) []treeDocumentEntry {
 			ModeTag:          report.modeTags[relPath],
 			TargetRoot:       entry.TargetRoot,
 			AllowedByInclude: entry.AllowedByInclude,
-			BlockRule:        entry.BlockRule,
 			BlockSource:      entry.BlockSource,
 		}
 		if size, ok := report.sizes[relPath]; ok {

@@ -1,6 +1,7 @@
 package catclip
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -84,7 +85,6 @@ type startupCurrentScopeState struct {
 	AllUnstaged  bool
 	AnyUntracked bool
 	AllUntracked bool
-	MaxDepth     int
 	Config       runConfig
 }
 
@@ -256,26 +256,10 @@ func newStartupPickerResolver() (*scopeResolver, error) {
 		return nil, err
 	}
 	gitCtx := detectGitContext(cfg.WorkingDir)
-	baseRules, err := loadIgnoreRules()
-	if err != nil {
-		return nil, err
-	}
-	matcher, err := buildScopeMatcher(baseRules, executionScope{})
-	if err != nil {
-		return nil, err
-	}
-	projectIgnore, useProjectIgnore, err := buildProjectIgnoreMatcher(cfg.WorkingDir, gitCtx.Enabled)
-	if err != nil {
-		return nil, err
-	}
 	return &scopeResolver{
 		cfg:               cfg,
 		gitCtx:            gitCtx,
-		matcher:           matcher,
-		projectIgnore:     projectIgnore,
-		useProjectIgnore:  useProjectIgnore,
 		allowFileSymlinks: false,
-		useGitIgnore:      gitCtx.Enabled,
 	}, nil
 }
 
@@ -1172,15 +1156,24 @@ func chooseStartupModifier(currentArgs []string) (startupModifierChoice, error) 
 	if err != nil {
 		return startupModifierChoice{}, err
 	}
-	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
-		Prompt:         "filter> ",
-		WithNth:        "1,3",
-		Nth:            "1",
-		Header:         startupModifierPickerHeader(),
-		PreviewCommand: startupModifierCurrentScopePreviewCommand(state),
-		NoSort:         true,
-		Lines:          lines,
-	}))
+	previewCmd := startupModifierCurrentScopePreviewCommand(state)
+	req := picker.Request{
+		Prompt:  "filter> ",
+		WithNth: "1,3",
+		Nth:     "1",
+		Header:  startupModifierPickerHeader(),
+		NoSort:  true,
+		Lines:   lines,
+	}
+	if previewCmd != "" {
+		// The modifier menu's preview is static — the scope cannot change
+		// while the menu is open. Pin it via start:preview(...) so fzf
+		// renders it once at startup instead of re-evaluating on every
+		// focus change.
+		req.PreviewWindow = picker.DefaultPreviewWindow
+		req.Bindings = append(req.Bindings, "start:preview("+previewCmd+")")
+	}
+	result, err := picker.Run(bin, themedFzfRequest(req))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return startupModifierChoice{}, errSelectionCancelled
 	}
@@ -1994,7 +1987,7 @@ func startupModifierChoiceMeaningful(choice startupModifierChoice, state startup
 
 	switch choice.Args[0] {
 	case "--depth":
-		return state.MaxDepth > 1
+		return true
 	case "--changed":
 		if !state.GitKnown {
 			return false
@@ -2047,10 +2040,9 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 	}
 
 	state := startupCurrentScopeState{
-		Known:    true,
-		Empty:    len(view.Entries) == 0,
-		MaxDepth: maxEntryPathDepth(view.Entries),
-		Config:   view.Config,
+		Known:  true,
+		Empty:  len(view.Entries) == 0,
+		Config: view.Config,
 	}
 	if state.Empty {
 		needsInclude, err := startupCurrentScopeNeedsInclude(view.Config)
@@ -2085,10 +2077,6 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 		return state, nil
 	}
 
-	changed, err := startupCurrentScopeSelectionSet(view.GitContext, executionScope{Changed: true}, currentRepoPaths)
-	if err != nil {
-		return startupCurrentScopeState{}, err
-	}
 	staged, err := startupCurrentScopeSelectionSet(view.GitContext, executionScope{Changed: true, Staged: true}, currentRepoPaths)
 	if err != nil {
 		return startupCurrentScopeState{}, err
@@ -2101,12 +2089,31 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 	if err != nil {
 		return startupCurrentScopeState{}, err
 	}
+	// `Changed:true` (no sub-flag) on collectChangedRepoPaths returns
+	// `staged ∪ unstaged ∪ untracked` — its extra `git diff HEAD` call
+	// is a subset of `staged ∪ unstaged` for tracked files. Recompute
+	// the union here instead of paying for the redundant call.
+	changed := unionRepoPathSets(staged, unstaged, untracked)
 
 	state.AnyChanged, state.AllChanged = startupAnyAllForCurrentScope(total, changed)
 	state.AnyStaged, state.AllStaged = startupAnyAllForCurrentScope(total, staged)
 	state.AnyUnstaged, state.AllUnstaged = startupAnyAllForCurrentScope(total, unstaged)
 	state.AnyUntracked, state.AllUntracked = startupAnyAllForCurrentScope(total, untracked)
 	return state, nil
+}
+
+func unionRepoPathSets(sets ...map[string]struct{}) map[string]struct{} {
+	total := 0
+	for _, s := range sets {
+		total += len(s)
+	}
+	out := make(map[string]struct{}, total)
+	for _, s := range sets {
+		for k := range s {
+			out[k] = struct{}{}
+		}
+	}
+	return out
 }
 
 func startupCurrentScopeNeedsInclude(cfg runConfig) (bool, error) {
@@ -2149,16 +2156,15 @@ func startupCurrentScopeNeedsInclude(cfg runConfig) (bool, error) {
 }
 
 func startupHasScopedIgnoredTargets(scopeTargets []string) (bool, error) {
-	resolver, err := newStartupPickerResolver()
+	wd, err := os.Getwd()
 	if err != nil {
 		return false, err
 	}
-	all, err := resolver.allIgnoredTargets()
+	hissPath, err := readableHissPath()
 	if err != nil {
 		return false, err
 	}
-	scoped := filterIgnoredTargetsByScopeTargets(all, scopeTargets)
-	return len(scoped) > 0, nil
+	return hasScopedIgnoredTargetsStreaming(context.Background(), wd, scopeTargets, hissPath)
 }
 
 func startupCurrentScopeSelectionSet(gitCtx gitContext, sel executionScope, currentRepoPaths map[string]struct{}) (map[string]struct{}, error) {
