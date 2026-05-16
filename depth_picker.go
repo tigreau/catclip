@@ -189,13 +189,13 @@ func buildDepthPickerPreview(view resolvedScopeView, buckets []depthBucket) (cmd
 
 	parts := []string{shellQuoteArg(treeBin)}
 	parts = append(parts, fzfTreeRenderArgs()...)
-	// Split the input-file path so the {2} placeholder lives outside any
-	// shell-quoting context. fzf substitutes {2} as a shell-escaped token
-	// (e.g. '2'); concatenating shell-adjacent strings collapses it back
-	// to a bare path component. Quoting the full path that contains {2}
-	// would freeze the apostrophes inside the quotes.
-	inputArg := shellQuoteArg(tmpdir+"/") + "{2}" + shellQuoteArg(".json")
-	parts = append(parts, "--input-file", inputArg)
+	// Pass --input-dir and --input-stem as separate args so the {2}
+	// substitution lives as a standalone token. POSIX sh and Windows cmd.exe
+	// quote differently for placeholder substitutions; keeping {2} away
+	// from any adjacent characters means catclip-tree assembles the final
+	// path in Go (platform-neutral), not the shell. See
+	// internal/tree/cli.go for the receiving side.
+	parts = append(parts, "--input-dir", shellQuoteArg(tmpdir), "--input-stem", "{2}")
 	return strings.Join(parts, " "), tmpdir
 }
 

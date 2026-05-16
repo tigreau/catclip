@@ -166,7 +166,6 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  Read line range:   catclip FILE --lines 400 450\n")
 	b.WriteString("  Copy file content: catclip FILE -r > dest    (preserves exact bytes)\n")
 	b.WriteString("  Read git changes:  catclip TARGET --changed-diff\n\n")
-	b.WriteString("  (Add --headless to every invocation. Omitted in examples for readability.)\n\n")
 	b.WriteString("  Start with --paths to orient before searching or reading:\n")
 	b.WriteString("    catclip . --paths                   # see what's in the project\n")
 	b.WriteString("    catclip . --depth 2 --paths         # top-level structure only\n")
@@ -213,7 +212,8 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  Bare names match directory segments:\n")
 	b.WriteString("  --exclude tests              Remove files in any tests/ directory\n\n")
 	b.WriteString("  --only and --exclude use shell globs (*, ?, [...]).\n")
-	b.WriteString("  --contains and --snippet use regex.\n\n")
+	b.WriteString("  --contains and --snippet use PCRE2 regex (supports lookaround,\n")
+	b.WriteString("  backreferences, atomic groups, named captures).\n\n")
 
 	// ── Narrowing ───────────────────────────────────────────────────────
 	b.WriteString("NARROWING (which ones)\n\n")

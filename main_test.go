@@ -369,46 +369,6 @@ func TestParseArgsRejectsEmptyStdinPathList(t *testing.T) {
 	}
 }
 
-func TestKnownTextLikeFileClassifiesCommonNamesAndExtensions(t *testing.T) {
-	if !knownTextLikeFile("src/app.ts") {
-		t.Fatal("expected .ts extension to classify as known text")
-	}
-	if !knownTextLikeFile("Makefile") {
-		t.Fatal("expected Makefile basename to classify as known text")
-	}
-	if knownTextLikeFile("image.unknownbin") {
-		t.Fatal("did not expect unknown extension to classify as known text")
-	}
-}
-
-func TestIsLikelyTextFileUsesKnownTextFastPath(t *testing.T) {
-	project := setupTestProject(t, map[string]string{})
-
-	binaryByName := filepath.Join(project, "fake.ts")
-	if err := os.WriteFile(binaryByName, []byte{0x00, 0x01, 0x02}, 0o644); err != nil {
-		t.Fatalf("write failed: %v", err)
-	}
-	text, err := isLikelyTextFile("fake.ts", binaryByName)
-	if err != nil {
-		t.Fatalf("isLikelyTextFile returned error: %v", err)
-	}
-	if !text {
-		t.Fatal("expected known text extension to bypass sniffing")
-	}
-
-	unknown := filepath.Join(project, "fake.unknownbin")
-	if err := os.WriteFile(unknown, []byte{0x00, 0x01, 0x02}, 0o644); err != nil {
-		t.Fatalf("write failed: %v", err)
-	}
-	text, err = isLikelyTextFile("fake.unknownbin", unknown)
-	if err != nil {
-		t.Fatalf("isLikelyTextFile returned error: %v", err)
-	}
-	if text {
-		t.Fatal("expected unknown binary-like file to still use sniff fallback")
-	}
-}
-
 func TestParseArgsStagedImpliesChanged(t *testing.T) {
 	cfg, err := parseArgs([]string{"src", "--staged"})
 	if err != nil {

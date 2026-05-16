@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
@@ -22,9 +23,14 @@ func prepareFileUnits(gitCtx gitContext, entries []fileEntry) ([]preparedFileUni
 		return nil, nil
 	}
 
+	snippetMatches, err := batchSnippetMatches(entries)
+	if err != nil {
+		return nil, err
+	}
+
 	units := make([]preparedFileUnit, 0, len(entries))
 	for _, entry := range entries {
-		unit, keep, err := prepareFileUnit(gitCtx, entry)
+		unit, keep, err := prepareFileUnit(gitCtx, entry, snippetMatches)
 		if err != nil {
 			return nil, err
 		}
@@ -36,7 +42,59 @@ func prepareFileUnits(gitCtx gitContext, entries []fileEntry) ([]preparedFileUni
 	return units, nil
 }
 
-func prepareFileUnit(gitCtx gitContext, entry fileEntry) (preparedFileUnit, bool, error) {
+// snippetMatchCache groups rg-derived match-line numbers by (pattern, absPath).
+// Pattern keying is required because --then chains can apply different
+// --snippet patterns to overlapping file sets.
+type snippetMatchCache map[string]map[string][]int
+
+func (c snippetMatchCache) lookup(pattern, absPath string) []int {
+	if c == nil {
+		return nil
+	}
+	if perFile, ok := c[pattern]; ok {
+		return perFile[absPath]
+	}
+	return nil
+}
+
+// batchSnippetMatches collects all snippet entries from the prepared set,
+// groups them by --snippet pattern, and runs one (chunked) rg invocation
+// per pattern to gather matched line numbers. Returns nil when there are
+// no snippet entries.
+func batchSnippetMatches(entries []fileEntry) (snippetMatchCache, error) {
+	pathsByPattern := map[string]map[string]struct{}{}
+	for _, e := range entries {
+		if e.Mode != entryModeSnippet || e.SnippetPattern == "" || e.AbsPath == "" {
+			continue
+		}
+		paths, ok := pathsByPattern[e.SnippetPattern]
+		if !ok {
+			paths = map[string]struct{}{}
+			pathsByPattern[e.SnippetPattern] = paths
+		}
+		paths[e.AbsPath] = struct{}{}
+	}
+	if len(pathsByPattern) == 0 {
+		return nil, nil
+	}
+
+	cache := make(snippetMatchCache, len(pathsByPattern))
+	for pattern, pathSet := range pathsByPattern {
+		paths := make([]string, 0, len(pathSet))
+		for p := range pathSet {
+			paths = append(paths, p)
+		}
+		sort.Strings(paths)
+		matches, err := runRipgrepMatchLines(pattern, paths)
+		if err != nil {
+			return nil, fmt.Errorf("--snippet match for pattern %q: %w", pattern, err)
+		}
+		cache[pattern] = matches
+	}
+	return cache, nil
+}
+
+func prepareFileUnit(gitCtx gitContext, entry fileEntry, snippetMatches snippetMatchCache) (preparedFileUnit, bool, error) {
 	unit := preparedFileUnit{Entry: entry}
 
 	switch entry.Mode {
@@ -52,7 +110,11 @@ func prepareFileUnit(gitCtx gitContext, entry fileEntry) (preparedFileUnit, bool
 		unit.BodyBytes = bodyBytes
 		return unit, true, nil
 	case entryModeSnippet:
-		payload, bodyBytes, err := buildPreparedSnippetPayload(entry)
+		matchedLines := snippetMatches.lookup(entry.SnippetPattern, entry.AbsPath)
+		if len(matchedLines) == 0 {
+			return preparedFileUnit{}, false, nil
+		}
+		payload, bodyBytes, err := buildPreparedSnippetPayload(entry, matchedLines)
 		if err != nil {
 			return preparedFileUnit{}, false, err
 		}
@@ -107,12 +169,12 @@ func slicedLinesBodySize(absPath string, start, end int) (int64, error) {
 	return total, nil
 }
 
-func buildPreparedSnippetPayload(entry fileEntry) ([]byte, int64, error) {
+func buildPreparedSnippetPayload(entry fileEntry, matchedLines []int) ([]byte, int64, error) {
 	snapshot, err := loadTextSnapshot(entry.AbsPath, entry.RelPath)
 	if err != nil {
 		return nil, 0, err
 	}
-	snippet, err := resolveSnippetFromSnapshot(snapshot, entry.SnippetPattern)
+	snippet, err := resolveSnippetFromSnapshot(snapshot, matchedLines)
 	if err != nil {
 		return nil, 0, err
 	}

@@ -159,9 +159,17 @@ func prepareSectionedFileItems(gitCtx gitContext, scopes []evaluatedOutputScope,
 	}
 
 	candidates = dedupeScopedFileCandidates(candidates, preserveOrder)
+	entries := make([]fileEntry, 0, len(candidates))
+	for _, candidate := range candidates {
+		entries = append(entries, candidate.entry)
+	}
+	snippetMatches, err := batchSnippetMatches(entries)
+	if err != nil {
+		return nil, err
+	}
 	itemsByScope := make(map[int][]outputPlanItem, len(scopes))
 	for _, candidate := range candidates {
-		unit, keep, err := prepareFileUnit(gitCtx, candidate.entry)
+		unit, keep, err := prepareFileUnit(gitCtx, candidate.entry, snippetMatches)
 		if err != nil {
 			return nil, err
 		}

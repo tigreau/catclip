@@ -77,7 +77,11 @@ func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string) (tree
 	if err != nil || !snapshot.IsText {
 		return treeDocument{}, false
 	}
-	snippet, err := resolveSnippetFromSnapshot(snapshot, pattern)
+	matches, err := runRipgrepMatchLines(pattern, []string{absPath})
+	if err != nil {
+		return treeDocument{}, false
+	}
+	snippet, err := resolveSnippetFromSnapshot(snapshot, matches[absPath])
 	if err != nil || len(snippet.Ranges) == 0 {
 		return treeDocument{}, false
 	}

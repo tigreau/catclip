@@ -56,7 +56,10 @@ func TestNormalizePositionalGlobArgsBareExtensionFixIt(t *testing.T) {
 		t.Fatalf("expected bare-extension fix-it, got:\n%s", err)
 	}
 	if !strings.Contains(err.Error(), `catclip src --only "*.tsx" --changed`) {
-		t.Fatalf("expected canonical bare-extension fix-it, got:\n%s", err)
+		t.Fatalf("expected --only filter suggestion, got:\n%s", err)
+	}
+	if !strings.Contains(err.Error(), `catclip src "*.tsx" --changed`) {
+		t.Fatalf("expected glob-as-target suggestion, got:\n%s", err)
 	}
 }
 

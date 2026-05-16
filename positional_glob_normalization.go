@@ -1,6 +1,10 @@
 package catclip
 
-import "strings"
+import (
+	"os"
+	"reflect"
+	"strings"
+)
 
 type positionalGlobNormalizationResult struct {
 	Args  []string
@@ -28,14 +32,15 @@ const (
 )
 
 type positionalGlobScopeNormalization struct {
-	rewritten     []string
-	hints         []string
-	fixItKind     positionalGlobTokenKind
-	fixItRaw      string
-	ambiguous     bool
-	ambiguityRaw  string
-	ambiguityThen [][]string
-	ambiguityOne  []string
+	rewritten           []string
+	rewrittenAsTargets  []string
+	hints               []string
+	fixItKind           positionalGlobTokenKind
+	fixItRaw            string
+	ambiguous           bool
+	ambiguityRaw        string
+	ambiguityThen       [][]string
+	ambiguityOne        []string
 }
 
 func normalizePositionalGlobArgs(args []string, quiet bool) (positionalGlobNormalizationResult, error) {
@@ -62,21 +67,37 @@ func normalizePositionalGlobArgs(args []string, quiet bool) (positionalGlobNorma
 		}
 
 		if norm.fixItKind != "" {
-			fullCommand := joinPositionalGlobCommand(normalizedScopes, [][]string{norm.rewritten}, canonicalizePositionalGlobScopes(scopes[i+1:]))
-			switch norm.fixItKind {
-			case positionalGlobBareExt:
+			suffix := canonicalizePositionalGlobScopes(scopes[i+1:])
+			onlyCommand := joinPositionalGlobCommand(normalizedScopes, [][]string{norm.rewritten}, suffix)
+			targetsCommand := joinPositionalGlobCommand(normalizedScopes, [][]string{norm.rewrittenAsTargets}, suffix)
+			noun := "pattern"
+			if norm.fixItKind == positionalGlobBareExt {
+				noun = "bare extension"
+			}
+			// When the scope had real targets typed alongside the pattern,
+			// the --only form and the targets-list form mean different
+			// things: --only narrows to pattern *within* the existing
+			// targets; the targets-list form unions the pattern globally
+			// with the existing targets. Show both so the user picks the
+			// intent. When there were no real targets, the two forms are
+			// equivalent and we show just the shorter glob-as-target form.
+			if reflect.DeepEqual(onlyCommand, targetsCommand) {
 				return positionalGlobNormalizationResult{}, newUsageError(
-					"Error: %s is a bare extension, not a target.\n  Use --only to filter by extension:\n    %s",
+					"Error: %s is a %s, not a target.\n  Use it as a glob target:\n    %s",
 					singleQuoted(norm.fixItRaw),
-					formatResolvedStartupCommand(fullCommand),
-				)
-			default:
-				return positionalGlobNormalizationResult{}, newUsageError(
-					"Error: %s is a pattern, not a target.\n  Use --only to filter by pattern:\n    %s",
-					singleQuoted(norm.fixItRaw),
-					formatResolvedStartupCommand(fullCommand),
+					noun,
+					formatResolvedStartupCommand(targetsCommand),
 				)
 			}
+			return positionalGlobNormalizationResult{}, newUsageError(
+				"Error: %s is a %s, not a target.\n  To filter the existing targets to %s:\n    %s\n  To also include %s files anywhere in the project:\n    %s",
+				singleQuoted(norm.fixItRaw),
+				noun,
+				norm.fixItRaw,
+				formatResolvedStartupCommand(onlyCommand),
+				norm.fixItRaw,
+				formatResolvedStartupCommand(targetsCommand),
+			)
 		}
 
 		normalizedScopes = append(normalizedScopes, norm.rewritten)
@@ -199,9 +220,10 @@ func normalizePositionalGlobScope(scope positionalGlobScope, quiet bool) positio
 	}
 
 	return positionalGlobScopeNormalization{
-		rewritten: buildCanonicalPatternScope(scope),
-		fixItKind: firstPatternToken.kind,
-		fixItRaw:  firstPatternToken.raw,
+		rewritten:          buildCanonicalPatternScope(scope),
+		rewrittenAsTargets: buildCanonicalPatternScopeAsTargets(scope),
+		fixItKind:          firstPatternToken.kind,
+		fixItRaw:           firstPatternToken.raw,
 	}
 }
 
@@ -306,16 +328,55 @@ func buildCanonicalPatternScope(scope positionalGlobScope) []string {
 			}
 		}
 	}
-	if len(targets) == 0 {
-		targets = []string{"."}
-	}
 
+	// When the user typed only patterns (no real targets), suggest the
+	// shorter form `catclip '*.go'` — globs are first-class targets, so
+	// there's no need to wrap with `. --only`. When the user typed both
+	// targets and patterns (e.g., `catclip src .go`), keep --only because
+	// the scopes are semantically different: `src '*.go'` would expand
+	// the scope to *.go files outside src/, while `src --only '*.go'`
+	// stays within src/.
 	scopeArgs := make([]string, 0, len(targets)+len(patterns)+len(scope.tail)+1)
-	scopeArgs = append(scopeArgs, targets...)
-	if len(patterns) > 0 {
-		scopeArgs = append(scopeArgs, "--only")
+	if len(targets) == 0 {
 		scopeArgs = append(scopeArgs, patterns...)
+	} else {
+		scopeArgs = append(scopeArgs, targets...)
+		if len(patterns) > 0 {
+			scopeArgs = append(scopeArgs, "--only")
+			scopeArgs = append(scopeArgs, patterns...)
+		}
 	}
+	scopeArgs = append(scopeArgs, scope.tail...)
+	return scopeArgs
+}
+
+// buildCanonicalPatternScopeAsTargets renders the same scope as
+// buildCanonicalPatternScope but emits the pattern(s) as targets alongside
+// the user's plain targets instead of wrapping them in --only. This produces
+// the semantically *broader* form: `catclip src '*.go'` matches both `src/`
+// and `*.go` files anywhere in the project, whereas `catclip src --only
+// '*.go'` stays within `src/`. The two forms are offered side-by-side in
+// the bare-extension error so the user can pick the intent that matches.
+func buildCanonicalPatternScopeAsTargets(scope positionalGlobScope) []string {
+	targets := []string{}
+	patterns := []string{}
+	for _, token := range scope.positional {
+		switch token.kind {
+		case positionalGlobPlain:
+			targets = append(targets, token.raw)
+		case positionalGlobWrapperStar:
+			if core := trimWrapperStars(token.raw); core != "" {
+				targets = append(targets, core)
+			}
+		default:
+			if canonicalPattern, ok := canonicalPatternForToken(token); ok {
+				patterns = append(patterns, canonicalPattern)
+			}
+		}
+	}
+	scopeArgs := make([]string, 0, len(targets)+len(patterns)+len(scope.tail))
+	scopeArgs = append(scopeArgs, targets...)
+	scopeArgs = append(scopeArgs, patterns...)
 	scopeArgs = append(scopeArgs, scope.tail...)
 	return scopeArgs
 }
@@ -385,9 +446,16 @@ func isBareExtensionToken(token string) bool {
 	if strings.Contains(token, "/") || strings.Contains(token, "\\") || hasGlobChars(token) {
 		return false
 	}
-	ext := strings.ToLower(token[1:])
-	_, ok := knownTextExts[ext]
-	return ok
+	// `.foo` is ambiguous: it could be a hidden filename (`.env`,
+	// `.htaccess`) or a bare extension the user meant as a glob (`.go`,
+	// `.ts`). Disambiguate by checking if the literal path exists on
+	// disk — real file wins. No allowlist needed; rg is the sole
+	// classification authority per
+	// docs/architecture/ACTIVE_NOTE_ripgrep_is_required.md.
+	if _, err := os.Stat(token); err == nil {
+		return false
+	}
+	return true
 }
 
 func canonicalPatternForToken(token positionalGlobToken) (string, bool) {

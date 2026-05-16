@@ -38,12 +38,12 @@ type scopeResolver struct {
 	cfg                  runConfig
 	gitCtx               gitContext
 	allowFileSymlinks    bool
-	textFileCache        map[string]bool
 	textFileSet          map[string]struct{}
 	textFileSetReady     bool
 	withBinaries         bool
 	includedTargets      includedTargetSet
 	wantedBasenames      map[string]struct{}
+	scopeTargets         []string
 	interactiveTargets   []targetMatch
 	interactiveTargetsOk bool
 	ignoredTargets       []targetMatch
@@ -71,6 +71,7 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 		withBinaries:      cfg.WithBinaries,
 		includedTargets:   buildIncludedTargetSet(cfg.WorkingDir, s.IncludedTargets),
 		wantedBasenames:   collectWantedBasenames(s.Targets),
+		scopeTargets:      append([]string(nil), s.Targets...),
 	}
 	var err error
 
@@ -414,7 +415,7 @@ func (r *scopeResolver) canResolveScopedTargetWithoutPrompt(normalizedTarget str
 		return false, err
 	}
 	if blockedDir != nil {
-		discovered, err := discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.classifyTextFile, blockedDir)
+		discovered, err := discoverFilesUnder(r.cfg.WorkingDir, resolvedDir, baseName, r.classifyTextFile, blockedDir)
 		if err != nil {
 			return false, err
 		}
@@ -492,7 +493,7 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 			return nil, diagnostics, notices, false, err
 		}
 		if blockedDir != nil {
-			discovered, err = discoverFilesByBasenameUnder(r.cfg.WorkingDir, filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(resolvedDir)), resolvedDir, baseName, r.classifyTextFile, blockedDir)
+			discovered, err = discoverFilesUnder(r.cfg.WorkingDir, resolvedDir, baseName, r.classifyTextFile, blockedDir)
 		} else {
 			var skipped []skippedMatch
 			discovered, skipped, err = r.resolveVisibleFilesByBasename(resolvedDir, baseName)
@@ -815,7 +816,7 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 			if !r.targetIncluded(relTarget) {
 				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, block.Source, hasIncludes, colors), isError: true}, nil
 			}
-			files, err := discoverFilesUnder(r.cfg.WorkingDir, absTarget, relTarget, r.classifyTextFile, block)
+			files, err := discoverFilesUnder(r.cfg.WorkingDir, relTarget, "", r.classifyTextFile, block)
 			return withTargetRoot(files, relTarget), true, nil, err
 		}
 		files, err := r.discoverVisibleFilesUnder(relTarget)
@@ -864,7 +865,7 @@ func (r *scopeResolver) ensureTextFileSet() error {
 	if r.textFileSetReady {
 		return nil
 	}
-	set, err := resolveTextFileSet(r.cfg.WorkingDir)
+	set, err := resolveTextFileSet(r.cfg.WorkingDir, r.scopeTargets)
 	if err != nil {
 		return err
 	}
@@ -874,10 +875,10 @@ func (r *scopeResolver) ensureTextFileSet() error {
 }
 
 // isTextFromSet reports whether rel is in the rg-derived text-file set.
-// knownTextLikeFile short-circuits "obvious text by extension/basename" so
-// `--with-binaries` and known-text overrides still apply uniformly.
+// Short-circuits on --with-binaries; otherwise defers to rg's
+// NUL-detection scan via the cached set.
 func (r *scopeResolver) isTextFromSet(rel string) bool {
-	if r.withBinaries || knownTextLikeFile(rel) {
+	if r.withBinaries {
 		return true
 	}
 	_, ok := r.textFileSet[rel]
@@ -888,47 +889,18 @@ func (r *scopeResolver) classifyTextFile(relPath, absPath string) (bool, error) 
 	if r.withBinaries {
 		return true, nil
 	}
-	if knownTextLikeFile(relPath) {
-		return true, nil
-	}
-	// Consult the rg-derived NUL-free file set first. The set covers every
-	// candidate the discovery pipeline can see (rg runs with --no-ignore
-	// --hidden), is computed once per process, and is shared across every
-	// resolver in the run. Hitting the set replaces the per-file 8KB read
-	// in isProbablyTextFile and is the load-bearing perf win on large
-	// repos. Falling through to isProbablyTextFile only happens when the
-	// rg scan failed entirely (errRipgrepUnavailable, etc.).
+	// rg's NUL-detection text-set is the sole content classifier.
+	// No Go fallback — rg's answer is final. A path absent from the set
+	// is classified as binary; --with-binaries to override.
 	rel := normalizeRelPath(relPath)
-	if rel != "" && rel != "." {
-		if err := r.ensureTextFileSet(); err == nil {
-			if _, ok := r.textFileSet[rel]; ok {
-				return true, nil
-			}
-			// rg covered the workdir but did not list this path → binary.
-			// Empty set indicates the rg scan returned nothing (workdir
-			// has no text files at all, or rg failed cleanly with exit 1);
-			// fall through to per-file detection in that case.
-			if len(r.textFileSet) > 0 {
-				return false, nil
-			}
-		}
+	if rel == "" || rel == "." {
+		return false, nil
 	}
-	if absPath == "" {
-		absPath = filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(relPath))
-	}
-	absPath = filepath.Clean(absPath)
-	if r.textFileCache == nil {
-		r.textFileCache = make(map[string]bool)
-	}
-	if text, ok := r.textFileCache[absPath]; ok {
-		return text, nil
-	}
-	text, err := isProbablyTextFile(absPath)
-	if err != nil {
+	if err := r.ensureTextFileSet(); err != nil {
 		return false, err
 	}
-	r.textFileCache[absPath] = text
-	return text, nil
+	_, ok := r.textFileSet[rel]
+	return ok, nil
 }
 
 func (r *scopeResolver) blockInfoForDir(relPath string) (*blockInfo, error) {
@@ -1519,7 +1491,14 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := r.ensureTextFileSet(); err != nil {
+	// allIgnoredTargets walks project-wide (no Paths above) — the
+	// downstream filterIgnoredTargetsByScopeTargets narrows to scope. It
+	// uses a project-wide text-file set rather than r.textFileSet, which
+	// is scope-narrowed and would hide ignored items outside the scope's
+	// target subtree (.gitignore-blocked dirs an ancestor of the scope
+	// might want surfaced for --include).
+	projectTextSet, err := resolveTextFileSet(r.cfg.WorkingDir, nil)
+	if err != nil {
 		return nil, err
 	}
 
@@ -1535,7 +1514,11 @@ func (r *scopeResolver) allIgnoredTargets() ([]targetMatch, error) {
 			dirSet[d] = struct{}{}
 		}
 
-		if !r.isTextFromSet(rel) {
+		isText := r.withBinaries
+		if !isText {
+			_, isText = projectTextSet[rel]
+		}
+		if !isText {
 			continue
 		}
 		filePaths = append(filePaths, rel)
@@ -1976,8 +1959,7 @@ func (r *scopeResolver) fuzzySearchFilesUnder(baseRel, needle string, rootBypass
 		return r.fuzzySearchFiles(baseRel, needle)
 	}
 
-	rootAbs := filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(baseRel))
-	entries, err := discoverFilesUnder(r.cfg.WorkingDir, rootAbs, baseRel, r.classifyTextFile, rootBypass)
+	entries, err := discoverFilesUnder(r.cfg.WorkingDir, baseRel, "", r.classifyTextFile, rootBypass)
 	if err != nil {
 		return nil, err
 	}

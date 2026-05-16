@@ -177,16 +177,12 @@ package catclip
 //      - ignore rules
 //      - --only / --exclude
 //      - known binary basename/extension denylist
-//      - known text basename/extension allowlist
-//   6. Fall back to byte sniffing only for unknown file types:
-//      - text sniffing is cached for the duration of the run
-//      - the same file should only be sniffed once per command
-//      - this is also why newer Linux repository runs include more assembly
-//        source than older catclip runs: rg only enumerates candidates, but
-//        `isLikelyTextFile(...)` now admits `.S` / `.lds.S` through the known
-//        text allowlist because extension matching is shell-style and
-//        case-insensitive (`.S` normalizes to `s`), instead of relying on the
-//        old byte-sniff fallback to recognize them as text
+//   6. Text/binary classification flows entirely through rg's text-file
+//      set (NUL-byte detection via
+//      `rg --files-without-match --text -e '\x00'`). The rg answer is
+//      authoritative — no per-file Go byte-sniff fallback, no Go-side
+//      name-based allowlist (see
+//      docs/architecture/ACTIVE_NOTE_ripgrep_is_required.md).
 //   7. Keep ripgrep-backed candidate entries lightweight:
 //      - picker/index candidates are stored with RelPath first
 //      - AbsPath is materialized only when a file survives to real work

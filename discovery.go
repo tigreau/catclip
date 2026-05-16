@@ -9,10 +9,12 @@ import (
 
 type textClassifier func(relPath, absPath string) (bool, error)
 
-// discoverFilesUnder enumerates text files under rootAbs using ripgrep.
+// discoverFilesUnder enumerates text files under rootRel using ripgrep.
 // When rootBypass is set the call switches to --no-ignore so callers acting
 // on an --include'd subtree can recover paths blocked by .hiss/.gitignore.
-func discoverFilesUnder(workingDir, rootAbs, rootRel string, classifyText textClassifier, rootBypass *blockInfo) ([]fileEntry, error) {
+// When baseName is non-empty, only files whose basename equals baseName are
+// returned; pass "" to skip the filter.
+func discoverFilesUnder(workingDir, rootRel, baseName string, classifyText textClassifier, rootBypass *blockInfo) ([]fileEntry, error) {
 	rootRel = normalizeRelPath(rootRel)
 	rels, err := ripgrepListUnder(workingDir, rootRel, rootBypass != nil)
 	if err != nil {
@@ -20,38 +22,7 @@ func discoverFilesUnder(workingDir, rootAbs, rootRel string, classifyText textCl
 	}
 	files := make([]fileEntry, 0, len(rels))
 	for _, rel := range rels {
-		absPath := filepath.Join(workingDir, filepath.FromSlash(rel))
-		text, err := classifyText(rel, absPath)
-		if err != nil {
-			return nil, err
-		}
-		if !text {
-			continue
-		}
-		entry := fileEntry{
-			AbsPath: absPath,
-			RelPath: rel,
-		}
-		if rootBypass != nil {
-			entry = withAllowedByInclude(entry, *rootBypass)
-		}
-		files = append(files, entry)
-	}
-	_ = rootAbs
-	return files, nil
-}
-
-// discoverFilesByBasenameUnder is the basename-filtered variant of
-// discoverFilesUnder.
-func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string, classifyText textClassifier, rootBypass *blockInfo) ([]fileEntry, error) {
-	rootRel = normalizeRelPath(rootRel)
-	rels, err := ripgrepListUnder(workingDir, rootRel, rootBypass != nil)
-	if err != nil {
-		return nil, err
-	}
-	files := make([]fileEntry, 0)
-	for _, rel := range rels {
-		if path.Base(rel) != baseName {
+		if baseName != "" && path.Base(rel) != baseName {
 			continue
 		}
 		absPath := filepath.Join(workingDir, filepath.FromSlash(rel))
@@ -71,7 +42,6 @@ func discoverFilesByBasenameUnder(workingDir, rootAbs, rootRel, baseName string,
 		}
 		files = append(files, entry)
 	}
-	_ = rootAbs
 	return files, nil
 }
 
@@ -105,14 +75,16 @@ func ripgrepListUnder(workingDir, rootRel string, noIgnore bool) ([]string, erro
 	return out, nil
 }
 
-func knownTextLikeFile(relPath string) bool {
-	if _, ok := knownTextBasenames[strings.ToLower(path.Base(relPath))]; ok {
-		return true
-	}
-	_, ok := knownTextExts[shellStyleExtension(relPath)]
-	return ok
-}
-
+// shellStyleExtension is kept for non-classification consumers (e.g.,
+// extension counting in startup_picker). Catclip's text/binary
+// classification flows entirely through rg per
+// docs/architecture/ACTIVE_NOTE_ripgrep_is_required.md; no Go-side
+// allowlist exists. A previous `knownTextLikeFile` attempt was
+// reverted — see
+// docs/versions/v0.5.0/reports/RESOLVED_BUG_windows_contains_slow.md
+// for the analysis (the allowlist almost never actually avoided the
+// rg text-set call in practice, since real projects always contain at
+// least one non-allowlisted file like a `.git` blob or build artifact).
 func shellStyleExtension(relPath string) string {
 	base := strings.ToLower(path.Base(relPath))
 	lastDot := strings.LastIndexByte(base, '.')
@@ -120,42 +92,6 @@ func shellStyleExtension(relPath string) string {
 		return ""
 	}
 	return base[lastDot+1:]
-}
-
-var knownTextBasenames = map[string]struct{}{
-	"makefile": {}, "gemfile": {}, "rakefile": {}, "guardfile": {}, "vagrantfile": {}, "berksfile": {}, "capfile": {},
-	"dockerfile": {}, "containerfile": {}, "jenkinsfile": {}, "procfile": {},
-	"cmakelists.txt": {}, "configure": {}, "configure.ac": {},
-	".gitignore": {}, ".gitattributes": {}, ".gitmodules": {}, ".gitkeep": {}, ".keep": {},
-	".git-blame-ignore-revs": {},
-	".dockerignore":          {}, ".helmignore": {}, ".slugignore": {},
-	".vscodeignore": {}, ".npmignore": {}, ".eslintignore": {},
-	".editorconfig": {}, ".eslintrc": {}, ".prettierrc": {}, ".stylelintrc": {},
-	".babelrc": {}, ".npmrc": {}, ".yarnrc": {}, ".nvmrc": {}, ".browserslistrc": {},
-	".flake8": {}, ".pylintrc": {}, ".rubocop.yml": {},
-	".htaccess": {}, ".mailmap": {}, ".sequelizerc": {},
-	"license": {}, "licence": {}, "authors": {}, "contributors": {}, "changelog": {}, "todo": {},
-	"codeowners": {}, "version": {}, "readme": {},
-}
-
-var knownTextExts = map[string]struct{}{
-	"html": {}, "htm": {}, "css": {}, "scss": {}, "sass": {}, "less": {}, "js": {}, "jsx": {}, "mjs": {}, "cjs": {}, "ts": {}, "tsx": {}, "mts": {}, "cts": {},
-	"json": {}, "yaml": {}, "yml": {}, "xml": {}, "toml": {}, "ini": {}, "cfg": {}, "conf": {}, "properties": {}, "env": {}, "lock": {},
-	"md": {}, "markdown": {}, "txt": {}, "text": {}, "rst": {}, "adoc": {},
-	"py": {}, "pyw": {}, "pyi": {}, "ipynb": {}, "rb": {}, "erb": {}, "haml": {}, "pl": {}, "pm": {}, "lua": {}, "sh": {}, "bash": {}, "zsh": {}, "fish": {}, "bat": {}, "cmd": {}, "ps1": {}, "psm1": {}, "psd1": {},
-	"c": {}, "cc": {}, "cpp": {}, "cxx": {}, "h": {}, "hh": {}, "hpp": {}, "hxx": {}, "go": {}, "rs": {}, "swift": {}, "kt": {}, "kts": {}, "scala": {}, "cs": {}, "fs": {}, "vb": {}, "vbs": {}, "java": {}, "jsp": {}, "php": {}, "sql": {},
-	"gd": {}, "godot": {}, "shader": {}, "unity": {}, "qml": {},
-	"mk": {}, "cmake": {}, "gradle": {},
-	"groovy": {}, "gvy": {}, "tf": {}, "hcl": {},
-	"sln": {}, "csproj": {}, "vbproj": {}, "fsproj": {},
-	"r": {}, "rmd": {}, "clj": {}, "cljs": {}, "ex": {}, "exs": {}, "erl": {}, "hrl": {}, "elm": {}, "nim": {}, "zig": {}, "v": {}, "d": {}, "m": {}, "mm": {},
-	"hs": {}, "lhs": {}, "jl": {}, "cl": {}, "lisp": {}, "scm": {}, "ss": {}, "rkt": {}, "asm": {}, "s": {},
-	"csv": {}, "tsv": {}, "graphql": {}, "gql": {}, "proto": {}, "sol": {}, "patch": {}, "diff": {},
-	"vim": {}, "dart": {}, "vue": {}, "svelte": {}, "astro": {}, "tex": {}, "j2": {}, "ejs": {}, "hbs": {}, "mustache": {}, "liquid": {}, "pug": {}, "jade": {},
-	"tsbuildinfo": {}, "info": {}, "local": {}, "development": {}, "production": {}, "staging": {}, "test": {}, "example": {},
-	"log": {}, "out": {}, "err": {}, "pid": {}, "seed": {}, "snap": {},
-	"code-snippets": {}, "code-workspace": {}, "tmlanguage": {},
-	"desktop": {}, "template": {}, "spec": {}, "ps1xml": {},
 }
 
 func containsParentTraversal(value string) bool {

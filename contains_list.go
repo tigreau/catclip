@@ -1,6 +1,7 @@
 package catclip
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -73,13 +74,21 @@ func contentMatchRowsForScope(cfg runConfig) ([]contentMatchRow, error) {
 	if patternText == "" {
 		return nil, nil
 	}
-	if _, err := compileContainsPattern(patternText); err != nil {
+	if err := validateContainsPattern(patternText); err != nil {
 		return nil, nil
 	}
 
 	gitCtx := detectGitContext(cfg.WorkingDir)
 	entries, _, _, _, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
 	if err != nil {
+		// While the user types in the interactive picker the pattern can be
+		// incomplete (e.g., `[` mid-character-class). rg surfaces this as a
+		// compile error; we swallow it silently so the picker just shows
+		// nothing rather than erroring out per-keystroke. Other errors
+		// still propagate.
+		if errors.Is(err, errRipgrepBadPattern) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	rows := make([]contentMatchRow, 0, len(entries))

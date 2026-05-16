@@ -29,30 +29,27 @@ func loadSnapshot(absPath, relPath string, requireText bool) (textSnapshot, erro
 		return textSnapshot{}, err
 	}
 
-	isText, err := isLikelyTextFile(relPath, absPath)
-	if err != nil {
-		return textSnapshot{}, err
-	}
-
 	snapshot := textSnapshot{
 		AbsPath: absPath,
 		RelPath: relPath,
 		Size:    info.Size(),
 		ModTime: info.ModTime(),
-		IsText:  isText,
-	}
-	if requireText && !isText {
-		return snapshot, nil
 	}
 
 	data, err := os.ReadFile(absPath)
 	if err != nil {
 		return textSnapshot{}, err
 	}
-	snapshot.RawBytes = data
-	if !isText {
+	// Emission-time NUL-byte check on bytes we'd read anyway. This is
+	// single-file byte inspection of a file we're processing, distinct
+	// from discovery-time content classification (which flows through
+	// rg's text-file set).
+	snapshot.IsText = bytes.IndexByte(data, 0) < 0
+	if requireText && !snapshot.IsText {
+		snapshot.RawBytes = nil
 		return snapshot, nil
 	}
+	snapshot.RawBytes = data
 	return snapshot, nil
 }
 

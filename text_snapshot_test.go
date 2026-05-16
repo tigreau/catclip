@@ -51,7 +51,11 @@ func TestSnippetResolutionMatchesPreviewAndPreparedPayload(t *testing.T) {
 		t.Fatalf("loadTextSnapshot returned error: %v", err)
 	}
 
-	snippet, err := resolveSnippetFromSnapshot(snapshot, "TODO")
+	matchedLines, err := runRipgrepMatchLines("TODO", []string{absPath})
+	if err != nil {
+		t.Fatalf("runRipgrepMatchLines returned error: %v", err)
+	}
+	snippet, err := resolveSnippetFromSnapshot(snapshot, matchedLines[absPath])
 	if err != nil {
 		t.Fatalf("resolveSnippetFromSnapshot returned error: %v", err)
 	}
@@ -76,7 +80,7 @@ func TestSnippetResolutionMatchesPreviewAndPreparedPayload(t *testing.T) {
 		RelPath:        relPath,
 		Mode:           entryModeSnippet,
 		SnippetPattern: "TODO",
-	})
+	}, matchedLines[absPath])
 	if err != nil {
 		t.Fatalf("buildPreparedSnippetPayload returned error: %v", err)
 	}

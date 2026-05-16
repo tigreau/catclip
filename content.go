@@ -2,16 +2,11 @@ package catclip
 
 import (
 	"bytes"
-	"errors"
-	"io"
-	"os"
 	"path/filepath"
-	"regexp"
-	"unicode/utf8"
 )
 
 func filterEntriesByContent(entries []fileEntry, pattern string) ([]fileEntry, error) {
-	if _, err := compileContainsPattern(pattern); err != nil {
+	if err := validateContainsPattern(pattern); err != nil {
 		return nil, err
 	}
 
@@ -50,32 +45,18 @@ func ensureEntryAbsPaths(entries []fileEntry, workingDir string) []fileEntry {
 	return entries
 }
 
-func isLikelyTextFile(relPath, absPath string) (bool, error) {
-	if knownTextLikeFile(relPath) {
-		return true, nil
+// validateContainsPattern checks a --contains / --snippet regex pattern at
+// flag-parse time. It is intentionally a non-empty check, not a regex
+// compile: the runtime engine is rg/PCRE2 (see
+// docs/architecture/ACTIVE_NOTE_ripgrep_is_required.md), and Go's RE2
+// engine cannot validate PCRE2-specific syntax (backreferences,
+// lookaround, atomic groups, etc.). Real syntax errors surface from rg
+// at scope-evaluation time with rg's own error message.
+func validateContainsPattern(pattern string) error {
+	if pattern == "" {
+		return newUsageError("Error: --contains requires a regex pattern.")
 	}
-	return isProbablyTextFile(absPath)
-}
-
-func compileContainsPattern(pattern string) (*regexp.Regexp, error) {
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return nil, newUsageError("Error: invalid --contains regex: %v.", err)
-	}
-	return re, nil
-}
-
-func fileHasMatchingLine(absPath string, re *regexp.Regexp) (bool, error) {
-	data, err := os.ReadFile(absPath)
-	if err != nil {
-		return false, err
-	}
-	for _, line := range splitLogicalLines(data) {
-		if re.MatchString(line) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return nil
 }
 
 func splitLogicalLines(data []byte) []string {
@@ -96,38 +77,4 @@ func splitLogicalLines(data []byte) []string {
 		start = end + 1
 	}
 	return lines
-}
-
-func isProbablyTextFile(path string) (bool, error) {
-	const sniffSize = 8192
-
-	f, err := os.Open(path)
-	if err != nil {
-		return false, err
-	}
-	defer f.Close()
-
-	buf := make([]byte, sniffSize)
-	n, err := f.Read(buf)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return false, err
-	}
-	if n == 0 {
-		return true, nil
-	}
-	buf = buf[:n]
-	if bytes.IndexByte(buf, 0) >= 0 {
-		return false, nil
-	}
-	if utf8.Valid(buf) {
-		return true, nil
-	}
-
-	control := 0
-	for _, b := range buf {
-		if b < 0x20 && b != '\n' && b != '\r' && b != '\t' && b != '\f' {
-			control++
-		}
-	}
-	return control <= len(buf)/10, nil
 }

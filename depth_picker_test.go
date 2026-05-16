@@ -60,12 +60,12 @@ if [ "$prompt" = "depth> " ]; then
 		echo "preview command missing catclip-tree invocation" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- "--input-file" >/dev/null || {
-		echo "preview command missing --input-file" >&2
+	printf '%s\n' "$preview" | grep -F -- "--input-dir" >/dev/null || {
+		echo "preview command missing --input-dir" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- "{2}.json" >/dev/null || {
-		echo "preview command missing per-bucket json placeholder" >&2
+	printf '%s\n' "$preview" | grep -F -- "--input-stem {2}" >/dev/null || {
+		echo "preview command missing per-bucket stem placeholder" >&2
 		exit 91
 	}
 	printf '%s\n' "$preview" | grep -F -- "--internal-tree-payload" >/dev/null && {
@@ -163,8 +163,8 @@ if [ "$prompt" != "depth> " ]; then
 fi
 
 # Pull the tmpdir out of the preview command. Pattern looks like:
-#   "<treeBin>" --bare ... --input-file "<tmpdir>/{2}.json"
-tmpdir_token="$(printf '%s\n' "$preview" | sed -n 's/.*--input-file "\{0,1\}\([^"]*\)\/{2}\.json"\{0,1\}.*/\1/p')"
+#   "<treeBin>" --bare ... --input-dir "<tmpdir>" --input-stem {2}
+tmpdir_token="$(printf '%s\n' "$preview" | sed -n 's/.*--input-dir "\{0,1\}\([^" ]*\)"\{0,1\} --input-stem.*/\1/p')"
 if [ -z "$tmpdir_token" ]; then
 	echo "could not extract tmpdir from preview command: $preview" >&2
 	exit 91

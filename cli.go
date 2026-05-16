@@ -31,6 +31,12 @@ type stdinPathCache struct {
 }
 
 func run(cfg runConfig, stdout, stderr io.Writer) error {
+	// Surface the rg call/timing counters at end-of-run when explicitly
+	// opted into. Useful for diagnosing per-platform perf (especially
+	// Windows where process spawn cost dominates --contains / --snippet).
+	// No-op when CATCLIP_BENCH_RG is unset.
+	defer benchReport()
+
 	switch cfg.Action {
 	case actionHelp:
 		_, err := io.WriteString(stdout, shortHelpText(cfg.Version, activeColorPaletteForWriter(stdout)))

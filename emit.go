@@ -647,17 +647,6 @@ type snippetRange struct {
 	End   int
 }
 
-// emitSnippetEntry writes only the blank-line-bounded blocks that matched the
-// scope's --contains pattern.
-func emitSnippetEntry(w io.Writer, entry fileEntry) error {
-	payload, _, err := buildPreparedSnippetPayload(entry)
-	if err != nil {
-		return err
-	}
-	_, err = w.Write(payload)
-	return err
-}
-
 // emitDiffEntry emits git patches for tracked files and falls back to full
 // content for untracked files, matching the shell tool's diff UX.
 func emitDiffEntry(w io.Writer, gitCtx gitContext, entry fileEntry) error {

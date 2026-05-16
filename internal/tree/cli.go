@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -44,6 +45,8 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 		maxLines     int
 		showVer      bool
 		inputFile    string
+		inputDir     string
+		inputStem    string
 	)
 
 	fs := flag.NewFlagSet("catclip-tree", flag.ContinueOnError)
@@ -58,6 +61,8 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 	fs.IntVar(&maxLines, "max-lines", 0, "maximum rendered lines for file preview mode (0 = unlimited)")
 	fs.BoolVar(&showVer, "version", false, "show version")
 	fs.StringVar(&inputFile, "input-file", "", "read payload from PATH instead of stdin")
+	fs.StringVar(&inputDir, "input-dir", "", "read payload from --input-dir/--input-stem.json (cross-platform alternative to --input-file for fzf preview commands where {N} substitution would otherwise need shell-quoting tricks)")
+	fs.StringVar(&inputStem, "input-stem", "", "basename (without extension) within --input-dir; joined as DIR/STEM.json")
 	fs.Usage = func() {
 		_, _ = io.WriteString(stderr, helpText(version))
 	}
@@ -110,9 +115,18 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 		return err
 	}
 
+	resolvedInputFile := inputFile
+	if resolvedInputFile == "" && inputDir != "" && inputStem != "" {
+		// Cross-platform path assembly: keeping --input-dir and --input-stem
+		// as separate flags lets fzf preview commands pass {N} substitutions
+		// as standalone args, avoiding shell-quoting differences between
+		// POSIX sh and Windows cmd.exe. See depth_picker.go for the caller.
+		resolvedInputFile = filepath.Join(inputDir, inputStem+".json")
+	}
+
 	payload := stdin
-	if inputFile != "" {
-		f, err := os.Open(inputFile)
+	if resolvedInputFile != "" {
+		f, err := os.Open(resolvedInputFile)
 		if err != nil {
 			return err
 		}
@@ -166,6 +180,8 @@ func helpText(version string) string {
 	b.WriteString("  --color MODE      auto, always, or never\n")
 	b.WriteString("  --max-lines N     Maximum lines in file preview mode (0 = unlimited)\n")
 	b.WriteString("  --input-file PATH Read payload from PATH instead of stdin\n")
+	b.WriteString("  --input-dir DIR   Read payload from DIR/STEM.json (paired with --input-stem)\n")
+	b.WriteString("  --input-stem STEM Basename within --input-dir; joined as DIR/STEM.json\n")
 	b.WriteString("  --version         Show version\n")
 	b.WriteString("  -h, --help        Show this help\n")
 	return b.String()
