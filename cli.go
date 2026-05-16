@@ -98,22 +98,22 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		for i, scopeSpec := range commandScopes {
 			scopeStarted := time.Now()
 			s := executionScopeFromCommandScopeSpec(scopeSpec)
-			entries, scopeDiagnostics, scopeNotices, scopeSelectionCancel, err := evaluateScope(cfg, gitCtx, i, s, stderr, colors)
+			discovered, err := evaluateScope(cfg, gitCtx, i, s, stderr, colors)
 			if err != nil {
 				discoverySpinnerStop()
 				return err
 			}
 			if cfg.Verbose {
-				fmt.Fprintf(stderr, "[verbose] scope %d: discovered %d file(s) in %s\n", i+1, len(entries), formatDuration(time.Since(scopeStarted)))
+				fmt.Fprintf(stderr, "[verbose] scope %d: discovered %d file(s) in %s\n", i+1, len(discovered.Entries), formatDuration(time.Since(scopeStarted)))
 			}
-			allEntries = append(allEntries, entries...)
+			allEntries = append(allEntries, discovered.Entries...)
 			evaluatedScopes = append(evaluatedScopes, evaluatedOutputScope{
 				Paths:   s.Paths,
-				Entries: append([]fileEntry(nil), entries...),
+				Entries: append([]fileEntry(nil), discovered.Entries...),
 			})
-			diagnostics = append(diagnostics, scopeDiagnostics...)
-			notices = append(notices, scopeNotices...)
-			hadSelectionCancel = hadSelectionCancel || scopeSelectionCancel
+			diagnostics = append(diagnostics, discovered.Diagnostics...)
+			notices = append(notices, discovered.Notices...)
+			hadSelectionCancel = hadSelectionCancel || discovered.SelectionCancel
 		}
 		discoverySpinnerStop()
 		outputPlan, err := buildOutputPlanForCfg(cfg, gitCtx, evaluatedScopes, allEntries)

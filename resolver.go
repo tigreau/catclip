@@ -61,8 +61,26 @@ type scopeResolver struct {
 	ignoreSetsReady      bool
 }
 
-func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s executionScope, stderr io.Writer, colors colorPalette) ([]fileEntry, []diagnostic, []string, bool, error) {
+// discoveredScope is the typed output of the discover stage for a
+// single execution scope. Carries the entries the scope resolved to,
+// the diagnostics and notices produced during resolution, and the
+// post-picker `executionScope` plus `gitContext` that produced them.
+// Self-contained so downstream stages don't have to re-thread inputs.
+//
+// Phase 0 of the SCC + pipeline-linearity refactor — see
+// docs/versions/v0.5.1/reports/ACTIVE_PLAN_stage_chain_checkpoints.md.
+type discoveredScope struct {
+	Scope           executionScope
+	GitContext      gitContext
+	Entries         []fileEntry
+	Diagnostics     []diagnostic
+	Notices         []string
+	SelectionCancel bool
+}
+
+func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s executionScope, stderr io.Writer, colors colorPalette) (discoveredScope, error) {
 	mode := executionScopeOutputMode(s)
+	result := discoveredScope{Scope: s, GitContext: gitCtx}
 
 	resolver := scopeResolver{
 		cfg:               cfg,
@@ -75,15 +93,12 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 	}
 	var err error
 
-	var diagnostics []diagnostic
-	var notices []string
 	var entries []fileEntry
 	selectedPaths := make([]string, 0, len(s.Targets))
-	hadSelectionCancel := false
 	for _, target := range s.Targets {
 		covered, err := resolver.interactiveQueryCoveredBySelection(target, selectedPaths)
 		if err != nil {
-			return nil, diagnostics, notices, hadSelectionCancel, err
+			return result, err
 		}
 		if covered {
 			continue
@@ -91,10 +106,10 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 
 		discovered, targetDiagnostics, targetNotices, selectionCancelled, err := resolver.resolveAndDiscoverTarget(scopeIndex, target, stderr, colors)
 		if err != nil {
-			return nil, diagnostics, notices, hadSelectionCancel, err
+			return result, err
 		}
-		diagnostics = append(diagnostics, targetDiagnostics...)
-		notices = append(notices, targetNotices...)
+		result.Diagnostics = append(result.Diagnostics, targetDiagnostics...)
+		result.Notices = append(result.Notices, targetNotices...)
 		entries = append(entries, discovered...)
 		if len(discovered) > 0 && !hasGlobChars(target) {
 			// selectedPaths tracks resolved single-path targets so that later
@@ -107,13 +122,13 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 			}
 			exists, err := resolver.targetPathExists(normalized)
 			if err != nil {
-				return nil, diagnostics, notices, hadSelectionCancel, err
+				return result, err
 			}
 			if exists {
 				selectedPaths = append(selectedPaths, normalized)
 			}
 		}
-		hadSelectionCancel = hadSelectionCancel || selectionCancelled
+		result.SelectionCancel = result.SelectionCancel || selectionCancelled
 	}
 
 	entries = dedupeEntriesByPath(entries)
@@ -125,16 +140,17 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 		// per-scope loop in cli.go converts this into exit 2 (single
 		// scope or all scopes unsatisfiable) or exit 1 (mixed success).
 		// See docs/versions/v0.5.0/reports/ACTIVE_BUG_git_selection_silently_dropped_no_git.md.
-		diagnostics = append(diagnostics, diagnostic{
+		result.Diagnostics = append(result.Diagnostics, diagnostic{
 			message:              gitSelectionRequiresGitRepoMessage(),
 			isScopeUnsatisfiable: true,
 		})
-		return nil, diagnostics, dedupePreserveOrder(notices), hadSelectionCancel, nil
+		result.Notices = dedupePreserveOrder(result.Notices)
+		return result, nil
 	}
 
 	entries, err = applyScopeStages(&resolver, gitCtx, s, entries)
 	if err != nil {
-		return nil, diagnostics, notices, hadSelectionCancel, err
+		return result, err
 	}
 
 	for i := range entries {
@@ -146,8 +162,9 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 		entries[i].DiffWantStaged = s.Staged
 		entries[i].DiffWantUnstaged = s.Unstaged
 	}
-	entries = ensureEntryAbsPaths(entries, cfg.WorkingDir)
-	return entries, diagnostics, dedupePreserveOrder(notices), hadSelectionCancel, nil
+	result.Entries = ensureEntryAbsPaths(entries, cfg.WorkingDir)
+	result.Notices = dedupePreserveOrder(result.Notices)
+	return result, nil
 }
 
 func includeTargetsContainWildcard(targets []string) bool {

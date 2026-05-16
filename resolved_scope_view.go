@@ -27,10 +27,11 @@ func resolvedCurrentScopeViewForConfig(cfg runConfig) (resolvedScopeView, error)
 	gitCtx := detectGitContext(cfg.WorkingDir)
 	scopeIndex := len(scopeSpecs) - 1
 	currentScope := executionScopeFromCommandScopeSpec(scopeSpecs[scopeIndex])
-	entries, _, _, _, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
+	discovered, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
 	if err != nil {
 		return resolvedScopeView{}, err
 	}
+	entries := discovered.Entries
 
 	return resolvedScopeView{
 		Config:     cfg,

@@ -79,7 +79,7 @@ func contentMatchRowsForScope(cfg runConfig) ([]contentMatchRow, error) {
 	}
 
 	gitCtx := detectGitContext(cfg.WorkingDir)
-	entries, _, _, _, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
+	discovered, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
 	if err != nil {
 		// While the user types in the interactive picker the pattern can be
 		// incomplete (e.g., `[` mid-character-class). rg surfaces this as a
@@ -91,9 +91,9 @@ func contentMatchRowsForScope(cfg runConfig) ([]contentMatchRow, error) {
 		}
 		return nil, err
 	}
-	rows := make([]contentMatchRow, 0, len(entries))
-	seen := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
+	rows := make([]contentMatchRow, 0, len(discovered.Entries))
+	seen := make(map[string]struct{}, len(discovered.Entries))
+	for _, entry := range discovered.Entries {
 		relPath := normalizeRelPath(entry.RelPath)
 		if relPath == "" {
 			continue

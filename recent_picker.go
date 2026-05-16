@@ -56,11 +56,11 @@ func startupRecentPickerEntries(currentArgs []string) ([]fileEntry, error) {
 	currentScope := executionScopeFromCommandScopeSpec(scopeSpecs[scopeIndex])
 
 	gitCtx := detectGitContext(cfg.WorkingDir)
-	entries, _, _, _, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
+	discovered, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
 	if err != nil {
 		return nil, err
 	}
-	return applyRecentStage(entries, cfg.WorkingDir, nil)
+	return applyRecentStage(discovered.Entries, cfg.WorkingDir, nil)
 }
 
 func startupRecentPickerLines(entries []fileEntry) []string {
