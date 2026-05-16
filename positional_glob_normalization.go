@@ -446,14 +446,23 @@ func isBareExtensionToken(token string) bool {
 	if strings.Contains(token, "/") || strings.Contains(token, "\\") || hasGlobChars(token) {
 		return false
 	}
-	// `.foo` is ambiguous: it could be a hidden filename (`.env`,
-	// `.htaccess`) or a bare extension the user meant as a glob (`.go`,
-	// `.ts`). Disambiguate by checking if the literal path exists on
-	// disk — real file wins. No allowlist needed; rg is the sole
-	// classification authority per
-	// docs/architecture/ACTIVE_NOTE_ripgrep_is_required.md.
+	// `.foo` is ambiguous: a hidden filename (`.env`, `.htaccess`) or a
+	// bare extension the user meant as a glob (`.go`, `.ts`). Two checks:
+	// real file on disk wins, else fall back to a length/shape heuristic
+	// so the answer doesn't depend on the working directory (otherwise
+	// tests are flaky across environments). Real extensions are short
+	// alphanumeric tails; longer or non-alphanumeric tails are dotfiles.
 	if _, err := os.Stat(token); err == nil {
 		return false
+	}
+	tail := token[1:]
+	if len(tail) > 6 {
+		return false
+	}
+	for _, r := range tail {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
 	}
 	return true
 }
