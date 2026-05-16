@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +95,9 @@ func TestCopyPathWithQuotes(t *testing.T) {
 	if os.Getenv("FILECLIP_INTEGRATION") == "" {
 		t.Skip("set FILECLIP_INTEGRATION=1 to run clipboard integration tests")
 	}
+	if runtime.GOOS == "windows" {
+		t.Skip("NTFS disallows double quotes in filenames")
+	}
 
 	// Some filesystems allow double quotes in filenames (macOS HFS+/APFS does).
 	path := filepath.Join(t.TempDir(), `file"with"quotes.txt`)
@@ -178,12 +182,11 @@ func TestCopyThenPaste(t *testing.T) {
 		t.Skip("set FILECLIP_INTEGRATION=1 to run clipboard integration tests")
 	}
 
-	// Use a persistent path (not t.TempDir) so the file exists at Paste time.
-	path := "/tmp/fileclip-paste-test.txt"
+	// t.TempDir survives until the test ends, which covers Copy + Paste.
+	path := filepath.Join(t.TempDir(), "fileclip-paste-test.txt")
 	if err := os.WriteFile(path, []byte("paste round-trip\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(path)
 
 	if err := Copy(path); err != nil {
 		t.Fatalf("Copy() failed: %v", err)

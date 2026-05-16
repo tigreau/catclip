@@ -97,7 +97,7 @@ jobs:
 
           (
             cd "$fixture"
-            "${runner[@]}" "$OLDPWD/catclip-bin${bin_ext}" -y . >/dev/null
+            "${runner[@]+"${runner[@]}"}" "$OLDPWD/catclip-bin${bin_ext}" -y . >/dev/null
           )
 
           bundle_dir="${TMPDIR:-/tmp}/catclip"
@@ -139,7 +139,7 @@ jobs:
           # --no-bundle should not error and should not write a new bundle file.
           (
             cd "$fixture"
-            "${runner[@]}" "$OLDPWD/catclip-bin${bin_ext}" -y --no-bundle . >/dev/null
+            "${runner[@]+"${runner[@]}"}" "$OLDPWD/catclip-bin${bin_ext}" -y --no-bundle . >/dev/null
           )
 
       - name: fileclip integration tests
