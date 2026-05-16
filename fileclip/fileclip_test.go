@@ -202,8 +202,21 @@ func TestCopyThenPaste(t *testing.T) {
 	if len(paths) == 0 {
 		t.Fatal("Paste() returned no paths")
 	}
-	if paths[0] != path {
-		t.Fatalf("Paste() returned %q, want %q", paths[0], path)
+	// Compare by file identity, not string equality: on Windows
+	// t.TempDir() can return an 8.3 short-name form (RUNNER~1) while
+	// the clipboard round-trip canonicalises to the long form
+	// (runneradmin), so a string compare fails despite both pointing
+	// at the same file.
+	gotInfo, err := os.Stat(paths[0])
+	if err != nil {
+		t.Fatalf("stat returned path %q: %v", paths[0], err)
+	}
+	wantInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat want path %q: %v", path, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("Paste() returned %q, want %q (different files)", paths[0], path)
 	}
 }
 

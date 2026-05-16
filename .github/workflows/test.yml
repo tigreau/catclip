@@ -136,11 +136,144 @@ jobs:
             echo "Bundle mode: $mode"
           fi
 
+          # Bundle content: the fixture files are 1000 bytes of 'a' each.
+          # The bundle is the concatenated emit, so it must contain that run.
+          if ! grep -q 'aaaaaaaaaa' "$bundle"; then
+            echo "ERROR: bundle file does not contain expected fixture content" >&2
+            head -c 200 "$bundle" >&2 || true
+            exit 1
+          fi
+          bytes=$(wc -c < "$bundle")
+          if [[ "$bytes" -lt 9000 ]]; then
+            echo "ERROR: bundle is $bytes bytes; expected ~10000 from 10 fixture files" >&2
+            exit 1
+          fi
+          echo "Bundle content verified ($bytes bytes)"
+
           # --no-bundle should not error and should not write a new bundle file.
           (
             cd "$fixture"
             "${runner[@]+"${runner[@]}"}" "$OLDPWD/catclip-bin${bin_ext}" -y --no-bundle . >/dev/null
           )
+
+      - name: --contains smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin_ext=".exe"
+          fi
+          export CATCLIP_RG="$(pwd)/bin/rg${bin_ext}"
+          export CATCLIP_FZF="$(pwd)/bin/fzf${bin_ext}"
+
+          fixture=$(mktemp -d)
+          printf 'function hello() {\n  return 42\n}\n' > "$fixture/yes.txt"
+          printf 'plain content\nno match here\n' > "$fixture/no.txt"
+
+          out=$(
+            cd "$fixture"
+            "$OLDPWD/catclip-bin${bin_ext}" . --contains 'function' --paths --headless
+          )
+
+          if ! echo "$out" | grep -q 'yes.txt'; then
+            echo "ERROR: --contains 'function' did not match yes.txt" >&2
+            echo "stdout was:" >&2
+            echo "$out" >&2
+            exit 1
+          fi
+          if echo "$out" | grep -q 'no.txt'; then
+            echo "ERROR: --contains 'function' wrongly matched no.txt" >&2
+            echo "stdout was:" >&2
+            echo "$out" >&2
+            exit 1
+          fi
+
+          # Also exercise a PCRE2-only feature (lookahead) to prove the
+          # rg+PCRE2 wire-up is real, not just a Go-RE2 fallback.
+          out=$(
+            cd "$fixture"
+            "$OLDPWD/catclip-bin${bin_ext}" . --contains 'function(?= hello)' --paths --headless
+          )
+          if ! echo "$out" | grep -q 'yes.txt'; then
+            echo "ERROR: PCRE2 lookahead failed to match yes.txt" >&2
+            echo "stdout was:" >&2
+            echo "$out" >&2
+            exit 1
+          fi
+          echo "--contains + PCRE2 lookahead verified"
+
+      - name: Text-path smoke test (small payload bypasses bundling)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin_ext=".exe"
+          fi
+          export CATCLIP_RG="$(pwd)/bin/rg${bin_ext}"
+          export CATCLIP_FZF="$(pwd)/bin/fzf${bin_ext}"
+
+          bundle_dir="${TMPDIR:-/tmp}/catclip"
+          if [[ ! -d "$bundle_dir" ]]; then
+            for candidate in "$RUNNER_TEMP/catclip" "/tmp/catclip" "$TEMP/catclip"; do
+              if [[ -d "$candidate" ]]; then
+                bundle_dir="$candidate"
+                break
+              fi
+            done
+          fi
+          # Wipe prior bundle state so this run's absence is meaningful.
+          rm -rf "$bundle_dir"
+
+          fixture=$(mktemp -d)
+          echo "tiny payload" > "$fixture/small.txt"
+
+          runner=()
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            runner=(xvfb-run -a)
+          fi
+
+          (
+            cd "$fixture"
+            "${runner[@]+"${runner[@]}"}" "$OLDPWD/catclip-bin${bin_ext}" -y small.txt >/dev/null
+          )
+
+          # A <4KB payload must take the text clipboard path; no bundle file.
+          if [[ -d "$bundle_dir" ]] && [[ -n "$(ls -A "$bundle_dir" 2>/dev/null || true)" ]]; then
+            echo "ERROR: small payload created a bundle file (text path should have run)" >&2
+            ls -la "$bundle_dir" >&2 || true
+            exit 1
+          fi
+          echo "Small payload bypassed bundling"
+
+      - name: catclip-tree --input-dir / --input-stem smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin_ext=".exe"
+          fi
+          go build -o "catclip-tree-bin${bin_ext}" ./cmd/catclip-tree
+
+          payload_dir=$(mktemp -d)
+          # Minimal valid tree payload; matches the schema in
+          # internal/tree/payload.go (meta + entry + summary records).
+          {
+            printf '{"type":"meta","version":1,"mode":"tree","root":"."}\n'
+            printf '{"type":"entry","path":"hello.txt","kind":"file","size":6}\n'
+            printf '{"type":"summary","count":1,"bytes":6,"human_size":"6B","tokens":1,"file_word":"file"}\n'
+          } > "$payload_dir/picked.json"
+
+          out=$("./catclip-tree-bin${bin_ext}" --color never --input-dir "$payload_dir" --input-stem picked)
+          if ! echo "$out" | grep -q 'hello.txt'; then
+            echo "ERROR: catclip-tree --input-dir/--input-stem did not render fixture entry" >&2
+            echo "stdout was:" >&2
+            echo "$out" >&2
+            exit 1
+          fi
+          echo "catclip-tree --input-dir/--input-stem verified"
 
       - name: fileclip integration tests
         shell: bash
