@@ -33,11 +33,11 @@ func shortHelpText(version string, colors colorPalette) string {
 	var b strings.Builder
 	cmd := func(s string) string { return colors.OK + s + colors.Reset }
 	bold := func(s string) string { return colors.Bold + s + colors.Reset }
-	dim := func(s string) string { return colors.Dim + s + colors.Reset }
 	bad := func(s string) string { return colors.Err + s + colors.Reset }
+	flag := func(s string) string { return colors.Prompt + s + colors.Reset }
 
 	fmt.Fprintf(&b, "%scatclip v%s — Recursively copy code context for AI prompts%s\n\n", colors.Bold, version, colors.Reset)
-	b.WriteString("Usage:  catclip [target ...] [filters ...]\n\n")
+	b.WriteString("Usage:  catclip [target ...] [option ...] [filter ...]\n\n")
 
 	fmt.Fprintf(&b, "%s\n", bold("Quick Start:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
@@ -73,9 +73,8 @@ func shortHelpText(version string, colors colorPalette) string {
 		{Left: "catclip src --lines 400 450", Right: "Read lines 400-450 with line numbers"},
 	})
 
-	fmt.Fprintf(&b, "\n  %s\n", dim(`You can give --only, --exclude, and --include more than one value.`))
-	fmt.Fprintf(&b, "  %s\n", dim(`Examples: --only "*.ts" "*.tsx"   --exclude "*.css" "*.scss"`))
-	fmt.Fprintf(&b, "  %s\n", dim(`Use --only -, --exclude -, or --include - to read exact relative paths from stdin.`))
+	fmt.Fprintf(&b, "\n  You can give %s, %s, and %s more than one value.\n", flag("--only"), flag("--exclude"), flag("--include"))
+	fmt.Fprintf(&b, "  Examples: %s   %s\n", flag(`--only "*.ts" "*.tsx"`), flag(`--exclude "*.css" "*.scss"`))
 	fmt.Fprintf(&b, "\n  These two commands are different:\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: `catclip src --recent 10 --only "*.ts"`, Right: "Take the 10 newest files, then keep the .ts ones"},
@@ -83,11 +82,11 @@ func shortHelpText(version string, colors colorPalette) string {
 	})
 	fmt.Fprintf(&b, "\n  One combined example:\n")
 	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --contains "Button" --only "*.tsx" --exclude "Header.tsx" "Login.tsx" --recent 5`))
-	fmt.Fprintf(&b, "    %s\n", dim(`Start with files under src.`))
-	fmt.Fprintf(&b, "    %s\n", dim(`Keep only the ones that mention "Button".`))
-	fmt.Fprintf(&b, "    %s\n", dim(`From those, keep only .tsx files.`))
-	fmt.Fprintf(&b, "    %s\n", dim(`Then remove Header.tsx and Login.tsx.`))
-	fmt.Fprintf(&b, "    %s\n\n", dim(`Finally, take the 5 most recently modified files left.`))
+	fmt.Fprintf(&b, "    Start with files under src.\n")
+	fmt.Fprintf(&b, "    Keep only the ones that mention \"Button\".\n")
+	fmt.Fprintf(&b, "    From those, keep only .tsx files.\n")
+	fmt.Fprintf(&b, "    Then remove Header.tsx and Login.tsx.\n")
+	fmt.Fprintf(&b, "    Finally, take the 5 most recently modified files left.\n\n")
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Git Filters (requires a git repo):"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
@@ -97,28 +96,47 @@ func shortHelpText(version string, colors colorPalette) string {
 
 	fmt.Fprintf(&b, "\n%s\n", bold("--then (chain another catclip command):"))
 	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --only "*.ts" --then docs --recent 5`))
-	fmt.Fprintf(&b, "    %s\n", dim(`Keeps only the TS files from src, then adds the 5 most recent files from docs.`))
+	fmt.Fprintf(&b, "    Keeps only the TS files from src, then adds the 5 most recent files from docs.\n")
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", cmd(`catclip . --paths --then src`))
-	fmt.Fprintf(&b, "    %s\n", dim(`First emits the repo file structure as paths, then adds full file bodies from src.`))
-	fmt.Fprintf(&b, "    %s\n", dim(`Useful when an AI should see the whole structure but only read source files from src.`))
+	fmt.Fprintf(&b, "    First emits the repo file structure as paths, then adds full file bodies from src.\n")
+	fmt.Fprintf(&b, "    Useful when an AI should see the whole structure but only read source files from src.\n")
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", bad(`catclip src docs --only "*.ts"`))
-	fmt.Fprintf(&b, "    %s\n", dim(`Bad here because it would also throw away every non-TS file in docs.`))
-	fmt.Fprintf(&b, "    %s\n", dim("Use --then when the next target should use different filters or output shape."))
+	fmt.Fprintf(&b, "    Bad here because it would also throw away every non-TS file in docs.\n")
+	fmt.Fprintf(&b, "    Use %s when the next target should use different filters or output shape.\n", flag("--then"))
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Ignored Files:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: "catclip --include tests", Right: "Allow an ignored folder for this run"},
-		{Left: "catclip --hiss", Right: fmt.Sprintf("Edit ignore rules (%s)", displayPath(globalHissPath()))},
+		{Left: "catclip --hiss", Right: fmt.Sprintf("Edit ignore rules (%s)", flag(displayPath(globalHissPath())))},
 	})
-	fmt.Fprintf(&b, "  %s\n", dim("catclip skips .gitignored paths and paths matched by .hiss (the ignore config)."))
+	fmt.Fprintf(&b, "  catclip skips .gitignored paths and paths matched by %s (the ignore config).\n", flag(".hiss"))
+	fmt.Fprintf(&b, "  %s only adds ignored files found inside your targets.\n", flag("--include"))
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "  %s\n", cmd(`catclip . --include build --only src build`))
+	fmt.Fprintf(&b, "    Works — '.' covers the whole project, %s keeps just src and build.\n", flag("--only"))
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "  %s\n", bad(`catclip src --include build`))
+	fmt.Fprintf(&b, "    Doesn't find build/ because it's outside src/.\n")
+
+	fmt.Fprintf(&b, "\n%s\n", bold("Piping:"))
+	fmt.Fprintf(&b, "  Use %s, %s, or %s to read exact relative paths from stdin.\n", flag("--only -"), flag("--exclude -"), flag("--include -"))
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "  %s\n", cmd(`git diff --name-only main | catclip . --only -`))
+	fmt.Fprintf(&b, "    Copy every file that differs from the main branch.\n")
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "  %s\n", cmd(`catclip . --contains TODO --paths -p | catclip . --exclude -`))
+	fmt.Fprintf(&b, "    Copy the project but skip any file that contains \"TODO\".\n")
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --paths -p | xargs vim`))
+	fmt.Fprintf(&b, "    Open the matching source files in vim for editing (works with %s too).\n", cmd(`nano`))
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src -p > snapshot.txt`))
+	fmt.Fprintf(&b, "    Save the output to a file instead of copying it to the clipboard.\n")
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Options:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "-h, --help", Right: "Show this help"},
-		{Left: "--help-all", Right: "Agent reference manual (--headless contract, all flags)"},
-		{Left: "--version", Right: "Show version"},
 		{Left: "--preview", Right: "See what would be copied without copying"},
 		{Left: "-p, --print", Right: "Print to terminal instead of clipboard"},
 		{Left: "-r, --raw", Right: "Bare file body — no wrappers, no line numbers"},
@@ -128,6 +146,14 @@ func shortHelpText(version string, colors colorPalette) string {
 		{Left: "-t, --no-tree", Right: "Skip the file tree preview"},
 		{Left: "--no-bundle", Right: "Force text clipboard; skip bundle for large output"},
 		{Left: "-v, --verbose", Right: "Debug info and timings"},
+	})
+
+	fmt.Fprintf(&b, "\n%s\n", bold("Tools:"))
+	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
+		{Left: "-h, --help", Right: "Show this help"},
+		{Left: "--help-all", Right: "Agent reference manual (--headless contract, all flags)"},
+		{Left: "--version", Right: "Show version"},
+		{Left: "--hiss", Right: "Open the ignore config in your default editor ($VISUAL, $EDITOR, then nano/notepad)"},
 		{Left: "--hiss-reset", Right: "Restore ignore rules to defaults"},
 	})
 
@@ -436,6 +462,14 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  Use --with-binaries to include binaries, --include '*' to include ignored paths,\n")
 	b.WriteString("  or both for a complete inventory equivalent to find:\n\n")
 	b.WriteString("    catclip TARGET --include '*' --with-binaries --paths --headless\n\n")
+	b.WriteString("  Path semantics:\n")
+	b.WriteString("    • Absolute paths are not accepted. Run catclip from the project root\n")
+	b.WriteString("      and pass relative paths.\n")
+	b.WriteString("    • Symlinks are not followed.\n")
+	b.WriteString("    • Path case sensitivity follows the host filesystem. On case-insensitive\n")
+	b.WriteString("      filesystems (default macOS, default Windows), repos with case-colliding\n")
+	b.WriteString("      paths in the git index may have git selectors (--changed, --staged, etc.)\n")
+	b.WriteString("      miss entries whose index spelling differs from the materialized path.\n\n")
 
 	// ── Reference table ─────────────────────────────────────────────────
 	b.WriteString("MODIFIER REFERENCE\n\n")
