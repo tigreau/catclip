@@ -37,7 +37,7 @@ func defaultTreeRenderOptions() treeRenderOptions {
 	return treepkg.DefaultRenderOptions()
 }
 
-func buildTreeDocumentFromPreview(cfg runConfig, plan outputPlan, report outputReport) treeDocument {
+func buildTreeDocumentFromPreview(cfg renderConfig, plan outputPlan, report outputReport) treeDocument {
 	doc := treeDocument{
 		Mode:    treeDocumentModeTree,
 		Target:  buildTreeDocumentTargetForPlan(cfg, plan),
@@ -49,19 +49,18 @@ func buildTreeDocumentFromPreview(cfg runConfig, plan outputPlan, report outputR
 	return doc
 }
 
-func buildTreeDocumentTarget(cfg runConfig) *treeDocumentTarget {
+func buildTreeDocumentTarget(cfg renderConfig) *treeDocumentTarget {
 	return treepkg.BuildTarget(cfg.TreeTarget, cfg.TreeKind, cfg.TreeState)
 }
 
-func buildTreeDocumentTargetForPlan(cfg runConfig, plan outputPlan) *treeDocumentTarget {
+func buildTreeDocumentTargetForPlan(cfg renderConfig, plan outputPlan) *treeDocumentTarget {
 	if target := buildTreeDocumentTarget(cfg); target != nil {
 		return target
 	}
-	scopeSpecs := configCommandScopes(cfg)
-	if len(scopeSpecs) != 1 || len(plan.items) == 0 {
+	if len(cfg.Scopes) != 1 || len(plan.items) == 0 {
 		return nil
 	}
-	targets := scopeSpecs[0].Targets()
+	targets := cfg.Scopes[0].Targets
 	if len(targets) != 1 {
 		return nil
 	}
@@ -76,7 +75,7 @@ func buildTreeDocumentTargetForPlan(cfg runConfig, plan outputPlan) *treeDocumen
 	return treepkg.BuildTarget(targetPath, treeTargetKindDir, treeTargetStateOK)
 }
 
-func buildEmptyTreeDocument(cfg runConfig) (treeDocument, bool) {
+func buildEmptyTreeDocument(cfg renderConfig) (treeDocument, bool) {
 	target := buildTreeDocumentTarget(cfg)
 	if target == nil {
 		return treeDocument{}, false

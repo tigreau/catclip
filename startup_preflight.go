@@ -107,6 +107,9 @@ func startupPreflightCommandSpec(args []string) (commandSpec, error) {
 				return commandSpec{}, err
 			}
 			values := cloneStringSlice(args[i+1 : next])
+			if err := validateIncludeValues(values); err != nil {
+				return commandSpec{}, err
+			}
 			current.IncludedTargets = append(current.IncludedTargets, values...)
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageInclude, Values: values})
 			i = next - 1

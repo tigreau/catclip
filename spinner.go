@@ -99,7 +99,7 @@ func spinnerOutputFile(w any) *os.File {
 	return nil
 }
 
-func outputSpinnerMessage(cfg runConfig) string {
+func outputSpinnerMessage(cfg emitConfig) string {
 	if cfg.OutputMode == outputModeClipboard {
 		return "Copying files..."
 	}

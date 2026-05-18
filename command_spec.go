@@ -36,14 +36,6 @@ type commandScopeSpec struct {
 	hasGitSelection bool
 }
 
-func configCommandSpec(cfg runConfig) commandSpec {
-	return cfg.Command
-}
-
-func configCommandScopes(cfg runConfig) []commandScopeSpec {
-	return configCommandSpec(cfg).Scopes()
-}
-
 func executionScopeFromCommandScopeSpec(s commandScopeSpec) executionScope {
 	out := executionScope{
 		Targets:         s.Targets(),

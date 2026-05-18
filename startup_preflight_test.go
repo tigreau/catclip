@@ -16,6 +16,8 @@ func TestValidateStartupPreflightArgsExamples(t *testing.T) {
 		{name: "bare modifier menu cannot take args", args: []string{"a", "--", "a"}, wantErr: "bare -- can only be followed by another bare -- in the same scope"},
 		{name: "bare include", args: []string{"--include"}, wantErr: "--include requires a target query"},
 		{name: "include with value", args: []string{"--include", "node_modules"}},
+		{name: "include rejects parent traversal", args: []string{"--include", "src/../vendor"}, wantErr: "--include cannot traverse above the current target scope"},
+		{name: "include rejects glob", args: []string{"--include", "*.js"}, wantErr: "--include does not accept glob patterns"},
 		{name: "bare only", args: []string{"--only"}, wantErr: "--only requires a pattern"},
 		{name: "only with value", args: []string{"--only", "a"}},
 		{name: "only recovery prefix", args: []string{"--only", "--", "--"}, wantErr: "--only requires a pattern"},

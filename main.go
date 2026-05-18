@@ -82,20 +82,24 @@ package catclip
 //      under cmd.exe. Push any conditional logic into Go-side `--internal-*`
 //      subcommands instead, and verify the placeholders ({2}, {3}, {+2}, {q})
 //      can be inlined directly. The working reference shapes are
-//      `fzfPreviewCommand`, `recentPickerPreviewCommand`, and
-//      `startupModifierCurrentScopePreviewCommand`.
+//      `startupCheckpointFileSetPreviewCommand`,
+//      `fzfCheckpointContentMatchListCommand`, `buildDepthPickerPreview`,
+//      and `recentPickerPreviewCommand`.
 //  19. Discovery Is the Parent's Job, Once:
 //      every fzf modifier picker (`--depth`, `--recent`, `--only`, …) runs
 //      `evaluateScope` exactly once in the parent and writes the result to a
 //      temp file. The fzf preview command then reads that file and formats —
 //      nothing more. A preview command that invokes `catclip` with
-//      scope-bearing arguments is broken by definition: fzf re-runs preview on
-//      every cursor move, so any path that ends up calling `evaluateScope`
-//      from there means hundreds of milliseconds of rg + classification +
-//      stage application per keystroke. The bug is invisible on small repos
-//      and crippling on large ones, so the rule has to be load-bearing at
-//      design time. `--recent` is the reference: parent serializes entries
-//      via `writeRecentPreviewData`, preview reads the TSV and formats.
+//      scope-bearing arguments in a free-form modifier hot path is broken by
+//      definition: fzf re-runs preview on every cursor move, so any path that
+//      ends up calling `evaluateScope` from there means hundreds of
+//      milliseconds of rg + classification + stage application per keystroke.
+//      Legacy commands may remain only as explicit fallback/exempt paths
+//      (target selection before a settled scope, per-file previews, static
+//      menu preview). The bug is invisible on small repos and crippling on
+//      large ones, so the rule has to be load-bearing at design time.
+//      `--recent` is the reference: parent serializes entries via
+//      `writeRecentPreviewData`, preview reads the TSV and formats.
 //      Pre-rendered tree payloads per bucket (one file per picker row) are
 //      the same pattern applied to richer rendering.
 //  20. State Lives in the Args String:
@@ -414,36 +418,62 @@ const (
 	outputModeStdout    outputMode = "stdout"
 )
 
-type runConfig struct {
+type parsedCommand struct {
 	Action     action
 	Version    string
 	Platform   string
 	WorkingDir string
 	OutputMode outputMode
 
-	Verbose          bool
-	Quiet            bool
-	Headless         bool
-	WithBinaries     bool
-	Yes              bool
-	Raw              bool
-	Preview          bool
-	NoTree           bool
-	NoBundle         bool
-	TreePayload      bool
-	TreeTarget       string
-	TreeKind         string
-	TreeState        string
-	FilePreview      bool
-	FilePath         string
-	ContentMatchList bool
-	RecentPreview    bool
-	RecentData       string
-	RecentSelect     string
+	Verbose           bool
+	Quiet             bool
+	Headless          bool
+	WithBinaries      bool
+	Yes               bool
+	Raw               bool
+	Preview           bool
+	NoTree            bool
+	NoBundle          bool
+	TreePayload       bool
+	PrediscoveredPath string
+	TreeTarget        string
+	TreeKind          string
+	TreeState         string
+	FilePreview       bool
+	FilePath          string
+	ContentMatchList  bool
+	RecentPreview     bool
+	RecentData        string
+	RecentSelect      string
 
 	Command commandSpec
 
 	Warnings []string
+}
+
+type invocationConfig struct {
+	Version      string
+	Platform     string
+	WorkingDir   string
+	Verbose      bool
+	Quiet        bool
+	Headless     bool
+	WithBinaries bool
+	Internal     bool
+}
+
+func (cfg invocationConfig) canPromptForChoice() bool {
+	return !cfg.Headless && !cfg.Internal && canPromptInteractively()
+}
+
+type resolvedInvocation struct {
+	Config invocationConfig
+	Scopes []executionScope
+}
+
+type discoveredInvocation struct {
+	Config invocationConfig
+	Scopes []discoveredScope
 }
 
 type executionScope struct {
@@ -530,6 +560,8 @@ type fileEntry struct {
 	AbsPath          string
 	RelPath          string
 	ModTime          time.Time
+	SizeBytes        int64
+	SizeKnown        bool
 	TargetRoot       string
 	GitVisible       bool
 	Mode             entryMode
@@ -738,7 +770,13 @@ func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
 
 func formatResolvedStartupCommand(args []string) string {
 	if cfg, err := parseArgsAllowImplicitDot(args); err == nil {
-		return formatCanonicalResolvedCommand(args, cfg)
+		return formatCanonicalResolvedInvocationCommand(
+			resolvedInvocationFromParsedCommand(cfg),
+			emitConfigFromParsedCommand(cfg),
+			cfg.Yes,
+			cfg.NoTree,
+			cfg.Preview,
+		)
 	}
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, "catclip")
@@ -748,20 +786,55 @@ func formatResolvedStartupCommand(args []string) string {
 	return strings.Join(parts, " ")
 }
 
-func formatCanonicalResolvedCommand(rawArgs []string, cfg runConfig) string {
-	parts := make([]string, 0, len(rawArgs)+4)
+func formatCanonicalResolvedInvocationCommand(invocation resolvedInvocation, emitCfg emitConfig, yes, noTree, preview bool) string {
+	globalArgs := canonicalGlobalArgsFromConfig(invocation.Config, emitCfg, yes, noTree, preview)
+	parts := make([]string, 0, len(globalArgs)+len(invocation.Scopes)*4+1)
 	parts = append(parts, "catclip")
-	for _, arg := range resolvedCommandGlobalFlags(rawArgs) {
+	for _, arg := range globalArgs {
 		parts = append(parts, shellQuoteArg(arg))
 	}
-	for i, scopeSpec := range configCommandScopes(cfg) {
+	for i, s := range invocation.Scopes {
 		if i > 0 {
 			parts = append(parts, "--then")
 		}
-		s := executionScopeFromCommandScopeSpec(scopeSpec)
 		parts = append(parts, canonicalScopeArgs(s)...)
 	}
 	return strings.Join(parts, " ")
+}
+
+func canonicalGlobalArgsFromConfig(invocationCfg invocationConfig, emitCfg emitConfig, yes, noTree, preview bool) []string {
+	out := make([]string, 0, 10)
+	if invocationCfg.Verbose {
+		out = append(out, "--verbose")
+	}
+	if invocationCfg.Quiet {
+		out = append(out, "--quiet")
+	}
+	if yes {
+		out = append(out, "--yes")
+	}
+	if emitCfg.OutputMode == outputModeStdout {
+		out = append(out, "--print")
+	}
+	if emitCfg.Raw {
+		out = append(out, "--raw")
+	}
+	if noTree {
+		out = append(out, "--no-tree")
+	}
+	if emitCfg.NoBundle {
+		out = append(out, "--no-bundle")
+	}
+	if preview {
+		out = append(out, "--preview")
+	}
+	if invocationCfg.Headless {
+		out = append(out, "--headless")
+	}
+	if invocationCfg.WithBinaries {
+		out = append(out, "--with-binaries")
+	}
+	return out
 }
 
 // canonicalScopeArgs renders an executionScope back into the argv form
@@ -844,15 +917,4 @@ func canonicalScopeArgs(s executionScope) []string {
 		}
 	}
 	return parts
-}
-
-func resolvedCommandGlobalFlags(rawArgs []string) []string {
-	out := make([]string, 0, 6)
-	for _, arg := range rawArgs {
-		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
-			out = append(out, arg)
-		}
-	}
-	return out
 }

@@ -95,12 +95,14 @@ func TestBundleAtOrAboveThresholdCreatesFile(t *testing.T) {
 
 	// 5KB of 'a' — comfortably over the 4096-byte threshold once wrapped.
 	big := strings.Repeat("a", 5000) + "\n"
-	cfg := runConfig{
+	cfg := emitConfig{
 		OutputMode: outputModeClipboard,
+	}
+	env := emitEnvironment{
 		WorkingDir: t.TempDir(),
 	}
 
-	stats, err := withPayloadWriter(cfg, io.Discard, colorPalette{}, func(w io.Writer) error {
+	stats, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, big)
 		return werr
 	})
@@ -134,12 +136,14 @@ func TestBundleFilePermissionsAre0600(t *testing.T) {
 	_, restore := withBundleStub(t)
 	defer restore()
 
-	cfg := runConfig{
+	cfg := emitConfig{
 		OutputMode: outputModeClipboard,
+	}
+	env := emitEnvironment{
 		WorkingDir: t.TempDir(),
 	}
 	big := strings.Repeat("z", 5000)
-	stats, err := withPayloadWriter(cfg, io.Discard, colorPalette{}, func(w io.Writer) error {
+	stats, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, big)
 		return werr
 	})
@@ -165,11 +169,13 @@ func TestBundleFilenameMatchesProjectAndTimestamp(t *testing.T) {
 	if err := os.MkdirAll(wd, 0o755); err != nil {
 		t.Fatalf("setup wd: %v", err)
 	}
-	cfg := runConfig{
+	cfg := emitConfig{
 		OutputMode: outputModeClipboard,
+	}
+	env := emitEnvironment{
 		WorkingDir: wd,
 	}
-	_, err := withPayloadWriter(cfg, io.Discard, colorPalette{}, func(w io.Writer) error {
+	_, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, strings.Repeat("x", 5000))
 		return werr
 	})
@@ -202,11 +208,13 @@ func TestBundleClearsPriorBundles(t *testing.T) {
 		t.Fatalf("write stale: %v", err)
 	}
 
-	cfg := runConfig{
+	cfg := emitConfig{
 		OutputMode: outputModeClipboard,
+	}
+	env := emitEnvironment{
 		WorkingDir: t.TempDir(),
 	}
-	_, err := withPayloadWriter(cfg, io.Discard, colorPalette{}, func(w io.Writer) error {
+	_, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, strings.Repeat("y", 5000))
 		return werr
 	})
@@ -218,8 +226,8 @@ func TestBundleClearsPriorBundles(t *testing.T) {
 	}
 }
 
-func TestBundleNoBundleFlagIsGlobal(t *testing.T) {
-	flags := resolvedCommandGlobalFlags([]string{"--no-bundle", ".", "--then", "src/"})
+func TestBundleNoBundleFlagIsCanonicalGlobalArg(t *testing.T) {
+	flags := canonicalGlobalArgsFromConfig(invocationConfig{}, emitConfig{NoBundle: true}, false, false, false)
 	found := false
 	for _, f := range flags {
 		if f == "--no-bundle" {
@@ -249,13 +257,15 @@ func TestBundleNoBundleSkipsBundleBranchAtLargePayload(t *testing.T) {
 	// Force a fake clipboard subprocess that just drains stdin.
 	fakeClipboardOnPath(t)
 
-	cfg := runConfig{
+	cfg := emitConfig{
 		OutputMode: outputModeClipboard,
-		Platform:   detectPlatform(),
-		WorkingDir: t.TempDir(),
 		NoBundle:   true,
 	}
-	stats, err := withPayloadWriter(cfg, io.Discard, colorPalette{}, func(w io.Writer) error {
+	env := emitEnvironment{
+		Platform:   detectPlatform(),
+		WorkingDir: t.TempDir(),
+	}
+	stats, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, strings.Repeat("q", 8000))
 		return werr
 	})

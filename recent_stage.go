@@ -62,6 +62,8 @@ func ensureEntryModTimes(entries []fileEntry, workingDir string) ([]fileEntry, e
 			return nil, err
 		}
 		entries[i].ModTime = info.ModTime()
+		entries[i].SizeBytes = info.Size()
+		entries[i].SizeKnown = true
 	}
 	return entries, nil
 }

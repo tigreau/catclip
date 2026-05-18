@@ -127,10 +127,10 @@ exit 91
 
 func TestStartupDepthPickerPrerendersAllBuckets(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"a.ts":           "a\n",
-		"src/b.ts":       "b\n",
-		"src/deep/c.ts":  "c\n",
-		"x/y/z/leaf.ts":  "leaf\n",
+		"a.ts":          "a\n",
+		"src/b.ts":      "b\n",
+		"src/deep/c.ts": "c\n",
+		"x/y/z/leaf.ts": "leaf\n",
 	})
 	_ = parseInProject(t, project, []string{"."})
 

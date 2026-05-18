@@ -204,7 +204,12 @@ func writeDepthPayloadFile(path string, view resolvedScopeView, scopes []evaluat
 	if err != nil {
 		return err
 	}
-	if err := encodeTreePayloadFromEntries(f, view.Config, view.GitContext, scopes, entries, nil); err != nil {
+	plan, err := buildOutputPlanForResolvedScopes(view.GitContext, []executionScope{view.Scope}, scopes, entries)
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := encodeTreePayloadFromPlan(f, view.Render, view.GitContext, plan, nil); err != nil {
 		_ = f.Close()
 		return err
 	}

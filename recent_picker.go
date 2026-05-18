@@ -47,7 +47,7 @@ func startupRecentPickerEntries(currentArgs []string) ([]fileEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	scopeSpecs := configCommandScopes(cfg)
+	scopeSpecs := cfg.Command.Scopes()
 	if len(scopeSpecs) == 0 {
 		return nil, nil
 	}
@@ -55,12 +55,13 @@ func startupRecentPickerEntries(currentArgs []string) ([]fileEntry, error) {
 	scopeIndex := len(scopeSpecs) - 1
 	currentScope := executionScopeFromCommandScopeSpec(scopeSpecs[scopeIndex])
 
-	gitCtx := detectGitContext(cfg.WorkingDir)
-	discovered, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
+	invocationCfg := invocationConfigFromParsedCommand(cfg)
+	gitCtx := detectGitContext(invocationCfg.WorkingDir)
+	discovered, err := evaluateScope(invocationCfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
 	if err != nil {
 		return nil, err
 	}
-	return applyRecentStage(discovered.Entries, cfg.WorkingDir, nil)
+	return applyRecentStage(discovered.Entries, invocationCfg.WorkingDir, nil)
 }
 
 func startupRecentPickerLines(entries []fileEntry) []string {
@@ -217,12 +218,24 @@ func writeRecentPreviewData(entries []fileEntry) (string, error) {
 	return path, nil
 }
 
-func runInternalRecentPreview(cfg runConfig, stdout io.Writer) error {
-	entries, err := readRecentPreviewData(cfg.RecentData)
+type recentPreviewConfig struct {
+	DataPath string
+	Selected string
+}
+
+func recentPreviewConfigFromParsedCommand(cfg parsedCommand) recentPreviewConfig {
+	return recentPreviewConfig{
+		DataPath: cfg.RecentData,
+		Selected: cfg.RecentSelect,
+	}
+}
+
+func runInternalRecentPreview(cfg recentPreviewConfig, stdout io.Writer) error {
+	entries, err := readRecentPreviewData(cfg.DataPath)
 	if err != nil {
 		return err
 	}
-	_, err = io.WriteString(stdout, renderRecentPreview(entries, cfg.RecentSelect, time.Now()))
+	_, err = io.WriteString(stdout, renderRecentPreview(entries, cfg.Selected, time.Now()))
 	return err
 }
 

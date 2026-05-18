@@ -35,7 +35,7 @@ type includedTargetSet struct {
 }
 
 type scopeResolver struct {
-	cfg                  runConfig
+	cfg                  invocationConfig
 	gitCtx               gitContext
 	allowFileSymlinks    bool
 	textFileSet          map[string]struct{}
@@ -78,7 +78,7 @@ type discoveredScope struct {
 	SelectionCancel bool
 }
 
-func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s executionScope, stderr io.Writer, colors colorPalette) (discoveredScope, error) {
+func evaluateScope(cfg invocationConfig, gitCtx gitContext, scopeIndex int, s executionScope, stderr io.Writer, colors colorPalette) (discoveredScope, error) {
 	mode := executionScopeOutputMode(s)
 	result := discoveredScope{Scope: s, GitContext: gitCtx}
 
@@ -153,6 +153,17 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 		return result, err
 	}
 
+	stampEntriesWithScopeOutputMode(entries, mode, s)
+	result.Entries = ensureEntryAbsPaths(entries, cfg.WorkingDir)
+	result.Notices = dedupePreserveOrder(result.Notices)
+	return result, nil
+}
+
+func executionScopeHasEntryOutputMode(s executionScope) bool {
+	return s.Diff || s.Snippet || s.Lines
+}
+
+func stampEntriesWithScopeOutputMode(entries []fileEntry, mode entryMode, s executionScope) {
 	for i := range entries {
 		entries[i].Mode = mode
 		entries[i].SnippetPattern = s.SnippetPattern
@@ -162,9 +173,6 @@ func evaluateScope(cfg runConfig, gitCtx gitContext, scopeIndex int, s execution
 		entries[i].DiffWantStaged = s.Staged
 		entries[i].DiffWantUnstaged = s.Unstaged
 	}
-	result.Entries = ensureEntryAbsPaths(entries, cfg.WorkingDir)
-	result.Notices = dedupePreserveOrder(result.Notices)
-	return result, nil
 }
 
 func includeTargetsContainWildcard(targets []string) bool {
@@ -854,6 +862,8 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 		AbsPath:    absTarget,
 		RelPath:    relTarget,
 		ModTime:    info.ModTime(),
+		SizeBytes:  info.Size(),
+		SizeKnown:  true,
 		GitVisible: true,
 	}
 	if dir := normalizeRelPath(path.Dir(relTarget)); dir != "." {
@@ -872,7 +882,6 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 	}
 	return []fileEntry{entry}, true, nil, nil
 }
-
 
 // ensureTextFileSet pulls the rg-derived NUL-free file set for the resolver's
 // working directory from the process-level cache. The cache amortizes one rg
@@ -1987,7 +1996,7 @@ func (r *scopeResolver) fuzzySearchFilesUnder(baseRel, needle string, rootBypass
 	return fuzzyFilterCandidates(needle, candidates)
 }
 
-func chooseDirectoryMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
+func chooseDirectoryMatch(cfg invocationConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
 	if !cfg.canPromptForChoice() {
 		return nil, headlessDirectoryAmbiguityError(needle, currentRel, matches)
 	}
@@ -1999,7 +2008,7 @@ func chooseDirectoryMatch(cfg runConfig, needle, currentRel string, matches []st
 	return chooseManyWithTypedFzf(path, needle, "dir> ", matches, treeTargetKindDir, treeTargetStateOK)
 }
 
-func chooseFileMatch(cfg runConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
+func chooseFileMatch(cfg invocationConfig, needle, currentRel string, matches []string, stderr io.Writer, colors colorPalette) ([]string, error) {
 	if !cfg.canPromptForChoice() {
 		return nil, headlessFileAmbiguityError(needle, currentRel, matches)
 	}
@@ -2011,7 +2020,7 @@ func chooseFileMatch(cfg runConfig, needle, currentRel string, matches []string,
 	return chooseManyWithTypedFzf(path, needle, "file> ", matches, treeTargetKindFile, treeTargetStateText)
 }
 
-func chooseTargetMatch(cfg runConfig, needle string, matches []targetMatch, stderr io.Writer, colors colorPalette) ([]targetMatch, error) {
+func chooseTargetMatch(cfg invocationConfig, needle string, matches []targetMatch, stderr io.Writer, colors colorPalette) ([]targetMatch, error) {
 	if !cfg.canPromptForChoice() {
 		return nil, headlessTargetAmbiguityError(needle, matches)
 	}
@@ -2179,6 +2188,10 @@ func chooseManyFilePathsWithFzf(query, prompt, header string, candidates []strin
 	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", header, fzfPreviewCommand(false), formatFzfCandidates(candidates, treeTargetKindFile, treeTargetStateText))
 }
 
+// fzfFileSetPreviewCommand is the legacy fallback command for free-form
+// file-set previews. Normal modifier pickers use
+// startupCheckpointFileSetPreviewCommand so preview keystrokes load entries[N]
+// instead of rediscovering the project.
 func fzfFileSetPreviewCommand(currentArgs []string, previewFlag string) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
@@ -2207,6 +2220,9 @@ func fzfFileSetPreviewCommand(currentArgs []string, previewFlag string) string {
 	return strings.Join(parts, " ")
 }
 
+// fzfDiffFilePreviewCommand is intentionally not checkpoint-backed: diff
+// pickers preview one focused file via --internal-file-preview, so they do not
+// rerun project discovery for a tree payload.
 func fzfDiffFilePreviewCommand(currentArgs []string) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
@@ -2234,7 +2250,8 @@ func chooseContentMatchesWithFzf(query string, currentArgs []string, flag string
 		return fzfChooseResult{}, err
 	}
 
-	command := fzfContentMatchListCommand(currentArgs, flag)
+	command, cleanup := fzfCheckpointContentMatchListCommand(currentArgs, flag)
+	defer cleanup()
 	if command == "" {
 		return fzfChooseResult{}, errSelectionCancelled
 	}
@@ -2311,6 +2328,9 @@ func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, previewC
 	return result.Matches, nil
 }
 
+// fzfPreviewCommand is used by target-selection pickers before a parent scope
+// has settled entries. SCC does not apply there; modifier previews use the
+// checkpoint wrappers in startup_picker.go / fzfCheckpointContentMatchListCommand.
 func fzfPreviewCommand(includeTarget bool) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
@@ -2338,6 +2358,8 @@ func fzfPreviewCommand(includeTarget bool) string {
 		` {+2} | ` + treeQ + ` ` + treeArgs
 }
 
+// fzfContentPreviewCommand previews one focused file, so it remains per-file
+// and out of the SCC match-list checkpoint path.
 func fzfContentPreviewCommand(flag string) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
@@ -2363,6 +2385,9 @@ func fzfContentPreviewCommand(flag string) string {
 	return strings.Join(parts, " ")
 }
 
+// fzfContentMatchListCommand is the legacy fallback when the checkpoint match
+// list command cannot be built. Normal content pickers call
+// fzfCheckpointContentMatchListCommand, which loads entries[N] from disk.
 func fzfContentMatchListCommand(currentArgs []string, flag string) string {
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
@@ -2377,6 +2402,55 @@ func fzfContentMatchListCommand(currentArgs []string, flag string) string {
 	// breaks regex input that includes spaces or quote characters.
 	parts = append(parts, flag, "{q}")
 	return strings.Join(parts, " ")
+}
+
+func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (string, func()) {
+	fallback := func() string {
+		return fzfContentMatchListCommand(currentArgs, flag)
+	}
+	switch flag {
+	case "--contains", "--snippet":
+	default:
+		return fallback(), func() {}
+	}
+	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
+	if err != nil || len(view.Entries) == 0 {
+		return fallback(), func() {}
+	}
+
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return "", func() {}
+	}
+	tmpdir, err := os.MkdirTemp("", "catclip-scc-*")
+	if err != nil {
+		return fallback(), func() {}
+	}
+	checkpointPath := filepath.Join(tmpdir, "scope.json")
+	statuses := map[string]string{}
+	if view.GitContext.Enabled {
+		statuses, err = collectGitStatusMapForPathspecs(view.GitContext, gitStatusPathspecsForEntries(view.GitContext, view.Entries))
+		if err != nil {
+			_ = os.RemoveAll(tmpdir)
+			return fallback(), func() {}
+		}
+	}
+	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+		GitContext: view.GitContext,
+		GitStatus:  statuses,
+		Entries:    view.Entries,
+	}); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return fallback(), func() {}
+	}
+
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-content-match-list", "--internal-prediscovered", shellQuoteArg(checkpointPath)}
+	// fzf already shell-quotes placeholders like {q}; adding our own quotes
+	// breaks regex input that includes spaces or quote characters.
+	parts = append(parts, flag, "{q}")
+	return strings.Join(parts, " "), func() {
+		_ = os.RemoveAll(tmpdir)
+	}
 }
 
 func contentMatchPickerHeader(flag string) string {
@@ -2728,7 +2802,7 @@ func singleQuoted(value string) string {
 	return "'" + value + "'"
 }
 
-func writeNoFilesMatchedMessage(cfg runConfig, stderr io.Writer, colors colorPalette, hadSelectionCancel bool) error {
+func writeNoFilesMatchedMessage(scopes []executionScope, stderr io.Writer, colors colorPalette, hadSelectionCancel bool) error {
 	if hadSelectionCancel {
 		return nil
 	}
@@ -2737,8 +2811,7 @@ func writeNoFilesMatchedMessage(cfg runConfig, stderr io.Writer, colors colorPal
 	hasStaged := false
 	hasUnstaged := false
 	hasUntracked := false
-	for _, scopeSpec := range configCommandScopes(cfg) {
-		s := executionScopeFromCommandScopeSpec(scopeSpec)
+	for _, s := range scopes {
 		anyChanged = anyChanged || executionScopeHasGitSelection(s)
 		hasStaged = hasStaged || s.Staged
 		hasUnstaged = hasUnstaged || s.Unstaged
@@ -2792,6 +2865,24 @@ func writeNoFilesMatchedMessage(cfg runConfig, stderr io.Writer, colors colorPal
 	}
 	if _, err := fmt.Fprintf(stderr, "  %s  3. Typo in target name%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
+	}
+	// Add a case-sensitivity bullet only when a regex filter was used —
+	// --contains and --snippet are PCRE2 regex matchers, case-sensitive
+	// by default. --only/--exclude are shell globs and don't have this
+	// concern; targets aren't pattern-matched at all. Keeping the bullet
+	// conditional avoids misleading users who hit zero-match for an
+	// unrelated reason.
+	usedRegexFilter := false
+	for _, s := range scopes {
+		if s.Contains != "" || s.Snippet {
+			usedRegexFilter = true
+			break
+		}
+	}
+	if usedRegexFilter {
+		if _, err := fmt.Fprintf(stderr, "  %s  4. Pattern is case-sensitive (try (?i)pattern for case-insensitive)%s\n", colors.Dim, colors.Reset); err != nil {
+			return err
+		}
 	}
 	if _, err := fmt.Fprintf(stderr, "\n  %sTry: catclip --hiss                        # view/edit ignore rules%s\n", colors.Dim, colors.Reset); err != nil {
 		return err

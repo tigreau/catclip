@@ -32,6 +32,19 @@ type emitStats struct {
 	BundlePath            string
 }
 
+type emitConfig struct {
+	OutputMode outputMode
+	Raw        bool
+	NoBundle   bool
+}
+
+// emitEnvironment is the temporary Phase 8 stand-in for invocationConfig's
+// environment fields. Phase 9 should replace this with invocationConfig.
+type emitEnvironment struct {
+	Platform   string
+	WorkingDir string
+}
+
 const bundleThreshold = 4096
 
 func bundleTempDir() string {
@@ -108,18 +121,18 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 
 // emitFullOutput writes every prepared output unit either to stdout or through
 // the platform clipboard command.
-func emitFullOutput(cfg runConfig, units []preparedFileUnit, stdout io.Writer, colors colorPalette) (emitStats, error) {
-	return emitOutputPlan(cfg, buildOutputPlan(units), stdout, colors)
+func emitFullOutput(cfg emitConfig, env emitEnvironment, units []preparedFileUnit, stdout io.Writer, colors colorPalette) (emitStats, error) {
+	return emitOutputPlan(cfg, env, buildOutputPlan(units), stdout, colors)
 }
 
-func emitOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
+func emitOutputPlan(cfg emitConfig, env emitEnvironment, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
 	if cfg.Raw {
-		return emitRawOutputPlan(cfg, plan, stdout, colors)
+		return emitRawOutputPlan(cfg, env, plan, stdout, colors)
 	}
 	if plan.HasPaths() {
-		return emitSectionedOutputPlan(cfg, plan, stdout, colors)
+		return emitSectionedOutputPlan(cfg, env, plan, stdout, colors)
 	}
-	return withPayloadWriter(cfg, stdout, colors, func(w io.Writer) error {
+	return withPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
 		prefetcher := startEmitPrefetch(plan)
 		if prefetcher != nil {
 			defer prefetcher.Close()
@@ -133,8 +146,8 @@ func emitOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors col
 	})
 }
 
-func emitRawOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
-	return withPayloadWriter(cfg, stdout, colors, func(w io.Writer) error {
+func emitRawOutputPlan(cfg emitConfig, env emitEnvironment, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
+	return withPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
 		for _, item := range plan.items {
 			if item.kind != outputSectionKindFiles || (item.mode != entryModeFull && item.mode != entryModeLines) {
 				return fmt.Errorf("raw output requires full-file or lines items")
@@ -346,8 +359,8 @@ func formatLineNumber(n int) []byte {
 	return []byte(fmt.Sprintf("%d\t", n))
 }
 
-func emitSectionedOutputPlan(cfg runConfig, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
-	return withPayloadWriter(cfg, stdout, colors, func(w io.Writer) error {
+func emitSectionedOutputPlan(cfg emitConfig, env emitEnvironment, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
+	return withPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
 		for i, section := range plan.sections {
 			if i > 0 {
 				separator := outputSectionSeparator(plan.sections[i-1].kind, section.kind)
@@ -586,14 +599,18 @@ func (p *emitPrefetcher) Close() {
 }
 
 func readPrefetchCandidate(entry fileEntry, capBytes int64) ([]byte, bool, error) {
-	info, err := os.Stat(entry.AbsPath)
-	if err != nil {
-		return nil, false, err
+	size := entry.SizeBytes
+	if !entry.SizeKnown {
+		info, err := os.Stat(entry.AbsPath)
+		if err != nil {
+			return nil, false, err
+		}
+		if !info.Mode().IsRegular() {
+			return nil, false, nil
+		}
+		size = info.Size()
 	}
-	if !info.Mode().IsRegular() {
-		return nil, false, nil
-	}
-	if size := info.Size(); size < 0 || size > capBytes {
+	if size < 0 || size > capBytes {
 		return nil, false, nil
 	}
 
@@ -694,7 +711,7 @@ func diffEntryOutput(gitCtx gitContext, entry fileEntry) (string, string, bool, 
 	return diffOutput, diffType, true, nil
 }
 
-func withPayloadWriter(cfg runConfig, stdout io.Writer, colors colorPalette, fn func(io.Writer) error) (emitStats, error) {
+func withPayloadWriter(cfg emitConfig, env emitEnvironment, stdout io.Writer, colors colorPalette, fn func(io.Writer) error) (emitStats, error) {
 	bufferSize := outputBufferSize()
 
 	if cfg.OutputMode == outputModeStdout {
@@ -723,7 +740,7 @@ func withPayloadWriter(cfg runConfig, stdout io.Writer, colors colorPalette, fn 
 	// have to materialize the payload first because the bundle/text decision
 	// depends on its size.
 	if cfg.NoBundle {
-		return streamToTextClipboard(cfg, fn, colors, bufferSize)
+		return streamToTextClipboard(env, fn, colors, bufferSize)
 	}
 
 	var payloadBuf bytes.Buffer
@@ -740,14 +757,14 @@ func withPayloadWriter(cfg runConfig, stdout io.Writer, colors colorPalette, fn 
 	payload := payloadBuf.Bytes()
 
 	if len(payload) >= bundleThreshold {
-		return emitBundle(cfg, payload, generateDuration)
+		return emitBundle(env, payload, generateDuration)
 	}
 
-	return emitBufferedToTextClipboard(cfg, payload, generateDuration, colors)
+	return emitBufferedToTextClipboard(env, payload, generateDuration, colors)
 }
 
-func streamToTextClipboard(cfg runConfig, fn func(io.Writer) error, colors colorPalette, bufferSize int) (emitStats, error) {
-	cmd, err := clipboardCommand(cfg.Platform, colors)
+func streamToTextClipboard(env emitEnvironment, fn func(io.Writer) error, colors colorPalette, bufferSize int) (emitStats, error) {
+	cmd, err := clipboardCommand(env.Platform, colors)
 	if err != nil {
 		return emitStats{}, err
 	}
@@ -772,7 +789,7 @@ func streamToTextClipboard(cfg runConfig, fn func(io.Writer) error, colors color
 	closeErr := stdin.Close()
 	finalizeDuration := time.Since(finalizeStarted)
 	waitStarted := time.Now()
-	waitErr := waitClipboardCommand(cmd, cfg.Platform)
+	waitErr := waitClipboardCommand(cmd, env.Platform)
 	waitDuration := time.Since(waitStarted)
 
 	if writeErr != nil {
@@ -800,8 +817,8 @@ func streamToTextClipboard(cfg runConfig, fn func(io.Writer) error, colors color
 	}, nil
 }
 
-func emitBufferedToTextClipboard(cfg runConfig, payload []byte, generateDuration time.Duration, colors colorPalette) (emitStats, error) {
-	cmd, err := clipboardCommand(cfg.Platform, colors)
+func emitBufferedToTextClipboard(env emitEnvironment, payload []byte, generateDuration time.Duration, colors colorPalette) (emitStats, error) {
+	cmd, err := clipboardCommand(env.Platform, colors)
 	if err != nil {
 		return emitStats{}, err
 	}
@@ -821,7 +838,7 @@ func emitBufferedToTextClipboard(cfg runConfig, payload []byte, generateDuration
 	closeErr := stdin.Close()
 	finalizeDuration := time.Since(finalizeStarted)
 	waitStarted := time.Now()
-	waitErr := waitClipboardCommand(cmd, cfg.Platform)
+	waitErr := waitClipboardCommand(cmd, env.Platform)
 	waitDuration := time.Since(waitStarted)
 
 	if writeErr != nil {
@@ -846,7 +863,7 @@ func emitBufferedToTextClipboard(cfg runConfig, payload []byte, generateDuration
 	}, nil
 }
 
-func emitBundle(cfg runConfig, payload []byte, generateDuration time.Duration) (emitStats, error) {
+func emitBundle(env emitEnvironment, payload []byte, generateDuration time.Duration) (emitStats, error) {
 	dir := bundleTempDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return emitStats{}, fmt.Errorf("Error: bundle directory: %w", err)
@@ -854,7 +871,7 @@ func emitBundle(cfg runConfig, payload []byte, generateDuration time.Duration) (
 	clearPriorBundles(dir)
 
 	finalizeStarted := time.Now()
-	tmpPath := bundleTempPath(dir, bundleProjectName(cfg.WorkingDir), time.Now())
+	tmpPath := bundleTempPath(dir, bundleProjectName(env.WorkingDir), time.Now())
 	if err := os.WriteFile(tmpPath, payload, 0600); err != nil {
 		return emitStats{}, fmt.Errorf("Error: bundle write: %w", err)
 	}

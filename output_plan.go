@@ -425,18 +425,7 @@ func (p outputPlan) PayloadSizes() (map[string]int64, int64) {
 func (p outputPlan) GitStatusPathspecs(gitCtx gitContext) []string {
 	set := make(map[string]struct{}, len(p.items))
 	for _, item := range p.items {
-		entry := item.entry
-		repoPath := ""
-		if entry.TargetRoot != "" && entry.TargetRoot != "." {
-			repoPath = gitCtx.toRepoPath(entry.TargetRoot)
-		} else {
-			repoPath = gitCtx.toRepoPath(entry.RelPath)
-		}
-		repoPath = normalizeRelPath(repoPath)
-		if repoPath == "" || repoPath == "." {
-			continue
-		}
-		set[repoPath] = struct{}{}
+		addGitStatusPathspec(set, gitCtx, item.entry)
 	}
 
 	pathspecs := make([]string, 0, len(set))
@@ -445,6 +434,33 @@ func (p outputPlan) GitStatusPathspecs(gitCtx gitContext) []string {
 	}
 	sort.Strings(pathspecs)
 	return pathspecs
+}
+
+func gitStatusPathspecsForEntries(gitCtx gitContext, entries []fileEntry) []string {
+	set := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		addGitStatusPathspec(set, gitCtx, entry)
+	}
+	pathspecs := make([]string, 0, len(set))
+	for repoPath := range set {
+		pathspecs = append(pathspecs, repoPath)
+	}
+	sort.Strings(pathspecs)
+	return pathspecs
+}
+
+func addGitStatusPathspec(set map[string]struct{}, gitCtx gitContext, entry fileEntry) {
+	repoPath := ""
+	if entry.TargetRoot != "" && entry.TargetRoot != "." {
+		repoPath = gitCtx.toRepoPath(entry.TargetRoot)
+	} else {
+		repoPath = gitCtx.toRepoPath(entry.RelPath)
+	}
+	repoPath = normalizeRelPath(repoPath)
+	if repoPath == "" || repoPath == "." {
+		return
+	}
+	set[repoPath] = struct{}{}
 }
 
 func (p outputPlan) TreeEntries(report outputReport) []treeDocumentEntry {

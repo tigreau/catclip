@@ -3,8 +3,10 @@ package catclip
 import "io"
 
 type resolvedScopeView struct {
-	Config     runConfig
+	Invocation invocationConfig
+	Render     renderConfig
 	GitContext gitContext
+	Scopes     []executionScope
 	ScopeIndex int
 	Scope      executionScope
 	Entries    []fileEntry
@@ -15,27 +17,31 @@ func resolvedCurrentScopeViewForArgs(args []string) (resolvedScopeView, error) {
 	if err != nil {
 		return resolvedScopeView{}, err
 	}
-	return resolvedCurrentScopeViewForConfig(cfg)
+	invocation := resolvedInvocationFromParsedCommand(cfg)
+	return resolvedCurrentScopeView(invocation, renderConfigFromParsedCommand(cfg))
 }
 
-func resolvedCurrentScopeViewForConfig(cfg runConfig) (resolvedScopeView, error) {
-	scopeSpecs := configCommandScopes(cfg)
-	if len(scopeSpecs) == 0 {
+func resolvedCurrentScopeView(invocation resolvedInvocation, renderCfg renderConfig) (resolvedScopeView, error) {
+	if len(invocation.Scopes) == 0 {
 		return resolvedScopeView{}, nil
 	}
 
-	gitCtx := detectGitContext(cfg.WorkingDir)
-	scopeIndex := len(scopeSpecs) - 1
-	currentScope := executionScopeFromCommandScopeSpec(scopeSpecs[scopeIndex])
-	discovered, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
+	invocationCfg := invocation.Config
+	resolvedScopes := append([]executionScope(nil), invocation.Scopes...)
+	gitCtx := detectGitContext(invocationCfg.WorkingDir)
+	scopeIndex := len(resolvedScopes) - 1
+	currentScope := resolvedScopes[scopeIndex]
+	discovered, err := evaluateScope(invocationCfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
 	if err != nil {
 		return resolvedScopeView{}, err
 	}
 	entries := discovered.Entries
 
 	return resolvedScopeView{
-		Config:     cfg,
+		Invocation: invocationCfg,
+		Render:     renderCfg,
 		GitContext: gitCtx,
+		Scopes:     resolvedScopes,
 		ScopeIndex: scopeIndex,
 		Scope:      currentScope,
 		Entries:    entries,
@@ -54,11 +60,11 @@ func startupResolvedCurrentScopeViewForArgs(args []string) (resolvedScopeView, b
 	if err != nil {
 		return resolvedScopeView{}, false, err
 	}
-	view, err := resolvedCurrentScopeViewForConfig(cfg)
+	view, err := resolvedCurrentScopeView(resolvedInvocationFromParsedCommand(cfg), renderConfigFromParsedCommand(cfg))
 	if err != nil {
 		return resolvedScopeView{}, false, err
 	}
-	if len(configCommandScopes(view.Config)) == 0 {
+	if len(view.Scopes) == 0 {
 		return resolvedScopeView{}, false, nil
 	}
 	return view, true, nil

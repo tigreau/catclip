@@ -39,7 +39,7 @@ func TestPrepareFileUnitsUsesSnippetBodyBytes(t *testing.T) {
 		t.Fatalf("expected prepared snippet payload, got:\n%s", string(units[0].Payload))
 	}
 
-	report, err := buildOutputReportForPlan(runConfig{NoTree: true}, gitContext{}, buildOutputPlan(units), nil)
+	report, err := buildOutputReportForPlan(renderConfig{NoTree: true}, gitContext{}, buildOutputPlan(units), nil)
 	if err != nil {
 		t.Fatalf("buildOutputReportForPlan returned error: %v", err)
 	}
@@ -97,6 +97,66 @@ func TestPrepareFileUnitsUsesDiffBodyBytes(t *testing.T) {
 	}
 	if !bytes.Equal(units[0].Payload, wantPayload) {
 		t.Fatalf("prepared diff payload mismatch:\nwant:\n%s\ngot:\n%s", string(wantPayload), string(units[0].Payload))
+	}
+}
+
+func TestPrepareFileUnitsUsesKnownFullFileSizeWithoutStat(t *testing.T) {
+	entry := fileEntry{
+		AbsPath:   filepath.Join(t.TempDir(), "missing.txt"),
+		RelPath:   "missing.txt",
+		SizeBytes: 1234,
+		SizeKnown: true,
+	}
+
+	units, err := prepareFileUnits(gitContext{}, []fileEntry{entry})
+	if err != nil {
+		t.Fatalf("prepareFileUnits returned error: %v", err)
+	}
+	if got, want := len(units), 1; got != want {
+		t.Fatalf("expected %d prepared unit, got %d", want, got)
+	}
+	if got := units[0].BodyBytes; got != entry.SizeBytes {
+		t.Fatalf("BodyBytes = %d, want known size %d", got, entry.SizeBytes)
+	}
+}
+
+func TestPrepareFileUnitsPreservesKnownEmptyFileSize(t *testing.T) {
+	entry := fileEntry{
+		AbsPath:   filepath.Join(t.TempDir(), "missing-empty.txt"),
+		RelPath:   "missing-empty.txt",
+		SizeBytes: 0,
+		SizeKnown: true,
+	}
+
+	units, err := prepareFileUnits(gitContext{}, []fileEntry{entry})
+	if err != nil {
+		t.Fatalf("prepareFileUnits returned error: %v", err)
+	}
+	if got, want := len(units), 1; got != want {
+		t.Fatalf("expected %d prepared unit, got %d", want, got)
+	}
+	if got := units[0].BodyBytes; got != 0 {
+		t.Fatalf("BodyBytes = %d, want known empty-file size 0", got)
+	}
+}
+
+func TestPrepareFileUnitsStatsWhenSizeUnknown(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"known-later.txt": "abc\n",
+	})
+
+	units, err := prepareFileUnits(gitContext{}, []fileEntry{{
+		AbsPath: filepath.Join(project, "known-later.txt"),
+		RelPath: "known-later.txt",
+	}})
+	if err != nil {
+		t.Fatalf("prepareFileUnits returned error: %v", err)
+	}
+	if got, want := len(units), 1; got != want {
+		t.Fatalf("expected %d prepared unit, got %d", want, got)
+	}
+	if got, want := units[0].BodyBytes, int64(len("abc\n")); got != want {
+		t.Fatalf("BodyBytes = %d, want stat-backed size %d", got, want)
 	}
 }
 
@@ -177,7 +237,7 @@ func TestEmitFullOutputUsesPreparedPayloadWithoutRebuilding(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	_, err := emitFullOutput(runConfig{OutputMode: outputModeStdout}, []preparedFileUnit{unit}, &stdout, colorPalette{})
+	_, err := emitFullOutput(emitConfig{OutputMode: outputModeStdout}, emitEnvironment{}, []preparedFileUnit{unit}, &stdout, colorPalette{})
 	if err != nil {
 		t.Fatalf("emitFullOutput returned error: %v", err)
 	}
@@ -209,7 +269,7 @@ func TestEmitFullOutputReadsFullFilesFromDiskAfterPrepare(t *testing.T) {
 	t.Setenv("CATCLIP_READ_WORKERS", "1")
 
 	var stdout bytes.Buffer
-	_, err = emitFullOutput(runConfig{OutputMode: outputModeStdout}, units, &stdout, colorPalette{})
+	_, err = emitFullOutput(emitConfig{OutputMode: outputModeStdout}, emitEnvironment{}, units, &stdout, colorPalette{})
 	if err != nil {
 		t.Fatalf("emitFullOutput returned error: %v", err)
 	}

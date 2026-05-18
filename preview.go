@@ -11,7 +11,33 @@ import (
 	treepkg "github.com/tigreau/catclip/internal/tree"
 )
 
-func buildOutputReportForPlan(cfg runConfig, gitCtx gitContext, plan outputPlan, notices []string) (outputReport, error) {
+type renderConfig struct {
+	NoTree      bool
+	TreePayload bool
+	Preview     bool
+	Quiet       bool
+	Yes         bool
+	TreeTarget  string
+	TreeKind    string
+	TreeState   string
+	Scopes      []executionScope
+}
+
+func renderConfigFromParsedCommand(cfg parsedCommand) renderConfig {
+	return renderConfig{
+		NoTree:      cfg.NoTree,
+		TreePayload: cfg.TreePayload,
+		Preview:     cfg.Preview,
+		Quiet:       cfg.Quiet,
+		Yes:         cfg.Yes,
+		TreeTarget:  cfg.TreeTarget,
+		TreeKind:    cfg.TreeKind,
+		TreeState:   cfg.TreeState,
+		Scopes:      executionScopesFromCommandSpec(cfg.Command),
+	}
+}
+
+func buildOutputReportForPlan(cfg renderConfig, gitCtx gitContext, plan outputPlan, notices []string, precomputedGitStatuses ...map[string]string) (outputReport, error) {
 	sizes, totalBytes := plan.PayloadSizes()
 	count, word := plan.SummaryCountWord()
 	report := outputReport{
@@ -20,7 +46,9 @@ func buildOutputReportForPlan(cfg runConfig, gitCtx gitContext, plan outputPlan,
 	}
 
 	if needsTreeRender(cfg) {
-		if gitCtx.Enabled {
+		if len(precomputedGitStatuses) > 0 && precomputedGitStatuses[0] != nil {
+			report.statuses = cloneStringMap(precomputedGitStatuses[0])
+		} else if gitCtx.Enabled {
 			statuses, err := collectGitStatusMapForPlan(gitCtx, plan)
 			if err != nil {
 				return outputReport{}, err
@@ -35,7 +63,18 @@ func buildOutputReportForPlan(cfg runConfig, gitCtx gitContext, plan outputPlan,
 	return report, nil
 }
 
-func needsTreeRender(cfg runConfig) bool {
+func cloneStringMap(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for key, value := range src {
+		dst[key] = value
+	}
+	return dst
+}
+
+func needsTreeRender(cfg renderConfig) bool {
 	if cfg.NoTree {
 		return false
 	}
@@ -50,9 +89,9 @@ func needsTreeRender(cfg runConfig) bool {
 
 // renderPreview writes the user-facing preview path: filter summary, notices,
 // optional tree, and the final size/token summary.
-func renderPreview(cfg runConfig, gitCtx gitContext, plan outputPlan, report outputReport, stdout, stderr io.Writer, colors colorPalette) error {
+func renderPreview(cfg renderConfig, gitCtx gitContext, plan outputPlan, report outputReport, stdout, stderr io.Writer, colors colorPalette) error {
 	if !cfg.Quiet {
-		if err := writeFilterSummary(stderr, cfg, gitCtx, colors); err != nil {
+		if err := writeFilterSummary(stderr, gitCtx, colors); err != nil {
 			return err
 		}
 		if err := writeReportNotices(stderr, report, colors); err != nil {
@@ -69,9 +108,9 @@ func renderPreview(cfg runConfig, gitCtx gitContext, plan outputPlan, report out
 	return writeSummary(stdout, report, colors)
 }
 
-func writeNormalDiagnostics(cfg runConfig, gitCtx gitContext, plan outputPlan, report outputReport, stderr io.Writer, colors colorPalette) (bool, error) {
+func writeNormalDiagnostics(cfg renderConfig, gitCtx gitContext, plan outputPlan, report outputReport, stderr io.Writer, colors colorPalette) (bool, error) {
 	if !cfg.Quiet {
-		if err := writeFilterSummary(stderr, cfg, gitCtx, colors); err != nil {
+		if err := writeFilterSummary(stderr, gitCtx, colors); err != nil {
 			return false, err
 		}
 		if err := writeReportNotices(stderr, report, colors); err != nil {
@@ -109,7 +148,7 @@ func writeNormalDiagnostics(cfg runConfig, gitCtx gitContext, plan outputPlan, r
 	return false, nil
 }
 
-func writeFilterSummary(w io.Writer, cfg runConfig, gitCtx gitContext, colors colorPalette) error {
+func writeFilterSummary(w io.Writer, gitCtx gitContext, colors colorPalette) error {
 	shortConfig := shortPath(globalHissPath())
 	if gitCtx.Enabled && repoHasGitIgnore(gitCtx) {
 		_, err := fmt.Fprintf(w, "  %sFiltered by .gitignore + %s%s\n", colors.Git, shortConfig, colors.Reset)
@@ -221,7 +260,10 @@ func shortPath(value string) string {
 }
 
 func collectGitStatusMapForPlan(gitCtx gitContext, plan outputPlan) (map[string]string, error) {
-	pathspecs := plan.GitStatusPathspecs(gitCtx)
+	return collectGitStatusMapForPathspecs(gitCtx, plan.GitStatusPathspecs(gitCtx))
+}
+
+func collectGitStatusMapForPathspecs(gitCtx gitContext, pathspecs []string) (map[string]string, error) {
 	out, err := collectGitStatusOutput(gitCtx, pathspecs)
 	if err != nil {
 		if len(pathspecs) > 0 {

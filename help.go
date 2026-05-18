@@ -93,6 +93,7 @@ func shortHelpText(version string, colors colorPalette) string {
 		{Left: "catclip src --changed", Right: "Only files changed in git"},
 		{Left: "catclip --changed-diff", Right: "Show changes as patches instead of full files"},
 	})
+	fmt.Fprintf(&b, "  Other git filters: %s, %s, %s, %s, %s.\n", flag("--staged"), flag("--unstaged"), flag("--untracked"), flag("--staged-diff"), flag("--unstaged-diff"))
 
 	fmt.Fprintf(&b, "\n%s\n", bold("--then (chain another catclip command):"))
 	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --only "*.ts" --then docs --recent 5`))
@@ -107,11 +108,13 @@ func shortHelpText(version string, colors colorPalette) string {
 	fmt.Fprintf(&b, "    Use %s when the next target should use different filters or output shape.\n", flag("--then"))
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Ignored Files:"))
+	fmt.Fprintf(&b, "  catclip skips .gitignored paths and paths matched by %s (the ignore config).\n", flag(".hiss"))
+	fmt.Fprintf(&b, "\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: "catclip --include tests", Right: "Allow an ignored folder for this run"},
 		{Left: "catclip --hiss", Right: fmt.Sprintf("Edit ignore rules (%s)", flag(displayPath(globalHissPath())))},
 	})
-	fmt.Fprintf(&b, "  catclip skips .gitignored paths and paths matched by %s (the ignore config).\n", flag(".hiss"))
+	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s only adds ignored files found inside your targets.\n", flag("--include"))
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", cmd(`catclip . --include build --only src build`))
@@ -239,7 +242,11 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  --exclude tests              Remove files in any tests/ directory\n\n")
 	b.WriteString("  --only and --exclude use shell globs (*, ?, [...]).\n")
 	b.WriteString("  --contains and --snippet use PCRE2 regex (supports lookaround,\n")
-	b.WriteString("  backreferences, atomic groups, named captures).\n\n")
+	b.WriteString("  backreferences, atomic groups, named captures).\n")
+	b.WriteString("  Patterns are case-sensitive by default. Use the inline (?i) flag\n")
+	b.WriteString("  for case-insensitive matching: --contains '(?i)power' matches\n")
+	b.WriteString("  power, Power, POWER. This differs from VSCode/IDE search which is\n")
+	b.WriteString("  case-insensitive by default.\n\n")
 
 	// ── Narrowing ───────────────────────────────────────────────────────
 	b.WriteString("NARROWING (which ones)\n\n")
@@ -331,7 +338,12 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("                      catclip blocked/sub --include blocked    (parent authorizes child)\n\n")
 	b.WriteString("  --include '*'     Disable all ignore rules — discover everything.\n")
 	b.WriteString("                    Equivalent to ripgrep's --no-ignore.\n")
-	b.WriteString("                    Authorizes any target, even if gitignored.\n\n")
+	b.WriteString("                    Authorizes any target, even if gitignored.\n")
+	b.WriteString("                    Pair with --paths for inventory; avoid combining with\n")
+	b.WriteString("                    body emit on uncurated repos. On a project with a full\n")
+	b.WriteString("                    node_modules/build tree this can mean megabytes of\n")
+	b.WriteString("                    payload and thousands of files, exceeding context\n")
+	b.WriteString("                    budgets or stalling the agent.\n\n")
 	b.WriteString("  Rules:\n")
 	b.WriteString("    1. --include must be the first modifier in a scope (before --only, --exclude, etc.)\n")
 	b.WriteString("    2. Only one --include per scope — use --then for additional includes\n")
@@ -374,6 +386,9 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  # Read a specific line range from a large file:\n")
 	b.WriteString("  catclip FILE --lines 400 450 --headless        # built-in, with line numbers\n")
 	b.WriteString("  catclip FILE -r --headless | sed -n '400,450p' # via sed, no line numbers\n\n")
+	b.WriteString("  # Skip a license/header at the top of a file (read body only):\n")
+	b.WriteString("  catclip FILE --snippet '(?i)copyright' --headless   # e.g. returns <file ... lines=\"1-4\">\n")
+	b.WriteString("  catclip FILE --lines 5 --headless                   # read from line 5 (one past the license end)\n\n")
 	b.WriteString("  # File count and payload size:\n")
 	b.WriteString("  catclip src --only '*.go' --paths --headless | wc -l\n")
 	b.WriteString("  catclip src --only '*.go' --headless | wc -c\n\n")
@@ -466,10 +481,12 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("    • Absolute paths are not accepted. Run catclip from the project root\n")
 	b.WriteString("      and pass relative paths.\n")
 	b.WriteString("    • Symlinks are not followed.\n")
-	b.WriteString("    • Path case sensitivity follows the host filesystem. On case-insensitive\n")
-	b.WriteString("      filesystems (default macOS, default Windows), repos with case-colliding\n")
-	b.WriteString("      paths in the git index may have git selectors (--changed, --staged, etc.)\n")
-	b.WriteString("      miss entries whose index spelling differs from the materialized path.\n\n")
+	b.WriteString("    • Path case sensitivity follows the target filesystem/volume. On\n")
+	b.WriteString("      case-insensitive filesystems (default macOS, default Windows), repos\n")
+	b.WriteString("      with case-colliding paths in the git index may have git selectors\n")
+	b.WriteString("      (--changed, --staged, etc.) miss entries whose index spelling differs\n")
+	b.WriteString("      from the materialized path. Use Linux or a case-sensitive volume for\n")
+	b.WriteString("      exact git selector behavior on those repos.\n\n")
 
 	// ── Reference table ─────────────────────────────────────────────────
 	b.WriteString("MODIFIER REFERENCE\n\n")

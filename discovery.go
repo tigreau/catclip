@@ -229,6 +229,10 @@ func mergeFileEntry(dst *fileEntry, incoming fileEntry) {
 	if dst.ModTime.IsZero() && !incoming.ModTime.IsZero() {
 		dst.ModTime = incoming.ModTime
 	}
+	if !dst.SizeKnown && incoming.SizeKnown {
+		dst.SizeBytes = incoming.SizeBytes
+		dst.SizeKnown = true
+	}
 }
 
 func dedupePreserveOrder(values []string) []string {

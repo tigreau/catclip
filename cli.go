@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -26,11 +27,12 @@ type verboseOutputMetrics struct {
 var headlessPromptGuardCount atomic.Int32
 
 type stdinPathCache struct {
-	loaded bool
-	paths  []string
+	loaded   bool
+	paths    []string
+	rawPaths []string
 }
 
-func run(cfg runConfig, stdout, stderr io.Writer) error {
+func run(cfg parsedCommand, stdout, stderr io.Writer) error {
 	// Surface the rg call/timing counters at end-of-run when explicitly
 	// opted into. Useful for diagnosing per-platform perf (especially
 	// Windows where process spawn cost dominates --contains / --snippet).
@@ -48,243 +50,107 @@ func run(cfg runConfig, stdout, stderr io.Writer) error {
 		_, err := fmt.Fprintf(stdout, "catclip %s\n", cfg.Version)
 		return err
 	case actionEditHiss:
-		return runEditHiss(cfg, stderr)
+		return runEditHiss(hissConfigFromParsedCommand(cfg), stderr)
 	case actionResetHiss:
-		return runResetHiss(cfg, stderr)
+		return runResetHiss(hissConfigFromParsedCommand(cfg), stderr)
 	case actionRun:
-		if err := validateImplementedFeatureSet(cfg); err != nil {
+		internalCfg := internalCommandConfigFromParsedCommand(cfg)
+		if err := validateImplementedFeatureSet(internalCfg); err != nil {
 			return err
 		}
-		restorePromptGuard := pushHeadlessPromptGuard(cfg.Headless || cfg.isInternalKind())
+		restorePromptGuard := pushHeadlessPromptGuard(cfg.Headless || internalCfg.isInternalKind())
 		defer restorePromptGuard()
+		if cfg.PrediscoveredPath != "" {
+			prediscoveredCfg := prediscoveredCommandConfigFromParsedCommand(cfg)
+			if cfg.ContentMatchList {
+				return runInternalPrediscoveredContentMatchList(prediscoveredCfg, stdout)
+			}
+			return runInternalPrediscoveredTreePayload(prediscoveredCfg, stdout)
+		}
 		if cfg.FilePreview {
-			return runInternalFilePreview(cfg, stdout)
+			return runInternalFilePreview(filePreviewConfigFromParsedCommand(cfg), stdout)
 		}
 		if cfg.ContentMatchList {
-			return runInternalContentMatchList(cfg, stdout)
+			return runInternalContentMatchList(contentMatchListConfigFromParsedCommand(cfg), stdout)
 		}
 		if cfg.RecentPreview {
-			return runInternalRecentPreview(cfg, stdout)
+			return runInternalRecentPreview(recentPreviewConfigFromParsedCommand(cfg), stdout)
 		}
 
 		colors := activeColorPalette()
 		started := time.Now()
-		gitCtx := detectGitContext(cfg.WorkingDir)
-		if proceed, err := warnDirectoryPatternSemantics(cfg, stderr, colors); err != nil {
+		resolvedInvocation := resolvedInvocationFromParsedCommand(cfg)
+		invocationCfg := resolvedInvocation.Config
+		emitCfg := emitConfigFromParsedCommand(cfg)
+		renderCfg := renderConfigFromParsedCommand(cfg)
+		gitCtx := detectGitContext(invocationCfg.WorkingDir)
+		if proceed, err := warnDirectoryPatternSemantics(stderr, colors); err != nil {
 			return err
 		} else if !proceed {
 			return nil
 		}
 
-		commandScopes := configCommandScopes(cfg)
+		commandScopes := resolvedInvocation.Scopes
 		if cfg.Verbose {
 			fmt.Fprintf(stderr, "[verbose] parsed %d scope(s)\n", len(commandScopes))
 			for i, s := range commandScopes {
-				fmt.Fprintf(stderr, "[verbose] scope %d: %s\n", i+1, formatScopeSummary(executionScopeFromCommandScopeSpec(s)))
+				fmt.Fprintf(stderr, "[verbose] scope %d: %s\n", i+1, formatScopeSummary(s))
 			}
 		}
 		discoverySpinnerStop := func() {}
 		if !cfg.Quiet {
 			discoverySpinnerStop = startLoadingSpinner(spinnerOutputFile(stderr), "Scanning files...")
 		}
-		var allEntries []fileEntry
-		evaluatedScopes := make([]evaluatedOutputScope, 0, len(commandScopes))
-		diagnostics := make([]diagnostic, 0, len(cfg.Warnings))
+		discoveryResult, err := discoverInvocation(resolvedInvocation, gitCtx, stderr, colors)
+		if err != nil {
+			discoverySpinnerStop()
+			return err
+		}
+		discoverySpinnerStop()
+		if cfg.Verbose {
+			for _, stat := range discoveryResult.ScopeStats {
+				fmt.Fprintf(stderr, "[verbose] scope %d: discovered %d file(s) in %s\n", stat.Index+1, stat.Count, formatDuration(stat.Duration))
+			}
+		}
+		diagnostics := make([]diagnostic, 0, len(cfg.Warnings)+len(discoveryResult.Diagnostics))
 		for _, warning := range cfg.Warnings {
 			diagnostics = append(diagnostics, diagnostic{message: warning})
 		}
-		var notices []string
-		hadSelectionCancel := false
-		for i, scopeSpec := range commandScopes {
-			scopeStarted := time.Now()
-			s := executionScopeFromCommandScopeSpec(scopeSpec)
-			discovered, err := evaluateScope(cfg, gitCtx, i, s, stderr, colors)
-			if err != nil {
-				discoverySpinnerStop()
-				return err
-			}
-			if cfg.Verbose {
-				fmt.Fprintf(stderr, "[verbose] scope %d: discovered %d file(s) in %s\n", i+1, len(discovered.Entries), formatDuration(time.Since(scopeStarted)))
-			}
-			allEntries = append(allEntries, discovered.Entries...)
-			evaluatedScopes = append(evaluatedScopes, evaluatedOutputScope{
-				Paths:   s.Paths,
-				Entries: append([]fileEntry(nil), discovered.Entries...),
-			})
-			diagnostics = append(diagnostics, discovered.Diagnostics...)
-			notices = append(notices, discovered.Notices...)
-			hadSelectionCancel = hadSelectionCancel || discovered.SelectionCancel
-		}
-		discoverySpinnerStop()
-		outputPlan, err := buildOutputPlanForCfg(cfg, gitCtx, evaluatedScopes, allEntries)
+		diagnostics = append(diagnostics, discoveryResult.Diagnostics...)
+		notices := discoveryResult.Notices
+		diagnosticSummary := summarizeDiagnostics(diagnostics, discoveryResult.HadSelectionCancel)
+		outputPlan, err := buildOutputPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
 		if err != nil {
 			return err
+		}
+		outputCtx := outputExecutionContext{
+			Invocation: invocationCfg,
+			Render:     renderCfg,
+			Emit:       emitCfg,
+			Git:        gitCtx,
+			Stdout:     stdout,
+			Stderr:     stderr,
+			Colors:     colors,
+			Started:    started,
+		}
+		outputState := outputExecutionState{
+			Scopes:      commandScopes,
+			Plan:        outputPlan,
+			Diagnostics: diagnostics,
+			Summary:     diagnosticSummary,
+			Notices:     notices,
 		}
 		if cfg.TreePayload {
-			hadErrorDiagnostic := false
-			hadTargetNotFound := false
-			hadScopeUnsatisfiable := false
-			for _, diag := range diagnostics {
-				if diag.isScopeUnsatisfiable {
-					hadScopeUnsatisfiable = true
-					fmt.Fprintln(stderr, diag.message)
-					continue
-				}
-				if diag.isTargetNotFound {
-					hadTargetNotFound = true
-					fmt.Fprintln(stderr, diag.message)
-					continue
-				}
-				if !diag.isError {
-					continue
-				}
-				hadErrorDiagnostic = true
-				fmt.Fprintln(stderr, diag.message)
-			}
-			if hadErrorDiagnostic {
-				return newExitError(1, "")
-			}
-			reportStarted := time.Now()
-			err := encodeTreePayloadFromPlan(stdout, cfg, gitCtx, outputPlan, notices)
-			if err != nil {
-				if errors.Is(err, errTreePayloadEmptyNoTarget) {
-					if err := writeNoFilesMatchedMessage(cfg, stderr, colors, hadSelectionCancel); err != nil {
-						return err
-					}
-					if hadScopeUnsatisfiable {
-						return newExitError(2, "")
-					}
-					return newExitError(1, "")
-				}
-				return err
-			}
-			if cfg.Verbose {
-				fmt.Fprintf(stderr, "[verbose] report: %s\n", formatDuration(time.Since(reportStarted)))
-			}
-			if hadScopeUnsatisfiable {
-				if len(outputPlan.items) == 0 {
-					return newExitError(2, "")
-				}
-				return newExitError(1, "")
-			}
-			if hadTargetNotFound {
-				return newExitError(1, "")
-			}
-			return nil
+			return executeTreePayload(outputCtx, outputState)
 		}
-		hadTargetNotFound := false
-		hadScopeUnsatisfiable := false
-		for _, diag := range diagnostics {
-			if diag.isError || diag.isTargetNotFound || diag.isScopeUnsatisfiable || !cfg.Quiet {
-				fmt.Fprintln(stderr, diag.message)
-			}
-			if diag.isTargetNotFound {
-				hadTargetNotFound = true
-			}
-			if diag.isScopeUnsatisfiable {
-				hadScopeUnsatisfiable = true
-			}
-		}
-		if len(outputPlan.items) == 0 {
-			if !cfg.Quiet {
-				for _, notice := range dedupePreserveOrder(notices) {
-					fmt.Fprintln(stderr, notice)
-				}
-			}
-			if err := writeNoFilesMatchedMessage(cfg, stderr, colors, hadSelectionCancel); err != nil {
-				return err
-			}
-			if hadScopeUnsatisfiable {
-				return newExitError(2, "")
-			}
-			return newExitError(1, "")
-		}
-		reportStarted := time.Now()
-		report, err := buildOutputReportForPlan(cfg, gitCtx, outputPlan, dedupePreserveOrder(notices))
-		if err != nil {
-			return err
-		}
-		if cfg.Verbose {
-			fmt.Fprintf(stderr, "[verbose] report: %s\n", formatDuration(time.Since(reportStarted)))
-		}
-		if cfg.Preview {
-			renderStarted := time.Now()
-			err := renderPreview(cfg, gitCtx, outputPlan, report, stdout, stderr, colors)
-			if err != nil {
-				return err
-			}
-			if cfg.Verbose {
-				fmt.Fprintf(stderr, "[verbose] preview: %s\n", formatDuration(time.Since(renderStarted)))
-				fmt.Fprintf(stderr, "[verbose] total: %s\n", formatDuration(time.Since(started)))
-			}
-			if hadScopeUnsatisfiable {
-				return newExitError(1, "")
-			}
-			if hadTargetNotFound {
-				return newExitError(1, "")
-			}
-			return nil
-		}
-		if err := validateRawOutputPlan(cfg, outputPlan); err != nil {
-			return err
-		}
-		diagStarted := time.Now()
-		proceed, err := writeNormalDiagnostics(cfg, gitCtx, outputPlan, report, stderr, colors)
-		if err != nil {
-			return err
-		}
-		if cfg.Verbose {
-			fmt.Fprintf(stderr, "[verbose] diagnostics: %s\n", formatDuration(time.Since(diagStarted)))
-		}
-		if !proceed {
-			return nil
-		}
-		outputMetrics, err := collectVerboseOutputMetrics(cfg.Verbose, gitCtx, outputPlan)
-		if err != nil {
-			return err
-		}
-		outputSpinnerStop := func() {}
-		if !cfg.Quiet && cfg.OutputMode == outputModeClipboard {
-			outputSpinnerStop = startLoadingSpinner(spinnerOutputFile(stderr), outputSpinnerMessage(cfg))
-		}
-		if shouldSeparateStdoutPayload(cfg, stdout, stderr) {
-			fmt.Fprintln(stderr)
-		}
-		outputStarted := time.Now()
-		emitStats, err := emitOutputPlan(cfg, outputPlan, stdout, colors)
-		if err != nil {
-			outputSpinnerStop()
-			return err
-		}
-		outputSpinnerStop()
-		outputMetrics.PayloadBytes = emitStats.PayloadBytes
-		if cfg.Verbose {
-			outputDuration := time.Since(outputStarted)
-			fmt.Fprintf(stderr, "[verbose] output: %s\n", formatDuration(outputDuration))
-			writeVerboseOutputMetrics(stderr, outputMetrics, emitStats, len(outputPlan.items), outputDuration)
-		}
-		if cfg.OutputMode == outputModeClipboard && !cfg.Quiet {
-			if err := writeClipboardSuccess(stderr, outputPlan, emitStats, colors); err != nil {
-				return err
-			}
-		}
-		if cfg.Verbose {
-			fmt.Fprintf(stderr, "[verbose] total: %s\n", formatDuration(time.Since(started)))
-		}
-		if hadScopeUnsatisfiable {
-			return newExitError(1, "")
-		}
-		if hadTargetNotFound {
-			return newExitError(1, "")
-		}
-		return nil
+		return executePlanOutput(outputCtx, outputState)
 	default:
 		return fmt.Errorf("unknown action %q", cfg.Action)
 	}
 }
 
-func shouldSeparateStdoutPayload(cfg runConfig, stdout, stderr io.Writer) bool {
-	if cfg.OutputMode != outputModeStdout || cfg.Quiet {
+func shouldSeparateStdoutPayload(emitCfg emitConfig, invocationCfg invocationConfig, stdout, stderr io.Writer) bool {
+	if emitCfg.OutputMode != outputModeStdout || invocationCfg.Quiet {
 		return false
 	}
 	stdoutFile := spinnerOutputFile(stdout)
@@ -421,15 +287,6 @@ func exitWithError(err error, stderr io.Writer) {
 	os.Exit(code)
 }
 
-func (cfg runConfig) isInternalKind() bool {
-	return cfg.TreePayload || cfg.FilePreview ||
-		cfg.ContentMatchList || cfg.RecentPreview
-}
-
-func (cfg runConfig) canPromptForChoice() bool {
-	return !cfg.Headless && !cfg.isInternalKind() && canPromptInteractively()
-}
-
 func activeColorPalette() colorPalette {
 	return activeColorPaletteForWriter(os.Stderr)
 }
@@ -459,7 +316,19 @@ func ansiColorPalette() colorPalette {
 	}
 }
 
-func runEditHiss(cfg runConfig, stderr io.Writer) error {
+type hissConfig struct {
+	Quiet bool
+	Yes   bool
+}
+
+func hissConfigFromParsedCommand(cfg parsedCommand) hissConfig {
+	return hissConfig{
+		Quiet: cfg.Quiet,
+		Yes:   cfg.Yes,
+	}
+}
+
+func runEditHiss(cfg hissConfig, stderr io.Writer) error {
 	path, err := ensureGlobalHiss()
 	if err != nil {
 		return err
@@ -481,7 +350,7 @@ func runEditHiss(cfg runConfig, stderr io.Writer) error {
 	return cmd.Run()
 }
 
-func runResetHiss(cfg runConfig, stderr io.Writer) error {
+func runResetHiss(cfg hissConfig, stderr io.Writer) error {
 	path, err := ensureGlobalHiss()
 	if err != nil {
 		return err
@@ -512,6 +381,30 @@ func runResetHiss(cfg runConfig, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "Configuration restored.")
 	}
 	return nil
+}
+
+type internalCommandConfig struct {
+	TreePayload       bool
+	PrediscoveredPath string
+	FilePreview       bool
+	ContentMatchList  bool
+	RecentPreview     bool
+}
+
+func internalCommandConfigFromParsedCommand(cfg parsedCommand) internalCommandConfig {
+	return internalCommandConfig{
+		TreePayload:       cfg.TreePayload,
+		PrediscoveredPath: cfg.PrediscoveredPath,
+		FilePreview:       cfg.FilePreview,
+		ContentMatchList:  cfg.ContentMatchList,
+		RecentPreview:     cfg.RecentPreview,
+	}
+}
+
+func (cfg internalCommandConfig) isInternalKind() bool {
+	return cfg.TreePayload || cfg.FilePreview ||
+		cfg.ContentMatchList || cfg.RecentPreview ||
+		cfg.PrediscoveredPath != ""
 }
 
 type editorCommand struct {
@@ -640,13 +533,14 @@ func formatDuration(d time.Duration) string {
 	return d.Round(time.Millisecond).String()
 }
 
-func validateImplementedFeatureSet(cfg runConfig) error {
+func validateImplementedFeatureSet(cfg internalCommandConfig) error {
+	if cfg.PrediscoveredPath != "" && !cfg.TreePayload && !cfg.ContentMatchList {
+		return newUsageError("Error: --internal-prediscovered requires --internal-tree-payload or --internal-content-match-list.")
+	}
 	return nil
 }
 
-
-
-func validateRawOutputPlan(cfg runConfig, plan outputPlan) error {
+func validateRawOutputPlan(cfg emitConfig, plan outputPlan) error {
 	if !cfg.Raw {
 		return nil
 	}
@@ -668,24 +562,59 @@ func validateRawOutputPlan(cfg runConfig, plan outputPlan) error {
 	return nil
 }
 
-func parseArgs(args []string) (runConfig, error) {
+func invocationConfigFromParsedCommand(cfg parsedCommand) invocationConfig {
+	return invocationConfig{
+		Version:      cfg.Version,
+		Platform:     cfg.Platform,
+		WorkingDir:   cfg.WorkingDir,
+		Verbose:      cfg.Verbose,
+		Quiet:        cfg.Quiet,
+		Headless:     cfg.Headless,
+		WithBinaries: cfg.WithBinaries,
+		Internal:     internalCommandConfigFromParsedCommand(cfg).isInternalKind(),
+	}
+}
+
+func resolvedInvocationFromParsedCommand(cfg parsedCommand) resolvedInvocation {
+	return resolvedInvocation{
+		Config: invocationConfigFromParsedCommand(cfg),
+		Scopes: executionScopesFromCommandSpec(cfg.Command),
+	}
+}
+
+func emitConfigFromParsedCommand(cfg parsedCommand) emitConfig {
+	return emitConfig{
+		OutputMode: cfg.OutputMode,
+		Raw:        cfg.Raw,
+		NoBundle:   cfg.NoBundle,
+	}
+}
+
+func emitEnvironmentFromInvocationConfig(cfg invocationConfig) emitEnvironment {
+	return emitEnvironment{
+		Platform:   cfg.Platform,
+		WorkingDir: cfg.WorkingDir,
+	}
+}
+
+func parseArgs(args []string) (parsedCommand, error) {
 	return parseArgsWithMode(args, false)
 }
 
 // parseArgsAllowImplicitDot is for internal inspection (startup picker, etc.)
 // where it's OK to default the scope target to "." when none is provided.
 // The CLI entry point uses parseArgs (strict) to require explicit targets.
-func parseArgsAllowImplicitDot(args []string) (runConfig, error) {
+func parseArgsAllowImplicitDot(args []string) (parsedCommand, error) {
 	return parseArgsWithMode(args, true)
 }
 
-func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, error) {
+func parseArgsWithMode(args []string, allowImplicitDotScope bool) (parsedCommand, error) {
 	wd, err := os.Getwd()
 	if err != nil {
-		return runConfig{}, err
+		return parsedCommand{}, err
 	}
 
-	cfg := runConfig{
+	cfg := parsedCommand{
 		Action:     actionRun,
 		Version:    loadVersion(),
 		Platform:   detectPlatform(),
@@ -730,13 +659,13 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 			}
 		}
 		if len(s.Targets) == 0 {
-			if cfg.TreePayload {
+			if cfg.TreePayload && cfg.PrediscoveredPath == "" {
 				return newUsageError("Error: --internal-tree-payload requires an explicit target.\n  Use: catclip TARGET --internal-tree-payload")
 			}
 			if cfg.Headless {
 				return newUsageError("Error: --headless requires explicit targets.\n  Pass a path, --include, or another scope-defining flag.\n  Example: catclip . --headless")
 			}
-			if cfg.isInternalKind() || cfg.Action != actionRun || allowImplicitDotScope {
+			if internalCommandConfigFromParsedCommand(cfg).isInternalKind() || cfg.Action != actionRun || allowImplicitDotScope {
 				s.Targets = []string{"."}
 			} else {
 				return newUsageError("Error: no target specified.\n  Pass an explicit target — use '.' for the current directory.\n  Example: catclip . --paths")
@@ -789,21 +718,27 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 			cfg.Preview = true
 		case "--internal-tree-payload":
 			cfg.TreePayload = true
+		case "--internal-prediscovered":
+			if i+1 >= len(args) {
+				return parsedCommand{}, newUsageError("Error: --internal-prediscovered requires a checkpoint path.")
+			}
+			i++
+			cfg.PrediscoveredPath = args[i]
 		case "--internal-tree-target":
 			if i+1 >= len(args) {
-				return runConfig{}, newUsageError("Error: --internal-tree-target requires a path.")
+				return parsedCommand{}, newUsageError("Error: --internal-tree-target requires a path.")
 			}
 			i++
 			cfg.TreeTarget = args[i]
 		case "--internal-tree-kind":
 			if i+1 >= len(args) {
-				return runConfig{}, newUsageError("Error: --internal-tree-kind requires a value.")
+				return parsedCommand{}, newUsageError("Error: --internal-tree-kind requires a value.")
 			}
 			i++
 			cfg.TreeKind = args[i]
 		case "--internal-tree-state":
 			if i+1 >= len(args) {
-				return runConfig{}, newUsageError("Error: --internal-tree-state requires a value.")
+				return parsedCommand{}, newUsageError("Error: --internal-tree-state requires a value.")
 			}
 			i++
 			cfg.TreeState = args[i]
@@ -811,7 +746,7 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 			cfg.FilePreview = true
 		case "--internal-file-path":
 			if i+1 >= len(args) {
-				return runConfig{}, newUsageError("Error: --internal-file-path requires a path.")
+				return parsedCommand{}, newUsageError("Error: --internal-file-path requires a path.")
 			}
 			i++
 			cfg.FilePath = args[i]
@@ -821,13 +756,13 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 			cfg.RecentPreview = true
 		case "--internal-recent-data":
 			if i+1 >= len(args) {
-				return runConfig{}, newUsageError("Error: --internal-recent-data requires a path.")
+				return parsedCommand{}, newUsageError("Error: --internal-recent-data requires a path.")
 			}
 			i++
 			cfg.RecentData = args[i]
 		case "--internal-recent-selection":
 			if i+1 >= len(args) {
-				return runConfig{}, newUsageError("Error: --internal-recent-selection requires a value.")
+				return parsedCommand{}, newUsageError("Error: --internal-recent-selection requires a value.")
 			}
 			i++
 			cfg.RecentSelect = args[i]
@@ -877,7 +812,7 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 				next := args[i+1]
 				if n, err := strconv.Atoi(next); err == nil {
 					if n < 1 {
-						return runConfig{}, newUsageError("Error: --lines start must be >= 1 (got %d).\n  Line numbers are 1-based, matching editors and compiler output.", n)
+						return parsedCommand{}, newUsageError("Error: --lines start must be >= 1 (got %d).\n  Line numbers are 1-based, matching editors and compiler output.", n)
 					}
 					start = n
 					i++
@@ -885,16 +820,16 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 						next2 := args[i+1]
 						if n2, err := strconv.Atoi(next2); err == nil {
 							if n2 < start {
-								return runConfig{}, newUsageError("Error: --lines end (%d) must be >= start (%d).\n  Use: --lines START END where END >= START.", n2, start)
+								return parsedCommand{}, newUsageError("Error: --lines end (%d) must be >= start (%d).\n  Use: --lines START END where END >= START.", n2, start)
 							}
 							end = n2
 							i++
 						} else if !strings.HasPrefix(next2, "-") {
-							return runConfig{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next2)
+							return parsedCommand{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next2)
 						}
 					}
 				} else if !strings.HasPrefix(next, "-") {
-					return runConfig{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next)
+					return parsedCommand{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next)
 				}
 			}
 			current.LinesStart = start
@@ -904,7 +839,7 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 		case "--snippet":
 			inModifierMode = true
 			if i+1 >= len(args) {
-				return runConfig{}, requiredStageValueError("--snippet")
+				return parsedCommand{}, requiredStageValueError("--snippet")
 			}
 			i++
 			current.SnippetPattern = args[i]
@@ -913,24 +848,24 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 			lastNoValueModifier = ""
 		case "--then":
 			if err := finalize(); err != nil {
-				return runConfig{}, err
+				return parsedCommand{}, err
 			}
 		case "--":
 			if i != len(args)-1 {
-				return runConfig{}, bareModifierPlaceholderOrderError()
+				return parsedCommand{}, bareModifierPlaceholderOrderError()
 			}
 			if cfg.Headless {
-				return runConfig{}, bareModifierPlaceholderHeadlessModeError()
+				return parsedCommand{}, bareModifierPlaceholderHeadlessModeError()
 			}
-			return runConfig{}, bareModifierPlaceholderInteractiveOnlyError()
+			return parsedCommand{}, bareModifierPlaceholderInteractiveOnlyError()
 		case "--only":
 			inModifierMode = true
 			values, next, exactValues, err := consumePathModifierValues(args, i+1, "--only", &stdinCache)
 			if err != nil {
-				return runConfig{}, err
+				return parsedCommand{}, err
 			}
 			if len(values) == 0 {
-				return runConfig{}, requiredStageValueError("--only")
+				return parsedCommand{}, requiredStageValueError("--only")
 			}
 			current.Only = append(current.Only, values...)
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageOnly, Values: append([]string(nil), values...), ExactValues: exactValues})
@@ -940,15 +875,13 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 			inModifierMode = true
 			values, next, exactValues, err := consumePathModifierValues(args, i+1, "--include", &stdinCache)
 			if err != nil {
-				return runConfig{}, err
+				return parsedCommand{}, err
 			}
 			if len(values) == 0 {
-				return runConfig{}, requiredStageValueError("--include")
+				return parsedCommand{}, requiredStageValueError("--include")
 			}
-			for _, v := range values {
-				if v != "*" && hasGlobChars(v) {
-					return runConfig{}, newUsageError("Error: --include does not accept glob patterns. Use literal paths or '*' to include all.")
-				}
+			if err := validateIncludeValues(values); err != nil {
+				return parsedCommand{}, err
 			}
 			current.IncludedTargets = append(current.IncludedTargets, values...)
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageInclude, Values: append([]string(nil), values...), ExactValues: exactValues})
@@ -958,10 +891,10 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 			inModifierMode = true
 			values, next, exactValues, err := consumePathModifierValues(args, i+1, "--exclude", &stdinCache)
 			if err != nil {
-				return runConfig{}, err
+				return parsedCommand{}, err
 			}
 			if len(values) == 0 {
-				return runConfig{}, requiredStageValueError("--exclude")
+				return parsedCommand{}, requiredStageValueError("--exclude")
 			}
 			current.Exclude = append(current.Exclude, values...)
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageExclude, Values: append([]string(nil), values...), ExactValues: exactValues})
@@ -971,7 +904,7 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 			inModifierMode = true
 			limit, next, err := consumeOptionalRecentLimit(args, i+1)
 			if err != nil {
-				return runConfig{}, err
+				return parsedCommand{}, err
 			}
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageRecent, Limit: limit})
 			i = next - 1
@@ -979,19 +912,19 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 		case "--depth":
 			inModifierMode = true
 			if i+1 >= len(args) {
-				return runConfig{}, requiredStageValueError("--depth")
+				return parsedCommand{}, requiredStageValueError("--depth")
 			}
 			i++
 			depth, err := parseDepthToken(args[i])
 			if err != nil {
-				return runConfig{}, err
+				return parsedCommand{}, err
 			}
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageDepth, Limit: intPtr(depth)})
 			lastNoValueModifier = ""
 		case "--contains":
 			inModifierMode = true
 			if i+1 >= len(args) {
-				return runConfig{}, containsMissingPatternError(args, i)
+				return parsedCommand{}, containsMissingPatternError(args, i)
 			}
 			i++
 			current.Contains = args[i]
@@ -1008,27 +941,27 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 		default:
 			switch {
 			case strings.HasPrefix(arg, "--contains="):
-				return runConfig{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
+				return parsedCommand{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
 			case strings.HasPrefix(arg, "--snippet="):
-				return runConfig{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
+				return parsedCommand{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
 			case strings.HasPrefix(arg, "--recent="):
-				return runConfig{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
+				return parsedCommand{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
 			case strings.HasPrefix(arg, "--depth="):
-				return runConfig{}, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
+				return parsedCommand{}, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 			case arg == "--diff":
-				return runConfig{}, diffStandaloneError()
+				return parsedCommand{}, diffStandaloneError()
 			case strings.HasPrefix(arg, "--"):
-				return runConfig{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
+				return parsedCommand{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
-				return runConfig{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
+				return parsedCommand{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
 			case arg == "-":
-				return runConfig{}, newUsageError("Error: '-' is not a valid target path.\n  To read file paths from stdin, use it with a modifier:\n    catclip src --exclude -\n    catclip src --only -")
+				return parsedCommand{}, newUsageError("Error: '-' is not a valid target path.\n  To read file paths from stdin, use it with a modifier:\n    catclip src --exclude -\n    catclip src --only -")
 			default:
 				if inModifierMode {
 					if lastNoValueModifier != "" {
-						return runConfig{}, noValueModifierError(lastNoValueModifier)
+						return parsedCommand{}, noValueModifierError(lastNoValueModifier)
 					}
-					return runConfig{}, positionalAfterModifierError()
+					return parsedCommand{}, positionalAfterModifierError()
 				}
 				current.Targets = append(current.Targets, arg)
 				current.explicitTargets++
@@ -1038,25 +971,25 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (runConfig, er
 	}
 
 	if err := finalize(); err != nil {
-		return runConfig{}, err
+		return parsedCommand{}, err
 	}
 
-	if cfg.Headless || cfg.isInternalKind() {
+	if cfg.Headless || internalCommandConfigFromParsedCommand(cfg).isInternalKind() {
 		cfg.OutputMode = outputModeStdout
 		cfg.Quiet = true
 	}
 
 	if len(executionScopes) == 0 {
-		if cfg.TreePayload {
-			return runConfig{}, newUsageError("Error: --internal-tree-payload requires an explicit target.\n  Use: catclip TARGET --internal-tree-payload")
+		if cfg.TreePayload && cfg.PrediscoveredPath == "" {
+			return parsedCommand{}, newUsageError("Error: --internal-tree-payload requires an explicit target.\n  Use: catclip TARGET --internal-tree-payload")
 		}
 		if cfg.Headless {
-			return runConfig{}, newUsageError("Error: --headless requires explicit targets.\n  Pass a path, --include, or another scope-defining flag.\n  Example: catclip . --headless")
+			return parsedCommand{}, newUsageError("Error: --headless requires explicit targets.\n  Pass a path, --include, or another scope-defining flag.\n  Example: catclip . --headless")
 		}
-		if cfg.isInternalKind() || cfg.Action != actionRun || allowImplicitDotScope {
+		if internalCommandConfigFromParsedCommand(cfg).isInternalKind() || cfg.Action != actionRun || allowImplicitDotScope {
 			executionScopes = append(executionScopes, executionScope{Targets: []string{"."}})
 		} else {
-			return runConfig{}, newUsageError("Error: no target specified.\n  Run catclip from an interactive terminal to pick targets, or pass an explicit target — use '.' for the current directory.\n  Example: catclip .")
+			return parsedCommand{}, newUsageError("Error: no target specified.\n  Run catclip from an interactive terminal to pick targets, or pass an explicit target — use '.' for the current directory.\n  Example: catclip .")
 		}
 	}
 
@@ -1109,28 +1042,77 @@ func consumePathModifierValues(args []string, start int, flag string, cache *std
 	return values, next, false, nil
 }
 
+func validateIncludeValues(values []string) error {
+	for _, value := range values {
+		if value == "*" {
+			continue
+		}
+		if isAbsolutePathForValidation(value) {
+			return newUsageError("Error: --include does not accept absolute paths: %s\n  Use a relative path inside the current target scope.", singleQuoted(value))
+		}
+		if containsParentTraversal(value) {
+			return newUsageError("Error: --include cannot traverse above the current target scope: %s\n  Use a relative path inside the current target scope.", singleQuoted(value))
+		}
+		if hasGlobChars(value) {
+			return newUsageError("Error: --include does not accept glob patterns. Use literal paths or '*' to include all.")
+		}
+	}
+	return nil
+}
+
+func isAbsolutePathForValidation(value string) bool {
+	if path.IsAbs(value) || filepath.IsAbs(value) {
+		return true
+	}
+	if strings.HasPrefix(value, `\\`) {
+		return true
+	}
+	if len(value) >= 3 && value[1] == ':' && (value[2] == '/' || value[2] == '\\') {
+		drive := value[0]
+		return (drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')
+	}
+	return false
+}
+
 func readModifierPathsFromStdin(flag string, cache *stdinPathCache) ([]string, error) {
 	if cache.loaded {
+		if flag == "--include" {
+			if err := validateIncludeValues(cache.rawPaths); err != nil {
+				return nil, err
+			}
+		}
 		return append([]string(nil), cache.paths...), nil
 	}
 	if isTerminalFile(os.Stdin) {
 		return nil, newUsageError("Error: %s - reads paths from stdin, but no input is being piped.\n  Pipe paths from another command:\n    catclip src --contains \"pattern\" --paths | catclip src %s -", flag, flag)
 	}
-	paths, err := readNormalizedStdinPaths(os.Stdin)
+	rawPaths, paths, err := readStdinPathValues(os.Stdin)
 	if err != nil {
 		return nil, err
 	}
 	if len(paths) == 0 {
 		return nil, newUsageError("Error: %s - received no paths from stdin.\n  The piped command produced no output.", flag)
 	}
+	if flag == "--include" {
+		if err := validateIncludeValues(rawPaths); err != nil {
+			return nil, err
+		}
+	}
 	cache.loaded = true
 	cache.paths = append([]string(nil), paths...)
+	cache.rawPaths = append([]string(nil), rawPaths...)
 	return append([]string(nil), cache.paths...), nil
 }
 
 func readNormalizedStdinPaths(stdin io.Reader) ([]string, error) {
+	_, paths, err := readStdinPathValues(stdin)
+	return paths, err
+}
+
+func readStdinPathValues(stdin io.Reader) ([]string, []string, error) {
 	scanner := bufio.NewScanner(stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	rawPaths := make([]string, 0, 64)
 	paths := make([]string, 0, 64)
 	for scanner.Scan() {
 		line := strings.TrimSuffix(scanner.Text(), "\r")
@@ -1138,15 +1120,16 @@ func readNormalizedStdinPaths(stdin io.Reader) ([]string, error) {
 		if normalized == "" {
 			continue
 		}
+		rawPaths = append(rawPaths, line)
 		paths = append(paths, normalized)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return paths, nil
+	return rawPaths, paths, nil
 }
 
-func warnDirectoryPatternSemantics(cfg runConfig, stderr io.Writer, colors colorPalette) (bool, error) {
+func warnDirectoryPatternSemantics(stderr io.Writer, colors colorPalette) (bool, error) {
 	return true, nil
 }
 

@@ -32,15 +32,15 @@ const (
 )
 
 type positionalGlobScopeNormalization struct {
-	rewritten           []string
-	rewrittenAsTargets  []string
-	hints               []string
-	fixItKind           positionalGlobTokenKind
-	fixItRaw            string
-	ambiguous           bool
-	ambiguityRaw        string
-	ambiguityThen       [][]string
-	ambiguityOne        []string
+	rewritten          []string
+	rewrittenAsTargets []string
+	hints              []string
+	fixItKind          positionalGlobTokenKind
+	fixItRaw           string
+	ambiguous          bool
+	ambiguityRaw       string
+	ambiguityThen      [][]string
+	ambiguityOne       []string
 }
 
 func normalizePositionalGlobArgs(args []string, quiet bool) (positionalGlobNormalizationResult, error) {

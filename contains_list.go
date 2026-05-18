@@ -14,11 +14,27 @@ type contentMatchRow struct {
 	RelPath string
 }
 
-func runInternalContentMatchList(cfg runConfig, stdout io.Writer) error {
+type contentMatchListConfig struct {
+	Invocation invocationConfig
+	Scopes     []executionScope
+}
+
+func contentMatchListConfigFromParsedCommand(cfg parsedCommand) contentMatchListConfig {
+	return contentMatchListConfig{
+		Invocation: invocationConfigFromParsedCommand(cfg),
+		Scopes:     executionScopesFromCommandSpec(cfg.Command),
+	}
+}
+
+func runInternalContentMatchList(cfg contentMatchListConfig, stdout io.Writer) error {
 	rows, err := contentMatchRowsForScope(cfg)
 	if err != nil {
 		return err
 	}
+	return writeContentMatchRows(stdout, rows)
+}
+
+func writeContentMatchRows(stdout io.Writer, rows []contentMatchRow) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -43,7 +59,7 @@ func runInternalContentMatchList(cfg runConfig, stdout io.Writer) error {
 	if _, err := io.WriteString(stdout, strings.Join(lines, "\n")); err != nil {
 		return err
 	}
-	_, err = io.WriteString(stdout, "\n")
+	_, err := io.WriteString(stdout, "\n")
 	return err
 }
 
@@ -62,14 +78,13 @@ func contentMatchScopePattern(s executionScope) string {
 	return s.Contains
 }
 
-func contentMatchRowsForScope(cfg runConfig) ([]contentMatchRow, error) {
-	scopeSpecs := configCommandScopes(cfg)
-	if len(scopeSpecs) == 0 {
+func contentMatchRowsForScope(cfg contentMatchListConfig) ([]contentMatchRow, error) {
+	if len(cfg.Scopes) == 0 {
 		return nil, nil
 	}
 
-	scopeIndex := len(scopeSpecs) - 1
-	currentScope := executionScopeFromCommandScopeSpec(scopeSpecs[scopeIndex])
+	scopeIndex := len(cfg.Scopes) - 1
+	currentScope := cfg.Scopes[scopeIndex]
 	patternText := strings.TrimSpace(contentMatchScopePattern(currentScope))
 	if patternText == "" {
 		return nil, nil
@@ -78,8 +93,8 @@ func contentMatchRowsForScope(cfg runConfig) ([]contentMatchRow, error) {
 		return nil, nil
 	}
 
-	gitCtx := detectGitContext(cfg.WorkingDir)
-	discovered, err := evaluateScope(cfg, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
+	gitCtx := detectGitContext(cfg.Invocation.WorkingDir)
+	discovered, err := evaluateScope(cfg.Invocation, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
 	if err != nil {
 		// While the user types in the interactive picker the pattern can be
 		// incomplete (e.g., `[` mid-character-class). rg surfaces this as a
@@ -91,9 +106,13 @@ func contentMatchRowsForScope(cfg runConfig) ([]contentMatchRow, error) {
 		}
 		return nil, err
 	}
-	rows := make([]contentMatchRow, 0, len(discovered.Entries))
-	seen := make(map[string]struct{}, len(discovered.Entries))
-	for _, entry := range discovered.Entries {
+	return contentMatchRowsFromEntries(discovered.Entries), nil
+}
+
+func contentMatchRowsFromEntries(entries []fileEntry) []contentMatchRow {
+	rows := make([]contentMatchRow, 0, len(entries))
+	seen := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
 		relPath := normalizeRelPath(entry.RelPath)
 		if relPath == "" {
 			continue
@@ -107,7 +126,7 @@ func contentMatchRowsForScope(cfg runConfig) ([]contentMatchRow, error) {
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].RelPath < rows[j].RelPath
 	})
-	return rows, nil
+	return rows
 }
 
 func contentMatchPathsForArgs(currentArgs []string, flag, query string) ([]string, error) {
@@ -117,7 +136,7 @@ func contentMatchPathsForArgs(currentArgs []string, flag, query string) ([]strin
 	if err != nil {
 		return nil, err
 	}
-	rows, err := contentMatchRowsForScope(cfg)
+	rows, err := contentMatchRowsForScope(contentMatchListConfigFromParsedCommand(cfg))
 	if err != nil {
 		return nil, err
 	}

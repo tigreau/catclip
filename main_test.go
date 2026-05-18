@@ -43,12 +43,12 @@ func (r *errAfterReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-func parsedExecutionScopes(t *testing.T, cfg runConfig) []executionScope {
+func parsedExecutionScopes(t *testing.T, cfg parsedCommand) []executionScope {
 	t.Helper()
 	return executionScopesFromCommandSpec(cfg.Command)
 }
 
-func parsedExecutionScope(t *testing.T, cfg runConfig) executionScope {
+func parsedExecutionScope(t *testing.T, cfg parsedCommand) executionScope {
 	t.Helper()
 	scopes := parsedExecutionScopes(t, cfg)
 	if len(scopes) != 1 {
@@ -369,6 +369,71 @@ func TestParseArgsRejectsEmptyStdinPathList(t *testing.T) {
 	}
 }
 
+func TestParseArgsRejectsInvalidTypedIncludeValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr string
+	}{
+		{name: "absolute", value: "/vendor", wantErr: "--include does not accept absolute paths"},
+		{name: "windows absolute", value: `C:\vendor`, wantErr: "--include does not accept absolute paths"},
+		{name: "parent traversal", value: "../vendor", wantErr: "--include cannot traverse above the current target scope"},
+		{name: "normalizing parent traversal", value: "src/../vendor", wantErr: "--include cannot traverse above the current target scope"},
+		{name: "glob", value: "*.js", wantErr: "--include does not accept glob patterns"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseArgs([]string{".", "--include", tc.value})
+			if err == nil {
+				t.Fatalf("expected %q to fail", tc.value)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
+func TestParseArgsAllowsIncludeWildcardSpecialCase(t *testing.T) {
+	cfg, err := parseArgs([]string{".", "--include", "*"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	scopes := cfg.Command.Scopes()
+	if got := scopes[0].IncludedTargets(); !reflect.DeepEqual(got, []string{"*"}) {
+		t.Fatalf("IncludedTargets = %#v, want [*]", got)
+	}
+}
+
+func TestParseArgsRejectsInvalidStdinIncludeValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		stdin   string
+		wantErr string
+	}{
+		{name: "absolute", stdin: "/vendor\n", wantErr: "--include does not accept absolute paths"},
+		{name: "absolute normalized to dot", stdin: "/tmp/..\n", wantErr: "--include does not accept absolute paths"},
+		{name: "windows absolute", stdin: "C:\\vendor\n", wantErr: "--include does not accept absolute paths"},
+		{name: "parent traversal", stdin: "../vendor\n", wantErr: "--include cannot traverse above the current target scope"},
+		{name: "normalizing parent traversal", stdin: "src/../vendor\n", wantErr: "--include cannot traverse above the current target scope"},
+		{name: "glob", stdin: "*.js\n", wantErr: "--include does not accept glob patterns"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setTestPipeStdin(t, tc.stdin)
+			_, err := parseArgs([]string{".", "--include", "-"})
+			if err == nil {
+				t.Fatalf("expected stdin %q to fail", tc.stdin)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func TestParseArgsStagedImpliesChanged(t *testing.T) {
 	cfg, err := parseArgs([]string{"src", "--staged"})
 	if err != nil {
@@ -500,6 +565,16 @@ func TestParseStartupInputTokensAllowsModifierLikeRegexValues(t *testing.T) {
 	}
 	if got, want := strings.Join(parsed.modifiers, "\n"), "--contains\n--snippet\n--snippet\n--contains"; got != want {
 		t.Fatalf("parsed.modifiers = %q, want %q", got, want)
+	}
+}
+
+func TestParseStartupInputTokensRejectsInvalidIncludeValue(t *testing.T) {
+	_, err := parseStartupInputTokens([]string{"--include", "src/../vendor"})
+	if err == nil {
+		t.Fatal("expected invalid startup include value to fail")
+	}
+	if !strings.Contains(err.Error(), "--include cannot traverse above the current target scope") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -1602,10 +1677,10 @@ func TestEmitFullOutputPrefetchMatchesSequential(t *testing.T) {
 		t.Fatalf("prepareFileUnits returned error: %v", err)
 	}
 
-	cfg := runConfig{OutputMode: outputModeStdout}
+	cfg := emitConfig{OutputMode: outputModeStdout}
 
 	var sequential bytes.Buffer
-	if _, err := emitFullOutput(cfg, units, &sequential, colorPalette{}); err != nil {
+	if _, err := emitFullOutput(cfg, emitEnvironment{}, units, &sequential, colorPalette{}); err != nil {
 		t.Fatalf("sequential emitFullOutput returned error: %v", err)
 	}
 
@@ -1613,7 +1688,7 @@ func TestEmitFullOutputPrefetchMatchesSequential(t *testing.T) {
 	t.Setenv("CATCLIP_PREFETCH_FILE_KIB", "64")
 
 	var prefetched bytes.Buffer
-	if _, err := emitFullOutput(cfg, units, &prefetched, colorPalette{}); err != nil {
+	if _, err := emitFullOutput(cfg, emitEnvironment{}, units, &prefetched, colorPalette{}); err != nil {
 		t.Fatalf("prefetch emitFullOutput returned error: %v", err)
 	}
 
@@ -1708,8 +1783,8 @@ func TestRunIncludeAllowsBlockedDirectory(t *testing.T) {
 
 func TestRunIncludeWildcardBypassesAllIgnoreRules(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"src/main.ts":            "console.log('ok')\n",
-		"tests/main.ts":          "console.log('test')\n",
+		"src/main.ts":             "console.log('ok')\n",
+		"tests/main.ts":           "console.log('test')\n",
 		"node_modules/lib/idx.js": "module.exports = {}\n",
 	})
 
@@ -1844,7 +1919,7 @@ func TestRunIncludeGlobPatternErrors(t *testing.T) {
 
 func TestRunWithBinariesIncludesBinaryFiles(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"src/main.ts":    "console.log('ok')\n",
+		"src/main.ts":     "console.log('ok')\n",
 		"assets/icon.png": "\x89PNG\r\n\x1a\n\x00\x00\x00fake png data",
 		"data/dump.bin":   "\x00\x01\x02binary data",
 	})
@@ -1869,7 +1944,7 @@ func TestRunWithBinariesIncludesBinaryFiles(t *testing.T) {
 
 func TestRunWithBinariesNotSetExcludesBinaryFiles(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"src/main.ts":    "console.log('ok')\n",
+		"src/main.ts":     "console.log('ok')\n",
 		"assets/icon.png": "\x89PNG\r\n\x1a\n\x00\x00\x00fake png data",
 	})
 
@@ -2494,6 +2569,207 @@ func TestFzfFileSetPreviewCommandInheritsCurrentScope(t *testing.T) {
 	}
 }
 
+func TestResolveStartupOnlyUsesCheckpointPreviewCommand(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"src/skip.test":  "test\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"src", "shared"})
+	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
+	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake catclip-tree: %v", err)
+	}
+	t.Setenv("CATCLIP_TREE", treeBin)
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+preview=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--preview)
+			preview="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "only> " ]; then
+	printf '%s\n' "$preview" | grep -F -- '--internal-tree-payload --internal-prediscovered' >/dev/null || {
+		echo "preview command did not use prediscovered checkpoint: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- ' src ' >/dev/null && {
+		echo "preview command leaked typed target src: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- ' shared ' >/dev/null && {
+		echo "preview command leaked typed target shared: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- '--only {+2}' >/dev/null || {
+		echo "preview command missing --only stage: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$input" | grep -F "shared/util.ts" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	args, _, err := resolveStartupScopeFileSetArgs([]string{"src", "shared"}, "--only", "only> ")
+	if err != nil {
+		t.Fatalf("resolveStartupScopeFileSetArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\nshared\n--only\nshared/util.ts"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupModifierMenuOnlyUsesCheckpointPreviewCommand(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":  "console.log('src')\n",
+		"src/other.ts": "console.log('other')\n",
+		"docs/read.md": "# docs\n",
+	})
+	_ = parseInProject(t, project, []string{"src"})
+	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
+	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake catclip-tree: %v", err)
+	}
+	t.Setenv("CATCLIP_TREE", treeBin)
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+preview=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--preview)
+			preview="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "filter> " ]; then
+	printf '%s\n' "$input" | grep -F $'\tonly' | head -n 1
+	exit 0
+fi
+
+if [ "$prompt" = "only> " ]; then
+	printf '%s\n' "$preview" | grep -F -- '--internal-tree-payload --internal-prediscovered' >/dev/null || {
+		echo "preview command did not use prediscovered checkpoint: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- ' src ' >/dev/null && {
+		echo "preview command leaked typed target src: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- '--only {+2}' >/dev/null || {
+		echo "preview command missing --only stage: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$input" | grep -F "src/main.ts" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+	args, _, err := resolveStartupModifierArgs(resolver, []string{"src"}, []string{"src"}, []string{"src"})
+	if err != nil {
+		t.Fatalf("resolveStartupModifierArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--only\nsrc/main.ts"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveStartupExcludeUsesCheckpointPreviewCommand(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":   "console.log('src')\n",
+		"src/skip.test": "test\n",
+	})
+	_ = parseInProject(t, project, []string{"src"})
+	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
+	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake catclip-tree: %v", err)
+	}
+	t.Setenv("CATCLIP_TREE", treeBin)
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+preview=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--preview)
+			preview="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "exclude> " ]; then
+	printf '%s\n' "$preview" | grep -F -- '--internal-tree-payload --internal-prediscovered' >/dev/null || {
+		echo "preview command did not use prediscovered checkpoint: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- ' src ' >/dev/null && {
+		echo "preview command leaked typed target src: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- '--exclude {+2}' >/dev/null || {
+		echo "preview command missing --exclude stage: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$input" | grep -F "skip.test" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	args, _, err := resolveStartupScopeFileSetArgs([]string{"src"}, "--exclude", "exclude> ")
+	if err != nil {
+		t.Fatalf("resolveStartupScopeFileSetArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--exclude\nsrc/skip.test"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
 func TestMultiSelectPickerBindingsIncludeRefreshPreview(t *testing.T) {
 	bindings := multiSelectPickerBindings()
 	found := false
@@ -2540,6 +2816,79 @@ func TestStartupFileSetPreviewCommandUsesOnlyRefinementForGitSelectors(t *testin
 	}
 }
 
+func TestResolveStartupGitScopeArgsUsesCheckpointPreviewCommand(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('main')\n",
+	})
+	initGitRepo(t, project)
+	writeProjectFile(t, project, "src/main.ts", "console.log('changed')\n")
+	writeProjectFile(t, project, "src/new.ts", "console.log('new')\n")
+	_ = parseInProject(t, project, []string{"."})
+	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
+	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake catclip-tree: %v", err)
+	}
+	t.Setenv("CATCLIP_TREE", treeBin)
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+preview=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--preview)
+			preview="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "changed> " ]; then
+	printf '%s\n' "$preview" | grep -F -- '--internal-tree-payload --internal-prediscovered' >/dev/null || {
+		echo "preview command did not use prediscovered checkpoint: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- '--only {+2}' >/dev/null || {
+		echo "preview command did not lower git picker preview to --only: $preview" >&2
+		exit 91
+	}
+	if printf '%s\n' "$preview" | grep -F -- '--changed {+2}' >/dev/null; then
+		echo "preview command appended row selection to --changed: $preview" >&2
+		exit 91
+	fi
+	printf '%s\n' "$input" | grep -F "src/main.ts" | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, err := resolveStartupGitScopeArgs(resolver, []string{"--changed"}, "changed> ", nil, true, false)
+	if err != nil {
+		t.Fatalf("resolveStartupGitScopeArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "--changed\n--only\nsrc/main.ts"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
 func TestStartupModifierCurrentScopePreviewCommandUsesCurrentScopeTree(t *testing.T) {
 	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
 	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -2550,17 +2899,15 @@ func TestStartupModifierCurrentScopePreviewCommandUsesCurrentScopeTree(t *testin
 	limit := 5
 	command := startupModifierCurrentScopePreviewCommand(startupCurrentScopeState{
 		Known: true,
-		Config: runConfig{
-			Command: finalizedCommandSpecFromExecutionScopes([]executionScope{
-				{
-					Targets: []string{"src"},
-					Stages:  []scopeStage{{Kind: scopeStageOnly, Values: []string{"*.ts"}}},
-				},
-				{
-					Targets: []string{"docs"},
-					Stages:  []scopeStage{{Kind: scopeStageRecent, Limit: &limit}},
-				},
-			}),
+		Scopes: []executionScope{
+			{
+				Targets: []string{"src"},
+				Stages:  []scopeStage{{Kind: scopeStageOnly, Values: []string{"*.ts"}}},
+			},
+			{
+				Targets: []string{"docs"},
+				Stages:  []scopeStage{{Kind: scopeStageRecent, Limit: &limit}},
+			},
 		},
 	})
 
@@ -2589,7 +2936,7 @@ func TestAllIgnoredTargetsIncludesIgnoredEntries(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "."})
 
 	resolver := scopeResolver{
-		cfg:               cfg,
+		cfg:               invocationConfigFromParsedCommand(cfg),
 		allowFileSymlinks: false,
 	}
 
@@ -2634,7 +2981,7 @@ func TestAllIgnoredTargetsTracksNoTextDirectoryState(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "."})
 
 	resolver := scopeResolver{
-		cfg:               cfg,
+		cfg:               invocationConfigFromParsedCommand(cfg),
 		gitCtx:            detectGitContext(project),
 		allowFileSymlinks: false,
 	}
@@ -2667,7 +3014,7 @@ func TestAllIgnoredTargetsIncludesGitignoreEntriesWithoutGitRepo(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "."})
 
 	resolver := scopeResolver{
-		cfg:               cfg,
+		cfg:               invocationConfigFromParsedCommand(cfg),
 		gitCtx:            detectGitContext(project),
 		allowFileSymlinks: false,
 	}
@@ -3676,9 +4023,7 @@ func TestBuildVisibleDirIndexDerivesDirsFromVisibleFiles(t *testing.T) {
 	}
 
 	resolver := scopeResolver{
-		cfg: runConfig{
-			WorkingDir: project,
-		},
+		cfg: invocationConfig{WorkingDir: project},
 	}
 
 	if err := resolver.buildVisibleDirIndex(); err != nil {
@@ -3937,7 +4282,7 @@ func TestRunChangedDiffHardFailsOutsideGit(t *testing.T) {
 
 func TestRunChangedWithThenLetsSiblingScopeProceed(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"src/main.ts": "console.log('ok')\n",
+		"src/main.ts":   "console.log('ok')\n",
 		"docs/intro.md": "hello\n",
 	})
 
@@ -4173,7 +4518,7 @@ func TestBuildVisibleFileListWithRipgrepSkipsDirSymlinkDescendants(t *testing.T)
 	}
 
 	resolver := scopeResolver{
-		cfg: runConfig{WorkingDir: project},
+		cfg: invocationConfig{WorkingDir: project},
 	}
 	if err := resolver.buildVisibleFileList(); err != nil {
 		t.Fatalf("buildVisibleFileList returned error: %v", err)
@@ -4205,7 +4550,7 @@ func TestBuildVisibleFileListWithRipgrepSkipsFileSymlinks(t *testing.T) {
 	}
 
 	resolver := scopeResolver{
-		cfg: runConfig{WorkingDir: project},
+		cfg: invocationConfig{WorkingDir: project},
 	}
 	if err := resolver.buildVisibleFileList(); err != nil {
 		t.Fatalf("buildVisibleFileList returned error: %v", err)
@@ -4446,9 +4791,10 @@ func TestWithPayloadWriterDoesNotBlockOnResidentWaylandClipboard(t *testing.T) {
 	t.Setenv("XDG_SESSION_TYPE", "wayland")
 	t.Setenv("CATCLIP_CLIPBOARD_WAIT_MS", "10")
 
-	cfg := runConfig{OutputMode: outputModeClipboard, Platform: "linux"}
+	cfg := emitConfig{OutputMode: outputModeClipboard}
+	env := emitEnvironment{Platform: "linux"}
 	started := time.Now()
-	stats, err := withPayloadWriter(cfg, io.Discard, colorPalette{}, func(w io.Writer) error {
+	stats, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
 		_, err := io.WriteString(w, "hello")
 		return err
 	})
@@ -4740,6 +5086,26 @@ func TestStartupCommandCanRunDirectlyRejectsExplicitIncludeQueries(t *testing.T)
 	}
 	if direct {
 		t.Fatal("expected explicit --include query to stay on startup resolution path")
+	}
+}
+
+func TestResolveStartupArgsRejectsInvalidIncludeValue(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	_, _, _, err = resolveStartupArgs(resolver, []string{".", "--include", "src/../vendor"})
+	if err == nil {
+		t.Fatal("expected invalid startup include value to fail")
+	}
+	if !strings.Contains(err.Error(), "--include cannot traverse above the current target scope") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
@@ -5177,11 +5543,11 @@ exit 91
 
 func TestResolveStartupArgsIncludePickerHidesAuthorizationOnlyAncestorForExplicitDescendantTarget(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"config/catclip/.hiss":                           "vendor/\n",
-		"src/vendor/lib/util.ts":                         "export const util = true\n",
-		"src/vendor/lib/internal/deep.ts":                "export const deep = true\n",
-		"src/vendor/extras/bonus.ts":                     "export const bonus = true\n",
-		"src/main.ts":                                    "console.log('src')\n",
+		"config/catclip/.hiss":            "vendor/\n",
+		"src/vendor/lib/util.ts":          "export const util = true\n",
+		"src/vendor/lib/internal/deep.ts": "export const deep = true\n",
+		"src/vendor/extras/bonus.ts":      "export const bonus = true\n",
+		"src/main.ts":                     "console.log('src')\n",
 	})
 	_ = parseInProject(t, project, []string{"."})
 	installScriptFzf(t, `#!/bin/sh
@@ -5240,9 +5606,9 @@ func TestResolveStartupArgsIncludeErrorsWhenNoScopedIgnoredTargets(t *testing.T)
 	}
 
 	project := setupTestProject(t, map[string]string{
-		".gitignore":               "vendor/\n",
-		"cmd/catclip/main.go":      "package main\n",
-		"vendor/lodash/index.js":   "module.exports = {}\n",
+		".gitignore":             "vendor/\n",
+		"cmd/catclip/main.go":    "package main\n",
+		"vendor/lodash/index.js": "module.exports = {}\n",
 	})
 	initGitRepo(t, project)
 	_ = parseInProject(t, project, []string{"."})
@@ -7811,6 +8177,14 @@ if [ "$prompt" = "match> " ]; then
 		echo "missing internal content match list command" >&2
 		exit 91
 	}
+	printf '%%s\n' "$bindings" | grep -F -- "--internal-prediscovered" >/dev/null || {
+		echo "missing prediscovered content match list checkpoint command" >&2
+		exit 91
+	}
+	if printf '%%s\n' "$bindings" | grep -F -- " src " >/dev/null; then
+		echo "content match list command leaked typed target src: $bindings" >&2
+		exit 91
+	fi
 	printf 'TODO\n'
 	printf 'todo.ts\tsrc/todo.ts\tfile\ttext\n'
 	exit 0
@@ -7950,12 +8324,16 @@ if [ "$prompt" = "match> " ]; then
 		echo "missing internal content match list command" >&2
 		exit 91
 	}
-	printf '%%s\n' "$bindings" | grep -F -- '--exclude uninstall.sh --snippet {q}' >/dev/null || {
+	printf '%%s\n' "$bindings" | grep -F -- "--internal-prediscovered" >/dev/null || {
+		echo "missing prediscovered snippet match list checkpoint command" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F -- '--snippet {q}' >/dev/null || {
 		echo "missing trimmed snippet contains-list command" >&2
 		exit 91
 	}
-	if printf '%%s\n' "$bindings" | grep -F -- '--exclude uninstall.sh -- --snippet {q}' >/dev/null; then
-		echo "trailing bare placeholder leaked into snippet contains-list command" >&2
+	if printf '%%s\n' "$bindings" | grep -F -- " uninstall.sh " >/dev/null; then
+		echo "content match list command leaked current args: $bindings" >&2
 		exit 91
 	fi
 	printf 'TODO\n'
@@ -9155,7 +9533,7 @@ func TestRunInternalContentMatchListUsesSingleLabelForRootFiles(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"--internal-content-match-list", ".", "--contains", "TODO"})
 
 	var stdout bytes.Buffer
-	if err := runInternalContentMatchList(cfg, &stdout); err != nil {
+	if err := runInternalContentMatchList(contentMatchListConfigFromParsedCommand(cfg), &stdout); err != nil {
 		t.Fatalf("runInternalContentMatchList returned error: %v", err)
 	}
 
@@ -9546,7 +9924,7 @@ func TestRunInternalFilePreviewChangedDiffFallsBackToFullFileForUntracked(t *tes
 	}
 }
 
-func parseInProject(t *testing.T, project string, args []string) runConfig {
+func parseInProject(t *testing.T, project string, args []string) parsedCommand {
 	t.Helper()
 
 	wd, err := os.Getwd()
@@ -9684,9 +10062,9 @@ func TestRunAllResolvableTargetsExitsZero(t *testing.T) {
 
 func TestRunGlobTargetMatchesFiles(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"main.go":    "package main\n",
-		"cli.go":     "package main\n",
-		"readme.md":  "# readme\n",
+		"main.go":   "package main\n",
+		"cli.go":    "package main\n",
+		"readme.md": "# readme\n",
 	})
 
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "*.go", "--paths"})
@@ -9751,9 +10129,9 @@ func TestRunGlobTargetNoMatchWarnsAndExitsNonZero(t *testing.T) {
 
 func TestRunGlobAndPathTargetsUnion(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"src/app.ts":  "export const ok = true\n",
-		"main.go":     "package main\n",
-		"readme.md":   "# readme\n",
+		"src/app.ts": "export const ok = true\n",
+		"main.go":    "package main\n",
+		"readme.md":  "# readme\n",
 	})
 
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "*.go", "--paths"})

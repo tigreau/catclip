@@ -12,23 +12,17 @@ import (
 // already validated the scope).
 var errTreePayloadEmptyNoTarget = errors.New("tree payload: empty plan and no implicit target")
 
-// buildOutputPlanForCfg picks between sectioned and non-sectioned plan
-// preparation using the same logic as cli.go. Returns the prepared plan.
-// allEntries is the union of per-scope entries (already accumulated by the
-// caller) and is used only when the cfg's command scopes do not require paths
-// sectioning.
-func buildOutputPlanForCfg(
-	cfg runConfig,
+func buildOutputPlanForResolvedScopes(
 	gitCtx gitContext,
+	scopes []executionScope,
 	evaluatedScopes []evaluatedOutputScope,
 	allEntries []fileEntry,
 ) (outputPlan, error) {
-	commandScopes := configCommandScopes(cfg)
-	if commandScopesUsePathsStage(commandScopes) {
-		return prepareSectionedOutputPlan(gitCtx, evaluatedScopes, commandScopesUseRecentStage(commandScopes))
+	if executionScopesUsePathsStage(scopes) {
+		return prepareSectionedOutputPlan(gitCtx, evaluatedScopes, executionScopesUseRecentStage(scopes))
 	}
 	entries := allEntries
-	if commandScopesUseRecentStage(commandScopes) {
+	if executionScopesUseRecentStage(scopes) {
 		entries = dedupeEntriesByPathPreserveOrder(entries)
 	} else {
 		entries = dedupeEntriesByPath(entries)
@@ -36,42 +30,50 @@ func buildOutputPlanForCfg(
 	return prepareOutputPlan(gitCtx, entries)
 }
 
-// encodeTreePayloadFromEntries runs the doc-building + encoding pipeline that
-// the top-level CLI uses for `--internal-tree-payload`, with no diagnostic
-// printing and no exit-code selection. It is the rule-19 entry point for any
-// caller that has resolved entries in-process and wants to serialize a tree
-// payload to a writer (file, buffer, network, etc.) without spawning a catclip
-// subprocess.
-//
-// For an empty plan with no implicit tree target, returns
-// errTreePayloadEmptyNoTarget instead of writing a payload. Callers that need
-// the "no files matched" CLI behavior handle that sentinel; pickers treat it
-// as a normal failure to render (no payload written).
-func encodeTreePayloadFromEntries(
-	w io.Writer,
-	cfg runConfig,
-	gitCtx gitContext,
-	evaluatedScopes []evaluatedOutputScope,
-	allEntries []fileEntry,
-	notices []string,
-) error {
-	plan, err := buildOutputPlanForCfg(cfg, gitCtx, evaluatedScopes, allEntries)
-	if err != nil {
-		return err
+func buildOutputPlanForDiscoveredInvocation(gitCtx gitContext, inv discoveredInvocation) (outputPlan, error) {
+	evaluatedScopes := make([]evaluatedOutputScope, 0, len(inv.Scopes))
+	var allEntries []fileEntry
+	resolvedScopes := make([]executionScope, 0, len(inv.Scopes))
+	for _, scope := range inv.Scopes {
+		resolvedScopes = append(resolvedScopes, scope.Scope)
+		entries := append([]fileEntry(nil), scope.Entries...)
+		allEntries = append(allEntries, entries...)
+		evaluatedScopes = append(evaluatedScopes, evaluatedOutputScope{
+			Paths:   scope.Scope.Paths,
+			Entries: entries,
+		})
 	}
-	return encodeTreePayloadFromPlan(w, cfg, gitCtx, plan, notices)
+	return buildOutputPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, allEntries)
 }
 
-// encodeTreePayloadFromPlan is the inner half of encodeTreePayloadFromEntries:
-// given an already-prepared outputPlan, build the tree document and write the
-// encoded payload. Exposed separately because cli.go has already-prepared
-// plans on hand and can avoid re-running plan preparation.
+func executionScopesUseRecentStage(scopes []executionScope) bool {
+	for _, s := range scopes {
+		if executionScopeHasStage(s, scopeStageRecent) {
+			return true
+		}
+	}
+	return false
+}
+
+func executionScopesUsePathsStage(scopes []executionScope) bool {
+	for _, s := range scopes {
+		if s.Paths || executionScopeHasStage(s, scopeStagePaths) {
+			return true
+		}
+	}
+	return false
+}
+
+// encodeTreePayloadFromPlan serializes an already-prepared outputPlan as a
+// tree payload. For an empty plan with no implicit tree target, returns
+// errTreePayloadEmptyNoTarget instead of writing a payload.
 func encodeTreePayloadFromPlan(
 	w io.Writer,
-	cfg runConfig,
+	cfg renderConfig,
 	gitCtx gitContext,
 	plan outputPlan,
 	notices []string,
+	precomputedGitStatuses ...map[string]string,
 ) error {
 	if len(plan.items) == 0 {
 		doc, ok := buildEmptyTreeDocument(cfg)
@@ -80,7 +82,7 @@ func encodeTreePayloadFromPlan(
 		}
 		return encodeTreePayload(w, doc)
 	}
-	report, err := buildOutputReportForPlan(cfg, gitCtx, plan, dedupePreserveOrder(notices))
+	report, err := buildOutputReportForPlan(cfg, gitCtx, plan, dedupePreserveOrder(notices), precomputedGitStatuses...)
 	if err != nil {
 		return err
 	}

@@ -10,7 +10,21 @@ import (
 const internalDiffHighlightPath = "diff"
 const internalSnippetPreviewEmptyHint = "Type a regex to preview snippet blocks.\nSnippet mode extracts blank-line-separated blocks around matches."
 
-func runInternalFilePreview(cfg runConfig, stdout io.Writer) error {
+type filePreviewConfig struct {
+	WorkingDir string
+	FilePath   string
+	Scopes     []executionScope
+}
+
+func filePreviewConfigFromParsedCommand(cfg parsedCommand) filePreviewConfig {
+	return filePreviewConfig{
+		WorkingDir: cfg.WorkingDir,
+		FilePath:   cfg.FilePath,
+		Scopes:     executionScopesFromCommandSpec(cfg.Command),
+	}
+}
+
+func runInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
 	relPath := internalPreviewRelPath(cfg)
 	if relPath == "" || relPath == "." {
 		return nil
@@ -24,12 +38,11 @@ func runInternalFilePreview(cfg runConfig, stdout io.Writer) error {
 	return encodeTreePayload(stdout, doc)
 }
 
-func internalPreviewRelPath(cfg runConfig) string {
+func internalPreviewRelPath(cfg filePreviewConfig) string {
 	relPath := normalizeRelPath(cfg.FilePath)
 	if relPath == "" {
-		scopeSpecs := configCommandScopes(cfg)
-		if len(scopeSpecs) == 1 {
-			targets := scopeSpecs[0].Targets()
+		if len(cfg.Scopes) == 1 {
+			targets := cfg.Scopes[0].Targets
 			if len(targets) == 1 {
 				relPath = normalizeRelPath(targets[0])
 			}
@@ -38,7 +51,7 @@ func internalPreviewRelPath(cfg runConfig) string {
 	return relPath
 }
 
-func buildInternalPreviewDocument(cfg runConfig, gitCtx gitContext, relPath string) (treeDocument, bool) {
+func buildInternalPreviewDocument(cfg filePreviewConfig, gitCtx gitContext, relPath string) (treeDocument, bool) {
 	absPath := filepath.Join(cfg.WorkingDir, filepath.FromSlash(relPath))
 	s := internalPreviewScope(cfg)
 
@@ -52,12 +65,11 @@ func buildInternalPreviewDocument(cfg runConfig, gitCtx gitContext, relPath stri
 	}
 }
 
-func internalPreviewScope(cfg runConfig) executionScope {
-	scopeSpecs := configCommandScopes(cfg)
-	if len(scopeSpecs) == 0 {
+func internalPreviewScope(cfg filePreviewConfig) executionScope {
+	if len(cfg.Scopes) == 0 {
 		return executionScope{}
 	}
-	return executionScopeFromCommandScopeSpec(scopeSpecs[len(scopeSpecs)-1])
+	return cfg.Scopes[len(cfg.Scopes)-1]
 }
 
 func buildInternalFullFilePreviewDocument(relPath, absPath, matchPattern string) (treeDocument, bool) {

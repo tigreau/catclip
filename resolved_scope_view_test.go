@@ -25,11 +25,10 @@ func TestResolvedCurrentScopeViewForArgsUsesCurrentScope(t *testing.T) {
 		t.Fatalf("resolved entries = %#v, want %#v", got, want)
 	}
 
-	scopeSpecs := view.Config.Command.Scopes()
-	if got, want := len(scopeSpecs), 2; got != want {
+	if got, want := len(view.Scopes), 2; got != want {
 		t.Fatalf("expected %d command scopes, got %d", want, got)
 	}
-	if got, want := scopeSpecs[1].OutputMode(), entryModeFull; got != want {
+	if got, want := executionScopeOutputMode(view.Scopes[1]), entryModeFull; got != want {
 		t.Fatalf("current scope OutputMode() = %q, want %q", got, want)
 	}
 }

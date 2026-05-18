@@ -77,15 +77,15 @@ type startupCurrentScopeState struct {
 	NeedsInclude            bool
 	HasScopedIgnoredTargets bool
 	GitKnown                bool
-	AnyChanged   bool
-	AllChanged   bool
-	AnyStaged    bool
-	AllStaged    bool
-	AnyUnstaged  bool
-	AllUnstaged  bool
-	AnyUntracked bool
-	AllUntracked bool
-	Config       runConfig
+	AnyChanged              bool
+	AllChanged              bool
+	AnyStaged               bool
+	AllStaged               bool
+	AnyUnstaged             bool
+	AllUnstaged             bool
+	AnyUntracked            bool
+	AllUntracked            bool
+	Scopes                  []executionScope
 }
 
 var startupModifierChoices = []startupModifierChoice{
@@ -257,7 +257,7 @@ func newStartupPickerResolver() (*scopeResolver, error) {
 	}
 	gitCtx := detectGitContext(cfg.WorkingDir)
 	return &scopeResolver{
-		cfg:               cfg,
+		cfg:               invocationConfigFromParsedCommand(cfg),
 		gitCtx:            gitCtx,
 		allowFileSymlinks: false,
 	}, nil
@@ -284,7 +284,7 @@ func startupCommandCanRunDirectly(resolver *scopeResolver, args []string) (bool,
 	if err != nil {
 		return false, nil
 	}
-	for _, scopeSpec := range configCommandScopes(cfg) {
+	for _, scopeSpec := range cfg.Command.Scopes() {
 		scopeResolver := *resolver
 		scopeTargets := scopeSpec.Targets()
 		if len(scopeSpec.IncludedTargets()) > 0 {
@@ -435,7 +435,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 		arg := args[i]
 		switch arg {
 		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset",
-			"--internal-tree-payload", "--internal-tree-target", "--internal-tree-kind", "--internal-tree-state",
+			"--internal-tree-payload", "--internal-prediscovered", "--internal-tree-target", "--internal-tree-kind", "--internal-tree-state",
 			"--internal-file-preview", "--internal-file-path",
 			"--internal-content-match-list",
 			"--internal-recent-preview", "--internal-recent-data", "--internal-recent-selection":
@@ -530,6 +530,9 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 		if !seenModifier && tokens[i] == "--include" {
 			if i+1 < len(tokens) && !strings.HasPrefix(tokens[i+1], "-") {
 				i++
+				if err := validateIncludeValues([]string{tokens[i]}); err != nil {
+					return startupInputParse{}, err
+				}
 				parsed.includeQueries = append(parsed.includeQueries, tokens[i])
 				continue
 			}
@@ -815,7 +818,7 @@ func startupCurrentScopeTargetPaths(args []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	scopeSpecs := configCommandScopes(cfg)
+	scopeSpecs := cfg.Command.Scopes()
 	if len(scopeSpecs) == 0 {
 		return nil, nil
 	}
@@ -836,7 +839,7 @@ func startupCurrentScopeIncludedTargetPaths(args []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	scopeSpecs := configCommandScopes(cfg)
+	scopeSpecs := cfg.Command.Scopes()
 	if len(scopeSpecs) == 0 {
 		return nil, nil
 	}
@@ -1146,7 +1149,7 @@ func chooseStartupModifier(currentArgs []string) (startupModifierChoice, error) 
 		return startupModifierChoice{}, err
 	}
 	if state.Known && state.Empty && !state.NeedsInclude {
-		return startupModifierChoice{}, startupNoFilesMatchedError(state.Config)
+		return startupModifierChoice{}, startupNoFilesMatchedError(state.Scopes)
 	}
 	lines, index := startupModifierChoiceLines(startupAvailableModifierChoicesWithState(currentArgs, state))
 	if len(lines) == 0 {
@@ -1336,6 +1339,9 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 			}
 			finalArgs := append(append([]string(nil), currentArgs...), resolvedArgs...)
 			return finalArgs, append(append([]string(nil), currentScopeTargets...), resolvedTargets...), usedFzf, 0, nil
+		}
+		if err := validateIncludeValues(values); err != nil {
+			return nil, nil, false, 0, err
 		}
 		exactStageValues, unresolvedValues, err := resolver.resolveExactIgnoredIncludeTargets(values, currentScopeExplicitTargets)
 		if err != nil {
@@ -1548,7 +1554,10 @@ func resolveStartupGitScopeArgs(resolver *scopeResolver, currentArgs []string, p
 		}
 	}
 
-	previewCommand := startupFileSetPreviewCommand(currentArgs, stageFlag, diffPreview)
+	previewCommand := ""
+	if diffPreview {
+		previewCommand = startupFileSetPreviewCommand(currentArgs, stageFlag, diffPreview)
+	}
 	stageValues, usedFzf, err := resolveStartupModifierStageValues(currentArgs, stageFlag, prompt, values, allowInteractiveEmpty, previewCommand)
 	if err != nil {
 		return nil, false, err
@@ -1608,8 +1617,18 @@ func startupStageSelectionCoversAll(selected, candidates []string) bool {
 }
 
 func resolveStartupModifierStageValues(currentArgs []string, flag, prompt string, values []string, allowInteractiveEmpty bool, previewCommand string) ([]string, bool, error) {
-	if previewCommand == "" {
-		previewCommand = startupFileSetPreviewCommand(currentArgs, flag, false)
+	cleanupPreview := func() {}
+	defer func() {
+		cleanupPreview()
+	}()
+	previewReady := previewCommand != ""
+	ensurePreviewCommand := func() string {
+		if previewReady {
+			return previewCommand
+		}
+		previewReady = true
+		previewCommand, cleanupPreview = startupCheckpointFileSetPreviewCommand(currentArgs, flag, false)
+		return previewCommand
 	}
 	if len(values) == 0 {
 		if !allowInteractiveEmpty {
@@ -1622,7 +1641,7 @@ func resolveStartupModifierStageValues(currentArgs []string, flag, prompt string
 		if len(relPaths) == 0 {
 			return nil, false, errSelectionCancelled
 		}
-		selected, err := chooseManyStartupFileSetRowsWithFzf("", prompt, startupFileSetPickerHeader(flag), previewCommand, startupFileSetRows(flag, relPaths))
+		selected, err := chooseManyStartupFileSetRowsWithFzf("", prompt, startupFileSetPickerHeader(flag), ensurePreviewCommand(), startupFileSetRows(flag, relPaths))
 		if err != nil {
 			return nil, false, err
 		}
@@ -1648,7 +1667,7 @@ func resolveStartupModifierStageValues(currentArgs []string, flag, prompt string
 			}
 			rows = startupFileSetRows(flag, relPaths)
 		}
-		selected, err := chooseManyStartupFileSetRowsWithFzf(value, prompt, startupFileSetPickerHeader(flag), previewCommand, rows)
+		selected, err := chooseManyStartupFileSetRowsWithFzf(value, prompt, startupFileSetPickerHeader(flag), ensurePreviewCommand(), rows)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1833,9 +1852,91 @@ func startupFileSetPreviewCommand(currentArgs []string, flag string, diffPreview
 	return fzfFileSetPreviewCommand(currentArgs, previewFlag)
 }
 
+// startupCheckpointFileSetPreviewCommand is the SCC path for free-form file-set
+// picker previews. It falls back to startupFileSetPreviewCommand only when a
+// short-lived checkpoint cannot be written.
+func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, diffPreview bool) (string, func()) {
+	fallback := func() string {
+		return startupFileSetPreviewCommand(currentArgs, flag, diffPreview)
+	}
+	if diffPreview || currentScopeDiffPreviewFlag(currentArgs) != "" {
+		return fallback(), func() {}
+	}
+	switch flag {
+	case "--only", "--exclude":
+	case "--changed", "--staged", "--unstaged", "--untracked":
+	default:
+		return fallback(), func() {}
+	}
+
+	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
+	if err != nil || len(view.Entries) == 0 {
+		return fallback(), func() {}
+	}
+	previewFlag := flag
+	switch flag {
+	case "--changed", "--staged", "--unstaged", "--untracked":
+		previewFlag = "--only"
+	}
+	cmd, tmpdir := buildFileSetCheckpointPreview(view, previewFlag)
+	if cmd == "" {
+		return fallback(), func() {}
+	}
+	return cmd, func() {
+		_ = os.RemoveAll(tmpdir)
+	}
+}
+
+func buildFileSetCheckpointPreview(view resolvedScopeView, previewFlag string) (cmd string, tmpdir string) {
+	treeBin, ok := treePreviewBinary()
+	if !ok {
+		return "", ""
+	}
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return "", ""
+	}
+	tmpdir, err = os.MkdirTemp("", "catclip-scc-*")
+	if err != nil {
+		return "", ""
+	}
+	checkpointPath := filepath.Join(tmpdir, "scope.json")
+	statuses := map[string]string{}
+	if view.GitContext.Enabled {
+		statuses, err = collectGitStatusMapForPathspecs(view.GitContext, gitStatusPathspecsForEntries(view.GitContext, view.Entries))
+		if err != nil {
+			_ = os.RemoveAll(tmpdir)
+			return "", ""
+		}
+	}
+	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+		GitContext: view.GitContext,
+		GitStatus:  statuses,
+		Entries:    view.Entries,
+	}); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return "", ""
+	}
+
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload", "--internal-prediscovered", shellQuoteArg(checkpointPath)}
+	if previewFlag != "" {
+		parts = append(parts, previewFlag, "{+2}")
+	}
+	parts = append(parts,
+		"--internal-tree-target", "{3}",
+		"--internal-tree-kind", "{4}",
+		"--internal-tree-state", "{5}",
+	)
+	parts = append(parts, "|", shellQuoteArg(treeBin))
+	parts = append(parts, fzfTreeRenderArgs()...)
+	return strings.Join(parts, " "), tmpdir
+}
+
+// startupModifierCurrentScopePreviewCommand is a static start:preview for the
+// modifier menu. It is pinned once when the menu opens and is not a per-keystroke
+// free-form refinement, so it is an explicit SCC exemption.
 func startupModifierCurrentScopePreviewCommand(state startupCurrentScopeState) string {
-	scopeSpecs := configCommandScopes(state.Config)
-	if !state.Known || state.Empty || len(scopeSpecs) == 0 {
+	if !state.Known || state.Empty || len(state.Scopes) == 0 {
 		return ""
 	}
 
@@ -1849,7 +1950,7 @@ func startupModifierCurrentScopePreviewCommand(state startupCurrentScopeState) s
 		return ""
 	}
 
-	scopeArgs := canonicalScopeArgs(executionScopeFromCommandScopeSpec(scopeSpecs[len(scopeSpecs)-1]))
+	scopeArgs := canonicalScopeArgs(state.Scopes[len(state.Scopes)-1])
 	if len(scopeArgs) == 0 {
 		return ""
 	}
@@ -2042,19 +2143,18 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 	state := startupCurrentScopeState{
 		Known:  true,
 		Empty:  len(view.Entries) == 0,
-		Config: view.Config,
+		Scopes: append([]executionScope(nil), view.Scopes...),
 	}
 	if state.Empty {
-		needsInclude, err := startupCurrentScopeNeedsInclude(view.Config)
+		needsInclude, err := startupCurrentScopeNeedsInclude(view.Scopes)
 		if err != nil {
 			return startupCurrentScopeState{}, err
 		}
 		state.NeedsInclude = needsInclude
 	}
-	scopeSpecs := configCommandScopes(view.Config)
-	if len(scopeSpecs) > 0 {
-		current := scopeSpecs[len(scopeSpecs)-1]
-		hasScopedIgnored, err := startupHasScopedIgnoredTargets(current.Targets())
+	if len(view.Scopes) > 0 {
+		current := view.Scopes[len(view.Scopes)-1]
+		hasScopedIgnored, err := startupHasScopedIgnoredTargets(current.Targets)
 		if err == nil {
 			state.HasScopedIgnoredTargets = hasScopedIgnored
 		}
@@ -2116,9 +2216,8 @@ func unionRepoPathSets(sets ...map[string]struct{}) map[string]struct{} {
 	return out
 }
 
-func startupCurrentScopeNeedsInclude(cfg runConfig) (bool, error) {
-	scopeSpecs := configCommandScopes(cfg)
-	if len(scopeSpecs) == 0 {
+func startupCurrentScopeNeedsInclude(scopes []executionScope) (bool, error) {
+	if len(scopes) == 0 {
 		return false, nil
 	}
 
@@ -2127,9 +2226,9 @@ func startupCurrentScopeNeedsInclude(cfg runConfig) (bool, error) {
 		return false, err
 	}
 
-	current := scopeSpecs[len(scopeSpecs)-1]
-	if len(current.IncludedTargets()) > 0 {
-		exactIncludedTargets, unresolvedIncludeQueries, err := resolver.resolveExactIgnoredIncludeTargets(current.IncludedTargets(), current.Targets())
+	current := scopes[len(scopes)-1]
+	if len(current.IncludedTargets) > 0 {
+		exactIncludedTargets, unresolvedIncludeQueries, err := resolver.resolveExactIgnoredIncludeTargets(current.IncludedTargets, current.Targets)
 		if err != nil {
 			return false, err
 		}
@@ -2139,7 +2238,7 @@ func startupCurrentScopeNeedsInclude(cfg runConfig) (bool, error) {
 		resolver.includedTargets = buildIncludedTargetSet(resolver.cfg.WorkingDir, exactIncludedTargets)
 	}
 
-	for _, target := range current.Targets() {
+	for _, target := range current.Targets {
 		target = normalizeRelPath(target)
 		if target == "" || target == "." {
 			continue
@@ -2190,9 +2289,9 @@ func startupAnyAllForCurrentScope(total int, set map[string]struct{}) (bool, boo
 	return true, len(set) == total
 }
 
-func startupNoFilesMatchedError(cfg runConfig) error {
+func startupNoFilesMatchedError(scopes []executionScope) error {
 	var b strings.Builder
-	if err := writeNoFilesMatchedMessage(cfg, &b, activeColorPalette(), false); err != nil {
+	if err := writeNoFilesMatchedMessage(scopes, &b, activeColorPalette(), false); err != nil {
 		return err
 	}
 	return newExitError(1, strings.TrimRight(b.String(), "\n"))

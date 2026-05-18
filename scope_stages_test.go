@@ -25,6 +25,27 @@ func testStageRelPaths(entries []fileEntry) []string {
 	return paths
 }
 
+func TestFileEntryDefaultSizeUnknown(t *testing.T) {
+	var entry fileEntry
+	if entry.SizeKnown {
+		t.Fatal("default fileEntry should leave SizeKnown false")
+	}
+	if entry.SizeBytes != 0 {
+		t.Fatalf("default fileEntry SizeBytes = %d, want 0", entry.SizeBytes)
+	}
+}
+
+func TestMergeFileEntryCarriesKnownSize(t *testing.T) {
+	dst := fileEntry{RelPath: "a.txt"}
+	incoming := fileEntry{RelPath: "a.txt", SizeBytes: 42, SizeKnown: true}
+
+	mergeFileEntry(&dst, incoming)
+
+	if !dst.SizeKnown || dst.SizeBytes != 42 {
+		t.Fatalf("mergeFileEntry did not carry known size: %+v", dst)
+	}
+}
+
 func TestFilterEntriesByStagePatternsMatchesTrailingSlashSubtrees(t *testing.T) {
 	entries := testStageEntries(
 		"tests",
@@ -230,12 +251,16 @@ func TestApplyRecentStageAppliesLimit(t *testing.T) {
 func TestApplyRecentStageBackfillsModTimesFromDisk(t *testing.T) {
 	project := t.TempDir()
 	now := time.Now()
+	contents := map[string]string{
+		"a.txt": "a.txt\n",
+		"b.txt": "b.txt\n",
+	}
 	for relPath, modTime := range map[string]time.Time{
 		"a.txt": now.Add(-2 * time.Hour),
 		"b.txt": now.Add(-1 * time.Hour),
 	} {
 		absPath := filepath.Join(project, relPath)
-		if err := os.WriteFile(absPath, []byte(relPath+"\n"), 0o644); err != nil {
+		if err := os.WriteFile(absPath, []byte(contents[relPath]), 0o644); err != nil {
 			t.Fatalf("write %s failed: %v", relPath, err)
 		}
 		if err := os.Chtimes(absPath, modTime, modTime); err != nil {
@@ -243,7 +268,7 @@ func TestApplyRecentStageBackfillsModTimesFromDisk(t *testing.T) {
 		}
 	}
 
-	resolver := &scopeResolver{cfg: runConfig{WorkingDir: project}}
+	resolver := &scopeResolver{cfg: invocationConfig{WorkingDir: project}}
 	entries := []fileEntry{{RelPath: "a.txt"}, {RelPath: "b.txt"}}
 	scope := executionScope{Stages: []scopeStage{{Kind: scopeStageRecent}}}
 
@@ -257,6 +282,14 @@ func TestApplyRecentStageBackfillsModTimesFromDisk(t *testing.T) {
 	}
 	if filtered[0].ModTime.IsZero() || filtered[1].ModTime.IsZero() {
 		t.Fatalf("expected mod times to be populated, got %+v", filtered)
+	}
+	for _, entry := range filtered {
+		if !entry.SizeKnown {
+			t.Fatalf("expected --recent stat to populate SizeKnown for %s", entry.RelPath)
+		}
+		if got, want := entry.SizeBytes, int64(len(contents[entry.RelPath])); got != want {
+			t.Fatalf("%s SizeBytes = %d, want %d", entry.RelPath, got, want)
+		}
 	}
 }
 
@@ -299,7 +332,7 @@ func TestApplyDepthStageRejectsValuesGreaterThanCurrentScopeMaxDepth(t *testing.
 
 func TestApplyScopeStagesKeepsDepthOrderingSemanticWithRecent(t *testing.T) {
 	now := time.Now()
-	resolver := &scopeResolver{cfg: runConfig{WorkingDir: ""}}
+	resolver := &scopeResolver{cfg: invocationConfig{WorkingDir: ""}}
 	entries := []fileEntry{
 		{RelPath: "README.md", ModTime: now.Add(-3 * time.Hour)},
 		{RelPath: "src/main.ts", ModTime: now.Add(-2 * time.Hour)},

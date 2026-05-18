@@ -67,6 +67,45 @@ func TestOutputPlanPreviewModeTagsIncludePathsModes(t *testing.T) {
 	}
 }
 
+func TestBuildOutputReportForPlanUsesPrecomputedGitStatusMap(t *testing.T) {
+	plan := outputPlan{
+		items: []outputPlanItem{
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "changed.txt", Mode: entryModeDiff}, BodyBytes: 10}),
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "new.txt", Mode: entryModeDiff}, BodyBytes: 5}),
+		},
+	}
+	precomputed := map[string]string{
+		"changed.txt": "M",
+		"new.txt":     "?",
+	}
+
+	report, err := buildOutputReportForPlan(renderConfig{}, gitContext{Enabled: true, Root: "/definitely/missing"}, plan, nil, precomputed)
+	if err != nil {
+		t.Fatalf("buildOutputReportForPlan returned error with precomputed statuses: %v", err)
+	}
+	if !reflect.DeepEqual(report.statuses, precomputed) {
+		t.Fatalf("report.statuses = %#v, want %#v", report.statuses, precomputed)
+	}
+	wantTags := map[string]string{
+		"changed.txt": "diff only",
+	}
+	if !reflect.DeepEqual(report.modeTags, wantTags) {
+		t.Fatalf("report.modeTags = %#v, want %#v", report.modeTags, wantTags)
+	}
+
+	precomputed["changed.txt"] = "S"
+	if report.statuses["changed.txt"] != "M" {
+		t.Fatalf("report.statuses was aliased to caller map: %#v", report.statuses)
+	}
+}
+
+func TestBuildOutputReportForPlanNilPrecomputedGitStatusMapRecomputes(t *testing.T) {
+	_, err := buildOutputReportForPlan(renderConfig{}, gitContext{Enabled: true, Root: "/definitely/missing"}, outputPlan{}, nil, nil)
+	if err == nil {
+		t.Fatal("expected nil precomputed status map to fall back to git status collection")
+	}
+}
+
 func TestOutputPlanPreviewModeTagsLines(t *testing.T) {
 	plan := outputPlan{
 		items: []outputPlanItem{
@@ -211,7 +250,7 @@ func TestBuildOutputReportForPlanUsesOutputPlanModeTags(t *testing.T) {
 		},
 	}
 
-	report, err := buildOutputReportForPlan(runConfig{}, gitContext{}, buildOutputPlan(units), nil)
+	report, err := buildOutputReportForPlan(renderConfig{}, gitContext{}, buildOutputPlan(units), nil)
 	if err != nil {
 		t.Fatalf("buildOutputReportForPlan returned error: %v", err)
 	}
@@ -232,7 +271,7 @@ func TestBuildOutputReportForPlanUsesPathsWordForPathOnlyOutput(t *testing.T) {
 		},
 	}
 
-	report, err := buildOutputReportForPlan(runConfig{}, gitContext{}, plan, nil)
+	report, err := buildOutputReportForPlan(renderConfig{}, gitContext{}, plan, nil)
 	if err != nil {
 		t.Fatalf("buildOutputReportForPlan returned error: %v", err)
 	}
@@ -254,7 +293,7 @@ func TestBuildOutputReportForPlanUsesPlanAccounting(t *testing.T) {
 		},
 	}
 
-	cfg := runConfig{}
+	cfg := renderConfig{}
 	gitCtx := gitContext{}
 	report, err := buildOutputReportForPlan(cfg, gitCtx, buildOutputPlan(units), []string{"notice"})
 	if err != nil {
@@ -343,7 +382,7 @@ func TestEmitOutputPlanUsesPreparedPayload(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	_, err := emitOutputPlan(runConfig{OutputMode: outputModeStdout}, buildOutputPlan([]preparedFileUnit{unit}), &stdout, colorPalette{})
+	_, err := emitOutputPlan(emitConfig{OutputMode: outputModeStdout}, emitEnvironment{}, buildOutputPlan([]preparedFileUnit{unit}), &stdout, colorPalette{})
 	if err != nil {
 		t.Fatalf("emitOutputPlan returned error: %v", err)
 	}

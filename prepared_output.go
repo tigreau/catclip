@@ -133,7 +133,7 @@ func prepareFileUnit(gitCtx gitContext, entry fileEntry, snippetMatches snippetM
 			unit.BodyBytes = bodyBytes
 			return unit, true, nil
 		}
-		bodyBytes, err := fileBodySize(entry.AbsPath)
+		bodyBytes, err := fileBodySize(entry)
 		if err != nil {
 			return preparedFileUnit{}, false, err
 		}
@@ -238,8 +238,11 @@ func buildWrappedPayload(relPath, typeAttr string, body []byte) ([]byte, int64) 
 	return payload, int64(len(body))
 }
 
-func fileBodySize(absPath string) (int64, error) {
-	info, err := os.Lstat(absPath)
+func fileBodySize(entry fileEntry) (int64, error) {
+	if entry.SizeKnown {
+		return entry.SizeBytes, nil
+	}
+	info, err := os.Lstat(entry.AbsPath)
 	if err != nil {
 		return 0, err
 	}
