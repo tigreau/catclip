@@ -387,6 +387,7 @@ package catclip
 // =============================================================================
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -709,6 +710,17 @@ func Main() {
 		if startupResult.Args == nil {
 			return
 		}
+		startupResult, err = maybeResolveStartupSinkPickerArgs(args, startupResult)
+		if err != nil {
+			if errors.Is(err, errSelectionCancelled) {
+				return
+			}
+			exitWithError(err, os.Stderr)
+			return
+		}
+		if startupResult.Args == nil {
+			return
+		}
 		args = startupResult.Args
 	}
 
@@ -725,14 +737,14 @@ func Main() {
 			}
 		}
 	}
-	if startupResult.UsedFzf && !cfg.Quiet {
+	if shouldWriteResolvedStartupCommand(startupResult, cfg.Quiet) {
 		if err := writeResolvedStartupCommand(os.Stderr, args); err != nil {
 			exitWithError(err, os.Stderr)
 			return
 		}
 	}
 
-	if err := run(cfg, os.Stdout, os.Stderr); err != nil {
+	if err := run(cfg, os.Stdout, os.Stderr, startupResult.PreparedOutput); err != nil {
 		exitWithError(err, os.Stderr)
 	}
 }
@@ -744,6 +756,25 @@ func rawArgsHasHeadless(args []string) bool {
 		}
 	}
 	return false
+}
+
+func rawArgsRequestQuiet(args []string) bool {
+	for _, arg := range args {
+		if arg == "-q" || arg == "--quiet" || arg == "--headless" {
+			return true
+		}
+	}
+	return false
+}
+
+func shouldWriteResolvedStartupCommand(result startupPickerResult, quiet bool) bool {
+	if !result.UsedFzf {
+		return false
+	}
+	if !quiet {
+		return true
+	}
+	return result.ForceResolvedCommand
 }
 
 func rawArgsUseStdinPathValues(args []string) bool {
@@ -764,7 +795,7 @@ func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
-	_, err := fmt.Fprintf(stderr, "Resolved command:\n  %s\n", formatResolvedStartupCommand(args))
+	_, err := fmt.Fprintf(stderr, "Resolved command:\n  %s\n\n", formatResolvedStartupCommand(args))
 	return err
 }
 
@@ -807,13 +838,13 @@ func canonicalGlobalArgsFromConfig(invocationCfg invocationConfig, emitCfg emitC
 	if invocationCfg.Verbose {
 		out = append(out, "--verbose")
 	}
-	if invocationCfg.Quiet {
+	if invocationCfg.Quiet && !invocationCfg.Headless {
 		out = append(out, "--quiet")
 	}
 	if yes {
 		out = append(out, "--yes")
 	}
-	if emitCfg.OutputMode == outputModeStdout {
+	if emitCfg.OutputMode == outputModeStdout && !invocationCfg.Headless {
 		out = append(out, "--print")
 	}
 	if emitCfg.Raw {

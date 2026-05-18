@@ -9479,7 +9479,7 @@ func TestWriteResolvedStartupCommandPrintsCanonicalCommand(t *testing.T) {
 		t.Fatalf("writeResolvedStartupCommand returned error: %v", err)
 	}
 
-	want := "Resolved command:\n  catclip src --contains TODO --only src/a.ts\n"
+	want := "Resolved command:\n  catclip src --contains TODO --only src/a.ts\n\n"
 	if stderr.String() != want {
 		t.Fatalf("expected stderr %q, got %q", want, stderr.String())
 	}
@@ -9491,9 +9491,40 @@ func TestWriteResolvedStartupCommandShowsImplicitDotScope(t *testing.T) {
 		t.Fatalf("writeResolvedStartupCommand returned error: %v", err)
 	}
 
-	want := "Resolved command:\n  catclip . --only src/a.ts\n"
+	want := "Resolved command:\n  catclip . --only src/a.ts\n\n"
 	if stderr.String() != want {
 		t.Fatalf("expected stderr %q, got %q", want, stderr.String())
+	}
+}
+
+func TestFormatResolvedStartupCommandHeadlessIsCanonical(t *testing.T) {
+	got := formatResolvedStartupCommand([]string{"src", "--headless"})
+	want := "catclip --headless src"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+	if strings.Contains(got, "--quiet") || strings.Contains(got, "--print") {
+		t.Fatalf("headless canonical command should not duplicate implied flags, got %q", got)
+	}
+}
+
+func TestShouldWriteResolvedStartupCommandHonorsPickerSelectedHeadless(t *testing.T) {
+	cfg, err := parseArgs([]string{".", "--headless"})
+	if err != nil {
+		t.Fatalf("parseArgs returned error: %v", err)
+	}
+	if !cfg.Quiet {
+		t.Fatal("test setup expected --headless to imply quiet")
+	}
+
+	if !shouldWriteResolvedStartupCommand(startupPickerResult{UsedFzf: true, ForceResolvedCommand: true}, cfg.Quiet) {
+		t.Fatal("expected picker-selected --headless to still print the resolved command")
+	}
+	if shouldWriteResolvedStartupCommand(startupPickerResult{UsedFzf: true}, cfg.Quiet) {
+		t.Fatal("expected typed quiet/headless command without force to stay quiet")
+	}
+	if shouldWriteResolvedStartupCommand(startupPickerResult{ForceResolvedCommand: true}, cfg.Quiet) {
+		t.Fatal("expected no resolved command when fzf was not used")
 	}
 }
 

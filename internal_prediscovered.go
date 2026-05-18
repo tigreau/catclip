@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -138,6 +139,16 @@ func runInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		return nil
 	}
 	scope := cfg.Scopes[0]
+	// The picker runs this preview command on every keystroke, including
+	// the initial frame where the user hasn't typed anything yet — fzf
+	// substitutes `{q}` as an empty string. An empty regex would fail
+	// validation inside applyScopeStages and surface as
+	// "Command failed: ..." in the fzf preview pane. Short-circuit so the
+	// preview shows an empty list while the input is empty (matches the
+	// behavior of the legacy contentMatchRowsForScope path).
+	if strings.TrimSpace(contentMatchScopePattern(scope)) == "" {
+		return nil
+	}
 	entries, err := applyPrediscoveredScopeTail(cfg.Invocation, checkpoint.GitContext, scope, checkpoint.Entries)
 	if err != nil {
 		if errors.Is(err, errRipgrepBadPattern) {

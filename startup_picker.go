@@ -67,8 +67,10 @@ type startupModifierChoice struct {
 }
 
 type startupPickerResult struct {
-	Args    []string
-	UsedFzf bool
+	Args                 []string
+	UsedFzf              bool
+	PreparedOutput       *startupPreparedOutputState
+	ForceResolvedCommand bool
 }
 
 type startupCurrentScopeState struct {

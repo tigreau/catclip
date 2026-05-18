@@ -388,6 +388,50 @@ func TestRunInternalPrediscoveredContentMatchListMatchesFreshEvaluation(t *testi
 	}
 }
 
+// fzf substitutes {q} as an empty string before the user types anything,
+// so the picker's preview command runs with `--contains ''` on its
+// empty-state frame. The internal prediscovered handler must short-
+// circuit on empty pattern and return zero rows instead of letting the
+// pattern reach the validator (which exits 2 and surfaces as
+// "Command failed: ..." in fzf). See
+// RESOLVED_BUG_empty_pattern_preview_command_failed.md.
+func TestRunInternalPrediscoveredContentMatchListShortCircuitsEmptyPattern(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a.go": "package main\n// TODO one\n",
+		"src/b.go": "package main\n",
+	})
+	parentCfg := parseInProject(t, project, []string{"src", "--only", "*.go"})
+	gitCtx := detectGitContext(parentCfg.WorkingDir)
+	discovered, err := evaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, colorPalette{})
+	if err != nil {
+		t.Fatalf("evaluateScope returned error: %v", err)
+	}
+	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
+	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+		GitContext: gitCtx,
+		GitStatus:  map[string]string{},
+		Entries:    discovered.Entries,
+	}); err != nil {
+		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
+	}
+
+	for _, flag := range []string{"--contains", "--snippet"} {
+		t.Run(strings.TrimPrefix(flag, "--"), func(t *testing.T) {
+			cfg, err := parseArgs([]string{"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, flag, ""})
+			if err != nil {
+				t.Fatalf("parseArgs returned error: %v", err)
+			}
+			var stdout bytes.Buffer
+			if err := run(cfg, &stdout, io.Discard); err != nil {
+				t.Fatalf("run with empty %s pattern returned error: %v", flag, err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("expected empty stdout for empty %s pattern, got: %q", flag, stdout.String())
+			}
+		})
+	}
+}
+
 func TestParseArgsInternalPrediscoveredRequiresPath(t *testing.T) {
 	_, err := parseArgs([]string{"--internal-tree-payload", "--internal-prediscovered"})
 	if err == nil {

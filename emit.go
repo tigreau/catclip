@@ -126,45 +126,52 @@ func emitFullOutput(cfg emitConfig, env emitEnvironment, units []preparedFileUni
 }
 
 func emitOutputPlan(cfg emitConfig, env emitEnvironment, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
-	if cfg.Raw {
-		return emitRawOutputPlan(cfg, env, plan, stdout, colors)
-	}
-	if plan.HasPaths() {
-		return emitSectionedOutputPlan(cfg, env, plan, stdout, colors)
-	}
 	return withPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
-		prefetcher := startEmitPrefetch(plan)
-		if prefetcher != nil {
-			defer prefetcher.Close()
-		}
-		for i, item := range plan.items {
-			if err := emitEntry(w, item.unit, i, prefetcher); err != nil {
-				return err
-			}
-		}
-		return nil
+		return writeOutputPlanPayload(w, cfg, plan)
 	})
 }
 
 func emitRawOutputPlan(cfg emitConfig, env emitEnvironment, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
 	return withPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
-		for _, item := range plan.items {
-			if item.kind != outputSectionKindFiles || (item.mode != entryModeFull && item.mode != entryModeLines) {
-				return fmt.Errorf("raw output requires full-file or lines items")
-			}
-			entry := item.unit.Entry
-			if entry.Lines {
-				if err := emitLinesSliceRaw(w, entry.AbsPath, entry.LinesStart, entry.LinesEnd); err != nil {
-					return err
-				}
-				continue
-			}
-			if err := emitFileBodyFromDisk(w, entry.AbsPath); err != nil {
+		return writeRawOutputPlanPayload(w, plan)
+	})
+}
+
+func writeOutputPlanPayload(w io.Writer, cfg emitConfig, plan outputPlan) error {
+	return writeOutputPlanPayloadWithPrefetch(w, cfg, plan, true)
+}
+
+func writeOutputPlanPayloadWithoutPrefetch(w io.Writer, cfg emitConfig, plan outputPlan) error {
+	return writeOutputPlanPayloadWithPrefetch(w, cfg, plan, false)
+}
+
+func writeOutputPlanPayloadWithPrefetch(w io.Writer, cfg emitConfig, plan outputPlan, prefetch bool) error {
+	if cfg.Raw {
+		return writeRawOutputPlanPayload(w, plan)
+	}
+	if plan.HasPaths() {
+		return writeSectionedOutputPlanPayload(w, plan, prefetch)
+	}
+	return writeFileOutputPlanPayload(w, plan, prefetch)
+}
+
+func writeRawOutputPlanPayload(w io.Writer, plan outputPlan) error {
+	for _, item := range plan.items {
+		if item.kind != outputSectionKindFiles || (item.mode != entryModeFull && item.mode != entryModeLines) {
+			return fmt.Errorf("raw output requires full-file or lines items")
+		}
+		entry := item.unit.Entry
+		if entry.Lines {
+			if err := emitLinesSliceRaw(w, entry.AbsPath, entry.LinesStart, entry.LinesEnd); err != nil {
 				return err
 			}
+			continue
 		}
-		return nil
-	})
+		if err := emitFileBodyFromDisk(w, entry.AbsPath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // emitLinesSliceRaw streams lines [linesStart, linesEnd] of absPath with no
@@ -361,40 +368,51 @@ func formatLineNumber(n int) []byte {
 
 func emitSectionedOutputPlan(cfg emitConfig, env emitEnvironment, plan outputPlan, stdout io.Writer, colors colorPalette) (emitStats, error) {
 	return withPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
-		for i, section := range plan.sections {
-			if i > 0 {
-				separator := outputSectionSeparator(plan.sections[i-1].kind, section.kind)
-				if separator != "" {
-					if _, err := io.WriteString(w, separator); err != nil {
-						return err
-					}
-				}
-			}
-			switch section.kind {
-			case outputSectionKindPaths:
-				for _, item := range section.items {
-					if _, err := io.WriteString(w, item.relPath+"\n"); err != nil {
-						return err
-					}
-				}
-			case outputSectionKindFiles:
-				subplan := outputPlan{items: section.items}
-				prefetcher := startEmitPrefetch(subplan)
-				for idx, item := range section.items {
-					if err := emitEntry(w, item.unit, idx, prefetcher); err != nil {
-						if prefetcher != nil {
-							prefetcher.Close()
-						}
-						return err
-					}
-				}
-				if prefetcher != nil {
-					prefetcher.Close()
+		return writeSectionedOutputPlanPayload(w, plan, true)
+	})
+}
+
+func writeSectionedOutputPlanPayload(w io.Writer, plan outputPlan, prefetch bool) error {
+	for i, section := range plan.sections {
+		if i > 0 {
+			separator := outputSectionSeparator(plan.sections[i-1].kind, section.kind)
+			if separator != "" {
+				if _, err := io.WriteString(w, separator); err != nil {
+					return err
 				}
 			}
 		}
-		return nil
-	})
+		switch section.kind {
+		case outputSectionKindPaths:
+			for _, item := range section.items {
+				if _, err := io.WriteString(w, item.relPath+"\n"); err != nil {
+					return err
+				}
+			}
+		case outputSectionKindFiles:
+			subplan := outputPlan{items: section.items}
+			if err := writeFileOutputPlanPayload(w, subplan, prefetch); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func writeFileOutputPlanPayload(w io.Writer, plan outputPlan, prefetch bool) error {
+	var prefetcher *emitPrefetcher
+	if prefetch {
+		prefetcher = startEmitPrefetch(plan)
+	}
+	if prefetcher != nil {
+		defer prefetcher.Close()
+	}
+	for i, item := range plan.items {
+		if err := emitEntry(w, item.unit, i, prefetcher); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func outputSectionSeparator(prev, next outputSectionKind) string {

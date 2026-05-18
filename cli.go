@@ -32,7 +32,12 @@ type stdinPathCache struct {
 	rawPaths []string
 }
 
-func run(cfg parsedCommand, stdout, stderr io.Writer) error {
+func run(cfg parsedCommand, stdout, stderr io.Writer, preparedOpt ...*startupPreparedOutputState) error {
+	var prepared *startupPreparedOutputState
+	if len(preparedOpt) > 0 {
+		prepared = preparedOpt[0]
+	}
+
 	// Surface the rg call/timing counters at end-of-run when explicitly
 	// opted into. Useful for diagnosing per-platform perf (especially
 	// Windows where process spawn cost dominates --contains / --snippet).
@@ -97,16 +102,31 @@ func run(cfg parsedCommand, stdout, stderr io.Writer) error {
 				fmt.Fprintf(stderr, "[verbose] scope %d: %s\n", i+1, formatScopeSummary(s))
 			}
 		}
-		discoverySpinnerStop := func() {}
-		if !cfg.Quiet {
-			discoverySpinnerStop = startLoadingSpinner(spinnerOutputFile(stderr), "Scanning files...")
-		}
-		discoveryResult, err := discoverInvocation(resolvedInvocation, gitCtx, stderr, colors)
-		if err != nil {
+		var (
+			discoveryResult DiscoveryResult
+			outputPlan      outputPlan
+		)
+		if prepared != nil {
+			gitCtx = prepared.Git
+			discoveryResult = prepared.Discovery
+			outputPlan = prepared.Plan
+		} else {
+			discoverySpinnerStop := func() {}
+			if !cfg.Quiet {
+				discoverySpinnerStop = startLoadingSpinner(spinnerOutputFile(stderr), "Scanning files...")
+			}
+			var err error
+			discoveryResult, err = discoverInvocation(resolvedInvocation, gitCtx, stderr, colors)
+			if err != nil {
+				discoverySpinnerStop()
+				return err
+			}
 			discoverySpinnerStop()
-			return err
+			outputPlan, err = buildOutputPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+			if err != nil {
+				return err
+			}
 		}
-		discoverySpinnerStop()
 		if cfg.Verbose {
 			for _, stat := range discoveryResult.ScopeStats {
 				fmt.Fprintf(stderr, "[verbose] scope %d: discovered %d file(s) in %s\n", stat.Index+1, stat.Count, formatDuration(stat.Duration))
@@ -119,10 +139,6 @@ func run(cfg parsedCommand, stdout, stderr io.Writer) error {
 		diagnostics = append(diagnostics, discoveryResult.Diagnostics...)
 		notices := discoveryResult.Notices
 		diagnosticSummary := summarizeDiagnostics(diagnostics, discoveryResult.HadSelectionCancel)
-		outputPlan, err := buildOutputPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
-		if err != nil {
-			return err
-		}
 		outputCtx := outputExecutionContext{
 			Invocation: invocationCfg,
 			Render:     renderCfg,

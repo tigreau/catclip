@@ -304,6 +304,27 @@ func (r *scopeResolver) targetIncluded(target string) bool {
 	return false
 }
 
+// includedDescendantsOf returns the user-supplied include paths that are
+// strict descendants of target. Used by the ignored-target error path to
+// detect the "user pointed --include inside the target" mistake and
+// produce a tailored teaching message instead of the generic
+// "Your --include does not cover this target" boilerplate.
+func (r *scopeResolver) includedDescendantsOf(target string) []string {
+	target = normalizeRelPath(target)
+	if target == "" || target == "." {
+		return nil
+	}
+	prefix := target + "/"
+	var descendants []string
+	for path := range r.includedTargets.exact {
+		if strings.HasPrefix(path, prefix) {
+			descendants = append(descendants, path)
+		}
+	}
+	sort.Strings(descendants)
+	return descendants
+}
+
 func (r *scopeResolver) targetPathExists(relTarget string) (bool, error) {
 	_, err := os.Stat(filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(relTarget)))
 	if err == nil {
@@ -839,7 +860,7 @@ func (r *scopeResolver) resolveExactTarget(relTarget string, fromChained bool, c
 		}
 		if block != nil {
 			if !r.targetIncluded(relTarget) {
-				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, block.Source, hasIncludes, colors), isError: true}, nil
+				return nil, true, &diagnostic{message: ignoredDirMessage(relTarget, block.Source, hasIncludes, r.includedDescendantsOf(relTarget), colors), isError: true}, nil
 			}
 			files, err := discoverFilesUnder(r.cfg.WorkingDir, relTarget, "", r.classifyTextFile, block)
 			return withTargetRoot(files, relTarget), true, nil, err
@@ -2658,16 +2679,33 @@ func targetNotFoundWarning(target string, scopeIndex int, colors colorPalette) s
 		colors.Dim, colors.Reset)
 }
 
-func ignoredDirMessage(relTarget, source string, includesActive bool, colors colorPalette) string {
+func ignoredDirMessage(relTarget, source string, includesActive bool, includedDescendants []string, colors colorPalette) string {
+	// Most actionable case: the user passed `--include <path>` where the
+	// include path lives inside the target (so the include is a
+	// descendant, not the ancestor that --include needs). Show them the
+	// two correct shapes instead of the generic "your --include does not
+	// cover this target" line.
+	if len(includedDescendants) > 0 {
+		descendant := includedDescendants[0]
+		return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %s--include %s points inside %s — it doesn't authorize %s itself.%s\n  %s--include must name the gitignored target, or an ancestor of it.%s\n\n  %sTo open %s and narrow to %s:%s\n    %scatclip %s --include %s --only %s%s\n  %sTo open %s directly:%s\n    %scatclip %s --include %s%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+			colors.Bold, colors.Err, colors.Reset, colors.Err, singleQuoted(relTarget), source, colors.Reset,
+			colors.Dim, singleQuoted(descendant), singleQuoted(relTarget), singleQuoted(relTarget), colors.Reset,
+			colors.Dim, colors.Reset,
+			colors.Dim, singleQuoted(relTarget), singleQuoted(descendant), colors.Reset,
+			colors.OK, relTarget, singleQuoted(relTarget), singleQuoted(descendant), colors.Reset,
+			colors.Dim, singleQuoted(descendant), colors.Reset,
+			colors.OK, descendant, singleQuoted(relTarget), colors.Reset,
+			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
+	}
 	if includesActive {
-		return fmt.Sprintf("\n%sError: %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
-			colors.Err, singleQuoted(relTarget), source, colors.Reset,
+		return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+			colors.Bold, colors.Err, colors.Reset, colors.Err, singleQuoted(relTarget), source, colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
 			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
 	}
-	return fmt.Sprintf("\n%sError: %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
-		colors.Err, singleQuoted(relTarget), source, colors.Reset,
+	return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+		colors.Bold, colors.Err, colors.Reset, colors.Err, singleQuoted(relTarget), source, colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
@@ -2676,8 +2714,8 @@ func ignoredDirMessage(relTarget, source string, includesActive bool, colors col
 
 func ignoredFileMessage(relTarget, source string, fromChained, includesActive bool, colors colorPalette) string {
 	if includesActive {
-		message := fmt.Sprintf("\n%sError: %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s",
-			colors.Err, singleQuoted(relTarget), source, colors.Reset,
+		message := fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s",
+			colors.Bold, colors.Err, colors.Reset, colors.Err, singleQuoted(relTarget), source, colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset)
 		if fromChained {
@@ -2686,8 +2724,8 @@ func ignoredFileMessage(relTarget, source string, fromChained, includesActive bo
 		return message + fmt.Sprintf("\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
 			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
 	}
-	message := fmt.Sprintf("\n%sError: %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
-		colors.Err, singleQuoted(relTarget), source, colors.Reset,
+	message := fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
+		colors.Bold, colors.Err, colors.Reset, colors.Err, singleQuoted(relTarget), source, colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset)
 	if fromChained {
@@ -2851,7 +2889,7 @@ func writeNoFilesMatchedMessage(scopes []executionScope, stderr io.Writer, color
 		return err
 	}
 
-	if _, err := fmt.Fprintf(stderr, "%sNo text files found matching your criteria.%s\n", colors.Warn, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(stderr, "\n%sNo text files found matching your criteria.%s\n", colors.Warn, colors.Reset); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(stderr, "\n  %sPossible causes:%s\n", colors.Dim, colors.Reset); err != nil {
