@@ -151,6 +151,30 @@ func TestCopyRelativePath(t *testing.T) {
 	}
 }
 
+// waitForFileRefsOnClipboard polls Has() until it returns true or the
+// budget elapses. macOS pasteboard writes can lag a few hundred ms
+// behind the osascript call that issued them, especially under CI
+// load — a fixed 100ms Sleep then a single Has() check raced that
+// latency intermittently on macos-latest runners. Polling tolerates
+// whatever the actual write-to-visible delay is on the current run.
+//
+// Returns false if Has() never returns true within budget; callers
+// fail the test with their own diagnostic message.
+func waitForFileRefsOnClipboard(t *testing.T, budget time.Duration) bool {
+	t.Helper()
+	deadline := time.Now().Add(budget)
+	for {
+		has, err := Has()
+		if err == nil && has {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
 func TestCopyThenHas(t *testing.T) {
 	if os.Getenv("FILECLIP_INTEGRATION") == "" {
 		t.Skip("set FILECLIP_INTEGRATION=1 to run clipboard integration tests")
@@ -165,15 +189,8 @@ func TestCopyThenHas(t *testing.T) {
 		t.Fatalf("Copy() failed: %v", err)
 	}
 
-	// Give background clipboards (like xclip) time to acquire the selection
-	time.Sleep(100 * time.Millisecond)
-
-	has, err := Has()
-	if err != nil {
-		t.Fatalf("Has() failed: %v", err)
-	}
-	if !has {
-		t.Fatal("Has() returned false after Copy(), expected true")
+	if !waitForFileRefsOnClipboard(t, 3*time.Second) {
+		t.Fatal("Has() never returned true within 3s after Copy()")
 	}
 }
 
@@ -192,8 +209,9 @@ func TestCopyThenPaste(t *testing.T) {
 		t.Fatalf("Copy() failed: %v", err)
 	}
 
-	// Give background clipboards (like xclip) time to acquire the selection
-	time.Sleep(100 * time.Millisecond)
+	if !waitForFileRefsOnClipboard(t, 3*time.Second) {
+		t.Fatal("Has() never returned true within 3s after Copy(); cannot Paste")
+	}
 
 	paths, err := Paste()
 	if err != nil {
