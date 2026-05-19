@@ -8,6 +8,15 @@ on:
 env:
   RIPGREP_VERSION: 14.1.1
   FZF_VERSION: 0.71.0
+  # Force the v4/v5 JavaScript actions (actions/checkout@v4,
+  # actions/setup-go@v5, actions/upload-artifact@v4,
+  # actions/download-artifact@v4) onto Node.js 24 ahead of GitHub's
+  # 2026-06-02 forced cutover. Lets us discover compatibility issues
+  # against the real Node 24 runtime now instead of waiting for the
+  # cutover to break things. Remove this when we bump to action
+  # versions whose default runtime is already Node 24 — see
+  # docs/versions/v0.5.3/reports/ACTIVE_NOTE_node24_actions_migration.md.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   test:

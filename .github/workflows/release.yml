@@ -8,6 +8,9 @@ on:
 env:
   RIPGREP_VERSION: 14.1.1
   FZF_VERSION: 0.71.0
+  # See test.yml for the rationale. Mirrors the opt-in so release
+  # builds run under the same Node.js runtime as CI tests.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   build:
