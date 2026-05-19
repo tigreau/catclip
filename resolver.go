@@ -2271,7 +2271,7 @@ func chooseContentMatchesWithFzf(query string, currentArgs []string, flag string
 		return fzfChooseResult{}, err
 	}
 
-	command, cleanup := fzfCheckpointContentMatchListCommand(currentArgs, flag)
+	command, checkpointPath, cleanup := fzfCheckpointContentMatchListCommand(currentArgs, flag)
 	defer cleanup()
 	if command == "" {
 		return fzfChooseResult{}, errSelectionCancelled
@@ -2284,7 +2284,8 @@ func chooseContentMatchesWithFzf(query string, currentArgs []string, flag string
 		WithNth:        "1",
 		Nth:            "1",
 		Header:         contentMatchPickerHeader(flag),
-		PreviewCommand: fzfContentPreviewCommand(flag),
+		PreviewCommand: fzfContentPreviewCommand(flag, checkpointPath),
+		PreviewWindow:  contentMatchPreviewWindow(flag),
 		Disabled:       true,
 		Multi:          true,
 		PrintQuery:     true,
@@ -2379,9 +2380,23 @@ func fzfPreviewCommand(includeTarget bool) string {
 		` {+2} | ` + treeQ + ` ` + treeArgs
 }
 
-// fzfContentPreviewCommand previews one focused file, so it remains per-file
-// and out of the SCC match-list checkpoint path.
-func fzfContentPreviewCommand(flag string) string {
+// fzfContentPreviewCommand builds the preview-pane command for the
+// content-match picker. The same command serves three states inside
+// runInternalFilePreview:
+//
+//   - Empty {q}: emits the contextual hint document (smart-case tips +
+//     pattern examples). No checkpoint needed.
+//   - Non-empty {q}, empty {3} (the `[all current matches]` row): if a
+//     checkpoint path is wired in, emits the full scope tree from the
+//     checkpoint. Otherwise emits nothing.
+//   - Non-empty {q}, non-empty {3}: per-file preview with match
+//     highlighting (or snippet extraction / diff).
+//
+// checkpointPath is empty when the caller couldn't write a checkpoint
+// (legacy fallback path); in that case the `[all current matches]`
+// preview is empty, matching pre-v0.5.2 behavior. Pass the path
+// returned by fzfCheckpointContentMatchListCommand to enable the tree.
+func fzfContentPreviewCommand(flag, checkpointPath string) string {
 	treeBin, ok := treePreviewBinary()
 	if !ok {
 		return ""
@@ -2397,10 +2412,13 @@ func fzfContentPreviewCommand(flag string) string {
 		"--quiet",
 		"--internal-file-preview",
 		"--internal-file-path", "{3}",
-		// fzf already shell-quotes placeholders like {q}; adding our own quotes
-		// breaks regex input that includes spaces or quote characters.
-		flag, "{q}",
 	}
+	if checkpointPath != "" {
+		parts = append(parts, "--internal-prediscovered", shellQuoteArg(checkpointPath))
+	}
+	// fzf already shell-quotes placeholders like {q}; adding our own quotes
+	// breaks regex input that includes spaces or quote characters.
+	parts = append(parts, flag, "{q}")
 	parts = append(parts, "|", shellQuoteArg(treeBin))
 	parts = append(parts, fzfTreeRenderArgs()...)
 	return strings.Join(parts, " ")
@@ -2425,27 +2443,39 @@ func fzfContentMatchListCommand(currentArgs []string, flag string) string {
 	return strings.Join(parts, " ")
 }
 
-func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (string, func()) {
+// fzfCheckpointContentMatchListCommand returns:
+//   - the fzf `reload` command string for the content-match list,
+//   - the checkpoint path on disk (empty when the fast SCC path was not
+//     taken — caller should treat that as "no tree preview available"),
+//   - a cleanup function that removes the tmpdir housing the checkpoint.
+//
+// The checkpoint path is exposed so the preview command builder can wire
+// the same JSON file into --internal-file-preview's empty-path branch
+// (the `[all current matches]` row's scope tree). Match-list reload and
+// preview share the same checkpoint file — one JSON write per picker
+// open.
+func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (string, string, func()) {
 	fallback := func() string {
 		return fzfContentMatchListCommand(currentArgs, flag)
 	}
+	noop := func() {}
 	switch flag {
 	case "--contains", "--snippet":
 	default:
-		return fallback(), func() {}
+		return fallback(), "", noop
 	}
 	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
 	if err != nil || len(view.Entries) == 0 {
-		return fallback(), func() {}
+		return fallback(), "", noop
 	}
 
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
-		return "", func() {}
+		return "", "", noop
 	}
 	tmpdir, err := os.MkdirTemp("", "catclip-scc-*")
 	if err != nil {
-		return fallback(), func() {}
+		return fallback(), "", noop
 	}
 	checkpointPath := filepath.Join(tmpdir, "scope.json")
 	statuses := map[string]string{}
@@ -2453,7 +2483,7 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 		statuses, err = collectGitStatusMapForPathspecs(view.GitContext, gitStatusPathspecsForEntries(view.GitContext, view.Entries))
 		if err != nil {
 			_ = os.RemoveAll(tmpdir)
-			return fallback(), func() {}
+			return fallback(), "", noop
 		}
 	}
 	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
@@ -2462,16 +2492,36 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 		Entries:    view.Entries,
 	}); err != nil {
 		_ = os.RemoveAll(tmpdir)
-		return fallback(), func() {}
+		return fallback(), "", noop
 	}
 
 	parts := []string{shellQuoteArg(self), "--quiet", "--internal-content-match-list", "--internal-prediscovered", shellQuoteArg(checkpointPath)}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
 	parts = append(parts, flag, "{q}")
-	return strings.Join(parts, " "), func() {
+	return strings.Join(parts, " "), checkpointPath, func() {
 		_ = os.RemoveAll(tmpdir)
 	}
+}
+
+// contentMatchPreviewWindow returns the fzf --preview-window spec for the
+// content match picker. For --contains, it appends a `+{6}-/2` offset so
+// the preview pane opens centered on the first match per focused file
+// (column 6 carries the first-match line number, populated by
+// attachFirstMatchLines). Snippet mode skips the offset because the
+// preview already renders matched blocks, not the full file — centering
+// on a line number would scroll PAST the snippet content.
+//
+// Cross-platform: --preview-window's `+{N}-/2` syntax is fzf-native, not
+// shell-evaluated, so cmd.exe / PowerShell / sh handle it identically.
+// The substitution value is always a positive integer (the [all current
+// matches] row uses contentMatchAllMatchesPreviewLine = "1") so fzf never
+// sees an empty `{6}` that could break the flag parse.
+func contentMatchPreviewWindow(flag string) string {
+	if flag != "--contains" {
+		return ""
+	}
+	return picker.DefaultPreviewWindow + ":+{6}-/2"
 }
 
 func contentMatchPickerHeader(flag string) string {
@@ -2918,7 +2968,7 @@ func writeNoFilesMatchedMessage(scopes []executionScope, stderr io.Writer, color
 		}
 	}
 	if usedRegexFilter {
-		if _, err := fmt.Fprintf(stderr, "  %s  4. Pattern is case-sensitive (try (?i)pattern for case-insensitive)%s\n", colors.Dim, colors.Reset); err != nil {
+		if _, err := fmt.Fprintf(stderr, "  %s  4. Pattern contains uppercase letters (smart-case: uppercase = exact match)%s\n", colors.Dim, colors.Reset); err != nil {
 			return err
 		}
 	}

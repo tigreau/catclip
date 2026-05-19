@@ -23,91 +23,167 @@ type stageValueMatcher struct {
 	hasGlob bool
 }
 
+// stageContext bundles the inputs every per-stage applier needs. The
+// pipeline owns it; appliers consume it read-only. Carrying the scope
+// and the specific stage (not just stage values) lets appliers see
+// scope-wide info — e.g., the include applier inspects s.Targets — and
+// keeps each applier's signature uniform so the dispatch table stays
+// flat.
+type stageContext struct {
+	Resolver *scopeResolver
+	GitCtx   gitContext
+	Scope    executionScope
+	Stage    scopeStage
+}
+
+// stageApplier is the per-stage transformer. Each kind of scope stage
+// (include, only, exclude, recent, depth, contains, snippet, the git
+// selection family, diff) gets one applier registered in
+// stageApplierTable. The pipeline calls them in scope.Stages order;
+// returning an empty entry slice short-circuits the rest of the chain.
+//
+// All appliers must be pure functions of (ctx, entries) — no hidden
+// state, no globals, no side effects beyond what's visible in the
+// returned slice. This preserves the args-as-state property that future
+// undo support depends on.
+type stageApplier func(ctx stageContext, entries []fileEntry) ([]fileEntry, error)
+
+// stageApplierTable maps each scopeStageKind to its applier. The table
+// is the only place that knows the kind→applier correspondence;
+// applyScopeStages just looks up and dispatches. To add a new stage:
+// add the kind to scope_stage.go, add an applier function below, and
+// register it here. Tests in scope_stages_test.go enforce coverage.
+var stageApplierTable = map[scopeStageKind]stageApplier{
+	scopeStageInclude:      applyIncludeStageCase,
+	scopeStageOnly:         applyOnlyStageCase,
+	scopeStageExclude:      applyExcludeStageCase,
+	scopeStageRecent:       applyRecentStageCase,
+	scopeStageDepth:        applyDepthStageCase,
+	scopeStageContains:     applyContentStageCase,
+	scopeStageSnippet:      applyContentStageCase,
+	scopeStageChanged:      applyChangedStageCase,
+	scopeStageStaged:       applyStagedStageCase,
+	scopeStageUnstaged:     applyUnstagedStageCase,
+	scopeStageUntracked:    applyUntrackedStageCase,
+	scopeStageChangedDiff:  applyChangedStageCase,
+	scopeStageStagedDiff:   applyStagedStageCase,
+	scopeStageUnstagedDiff: applyUnstagedStageCase,
+	scopeStageDiff:         applyDiffStageCase,
+	scopeStagePaths:        applyPathsStageCase,
+	scopeStageLines:        applyLinesStageCase,
+}
+
 func applyScopeStages(resolver *scopeResolver, gitCtx gitContext, s executionScope, entries []fileEntry) ([]fileEntry, error) {
 	if len(entries) == 0 {
 		return entries, nil
 	}
 	for _, stage := range s.Stages {
-		var err error
-		switch stage.Kind {
-		case scopeStageInclude:
-			entries, err = applyIncludeStage(resolver, s, entries, stage.Values, stage.ExactValues)
-		case scopeStageOnly:
-			if stage.ExactValues {
-				entries = filterEntriesByExactStagePaths(entries, stage.Values, true)
-				continue
-			}
-			entries, err = filterEntriesByStagePatterns(entries, stage.Values, true)
-		case scopeStageExclude:
-			if stage.ExactValues {
-				entries = filterEntriesByExactStagePaths(entries, stage.Values, false)
-				continue
-			}
-			entries, err = filterEntriesByStagePatterns(entries, stage.Values, false)
-		case scopeStageRecent:
-			entries, err = applyRecentStage(entries, resolver.cfg.WorkingDir, stage.Limit)
-		case scopeStageDepth:
-			if stage.Limit == nil {
-				continue
-			}
-			entries, err = applyDepthStage(entries, *stage.Limit)
-		case scopeStageContains:
-			if len(stage.Values) == 0 {
-				continue
-			}
-			entries = ensureEntryAbsPaths(entries, resolver.cfg.WorkingDir)
-			entries, err = filterEntriesByContent(entries, stage.Values[0])
-		case scopeStageSnippet:
-			if len(stage.Values) == 0 {
-				continue
-			}
-			entries = ensureEntryAbsPaths(entries, resolver.cfg.WorkingDir)
-			entries, err = filterEntriesByContent(entries, stage.Values[0])
-		case scopeStageChanged:
-			if !gitCtx.Enabled {
-				continue
-			}
-			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true}, entries)
-		case scopeStageStaged:
-			if !gitCtx.Enabled {
-				continue
-			}
-			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Staged: true}, entries)
-		case scopeStageUnstaged:
-			if !gitCtx.Enabled {
-				continue
-			}
-			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Unstaged: true}, entries)
-		case scopeStageUntracked:
-			if !gitCtx.Enabled {
-				continue
-			}
-			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Untracked: true}, entries)
-		case scopeStageChangedDiff:
-			if !gitCtx.Enabled {
-				continue
-			}
-			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true}, entries)
-		case scopeStageStagedDiff:
-			if !gitCtx.Enabled {
-				continue
-			}
-			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Staged: true}, entries)
-		case scopeStageUnstagedDiff:
-			if !gitCtx.Enabled {
-				continue
-			}
-			entries, err = filterChangedEntries(gitCtx, executionScope{Changed: true, Unstaged: true}, entries)
-		case scopeStageDiff:
-			// Output-shape modifiers do not change the selected file set.
+		applier, ok := stageApplierTable[stage.Kind]
+		if !ok {
+			// Unknown kind = no-op. Preserves the original switch's
+			// default behavior so additions to the kind enum can land
+			// without breaking older runs.
+			continue
 		}
+		ctx := stageContext{Resolver: resolver, GitCtx: gitCtx, Scope: s, Stage: stage}
+		next, err := applier(ctx, entries)
 		if err != nil {
 			return nil, err
 		}
+		entries = next
 		if len(entries) == 0 {
 			return entries, nil
 		}
 	}
+	return entries, nil
+}
+
+func applyIncludeStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	return applyIncludeStage(ctx.Resolver, ctx.Scope, entries, ctx.Stage.Values, ctx.Stage.ExactValues)
+}
+
+func applyOnlyStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	if ctx.Stage.ExactValues {
+		return filterEntriesByExactStagePaths(entries, ctx.Stage.Values, true), nil
+	}
+	return filterEntriesByStagePatterns(entries, ctx.Stage.Values, true)
+}
+
+func applyExcludeStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	if ctx.Stage.ExactValues {
+		return filterEntriesByExactStagePaths(entries, ctx.Stage.Values, false), nil
+	}
+	return filterEntriesByStagePatterns(entries, ctx.Stage.Values, false)
+}
+
+func applyRecentStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	return applyRecentStage(entries, ctx.Resolver.cfg.WorkingDir, ctx.Stage.Limit)
+}
+
+func applyDepthStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	if ctx.Stage.Limit == nil {
+		return entries, nil
+	}
+	return applyDepthStage(entries, *ctx.Stage.Limit)
+}
+
+// applyContentStageCase serves both --contains and --snippet. The two
+// stages share matching semantics (rg-driven regex over file content);
+// the difference between them is downstream — only the emit shape
+// changes. Keeping a single applier here removes the bug surface of
+// "added logic to --contains but forgot to mirror it on --snippet."
+func applyContentStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	if len(ctx.Stage.Values) == 0 {
+		return entries, nil
+	}
+	entries = ensureEntryAbsPaths(entries, ctx.Resolver.cfg.WorkingDir)
+	return filterEntriesByContent(entries, ctx.Stage.Values[0])
+}
+
+// applyChangedStageCase serves scopeStageChanged and scopeStageChangedDiff;
+// the *Diff variant only changes the emit shape downstream, not the
+// selected file set.
+func applyChangedStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	if !ctx.GitCtx.Enabled {
+		return entries, nil
+	}
+	return filterChangedEntries(ctx.GitCtx, executionScope{Changed: true}, entries)
+}
+
+func applyStagedStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	if !ctx.GitCtx.Enabled {
+		return entries, nil
+	}
+	return filterChangedEntries(ctx.GitCtx, executionScope{Changed: true, Staged: true}, entries)
+}
+
+func applyUnstagedStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	if !ctx.GitCtx.Enabled {
+		return entries, nil
+	}
+	return filterChangedEntries(ctx.GitCtx, executionScope{Changed: true, Unstaged: true}, entries)
+}
+
+func applyUntrackedStageCase(ctx stageContext, entries []fileEntry) ([]fileEntry, error) {
+	if !ctx.GitCtx.Enabled {
+		return entries, nil
+	}
+	return filterChangedEntries(ctx.GitCtx, executionScope{Changed: true, Untracked: true}, entries)
+}
+
+// applyDiffStageCase, applyPathsStageCase, applyLinesStageCase are no-ops:
+// these are output-shape modifiers, not file-set filters. They appear in
+// scope.Stages for completeness so canonicalScopeArgs round-trips, but
+// the file set they "apply to" is whatever the upstream stages produced.
+func applyDiffStageCase(_ stageContext, entries []fileEntry) ([]fileEntry, error) {
+	return entries, nil
+}
+
+func applyPathsStageCase(_ stageContext, entries []fileEntry) ([]fileEntry, error) {
+	return entries, nil
+}
+
+func applyLinesStageCase(_ stageContext, entries []fileEntry) ([]fileEntry, error) {
 	return entries, nil
 }
 

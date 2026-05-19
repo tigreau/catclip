@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 var (
@@ -426,9 +427,11 @@ func runRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 			"--null",
 			"--pcre2",
 			"-H",
-			"-e", pattern,
-			"--",
 		}
+		if isSmartCaseInsensitive(pattern) {
+			args = append(args, "--ignore-case")
+		}
+		args = append(args, "-e", pattern, "--")
 		args = append(args, chunk...)
 
 		cmd := exec.Command(bin, args...)
@@ -478,6 +481,90 @@ func runRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 	return matches, nil
 }
 
+// firstMatchLinePerFile returns the line number of the first match in each
+// file under absPaths, given the regex pattern. Files without a match are
+// absent from the returned map. Used by the content-match picker to set
+// fzf's --preview-window offset so the per-file preview opens centered on
+// the first hit.
+//
+// Why a dedicated helper rather than reusing runRipgrepMatchLines: this
+// runs with --max-count 1 so rg stops scanning each file as soon as the
+// first match is found, which matters for the picker's per-keystroke
+// refresh cadence on large files.
+//
+// Output parsing uses the same NUL-delimited format as runRipgrepMatchLines
+// (`{path}\0{lineno}:{matched}\n`) — robust against Windows drive-letter
+// colons in paths and digit-prefixed match content.
+func firstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, error) {
+	if len(absPaths) == 0 {
+		return map[string]int{}, nil
+	}
+	bin, ok := ripgrepBinary()
+	if !ok {
+		return nil, errRipgrepUnavailable
+	}
+	out := make(map[string]int, len(absPaths))
+	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+		args := []string{
+			"--color=never",
+			"--no-messages",
+			"--no-heading",
+			"--line-number",
+			"--null",
+			"--pcre2",
+			"-H",
+			"--max-count", "1",
+		}
+		if isSmartCaseInsensitive(pattern) {
+			args = append(args, "--ignore-case")
+		}
+		args = append(args, "-e", pattern, "--")
+		args = append(args, chunk...)
+
+		cmd := exec.Command(bin, args...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		result, err := cmd.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				switch exitErr.ExitCode() {
+				case 1:
+					continue
+				case 2:
+					if isRipgrepBadPatternStderr(stderr.Bytes()) {
+						return nil, errRipgrepBadPattern
+					}
+				}
+			}
+			return nil, err
+		}
+		for _, rec := range bytes.Split(result, []byte{'\n'}) {
+			if len(rec) == 0 {
+				continue
+			}
+			nul := bytes.IndexByte(rec, 0)
+			if nul < 0 {
+				continue
+			}
+			path := string(rec[:nul])
+			rest := rec[nul+1:]
+			colon := bytes.IndexByte(rest, ':')
+			if colon < 0 {
+				continue
+			}
+			line, err := strconv.Atoi(string(rest[:colon]))
+			if err != nil || line < 1 {
+				continue
+			}
+			if _, dup := out[path]; dup {
+				continue
+			}
+			out[path] = line
+		}
+	}
+	return out, nil
+}
+
 func runRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, error) {
 	bin, ok := ripgrepBinary()
 	if !ok {
@@ -489,7 +576,18 @@ func runRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, 
 
 	matches := make(map[string]struct{}, len(absPaths))
 	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
-		args := []string{"--color=never", "--no-messages", "--files-with-matches", "--pcre2", "-0", "-m", "1", "-e", pattern, "--"}
+		args := []string{
+			"--color=never",
+			"--no-messages",
+			"--files-with-matches",
+			"--pcre2",
+			"-0",
+			"-m", "1",
+		}
+		if isSmartCaseInsensitive(pattern) {
+			args = append(args, "--ignore-case")
+		}
+		args = append(args, "-e", pattern, "--")
 		args = append(args, chunk...)
 
 		cmd := exec.Command(bin, args...)
@@ -693,4 +791,69 @@ func hasScopedIgnoredTargetsStreaming(ctx context.Context, workingDir string, sc
 		}
 	}
 	return found, nil
+}
+
+// maxLinesForFiles returns the largest line count across absPaths, using
+// bundled rg as the line-counting engine (`rg -c '^'`). The Go side does
+// no file reading; rg owns the scan.
+//
+// Returns (0, nil) on empty input. Returns errRipgrepUnavailable if the
+// bundled binary cannot be located. Per-chunk rg exit code 1 (no matches)
+// is tolerated — that just means the chunk's files are empty/binary;
+// continue with the next chunk.
+//
+// Used by the interactive lines picker to bound its numeric row set.
+// Callers must pass absolute paths; the function does not resolve relative
+// paths against a working directory.
+func maxLinesForFiles(absPaths []string) (int, error) {
+	if len(absPaths) == 0 {
+		return 0, nil
+	}
+	bin, ok := ripgrepBinary()
+	if !ok {
+		return 0, errRipgrepUnavailable
+	}
+	maxLines := 0
+	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+		args := []string{"-c", "--no-messages", "--color=never", "-e", "^", "--"}
+		args = append(args, chunk...)
+		cmd := exec.Command(bin, args...)
+		out, err := cmd.Output()
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+				continue
+			}
+			return 0, err
+		}
+		for _, line := range bytes.Split(out, []byte{'\n'}) {
+			if len(line) == 0 {
+				continue
+			}
+			// rg prints `path:count` when there are multiple positionals
+			// but just `count` for a single positional. Handle both: prefer
+			// LastIndexByte for the colon (also right for Windows drives),
+			// fall back to the bare-count form.
+			tail := line
+			if colon := bytes.LastIndexByte(line, ':'); colon >= 0 {
+				tail = line[colon+1:]
+			}
+			n, err := strconv.Atoi(string(bytes.TrimSpace(tail)))
+			if err != nil {
+				continue
+			}
+			if n > maxLines {
+				maxLines = n
+			}
+		}
+	}
+	return maxLines, nil
+}
+
+func isSmartCaseInsensitive(pattern string) bool {
+	for _, r := range pattern {
+		if unicode.IsUpper(r) {
+			return false
+		}
+	}
+	return true
 }

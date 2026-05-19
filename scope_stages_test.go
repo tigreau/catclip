@@ -421,3 +421,38 @@ func TestScopeIncludeTargetWildcardSkipped(t *testing.T) {
 		t.Fatalf("scopeIncludeTarget(src, *) = %v, want %v", got, want)
 	}
 }
+
+// Every scopeStageKind must have a stageApplierTable entry so the
+// pipeline can dispatch the kind without falling through to the
+// unknown-kind no-op branch. Adding a new kind without registering
+// an applier is a silent regression — the new flag would parse
+// successfully but apply no filter at runtime. This test catches
+// that at compile-extend time. To register an output-shape-only kind
+// (no file-set filtering), wire it to applyDiffStageCase or one of
+// the no-op aliases.
+func TestStageApplierTableCoversEveryStageKind(t *testing.T) {
+	allKinds := []scopeStageKind{
+		scopeStageInclude,
+		scopeStageOnly,
+		scopeStageExclude,
+		scopeStageRecent,
+		scopeStageDepth,
+		scopeStageContains,
+		scopeStageSnippet,
+		scopeStageChanged,
+		scopeStageStaged,
+		scopeStageUnstaged,
+		scopeStageUntracked,
+		scopeStageChangedDiff,
+		scopeStageStagedDiff,
+		scopeStageUnstagedDiff,
+		scopeStageDiff,
+		scopeStagePaths,
+		scopeStageLines,
+	}
+	for _, kind := range allKinds {
+		if _, ok := stageApplierTable[kind]; !ok {
+			t.Errorf("stageApplierTable missing entry for %q", string(kind))
+		}
+	}
+}

@@ -70,6 +70,16 @@ func run(cfg parsedCommand, stdout, stderr io.Writer, preparedOpt ...*startupPre
 			if cfg.ContentMatchList {
 				return runInternalPrediscoveredContentMatchList(prediscoveredCfg, stdout)
 			}
+			if cfg.LinesPreview {
+				return runInternalLinesPreview(prediscoveredCfg, emitConfigFromParsedCommand(cfg), stdout)
+			}
+			// --internal-file-preview paired with --internal-prediscovered
+			// routes through the file-preview handler so it can dispatch on
+			// (empty pattern, empty focused path, checkpoint present) — see
+			// runInternalFilePreview for the three preview states.
+			if cfg.FilePreview {
+				return runInternalFilePreview(filePreviewConfigFromParsedCommand(cfg), stdout)
+			}
 			return runInternalPrediscoveredTreePayload(prediscoveredCfg, stdout)
 		}
 		if cfg.FilePreview {
@@ -405,6 +415,7 @@ type internalCommandConfig struct {
 	FilePreview       bool
 	ContentMatchList  bool
 	RecentPreview     bool
+	LinesPreview      bool
 }
 
 func internalCommandConfigFromParsedCommand(cfg parsedCommand) internalCommandConfig {
@@ -414,12 +425,14 @@ func internalCommandConfigFromParsedCommand(cfg parsedCommand) internalCommandCo
 		FilePreview:       cfg.FilePreview,
 		ContentMatchList:  cfg.ContentMatchList,
 		RecentPreview:     cfg.RecentPreview,
+		LinesPreview:      cfg.LinesPreview,
 	}
 }
 
 func (cfg internalCommandConfig) isInternalKind() bool {
 	return cfg.TreePayload || cfg.FilePreview ||
 		cfg.ContentMatchList || cfg.RecentPreview ||
+		cfg.LinesPreview ||
 		cfg.PrediscoveredPath != ""
 }
 
@@ -550,8 +563,11 @@ func formatDuration(d time.Duration) string {
 }
 
 func validateImplementedFeatureSet(cfg internalCommandConfig) error {
-	if cfg.PrediscoveredPath != "" && !cfg.TreePayload && !cfg.ContentMatchList {
-		return newUsageError("Error: --internal-prediscovered requires --internal-tree-payload or --internal-content-match-list.")
+	if cfg.PrediscoveredPath != "" && !cfg.TreePayload && !cfg.ContentMatchList && !cfg.LinesPreview && !cfg.FilePreview {
+		return newUsageError("Error: --internal-prediscovered requires --internal-tree-payload, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview.")
+	}
+	if cfg.LinesPreview && cfg.PrediscoveredPath == "" {
+		return newUsageError("Error: --internal-lines-preview requires --internal-prediscovered.")
 	}
 	return nil
 }
@@ -768,6 +784,8 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (parsedCommand
 			cfg.FilePath = args[i]
 		case "--internal-content-match-list":
 			cfg.ContentMatchList = true
+		case "--internal-lines-preview":
+			cfg.LinesPreview = true
 		case "--internal-recent-preview":
 			cfg.RecentPreview = true
 		case "--internal-recent-data":

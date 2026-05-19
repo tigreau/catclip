@@ -451,7 +451,7 @@ func TestRunInternalPrediscoveredRequiresTreePayload(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected --internal-prediscovered without --internal-tree-payload to fail")
 	}
-	if !strings.Contains(err.Error(), "--internal-prediscovered requires --internal-tree-payload or --internal-content-match-list") {
+	if !strings.Contains(err.Error(), "--internal-prediscovered requires --internal-tree-payload, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

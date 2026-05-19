@@ -126,6 +126,44 @@ func runInternalPrediscoveredTreePayload(cfg prediscoveredCommandConfig, stdout 
 	return encodeTreePayloadFromPlan(stdout, cfg.Render, checkpoint.GitContext, plan, nil, checkpoint.GitStatus)
 }
 
+// runInternalLinesPreview emits byte-faithful file content for the lines
+// picker preview pane. It loads the prediscovered checkpoint, applies the
+// scope tail (which includes the --lines stage chosen by the picker's
+// hovered values), builds the output plan, and writes the actual emit
+// payload — the same bytes the sink would paste — directly to stdout.
+//
+// Unlike runInternalPrediscoveredTreePayload (which emits a tree-only
+// metadata document), this path includes file bodies because the picker
+// is slicing those bodies; seeing the slice is the point of the preview.
+func runInternalLinesPreview(cfg prediscoveredCommandConfig, emitCfg emitConfig, stdout io.Writer) error {
+	checkpoint, err := readPrediscoveredCheckpoint(cfg.CheckpointPath)
+	if err != nil {
+		return err
+	}
+	if len(cfg.Scopes) > 1 {
+		return newUsageError("Error: --internal-lines-preview accepts one preview scope.")
+	}
+	var scope executionScope
+	if len(cfg.Scopes) == 1 {
+		scope = cfg.Scopes[0]
+	}
+	entries, err := applyPrediscoveredScopeTail(cfg.Invocation, checkpoint.GitContext, scope, checkpoint.Entries)
+	if err != nil {
+		return err
+	}
+	evaluatedScopes := []evaluatedOutputScope{{
+		Paths:   scope.Paths,
+		Entries: append([]fileEntry(nil), entries...),
+	}}
+	plan, err := buildOutputPlanForResolvedScopes(checkpoint.GitContext, []executionScope{scope}, evaluatedScopes, entries)
+	if err != nil {
+		return err
+	}
+	// Prefetch disabled: the preview pane only renders a screenful of
+	// output, so we never need every file body queued ahead of time.
+	return writeOutputPlanPayloadWithoutPrefetch(stdout, emitCfg, plan)
+}
+
 func runInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, stdout io.Writer) error {
 	checkpoint, err := readPrediscoveredCheckpoint(cfg.CheckpointPath)
 	if err != nil {
@@ -156,7 +194,9 @@ func runInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		}
 		return err
 	}
-	return writeContentMatchRows(stdout, contentMatchRowsFromEntries(entries))
+	rows := contentMatchRowsFromEntries(entries)
+	rows = attachFirstMatchLines(rows, entries, contentMatchScopePattern(scope))
+	return writeContentMatchRows(stdout, rows)
 }
 
 func applyPrediscoveredScopeTail(cfg invocationConfig, gitCtx gitContext, scope executionScope, entries []fileEntry) ([]fileEntry, error) {

@@ -20,6 +20,16 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 
 	requireNoDirectCallInFile(t, files, "cli.go", "evaluateScope")
 	requireParsedCommandOnlyAtRootBoundary(t, files)
+
+	// Bundled-rg lookup is the rg boundary: only ripgrep.go (which defines
+	// the function and wraps every rg invocation in it) and bundled_tools.go
+	// (the startup tool-availability check) may call ripgrepBinary directly.
+	// Any new caller is a rg leak — bypasses the wrappers, escapes future
+	// migration to internal/search/, and breaks the v0.5.3 package-extraction
+	// boundary before it lands. Add the file to the allowlist only if it
+	// genuinely needs the bare binary path (not the wrapped operations).
+	requireCallOnlyInAllowedFiles(t, files, "ripgrepBinary",
+		[]string{"ripgrep.go", "bundled_tools.go"})
 }
 
 type parsedGoFile struct {
@@ -118,6 +128,39 @@ func requireNoDirectCallInFile(t *testing.T, files []parsedGoFile, filename, cal
 		return
 	}
 	t.Fatalf("file %s was not parsed", filename)
+}
+
+// requireCallOnlyInAllowedFiles asserts that every direct call to callee
+// across the production files happens inside one of the allowed filenames.
+// "Direct call" means the function-name identifier appears as the callee
+// of a call expression — calling it via a struct method or via a value of
+// the same name does not trip the check (those aren't bare function
+// references).
+func requireCallOnlyInAllowedFiles(t *testing.T, files []parsedGoFile, callee string, allowed []string) {
+	t.Helper()
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		allowedSet[name] = struct{}{}
+	}
+	for _, parsed := range files {
+		if _, ok := allowedSet[parsed.name]; ok {
+			continue
+		}
+		ast.Inspect(parsed.file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := call.Fun.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if ident.Name == callee {
+				t.Errorf("%s calls %s; expected calls only from %v", parsed.name, callee, allowed)
+			}
+			return true
+		})
+	}
 }
 
 func requireParsedCommandOnlyAtRootBoundary(t *testing.T, files []parsedGoFile) {

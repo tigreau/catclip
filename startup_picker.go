@@ -26,6 +26,7 @@ const (
 	startupModifierModeDepth    startupModifierMode = "depth"
 	startupModifierModeContains startupModifierMode = "contains"
 	startupModifierModeSnippet  startupModifierMode = "snippet"
+	startupModifierModeLines    startupModifierMode = "lines"
 	startupModifierModeGit      startupModifierMode = "git"
 )
 
@@ -139,6 +140,13 @@ var startupModifierChoices = []startupModifierChoice{
 		Description: "Keep matching regex snippets from file contents",
 		Args:        []string{"--snippet"},
 		Mode:        startupModifierModeSnippet,
+	},
+	{
+		Key:         "lines",
+		Label:       "--lines",
+		Description: "Slice files by line range",
+		Args:        []string{"--lines"},
+		Mode:        startupModifierModeLines,
 	},
 	{
 		Key:         "include",
@@ -1234,6 +1242,12 @@ func resolveStartupModifierArgs(resolver *scopeResolver, currentArgs, currentSco
 			return nil, true || usedFzf, err
 		}
 		return args, true || usedFzf, nil
+	case startupModifierModeLines:
+		args, usedFzf, err := resolveStartupLinesArgs(finalArgs)
+		if err != nil {
+			return nil, true || usedFzf, err
+		}
+		return args, true || usedFzf, nil
 	case startupModifierModeContains:
 		args, containsUsedFzf, err := resolveStartupContentArgs(finalArgs, "--contains")
 		if err != nil {
@@ -1424,6 +1438,14 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 	case "--lines":
 		if err := validateCurrentScopeFlagAddition(currentArgs, "--lines"); err != nil {
 			return nil, append([]string(nil), currentScopeTargets...), false, 0, err
+		}
+		if len(remaining) == 0 || (allowInteractiveCompletion && startupRemainingIsBarePlaceholderChain(remaining)) {
+			if allowInteractiveCompletion {
+				args, usedFzf, err := resolveStartupLinesArgs(currentArgs)
+				return args, append([]string(nil), currentScopeTargets...), usedFzf, 0, err
+			}
+			// Bare --lines without numerics in non-interactive mode keeps
+			// today's "emit numbered full file" behavior.
 		}
 		finalArgs := append(append([]string(nil), currentArgs...), flag)
 		consumed := 0

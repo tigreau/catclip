@@ -58,7 +58,10 @@ func copyPlatform(paths []string) error {
 
 func copyX11(payload string) error {
 	if _, err := exec.LookPath("xclip"); err != nil {
-		return fmt.Errorf("%w: xclip not found (install: sudo apt install xclip)", ErrToolNotFound)
+		// Keep the error minimal — catclip overrides the presentation with
+		// a multi-distro install hint via clipboardInstallHint. Standalone
+		// fileclip consumers see a sensible base message they can format.
+		return fmt.Errorf("%w: xclip not found", ErrToolNotFound)
 	}
 	cmd := exec.Command("xclip", "-selection", "clipboard", "-t", "text/uri-list")
 	cmd.Stdin = strings.NewReader(payload)
@@ -70,7 +73,8 @@ func copyX11(payload string) error {
 
 func copyWayland(payload string) error {
 	if _, err := exec.LookPath("wl-copy"); err != nil {
-		return fmt.Errorf("%w: wl-copy not found (install: sudo apt install wl-clipboard)", ErrToolNotFound)
+		// See copyX11: minimal message; catclip provides the install hint.
+		return fmt.Errorf("%w: wl-copy not found", ErrToolNotFound)
 	}
 	cmd := exec.Command("wl-copy", "--type", "text/uri-list")
 	cmd.Stdin = strings.NewReader(payload)

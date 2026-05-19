@@ -14,6 +14,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tigreau/catclip/fileclip"
+	"github.com/tigreau/catclip/internal/picker"
 )
 
 func TestMain(m *testing.M) {
@@ -1431,6 +1434,35 @@ func TestRunLinesOpenEndedRange(t *testing.T) {
 	}
 }
 
+// Files where the requested start line exceeds the file length emit
+// zero bytes — no open tag, no close tag. Matches sed/awk/Python slicing
+// conventions and keeps multi-file --lines output free of empty wrappers.
+// The lines picker preview path inherits this via emitOutputPlan.
+func TestRunLinesSliceDropsFilesShorterThanStart(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"short.txt": "a\nb\nc\n",                             // 3 lines
+		"long.txt":  "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n", // 12 lines
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "short.txt", "long.txt", "--lines", "5", "10"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	got := stdout.String()
+	if strings.Contains(got, `<file path="short.txt"`) {
+		t.Fatalf("expected short.txt to be dropped (no lines in range 5-10), got:\n%s", got)
+	}
+	if !strings.Contains(got, `<file path="long.txt" lines="5-10">`) {
+		t.Fatalf("expected long.txt with lines=\"5-10\", got:\n%s", got)
+	}
+	if !strings.Contains(got, "     5\te\n") || !strings.Contains(got, "    10\tj\n") {
+		t.Fatalf("expected long.txt lines 5-10 in body, got:\n%s", got)
+	}
+}
+
 func TestRunLinesRawMode(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"data.txt": "a\nb\nc\nd\ne\n",
@@ -2486,7 +2518,7 @@ func TestFzfContentPreviewCommandUsesFilePreviewPayload(t *testing.T) {
 	}
 	t.Setenv("CATCLIP_TREE", treeBin)
 
-	command := fzfContentPreviewCommand("--contains")
+	command := fzfContentPreviewCommand("--contains", "")
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
@@ -2507,7 +2539,7 @@ func TestFzfContentSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 	}
 	t.Setenv("CATCLIP_TREE", treeBin)
 
-	command := fzfContentPreviewCommand("--snippet")
+	command := fzfContentPreviewCommand("--snippet", "")
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
@@ -4770,8 +4802,96 @@ func TestClipboardCommandShowsInstallHint(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected clipboard lookup error")
 	}
-	if !strings.Contains(err.Error(), "Install xclip or xsel") {
-		t.Fatalf("expected install hint, got: %v", err)
+	// xsel was previously suggested as a fallback. Removed because it
+	// can't reliably serve the bundle path's text/uri-list MIME type;
+	// see emit.go::clipboardCommand for the rationale.
+	if !strings.Contains(err.Error(), "Install xclip") {
+		t.Fatalf("expected xclip install hint, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "xsel") {
+		t.Fatalf("install hint should no longer mention xsel, got: %v", err)
+	}
+}
+
+func TestClipboardInstallHintWaylandIncludesFedora(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	hint := clipboardInstallHint("linux", colorPalette{})
+	for _, want := range []string{"wl-clipboard", "Debian/Ubuntu", "Arch", "Fedora"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("wayland install hint missing %q, got: %s", want, hint)
+		}
+	}
+}
+
+func TestClipboardInstallHintX11IncludesFedora(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("XDG_SESSION_TYPE", "")
+	hint := clipboardInstallHint("linux", colorPalette{})
+	for _, want := range []string{"xclip", "Debian/Ubuntu", "Arch", "Fedora"} {
+		if !strings.Contains(hint, want) {
+			t.Errorf("x11 install hint missing %q, got: %s", want, hint)
+		}
+	}
+}
+
+// The bundle path (large clipboard payloads -> file-ref clipboard via
+// fileclip) used to surface fileclip's raw single-line "xclip not found
+// (install: sudo apt install xclip)" error, asymmetric to the text path's
+// multi-distro hint. emitBundle now intercepts fileclip.ErrToolNotFound
+// and emits the same install-hint shape so both sinks teach the user
+// identically.
+func TestEmitBundleSurfacesMultiDistroHintOnToolNotFound(t *testing.T) {
+	originalCopy := fileclipCopy
+	defer func() { fileclipCopy = originalCopy }()
+	fileclipCopy = func(...string) error {
+		return fmt.Errorf("%w: xclip not found", fileclip.ErrToolNotFound)
+	}
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("XDG_SESSION_TYPE", "")
+
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+
+	_, err := emitBundle(emitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, colorPalette{})
+	if err == nil {
+		t.Fatal("expected emitBundle to surface tool-not-found error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "No clipboard tool found.") {
+		t.Fatalf("expected unified 'No clipboard tool found.' header, got: %v", err)
+	}
+	for _, want := range []string{"xclip", "Debian/Ubuntu", "Arch", "Fedora"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("bundle install hint missing %q, got: %s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "clipboard command failed") {
+		t.Fatalf("ErrToolNotFound should not fall back to the generic 'clipboard command failed' framing, got: %v", err)
+	}
+}
+
+// Non-ErrToolNotFound errors keep the generic "clipboard command failed"
+// framing — those represent runtime failures from a present binary, not
+// a missing-tool situation, and the install hint would be misleading.
+func TestEmitBundleKeepsGenericFramingForToolFailures(t *testing.T) {
+	originalCopy := fileclipCopy
+	defer func() { fileclipCopy = originalCopy }()
+	fileclipCopy = func(...string) error {
+		return fmt.Errorf("%w: xclip: exit status 1", fileclip.ErrToolFailed)
+	}
+
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+
+	_, err := emitBundle(emitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, colorPalette{})
+	if err == nil {
+		t.Fatal("expected emitBundle to surface tool-failed error")
+	}
+	if !strings.Contains(err.Error(), "clipboard command failed") {
+		t.Fatalf("expected generic 'clipboard command failed' framing, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "No clipboard tool found.") {
+		t.Fatalf("tool-failed should not use the not-found hint, got: %v", err)
 	}
 }
 
@@ -8389,8 +8509,12 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$prompt" = "match> " ]; then
-	printf '%s\n' "$preview" | grep -F -- '--internal-file-preview --internal-file-path {3} --snippet {q}' >/dev/null || {
-		echo "missing snippet preview command: $preview" >&2
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-preview --internal-file-path {3}' >/dev/null || {
+		echo "missing file preview command: $preview" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- '--snippet {q}' >/dev/null || {
+		echo "missing snippet flag/query: $preview" >&2
 		exit 91
 	}
 	printf 'TODO\n'
@@ -9606,6 +9730,136 @@ func TestRunInternalContentMatchListSuppressesInvalidRegex(t *testing.T) {
 	}
 }
 
+// firstMatchLinePerFile returns the line of the first match per file.
+// Files with no matches are absent. Cross-platform: parses rg's NUL-
+// separated path-from-line stream so Windows drive-letter colons in
+// the path don't confuse the split.
+func TestFirstMatchLinePerFile(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.txt")
+	b := filepath.Join(dir, "b.txt")
+	c := filepath.Join(dir, "c.txt")
+	if err := os.WriteFile(a, []byte("aaa\nTODO: alpha\nmore aaa\n"), 0o600); err != nil {
+		t.Fatalf("write a: %v", err)
+	}
+	if err := os.WriteFile(b, []byte("xxx\nyyy\nTODO: beta\nzzz\nTODO: again\n"), 0o600); err != nil {
+		t.Fatalf("write b: %v", err)
+	}
+	if err := os.WriteFile(c, []byte("no match here\n"), 0o600); err != nil {
+		t.Fatalf("write c: %v", err)
+	}
+
+	got, err := firstMatchLinePerFile("TODO", []string{a, b, c})
+	if err != nil {
+		t.Fatalf("firstMatchLinePerFile returned error: %v", err)
+	}
+	if got[a] != 2 {
+		t.Errorf("a.txt first match line = %d, want 2", got[a])
+	}
+	if got[b] != 3 {
+		t.Errorf("b.txt first match line = %d, want 3", got[b])
+	}
+	if _, present := got[c]; present {
+		t.Errorf("c.txt should be absent (no matches), got %d", got[c])
+	}
+}
+
+func TestFirstMatchLinePerFileEmptyInput(t *testing.T) {
+	got, err := firstMatchLinePerFile("TODO", nil)
+	if err != nil {
+		t.Fatalf("firstMatchLinePerFile returned error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("expected empty map, got %v", got)
+	}
+}
+
+// writeContentMatchRows emits 6 TSV columns. Column 6 is the first-match
+// line number used by fzf's --preview-window +{6}-/2 offset. The
+// [all current matches] row uses "1" as a well-formed placeholder so the
+// fzf flag parse never sees an empty {6}. File rows without a known
+// line (FirstMatchLine == 0) get downgraded to "1" so the substitution
+// always lands at the top of the preview pane instead of going negative.
+func TestWriteContentMatchRowsIncludesFirstMatchLine(t *testing.T) {
+	var buf bytes.Buffer
+	if err := writeContentMatchRows(&buf, []contentMatchRow{
+		{RelPath: "src/a.go", FirstMatchLine: 42},
+		{RelPath: "src/b.go", FirstMatchLine: 0},
+	}); err != nil {
+		t.Fatalf("writeContentMatchRows returned error: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines (all-matches + 2 files), got %d: %q", len(lines), buf.String())
+	}
+
+	headerCols := strings.Split(lines[0], "\t")
+	if len(headerCols) != 6 {
+		t.Fatalf("all-matches row should have 6 columns, got %d: %q", len(headerCols), lines[0])
+	}
+	if headerCols[0] != contentMatchAllMatchesLabel {
+		t.Fatalf("all-matches label = %q, want %q", headerCols[0], contentMatchAllMatchesLabel)
+	}
+	if headerCols[5] != contentMatchAllMatchesPreviewLine {
+		t.Fatalf("all-matches column 6 = %q, want %q", headerCols[5], contentMatchAllMatchesPreviewLine)
+	}
+
+	aCols := strings.Split(lines[1], "\t")
+	if len(aCols) != 6 {
+		t.Fatalf("a.go row should have 6 columns, got %d: %q", len(aCols), lines[1])
+	}
+	if aCols[5] != "42" {
+		t.Fatalf("a.go first-match line column = %q, want 42", aCols[5])
+	}
+
+	bCols := strings.Split(lines[2], "\t")
+	if bCols[5] != "1" {
+		t.Fatalf("b.go (FirstMatchLine=0) should downgrade to 1, got %q", bCols[5])
+	}
+}
+
+// contentMatchPreviewWindow appends a +{6}-/2 offset for --contains so
+// the preview pane centers on the first match. --snippet stays at the
+// default window because snippet mode renders matched blocks already.
+func TestContentMatchPreviewWindow(t *testing.T) {
+	containsWindow := contentMatchPreviewWindow("--contains")
+	if !strings.HasSuffix(containsWindow, ":+{6}-/2") {
+		t.Errorf("--contains preview window = %q, expected suffix :+{6}-/2", containsWindow)
+	}
+	if !strings.HasPrefix(containsWindow, picker.DefaultPreviewWindow) {
+		t.Errorf("--contains preview window = %q, expected prefix %q", containsWindow, picker.DefaultPreviewWindow)
+	}
+
+	snippetWindow := contentMatchPreviewWindow("--snippet")
+	if snippetWindow != "" {
+		t.Errorf("--snippet preview window should be empty (default applies), got %q", snippetWindow)
+	}
+}
+
+// End-to-end check that the content match list emits first-match lines
+// for --contains rows. Goes through runInternalContentMatchList rather
+// than calling the helpers directly so we exercise the wire-up.
+func TestRunInternalContentMatchListPopulatesFirstMatchLine(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a.go": "package main\nfunc main() {}\nTODO: line three\n",
+		"src/b.go": "package main\nTODO: line two\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-content-match-list", "src", "--contains", "TODO"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, "\tsrc/a.go\tfile\ttext\t3\n") {
+		t.Fatalf("expected a.go first-match line 3, got %q", out)
+	}
+	if !strings.Contains(out, "\tsrc/b.go\tfile\ttext\t2\n") {
+		t.Fatalf("expected b.go first-match line 2, got %q", out)
+	}
+}
+
 func TestRunInternalContentMatchListUsesSnippetPattern(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":    "TODO: src\n",
@@ -9798,6 +10052,189 @@ func TestRunInternalFilePreviewOutputsSnippetHintForEmptyRegex(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("expected no stderr, got %q", stderr.String())
+	}
+}
+
+// Empty --contains pattern with an empty focused file path is the
+// initial state of the content picker (fzf's `{q}` is empty before the
+// user types). The preview must render the contains-mode teaching hint
+// — NOT the "No previewable text files here" message that catclip-tree
+// emits for empty payloads.
+func TestRunInternalFilePreviewOutputsContainsHintForEmptyRegex(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "const a = 1\nTODO: first\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "", "--contains", ""})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	doc, err := decodeTreePayload(bytes.NewReader(stdout.Bytes()))
+	if err != nil {
+		t.Fatalf("decodeTreePayload returned error: %v", err)
+	}
+	if doc.File == nil {
+		t.Fatal("expected file preview payload for contains hint")
+	}
+	if doc.File.Path != "" {
+		t.Fatalf("doc.File.Path = %q, want empty for hint preview", doc.File.Path)
+	}
+	if doc.File.Content != internalContainsPreviewEmptyHint {
+		t.Fatalf("doc.File.Content = %q, want %q", doc.File.Content, internalContainsPreviewEmptyHint)
+	}
+	_ = project
+}
+
+// Same hint path as the contains case, but specifically when a file IS
+// focused and the regex is still empty. The hint should fire regardless
+// of the focused-row state (matches the picker's actual behavior — fzf
+// substitutes both `{3}` and `{q}` per refresh, and the hint must win
+// over the file preview while the query is empty).
+func TestRunInternalFilePreviewContainsHintWinsOverFocusedFile(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "const a = 1\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "src/main.ts", "--contains", "   "})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	doc, err := decodeTreePayload(bytes.NewReader(stdout.Bytes()))
+	if err != nil {
+		t.Fatalf("decodeTreePayload returned error: %v", err)
+	}
+	if doc.File == nil || doc.File.Content != internalContainsPreviewEmptyHint {
+		t.Fatalf("expected contains hint, got %#v", doc.File)
+	}
+	_ = project
+}
+
+// internalPreviewPatternIsEmpty fires only in content-picker context
+// (snippet stage OR contains stage). A scope with no content stage
+// should not be treated as "empty pattern" — that would short-circuit
+// non-content pickers' preview into the hint.
+func TestInternalPreviewPatternIsEmptyOnlyContentMode(t *testing.T) {
+	cases := []struct {
+		name string
+		s    executionScope
+		want bool
+	}{
+		{
+			name: "contains-empty",
+			s: executionScope{
+				Contains: "",
+				Stages:   []scopeStage{{Kind: scopeStageContains}},
+			},
+			want: true,
+		},
+		{
+			name: "contains-non-empty",
+			s: executionScope{
+				Contains: "TODO",
+				Stages:   []scopeStage{{Kind: scopeStageContains}},
+			},
+			want: false,
+		},
+		{
+			name: "snippet-empty",
+			s: executionScope{
+				Snippet:        true,
+				SnippetPattern: "  ",
+				Stages:         []scopeStage{{Kind: scopeStageSnippet}},
+			},
+			want: true,
+		},
+		{
+			name: "no-content-stage",
+			s: executionScope{
+				Targets: []string{"src"},
+			},
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		got := internalPreviewPatternIsEmpty(c.s)
+		if got != c.want {
+			t.Errorf("%s: internalPreviewPatternIsEmpty = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// buildInternalContentHintDocument returns different hint text based on
+// the scope's content mode. Snippet scope -> snippet hint; contains
+// scope (or neither, falling through) -> contains hint.
+func TestBuildInternalContentHintDocumentRoutesByMode(t *testing.T) {
+	snippetDoc := buildInternalContentHintDocument(executionScope{
+		Snippet: true,
+		Stages:  []scopeStage{{Kind: scopeStageSnippet}},
+	})
+	if snippetDoc.File == nil || snippetDoc.File.Content != internalSnippetPreviewEmptyHint {
+		t.Fatalf("snippet hint mismatch: %#v", snippetDoc.File)
+	}
+
+	containsDoc := buildInternalContentHintDocument(executionScope{
+		Stages: []scopeStage{{Kind: scopeStageContains}},
+	})
+	if containsDoc.File == nil || containsDoc.File.Content != internalContainsPreviewEmptyHint {
+		t.Fatalf("contains hint mismatch: %#v", containsDoc.File)
+	}
+}
+
+// When the user typed a regex and focused [all current matches] (empty
+// path), the preview should emit the full scope tree from the SCC
+// checkpoint — same shape as --only/--exclude's [all files] preview.
+// This replaces the misleading "No previewable text files" message.
+func TestRunInternalFilePreviewEmitsTreeFromCheckpointForAllMatches(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a.ts": "TODO: alpha\n",
+		"src/b.ts": "TODO: beta\n",
+	})
+
+	// Build a checkpoint manually using the same path the picker would
+	// take when chooseContentMatchesWithFzf runs.
+	parentCfg := parseInProject(t, project, []string{"src"})
+	gitCtx := detectGitContext(parentCfg.WorkingDir)
+	discovered, err := evaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, colorPalette{})
+	if err != nil {
+		t.Fatalf("evaluateScope returned error: %v", err)
+	}
+	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
+	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+		GitContext: gitCtx,
+		GitStatus:  map[string]string{},
+		Entries:    discovered.Entries,
+	}); err != nil {
+		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
+	}
+
+	cfg := parseInProject(t, project, []string{
+		"--internal-file-preview",
+		"--internal-file-path", "",
+		"--internal-prediscovered", checkpointPath,
+		"src",
+		"--contains", "TODO",
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	doc, err := decodeTreePayload(bytes.NewReader(stdout.Bytes()))
+	if err != nil {
+		t.Fatalf("decodeTreePayload returned error: %v", err)
+	}
+	if doc.File != nil {
+		t.Fatalf("expected tree payload, not file preview, got file=%#v", doc.File)
+	}
+	if len(doc.Entries) < 2 {
+		t.Fatalf("expected at least 2 tree entries (a.ts + b.ts), got %d", len(doc.Entries))
 	}
 }
 

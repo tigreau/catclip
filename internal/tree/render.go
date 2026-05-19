@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
@@ -429,7 +430,11 @@ func overlayPreviewMatchHighlights(lines, rawLines []string, pattern string) []s
 		return lines
 	}
 
-	re, err := regexp.Compile(pattern)
+	compiledPattern := pattern
+	if isSmartCaseInsensitive(pattern) {
+		compiledPattern = "(?i)" + pattern
+	}
+	re, err := regexp.Compile(compiledPattern)
 	if err != nil {
 		return lines
 	}
@@ -470,7 +475,11 @@ func previewHighlightedLineNumbers(rawLines []string, pattern string, focusLines
 		return highlighted
 	}
 
-	re, err := regexp.Compile(pattern)
+	compiledPattern := pattern
+	if isSmartCaseInsensitive(pattern) {
+		compiledPattern = "(?i)" + pattern
+	}
+	re, err := regexp.Compile(compiledPattern)
 	if err != nil {
 		return highlighted
 	}
@@ -764,4 +773,13 @@ func splitLogicalLines(data []byte) []string {
 		return []string{string(data)}
 	}
 	return lines
+}
+
+func isSmartCaseInsensitive(pattern string) bool {
+	for _, r := range pattern {
+		if unicode.IsUpper(r) {
+			return false
+		}
+	}
+	return true
 }

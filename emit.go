@@ -3,6 +3,7 @@ package catclip
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -223,6 +224,14 @@ func emitNumberedFileBodyFromDisk(w io.Writer, absPath string) error {
 // emitLinesFile writes a wrapped file with line numbering. For sliced mode
 // (LinesStart > 0), it adds a lines="START-END" attribute and only emits
 // the requested range. For bare --lines, it numbers the entire file.
+//
+// In sliced mode, if the file has no lines in the requested range (start
+// line exceeds file length), zero bytes are emitted — no open tag, no
+// close tag. This matches the convention used by sed, awk, Python
+// slicing, and every line-range tool surveyed: short files contribute
+// nothing rather than empty wrappers. The picker preview path inherits
+// this behavior automatically because it routes through the same emit
+// pipeline.
 func emitLinesFile(w io.Writer, entry fileEntry) error {
 	f, err := os.Open(entry.AbsPath)
 	if err != nil {
@@ -230,8 +239,9 @@ func emitLinesFile(w io.Writer, entry fileEntry) error {
 	}
 	defer f.Close()
 
+	sliced := entry.LinesStart > 0
 	linesAttr := ""
-	if entry.LinesStart > 0 {
+	if sliced {
 		if entry.LinesEnd > 0 {
 			linesAttr = fmt.Sprintf("%d-%d", entry.LinesStart, entry.LinesEnd)
 		} else {
@@ -239,18 +249,24 @@ func emitLinesFile(w io.Writer, entry fileEntry) error {
 		}
 	}
 
-	if _, err := w.Write(buildFileOpenTagWithLines(entry.RelPath, "", linesAttr)); err != nil {
-		return err
-	}
-
-	var contentWriter io.Writer
+	openTag := buildFileOpenTagWithLines(entry.RelPath, "", linesAttr)
 	startLine := 1
-	if entry.LinesStart > 0 {
+	if sliced {
 		startLine = entry.LinesStart
 	}
-	nw := &numberedWriter{w: w, line: startLine, atLineStart: true}
-	contentWriter = nw
 
+	// For bare --lines (full file), write the open tag eagerly so empty
+	// files still get a wrapper. For sliced mode, defer it until the
+	// first matching line so short files emit zero bytes.
+	openWritten := false
+	if !sliced {
+		if _, err := w.Write(openTag); err != nil {
+			return err
+		}
+		openWritten = true
+	}
+
+	nw := &numberedWriter{w: w, line: startLine, atLineStart: true}
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, readBufferSize()), 10*1024*1024)
 	lineNum := 0
@@ -259,17 +275,23 @@ func emitLinesFile(w io.Writer, entry fileEntry) error {
 
 	for scanner.Scan() {
 		lineNum++
-		if entry.LinesStart > 0 && lineNum < entry.LinesStart {
+		if sliced && lineNum < entry.LinesStart {
 			continue
 		}
 		if entry.LinesEnd > 0 && lineNum > entry.LinesEnd {
 			break
 		}
+		if !openWritten {
+			if _, err := w.Write(openTag); err != nil {
+				return err
+			}
+			openWritten = true
+		}
 		line := scanner.Bytes()
-		if _, err := contentWriter.Write(line); err != nil {
+		if _, err := nw.Write(line); err != nil {
 			return fmt.Errorf("failed while writing %s: %w", entry.RelPath, err)
 		}
-		if _, err := contentWriter.Write([]byte{'\n'}); err != nil {
+		if _, err := nw.Write([]byte{'\n'}); err != nil {
 			return fmt.Errorf("failed while writing %s: %w", entry.RelPath, err)
 		}
 		wroteAny = true
@@ -279,6 +301,10 @@ func emitLinesFile(w io.Writer, entry fileEntry) error {
 		return fmt.Errorf("failed while streaming %s: %w", entry.AbsPath, err)
 	}
 
+	if !openWritten {
+		// Sliced mode, no lines in range — emit nothing.
+		return nil
+	}
 	if wroteAny && lastByte != '\n' {
 		_, err := w.Write(fileCloseTagWithNewline)
 		return err
@@ -775,7 +801,7 @@ func withPayloadWriter(cfg emitConfig, env emitEnvironment, stdout io.Writer, co
 	payload := payloadBuf.Bytes()
 
 	if len(payload) >= bundleThreshold {
-		return emitBundle(env, payload, generateDuration)
+		return emitBundle(env, payload, generateDuration, colors)
 	}
 
 	return emitBufferedToTextClipboard(env, payload, generateDuration, colors)
@@ -881,7 +907,7 @@ func emitBufferedToTextClipboard(env emitEnvironment, payload []byte, generateDu
 	}, nil
 }
 
-func emitBundle(env emitEnvironment, payload []byte, generateDuration time.Duration) (emitStats, error) {
+func emitBundle(env emitEnvironment, payload []byte, generateDuration time.Duration, colors colorPalette) (emitStats, error) {
 	dir := bundleTempDir()
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return emitStats{}, fmt.Errorf("Error: bundle directory: %w", err)
@@ -895,6 +921,15 @@ func emitBundle(env emitEnvironment, payload []byte, generateDuration time.Durat
 	}
 	if err := fileclipCopy(tmpPath); err != nil {
 		_ = os.Remove(tmpPath)
+		// fileclip.ErrToolNotFound is the "no clipboard binary on PATH"
+		// sentinel. Render the same multi-distro install hint the text
+		// clipboard path uses so the two sinks teach the user identically.
+		// Other failures (ErrToolFailed or anything else) keep the
+		// generic "clipboard command failed" framing — those are runtime
+		// failures from a present tool, not a missing-tool situation.
+		if errors.Is(err, fileclip.ErrToolNotFound) {
+			return emitStats{}, fmt.Errorf("Error: No clipboard tool found.\n%s", clipboardInstallHint(env.Platform, colors))
+		}
 		return emitStats{}, fmt.Errorf("Error: clipboard command failed: %w", err)
 	}
 	finalizeDuration := time.Since(finalizeStarted)
@@ -939,7 +974,11 @@ func clipboardCommandMayStayResident(cmd *exec.Cmd, platform string) bool {
 		return false
 	}
 	switch filepath.Base(cmd.Path) {
-	case "wl-copy", "xclip", "xsel":
+	// xsel was previously in this list. Removed when clipboardCommand
+	// stopped falling back to xsel — see the comment there for the
+	// text/uri-list rationale that ties the text and bundle paths to
+	// xclip / wl-clipboard.
+	case "wl-copy", "xclip":
 		return true
 	default:
 		return false
@@ -1040,9 +1079,13 @@ func clipboardCommand(platform string, colors colorPalette) (*exec.Cmd, error) {
 		if _, err := exec.LookPath("xclip"); err == nil {
 			return exec.Command("xclip", "-selection", "clipboard"), nil
 		}
-		if _, err := exec.LookPath("xsel"); err == nil {
-			return exec.Command("xsel", "--clipboard", "--input"), nil
-		}
+		// xsel is intentionally not a fallback. The bundle path (file-ref
+		// clipboard) needs `text/uri-list` MIME-type support, which xclip
+		// has and xsel does not. Standardizing on xclip keeps the text
+		// and bundle clipboard paths in lockstep — a user with xsel only
+		// would succeed at text clipboard but fail at bundles, which is
+		// the kind of asymmetry the v0.5.2 install-hint cleanup is
+		// designed to prevent.
 		return nil, fmt.Errorf("Error: No clipboard tool found.\n%s", clipboardInstallHint(platform, colors))
 	}
 }
@@ -1060,11 +1103,18 @@ func clipboardInstallHint(platform string, colors colorPalette) string {
 	case "wsl":
 		return fmt.Sprintf("  %sEnsure clip.exe is reachable through WSL interop from the Windows host.%s", colors.Dim, colors.Reset)
 	default:
+		// Single hint message used by both the text and bundle clipboard
+		// paths. The bundle path requires `text/uri-list` MIME-type
+		// support, which xclip and wl-clipboard both have but xsel does
+		// not — so the hint deliberately omits xsel even though xsel
+		// would work for text-only clipboards. Standardizing the user
+		// on xclip / wl-clipboard avoids the asymmetry where text
+		// clipboard succeeds and bundle clipboard fails.
 		if isWaylandSession() {
-			return fmt.Sprintf("  Wayland detected. Install wl-clipboard:\n    sudo apt install wl-clipboard    %s# Debian/Ubuntu%s\n    sudo pacman -S wl-clipboard      %s# Arch%s",
-				colors.Dim, colors.Reset, colors.Dim, colors.Reset)
+			return fmt.Sprintf("  Wayland detected. Install wl-clipboard:\n    sudo apt install wl-clipboard    %s# Debian/Ubuntu%s\n    sudo pacman -S wl-clipboard      %s# Arch%s\n    sudo dnf install wl-clipboard    %s# Fedora%s",
+				colors.Dim, colors.Reset, colors.Dim, colors.Reset, colors.Dim, colors.Reset)
 		}
-		return fmt.Sprintf("  X11 detected. Install xclip or xsel:\n    sudo apt install xclip xsel      %s# Debian/Ubuntu%s\n    sudo pacman -S xclip xsel        %s# Arch%s",
-			colors.Dim, colors.Reset, colors.Dim, colors.Reset)
+		return fmt.Sprintf("  X11 detected. Install xclip:\n    sudo apt install xclip           %s# Debian/Ubuntu%s\n    sudo pacman -S xclip             %s# Arch%s\n    sudo dnf install xclip           %s# Fedora%s",
+			colors.Dim, colors.Reset, colors.Dim, colors.Reset, colors.Dim, colors.Reset)
 	}
 }

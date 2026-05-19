@@ -1,0 +1,304 @@
+package catclip
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/tigreau/catclip/internal/picker"
+)
+
+// linesPickerEOFToken is the sentinel emitted by the end-line picker to
+// represent the "to end of file" choice. It lives in column 1 (the search /
+// returned field) of the TSV row; the preview command's inline shell case
+// dispatches on this exact string to render the open-ended form.
+const linesPickerEOFToken = "EOF"
+
+// resolveStartupLinesArgs runs the two-stage lines picker (start line, then
+// end line) and returns currentArgs extended with the chosen --lines values.
+//
+// Stage flow:
+//   - Esc on the start picker returns errSelectionCancelled and the lines
+//     picker exits to its caller (the modifier menu).
+//   - Esc on the end picker reopens the start picker so the user can revise
+//     the opening bound. This is the only two-stage backtrack in catclip
+//     today; the loop here is intra-picker.
+//
+// Returns currentArgs+["--lines", "START"] for the open-ended choice and
+// currentArgs+["--lines", "START", "END"] otherwise.
+func resolveStartupLinesArgs(currentArgs []string) ([]string, bool, error) {
+	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
+	if err != nil {
+		return nil, false, err
+	}
+	entries := ensureEntryAbsPaths(view.Entries, view.Invocation.WorkingDir)
+	if len(entries) == 0 {
+		return nil, false, errSelectionCancelled
+	}
+	absPaths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.TrimSpace(e.AbsPath) == "" {
+			continue
+		}
+		absPaths = append(absPaths, e.AbsPath)
+	}
+	maxLines, err := maxLinesForFiles(absPaths)
+	if err != nil {
+		return nil, false, err
+	}
+	if maxLines <= 0 {
+		return nil, false, errSelectionCancelled
+	}
+	if maxLines == 1 {
+		// Single-line files in scope. A one-row picker is friction without
+		// value; emit --lines 1 directly.
+		return append(append([]string(nil), currentArgs...), "--lines", "1"), false, nil
+	}
+
+	checkpointPath, cleanup, err := writeLinesPickerCheckpoint(view, entries)
+	if err != nil {
+		return nil, false, err
+	}
+	defer cleanup()
+
+	for {
+		start, err := chooseStartupStartLine(checkpointPath, maxLines)
+		if err != nil {
+			return nil, true, err
+		}
+		end, isOpenEnd, err := chooseStartupEndLine(checkpointPath, start, maxLines)
+		if errors.Is(err, errSelectionCancelled) {
+			// Two-stage backtrack: reopen the start picker.
+			continue
+		}
+		if err != nil {
+			return nil, true, err
+		}
+		args := append(append([]string(nil), currentArgs...), "--lines", strconv.Itoa(start))
+		if !isOpenEnd {
+			args = append(args, strconv.Itoa(end))
+		}
+		return args, true, nil
+	}
+}
+
+// writeLinesPickerCheckpoint writes a prediscovered SCC checkpoint file
+// for the current scope's resolved entries. The preview commands in both
+// stages of the lines picker read this file via --internal-prediscovered.
+//
+// The returned cleanup removes the entire tmpdir; it is safe to call
+// multiple times.
+func writeLinesPickerCheckpoint(view resolvedScopeView, entries []fileEntry) (string, func(), error) {
+	tmpdir, err := os.MkdirTemp("", "catclip-lines-*")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup := func() { _ = os.RemoveAll(tmpdir) }
+	checkpointPath := filepath.Join(tmpdir, "scope.json")
+
+	statuses := map[string]string{}
+	if view.GitContext.Enabled {
+		statuses, err = collectGitStatusMapForPathspecs(view.GitContext, gitStatusPathspecsForEntries(view.GitContext, entries))
+		if err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+	}
+	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+		GitContext: view.GitContext,
+		GitStatus:  statuses,
+		Entries:    entries,
+	}); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return checkpointPath, cleanup, nil
+}
+
+func chooseStartupStartLine(checkpointPath string, maxLines int) (int, error) {
+	previewCmd := buildLinesPickerStartPreviewCommand(checkpointPath)
+	lines := startupLinePickerLines(1, maxLines)
+	selected, err := chooseLineWithFzf("start-line> ", linesPickerStartHeader(), lines, previewCmd)
+	if err != nil {
+		return 0, err
+	}
+	n, err := parseLinesPickerToken(selected)
+	if err != nil {
+		return 0, err
+	}
+	if n < 1 || n > maxLines {
+		return 0, errSelectionCancelled
+	}
+	return n, nil
+}
+
+func chooseStartupEndLine(checkpointPath string, startLine, maxLines int) (int, bool, error) {
+	previewCmd := buildLinesPickerEndPreviewCommand(checkpointPath, startLine)
+	lines := startupLineEndPickerLines(startLine, maxLines)
+	selected, err := chooseLineWithFzf("end-line> ", linesPickerEndHeader(), lines, previewCmd)
+	if err != nil {
+		return 0, false, err
+	}
+	if linesPickerSelectionIsEOF(selected) {
+		return 0, true, nil
+	}
+	n, err := parseLinesPickerToken(selected)
+	if err != nil {
+		return 0, false, err
+	}
+	if n < startLine || n > maxLines {
+		return 0, false, errSelectionCancelled
+	}
+	return n, false, nil
+}
+
+func startupLinePickerLines(startInclusive, endInclusive int) []string {
+	if endInclusive < startInclusive {
+		return nil
+	}
+	out := make([]string, 0, endInclusive-startInclusive+1)
+	for n := startInclusive; n <= endInclusive; n++ {
+		value := strconv.Itoa(n)
+		label := "Line " + value
+		out = append(out, strings.Join([]string{value, value, label}, "\t"))
+	}
+	return out
+}
+
+func startupLineEndPickerLines(startLine, maxLines int) []string {
+	if maxLines < startLine {
+		return nil
+	}
+	rows := make([]string, 0, maxLines-startLine+2)
+	// EOF row: column 1 (search/return) is the sentinel; column 2 (preview
+	// substitution into {2}) is the literal EOF — the shell case in the
+	// preview command dispatches on it. Column 3 is the human label.
+	rows = append(rows, strings.Join([]string{linesPickerEOFToken, linesPickerEOFToken, "[to end of file]"}, "\t"))
+	rows = append(rows, startupLinePickerLines(startLine, maxLines)...)
+	return rows
+}
+
+func parseLinesPickerToken(selected string) (int, error) {
+	value := selected
+	if tab := strings.IndexByte(selected, '\t'); tab >= 0 {
+		value = selected[:tab]
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, errSelectionCancelled
+	}
+	n, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, errSelectionCancelled
+	}
+	return n, nil
+}
+
+func linesPickerSelectionIsEOF(selected string) bool {
+	value := selected
+	if tab := strings.IndexByte(selected, '\t'); tab >= 0 {
+		value = selected[:tab]
+	}
+	return strings.TrimSpace(value) == linesPickerEOFToken
+}
+
+func chooseLineWithFzf(prompt, header string, lines []string, previewCommand string) (string, error) {
+	bin, err := fuzzyResolverBinary()
+	if err != nil {
+		return "", err
+	}
+	stopActiveSpinner()
+	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
+		Prompt:         prompt,
+		WithNth:        "1,3",
+		Nth:            "1",
+		Header:         header,
+		PreviewCommand: previewCommand,
+		NoSort:         true,
+		Exact:          true,
+		Lines:          lines,
+	}))
+	if err == nil {
+		if len(result.Matches) == 0 {
+			return "", errSelectionCancelled
+		}
+		return strings.TrimSpace(result.Matches[0]), nil
+	}
+	if errors.Is(err, picker.ErrSelectionCancelled) {
+		return "", errSelectionCancelled
+	}
+	return "", err
+}
+
+func linesPickerStartHeader() string {
+	return pickerHeader(
+		"Pick the start line.",
+		"Hover a line to preview from there to EOF.",
+		"[Up/Down] move  [Enter] confirm  [Esc] cancel",
+	)
+}
+
+func linesPickerEndHeader() string {
+	return pickerHeader(
+		"Pick the end line.",
+		"[to end of file] keeps the slice open-ended.",
+		"[Up/Down] move  [Enter] confirm  [Esc] back to start",
+	)
+}
+
+// buildLinesPickerStartPreviewCommand wires the start-line picker's preview
+// pane to the SCC prediscovered checkpoint, routing through the
+// --internal-lines-preview emit path. {2} resolves to the hovered line
+// number; catclip applies --lines {2} (open-ended) to the already-resolved
+// entry set and emits actual file content. The preview pane is byte-
+// faithful to what the chosen slice will paste.
+//
+// We do NOT pipe through catclip-tree here: catclip-tree consumes the
+// metadata-only tree-payload format, which strips file bodies. The lines
+// preview's whole purpose is to show the bodies, so we display the raw
+// emit directly.
+func buildLinesPickerStartPreviewCommand(checkpointPath string) string {
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return ""
+	}
+	parts := []string{
+		shellQuoteArg(self),
+		"--quiet",
+		"--internal-prediscovered", shellQuoteArg(checkpointPath),
+		"--internal-lines-preview",
+		"--lines", "{2}",
+	}
+	return strings.Join(parts, " ")
+}
+
+// buildLinesPickerEndPreviewCommand wires the end-line picker. The shell
+// `case` discriminates the EOF sentinel: for that row we drop the end
+// argument so catclip emits the same open-ended form (`lines="START-"`)
+// the final pick will produce. For numeric rows, {2} is the chosen end.
+// Output is raw emit text — no catclip-tree pipe, see start helper above.
+func buildLinesPickerEndPreviewCommand(checkpointPath string, startLine int) string {
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return ""
+	}
+	start := strconv.Itoa(startLine)
+	baseOpen := strings.Join([]string{
+		shellQuoteArg(self),
+		"--quiet",
+		"--internal-prediscovered", shellQuoteArg(checkpointPath),
+		"--internal-lines-preview",
+		"--lines", start,
+	}, " ")
+	baseRanged := strings.Join([]string{
+		shellQuoteArg(self),
+		"--quiet",
+		"--internal-prediscovered", shellQuoteArg(checkpointPath),
+		"--internal-lines-preview",
+		"--lines", start, "{2}",
+	}, " ")
+	return fmt.Sprintf("case {2} in %s) %s ;; *) %s ;; esac", linesPickerEOFToken, baseOpen, baseRanged)
+}
