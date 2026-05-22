@@ -305,8 +305,17 @@ jobs:
           fi
           payload_file="$stub_dir/payload"
           mime_file="$stub_dir/mime"
-          cat >"$payload_file"
+          /bin/cat >"$payload_file"
           printf '%s\n' "$mime" >"$mime_file"
+          EOF
+            cat >"$stub_dir/xclip" <<'EOF'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          stub_dir="$(dirname "$0")"
+          payload_file="$stub_dir/payload"
+          mime_file="$stub_dir/mime"
+          /bin/cat >"$payload_file"
+          printf '%s\n' "text/plain" >"$mime_file"
           EOF
             cat >"$stub_dir/wl-paste" <<'EOF'
           #!/usr/bin/env bash
@@ -317,7 +326,7 @@ jobs:
           case "${1:-}" in
             --list-types)
               if [[ -f "$mime_file" ]]; then
-                cat "$mime_file"
+                /bin/cat "$mime_file"
               fi
               ;;
             --type)
@@ -325,18 +334,18 @@ jobs:
               if [[ ! -f "$payload_file" || ! -f "$mime_file" ]]; then
                 exit 1
               fi
-              current="$(cat "$mime_file")"
+              current="$(/bin/cat "$mime_file")"
               if [[ "$wanted" != "$current" ]]; then
                 exit 1
               fi
-              cat "$payload_file"
+              /bin/cat "$payload_file"
               ;;
             *)
               exit 1
               ;;
           esac
           EOF
-            chmod +x "$stub_dir/wl-copy" "$stub_dir/wl-paste"
+            chmod +x "$stub_dir/wl-copy" "$stub_dir/wl-paste" "$stub_dir/xclip"
             export PATH="$stub_dir:$PATH"
             export XDG_SESSION_TYPE=wayland
             export WAYLAND_DISPLAY=wayland-0
