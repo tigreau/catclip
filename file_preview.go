@@ -25,8 +25,45 @@ const internalContainsPreviewEmptyHint = `Content search — PCRE2 regex
   Patterns:
     func.*Handle  → function signatures
     import.*from  → ES module imports
-    ^package      → lines starting with "package"
+
+  Code hygiene:
+    TODO|FIXME               → work markers
+    [ \t]+$                  → trailing whitespace
+    .{120,}                  → lines over 120 chars
+    <<<<<<<|=======|>>>>>>>  → merge conflicts
+
+  Security:
+    password|secret|api[_-]?key  → possible credentials
+    https?://[^\s"'<>]+          → URLs
+
+  Debug:
+    console\.log|debugger        → debug leftovers
+    (?i)\b(deprecated|workaround)\b  → risky code comments
+
+  Flags:
     (?i)error     → force case-insensitive
+    ^package      → lines starting with "package"
+
+  Symbols:
+    .             → any single character
+    *             → 0 or more of previous    (ab* matches a, ab, abb)
+    +             → 1 or more of previous    (ab+ matches ab, abb; not a)
+    ?             → optional, 0 or 1         (https? matches http or https)
+    ^             → start of line            (^TODO matches line-initial TODO)
+    $             → end of line              (\.js$ matches paths ending in .js)
+    \.            → literal dot              (without \ the dot matches anything)
+    \s            → any whitespace           (\s+ matches one or more spaces)
+    \t            → tab character
+    \b            → word boundary            (\berror\b won't match handleError)
+    [abc]         → any one of these chars   ([tj]s matches ts or js)
+    {n,}          → n or more of previous   (.{120,} matches 120+ char lines)
+    a|b           → a or b                  (cat|dog matches cat or dog)
+
+  Watch out:
+    .  vs  \.     → wildcard vs literal dot
+    *  vs  +      → "maybe something" vs "definitely something"
+    ^TODO         → line starts with TODO
+    [^abc]        → any char that is NOT a, b, or c  (^ means opposite inside [])
 
   Focus a file on the left to preview it here.
   Matched lines are highlighted in the preview.`
@@ -46,7 +83,29 @@ const internalSnippetPreviewEmptyHint = `Snippet search — PCRE2 regex
   Patterns:
     func.*Handle  → function blocks
     type.*struct  → struct definitions
+    import.*from  → ES module imports
     TODO          → comment blocks with TODOs
+
+  Symbols:
+    .             → any single character
+    *             → 0 or more of previous    (ab* matches a, ab, abb)
+    +             → 1 or more of previous    (ab+ matches ab, abb; not a)
+    ?             → optional, 0 or 1         (https? matches http or https)
+    ^             → start of line            (^TODO matches line-initial TODO)
+    $             → end of line              (\.js$ matches paths ending in .js)
+    \.            → literal dot              (without \ the dot matches anything)
+    \s            → any whitespace           (\s+ matches one or more spaces)
+    \t            → tab character
+    \b            → word boundary            (\berror\b won't match handleError)
+    [abc]         → any one of these chars   ([tj]s matches ts or js)
+    {n,}          → n or more of previous   (.{120,} matches 120+ char lines)
+    a|b           → a or b                  (cat|dog matches cat or dog)
+
+  Watch out:
+    .  vs  \.     → wildcard vs literal dot
+    *  vs  +      → "maybe something" vs "definitely something"
+    ^TODO         → line starts with TODO
+    [^abc]        → any char that is NOT a, b, or c  (^ means opposite inside [])
 
   Focus a file on the left to preview matching blocks here.`
 
@@ -200,7 +259,7 @@ func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string) (tree
 	}
 
 	content, focusLines := buildInternalSnippetPreviewContent(snippet.Ranges, snippet.Lines)
-	return buildTreeFilePreviewDocument(relPath, "", content, "", false, focusLines), true
+	return buildTreeFilePreviewDocument(relPath, "", content, pattern, false, focusLines), true
 }
 
 func buildInternalSnippetHintDocument() treeDocument {

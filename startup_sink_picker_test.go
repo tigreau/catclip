@@ -335,9 +335,7 @@ esac
 }
 
 func TestSinkPreviewTogglePersistsAcrossPreviewReruns(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("shell-script preview toggle cannot run on Windows")
-	}
+	// Verify cross-platform Go internal preview toggle command
 
 	project := setupTestProject(t, map[string]string{
 		"src/main.go": "package main\n",
@@ -430,7 +428,9 @@ func runSinkPreviewCommand(t *testing.T, command string) string {
 
 func runShellCommand(t *testing.T, command string) string {
 	t.Helper()
-	out, err := exec.Command("/bin/sh", "-c", command).CombinedOutput()
+	cmd := exec.Command("/bin/sh", "-c", command)
+	cmd.Env = append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q failed: %v\n%s", command, err, string(out))
 	}

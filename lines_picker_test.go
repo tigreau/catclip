@@ -77,14 +77,8 @@ func TestLinesPickerPreviewCommandsUseLinesPreviewFlag(t *testing.T) {
 	if strings.Contains(endCmd, "--internal-tree-payload") {
 		t.Fatalf("end preview must not use --internal-tree-payload: %s", endCmd)
 	}
-	if !strings.Contains(endCmd, "case {2} in EOF)") {
-		t.Fatalf("end preview must dispatch EOF row via shell case: %s", endCmd)
-	}
 	if !strings.Contains(endCmd, "--lines 42 {2}") {
 		t.Fatalf("end preview must include fixed start + {2}: %s", endCmd)
-	}
-	if !strings.Contains(endCmd, "--lines 42 ;;") {
-		t.Fatalf("end preview EOF branch must drop the end arg: %s", endCmd)
 	}
 }
 

@@ -91,6 +91,12 @@ func run(cfg parsedCommand, stdout, stderr io.Writer, preparedOpt ...*startupPre
 		if cfg.RecentPreview {
 			return runInternalRecentPreview(recentPreviewConfigFromParsedCommand(cfg), stdout)
 		}
+		if cfg.SinkTogglePath != "" {
+			return runInternalSinkToggle(cfg.SinkTogglePath, stdout)
+		}
+		if cfg.SinkPreviewModePath != "" {
+			return runInternalSinkPreview(cfg.SinkPreviewModePath, cfg.SinkPreviewOutputPath, cfg.SinkPreviewTreePath, stdout)
+		}
 
 		colors := activeColorPalette()
 		started := time.Now()
@@ -416,6 +422,8 @@ type internalCommandConfig struct {
 	ContentMatchList  bool
 	RecentPreview     bool
 	LinesPreview      bool
+	SinkTogglePath      string
+	SinkPreviewModePath string
 }
 
 func internalCommandConfigFromParsedCommand(cfg parsedCommand) internalCommandConfig {
@@ -426,6 +434,8 @@ func internalCommandConfigFromParsedCommand(cfg parsedCommand) internalCommandCo
 		ContentMatchList:  cfg.ContentMatchList,
 		RecentPreview:     cfg.RecentPreview,
 		LinesPreview:      cfg.LinesPreview,
+		SinkTogglePath:    cfg.SinkTogglePath,
+		SinkPreviewModePath: cfg.SinkPreviewModePath,
 	}
 }
 
@@ -433,7 +443,8 @@ func (cfg internalCommandConfig) isInternalKind() bool {
 	return cfg.TreePayload || cfg.FilePreview ||
 		cfg.ContentMatchList || cfg.RecentPreview ||
 		cfg.LinesPreview ||
-		cfg.PrediscoveredPath != ""
+		cfg.PrediscoveredPath != "" ||
+		cfg.SinkTogglePath != "" || cfg.SinkPreviewModePath != ""
 }
 
 type editorCommand struct {
@@ -794,6 +805,20 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (parsedCommand
 			}
 			i++
 			cfg.RecentData = args[i]
+		case "--internal-sink-toggle":
+			if i+1 >= len(args) {
+				return parsedCommand{}, newUsageError("Error: --internal-sink-toggle requires a path.")
+			}
+			i++
+			cfg.SinkTogglePath = args[i]
+		case "--internal-sink-preview":
+			if i+3 >= len(args) {
+				return parsedCommand{}, newUsageError("Error: --internal-sink-preview requires mode, output, and tree paths.")
+			}
+			cfg.SinkPreviewModePath = args[i+1]
+			cfg.SinkPreviewOutputPath = args[i+2]
+			cfg.SinkPreviewTreePath = args[i+3]
+			i += 3
 		case "--internal-recent-selection":
 			if i+1 >= len(args) {
 				return parsedCommand{}, newUsageError("Error: --internal-recent-selection requires a value.")
@@ -857,6 +882,10 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (parsedCommand
 								return parsedCommand{}, newUsageError("Error: --lines end (%d) must be >= start (%d).\n  Use: --lines START END where END >= START.", n2, start)
 							}
 							end = n2
+							i++
+						} else if next2 == "EOF" {
+							// Sentinel from the interactive end-line picker preview command.
+							// Behaves identically to an open-ended --lines START.
 							i++
 						} else if !strings.HasPrefix(next2, "-") {
 							return parsedCommand{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next2)

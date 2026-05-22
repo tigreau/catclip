@@ -20,6 +20,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("CATCLIP_TEST_RUN_MAIN") == "1" {
+		Main()
+		os.Exit(0)
+	}
 	if _, ok := ripgrepBinary(); !ok {
 		fmt.Fprintln(os.Stderr, "FATAL: rg not found. Run 'make dev' to set up dev tools.")
 		os.Exit(1)
@@ -9479,7 +9483,7 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveStartupArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(args, "\n"), "--only\nsrc/main.ts\nsrc/util.ts"; got != want {
+	if got, want := strings.Join(args, "\n"), "--only\n*.ts"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }

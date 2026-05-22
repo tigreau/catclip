@@ -13,6 +13,34 @@ import (
 	treepkg "github.com/tigreau/catclip/internal/tree"
 )
 
+func runInternalSinkToggle(modePath string, stdout io.Writer) error {
+	mode, err := os.ReadFile(modePath)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(string(mode)) == "tree" {
+		return os.WriteFile(modePath, []byte("output\n"), 0o600)
+	}
+	return os.WriteFile(modePath, []byte("tree\n"), 0o600)
+}
+
+func runInternalSinkPreview(modePath, outputPath, treePath string, stdout io.Writer) error {
+	mode, err := os.ReadFile(modePath)
+	if err != nil {
+		return err
+	}
+	targetPath := outputPath
+	if strings.TrimSpace(string(mode)) == "tree" {
+		targetPath = treePath
+	}
+	content, err := os.ReadFile(targetPath)
+	if err != nil {
+		return err
+	}
+	_, err = stdout.Write(content)
+	return err
+}
+
 const sinkPreviewDirectPasteByteLimit = 128 * 1024
 
 var errSinkPreviewLimitReached = errors.New("sink preview limit reached")
@@ -323,8 +351,6 @@ func prepareStartupSinkPreviewFiles(ctx startupSinkPickerContext) (startupSinkPr
 	outputPath := filepath.Join(tmpdir, "output.txt")
 	treePath := filepath.Join(tmpdir, "tree.txt")
 	modePath := filepath.Join(tmpdir, "mode")
-	previewScriptPath := filepath.Join(tmpdir, "preview")
-	toggleScriptPath := filepath.Join(tmpdir, "toggle")
 	if err := os.WriteFile(outputPath, formatSinkPreview(outputPreview), 0o600); err != nil {
 		return fail(err)
 	}
@@ -335,38 +361,35 @@ func prepareStartupSinkPreviewFiles(ctx startupSinkPickerContext) (startupSinkPr
 		return fail(err)
 	}
 
-	previewScript := fmt.Sprintf(`#!/bin/sh
-mode="$(cat %s 2>/dev/null)"
-case "$mode" in
-	tree) cat %s ;;
-	*) cat %s ;;
-esac
-`, shellQuoteArg(modePath), shellQuoteArg(treePath), shellQuoteArg(outputPath))
-	if err := os.WriteFile(previewScriptPath, []byte(previewScript), 0o700); err != nil {
-		return fail(err)
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return fail(fmt.Errorf("failed to locate catclip executable"))
 	}
+	selfQuoted := shellQuoteArg(self)
 
-	toggleScript := fmt.Sprintf(`#!/bin/sh
-mode="$(cat %s 2>/dev/null)"
-if [ "$mode" = "tree" ]; then
-	printf '%%s\n' output > %s
-else
-	printf '%%s\n' tree > %s
-fi
-`, shellQuoteArg(modePath), shellQuoteArg(modePath), shellQuoteArg(modePath))
-	if err := os.WriteFile(toggleScriptPath, []byte(toggleScript), 0o700); err != nil {
-		return fail(err)
-	}
+	previewCmd := strings.Join([]string{
+		selfQuoted,
+		"--internal-sink-preview",
+		shellQuoteArg(modePath),
+		shellQuoteArg(outputPath),
+		shellQuoteArg(treePath),
+	}, " ")
+
+	toggleCmd := strings.Join([]string{
+		selfQuoted,
+		"--internal-sink-toggle",
+		shellQuoteArg(modePath),
+	}, " ")
 
 	return startupSinkPreviewFiles{
-		PreviewCommand: shellQuoteArg(previewScriptPath),
-		ToggleBinding:  startupSinkPreviewToggleBinding(toggleScriptPath),
+		PreviewCommand: previewCmd,
+		ToggleBinding:  startupSinkPreviewToggleBinding(toggleCmd),
 		Cleanup:        cleanup,
 	}, nil
 }
 
-func startupSinkPreviewToggleBinding(toggleScriptPath string) string {
-	action := "execute-silent(" + shellQuoteArg(toggleScriptPath) + ")+refresh-preview"
+func startupSinkPreviewToggleBinding(toggleCommand string) string {
+	action := "execute-silent(" + toggleCommand + ")+refresh-preview"
 	// Key choice constraints:
 	//   `?`     — requires shift+/; users intuit `/` (less/vim/fzf
 	//             filter), shift requirement isn't discoverable.

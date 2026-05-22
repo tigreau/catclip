@@ -316,10 +316,9 @@ func buildLinesPickerStartPreviewCommand(checkpointPath string) string {
 	return strings.Join(parts, " ")
 }
 
-// buildLinesPickerEndPreviewCommand wires the end-line picker. The shell
-// `case` discriminates the EOF sentinel: for that row we drop the end
-// argument so catclip emits the same open-ended form (`lines="START-"`)
-// the final pick will produce. For numeric rows, {2} is the chosen end.
+// buildLinesPickerEndPreviewCommand wires the end-line picker.
+// It directly passes {2} to --lines. The CLI argument parser accepts
+// the EOF sentinel and treats it identically to an open-ended slice.
 // Output is raw emit text — no catclip-tree pipe, see start helper above.
 func buildLinesPickerEndPreviewCommand(checkpointPath string, startLine int) string {
 	self, err := os.Executable()
@@ -327,19 +326,12 @@ func buildLinesPickerEndPreviewCommand(checkpointPath string, startLine int) str
 		return ""
 	}
 	start := strconv.Itoa(startLine)
-	baseOpen := strings.Join([]string{
-		shellQuoteArg(self),
-		"--quiet",
-		"--internal-prediscovered", shellQuoteArg(checkpointPath),
-		"--internal-lines-preview",
-		"--lines", start,
-	}, " ")
-	baseRanged := strings.Join([]string{
+	parts := []string{
 		shellQuoteArg(self),
 		"--quiet",
 		"--internal-prediscovered", shellQuoteArg(checkpointPath),
 		"--internal-lines-preview",
 		"--lines", start, "{2}",
-	}, " ")
-	return fmt.Sprintf("case {2} in %s) %s ;; *) %s ;; esac", linesPickerEOFToken, baseOpen, baseRanged)
+	}
+	return strings.Join(parts, " ")
 }

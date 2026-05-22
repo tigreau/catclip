@@ -444,6 +444,10 @@ type parsedCommand struct {
 	RecentData        string
 	RecentSelect      string
 	LinesPreview      bool
+	SinkTogglePath        string
+	SinkPreviewModePath   string
+	SinkPreviewOutputPath string
+	SinkPreviewTreePath   string
 
 	Command commandSpec
 
