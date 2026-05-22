@@ -109,18 +109,11 @@ jobs:
             "${runner[@]+"${runner[@]}"}" "$OLDPWD/catclip-bin${bin_ext}" -y . >/dev/null
           )
 
-          bundle_dir="${TMPDIR:-/tmp}/catclip"
-          # macOS sets TMPDIR to /var/folders/...; the dir inside is still catclip.
-          if [[ ! -d "$bundle_dir" ]]; then
-            for candidate in "$RUNNER_TEMP/catclip" "/tmp/catclip" "$TEMP/catclip"; do
-              if [[ -d "$candidate" ]]; then
-                bundle_dir="$candidate"
-                break
-              fi
-            done
-          fi
-
-          bundle=$(ls "$bundle_dir"/*.txt 2>/dev/null | head -1)
+          bundle_dir="$HOME/Documents/catclip"
+          shopt -s nullglob
+          bundle_files=("$bundle_dir"/*.txt)
+          bundle="${bundle_files[0]:-}"
+          shopt -u nullglob
           if [[ -z "$bundle" ]]; then
             echo "ERROR: no bundle file found in $bundle_dir" >&2
             ls -la "$bundle_dir" 2>&1 || true
@@ -223,15 +216,7 @@ jobs:
           export CATCLIP_RG="$(pwd)/bin/rg${bin_ext}"
           export CATCLIP_FZF="$(pwd)/bin/fzf${bin_ext}"
 
-          bundle_dir="${TMPDIR:-/tmp}/catclip"
-          if [[ ! -d "$bundle_dir" ]]; then
-            for candidate in "$RUNNER_TEMP/catclip" "/tmp/catclip" "$TEMP/catclip"; do
-              if [[ -d "$candidate" ]]; then
-                bundle_dir="$candidate"
-                break
-              fi
-            done
-          fi
+          bundle_dir="$HOME/Documents/catclip"
           # Wipe prior bundle state so this run's absence is meaningful.
           rm -rf "$bundle_dir"
 
