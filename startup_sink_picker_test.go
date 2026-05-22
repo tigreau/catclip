@@ -430,7 +430,11 @@ func runShellCommand(t *testing.T, command string) string {
 	t.Helper()
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("cmd", "/c", command)
+		batPath := filepath.Join(t.TempDir(), "run.bat")
+		if err := os.WriteFile(batPath, []byte("@echo off\r\n"+command+"\r\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cmd = exec.Command("cmd", "/c", batPath)
 	} else {
 		cmd = exec.Command("/bin/sh", "-c", command)
 	}
