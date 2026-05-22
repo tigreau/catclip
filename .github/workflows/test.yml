@@ -15,7 +15,7 @@ env:
   # against the real Node 24 runtime now instead of waiting for the
   # cutover to break things. Remove this when we bump to action
   # versions whose default runtime is already Node 24 — see
-  # docs/versions/v0.5.3/reports/ACTIVE_NOTE_node24_actions_migration.md.
+  # docs/versions/v0.5.4/reports/ACTIVE_NOTE_github_actions_node24_action_bumps.md.
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:

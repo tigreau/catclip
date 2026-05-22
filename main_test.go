@@ -31,6 +31,13 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+func skipUnlessLinux(t *testing.T, feature string) {
+	t.Helper()
+	if runtime.GOOS != "linux" {
+		t.Skipf("%s is Linux-specific; running on %s", feature, runtime.GOOS)
+	}
+}
+
 type errAfterReader struct {
 	data []byte
 	err  error
@@ -1440,7 +1447,7 @@ func TestRunLinesOpenEndedRange(t *testing.T) {
 // The lines picker preview path inherits this via emitOutputPlan.
 func TestRunLinesSliceDropsFilesShorterThanStart(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"short.txt": "a\nb\nc\n",                             // 3 lines
+		"short.txt": "a\nb\nc\n",                            // 3 lines
 		"long.txt":  "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n", // 12 lines
 	})
 
@@ -1460,6 +1467,41 @@ func TestRunLinesSliceDropsFilesShorterThanStart(t *testing.T) {
 	}
 	if !strings.Contains(got, "     5\te\n") || !strings.Contains(got, "    10\tj\n") {
 		t.Fatalf("expected long.txt lines 5-10 in body, got:\n%s", got)
+	}
+}
+
+// Files too short for the requested --lines range must be absent from
+// the tree and the file count, not just from the emit body. v0.5.2's
+// short-file work suppressed the <file> wrapper at emit time but left
+// the unit in the plan, so the preview tree still listed the file as
+// "(0B) [lines N-M]" and counted it. See
+// docs/versions/v0.5.3/reports/ACTIVE_BUG_lines_filter_leak.md.
+func TestRunLinesSliceDropsShortFilesFromTreeAndCount(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"short.txt": "a\nb\nc\n",                            // 3 lines
+		"long.txt":  "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\n", // 12 lines
+	})
+
+	// Non-quiet so the tree + summary render to stderr.
+	cfg := parseInProject(t, project, []string{"--print", "short.txt", "long.txt", "--lines", "5", "10"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	tree := stderr.String()
+	if strings.Contains(tree, "short.txt") {
+		t.Fatalf("short.txt should be absent from the tree (no lines in range 5-10), got:\n%s", tree)
+	}
+	if !strings.Contains(tree, "long.txt") {
+		t.Fatalf("long.txt should be present in the tree, got:\n%s", tree)
+	}
+	if !strings.Contains(tree, "Count:   1 file") {
+		t.Fatalf("expected count of exactly 1 file (long.txt only), got:\n%s", tree)
+	}
+	if strings.Contains(tree, "(0B)") {
+		t.Fatalf("no entry should render as (0B) — short files are dropped, got:\n%s", tree)
 	}
 }
 
@@ -2408,7 +2450,7 @@ func TestSafeTargetPickerHeaderOmitsCtrlO(t *testing.T) {
 	if strings.Contains(header, "[Ctrl-O]") || strings.Contains(header, "ignored ones") {
 		t.Fatalf("expected safe picker header to stay visible-target-only, got %q", header)
 	}
-	if !strings.Contains(header, "Pick files and folders to include.") || !strings.Contains(header, "[Up/Down] move  [Enter] confirm  [Tab] mark  [Esc] cancel") {
+	if !strings.Contains(header, "Pick files and folders to include.") || !strings.Contains(header, "[Up/Down] move  [Enter] confirm  [Tab] mark  [Esc] exit") {
 		t.Fatalf("expected safe picker header to guide first-time fzf users, got %q", header)
 	}
 }
@@ -2432,6 +2474,37 @@ func TestPickerHeadersUseFourLinesMax60Chars(t *testing.T) {
 			if len(line) > 60 {
 				t.Fatalf("expected %s header line to fit 60 chars, got %d: %q", name, len(line), line)
 			}
+		}
+	}
+}
+
+func TestPickerHeadersCanShowEscExitAndUndo(t *testing.T) {
+	headers := map[string]string{
+		"target":         targetPickerHeaderWithEscHint("select> ", "undo"),
+		"ignored":        ignoredTargetPickerHeaderWithEscHint("undo"),
+		"contains":       contentMatchPickerHeaderWithEscHint("--contains", "undo"),
+		"modifier":       startupModifierPickerHeaderWithEscHint("undo"),
+		"only":           startupFileSetPickerHeaderWithEscHint("--only", "undo"),
+		"depth":          depthPickerHeaderWithEscHint("undo"),
+		"recent":         recentPickerHeaderWithEscHint("undo"),
+		"lines-start":    linesPickerStartHeaderWithEscHint("undo"),
+		"lines-end":      linesPickerEndHeaderWithEscHint("undo"),
+		"output-sink":    startupSinkPickerHeaderWithEscHint("undo"),
+		"output-default": startupSinkPickerHeader(),
+	}
+
+	for name, header := range headers {
+		if name == "output-default" {
+			if !strings.Contains(header, "[Esc] exit") {
+				t.Fatalf("expected %s header to keep exit by default, got %q", name, header)
+			}
+			continue
+		}
+		if !strings.Contains(header, "[Esc] undo") {
+			t.Fatalf("expected %s header to show Esc undo, got %q", name, header)
+		}
+		if strings.Contains(header, "[Esc] exit") {
+			t.Fatalf("expected %s header not to also show Esc exit, got %q", name, header)
 		}
 	}
 }
@@ -3642,6 +3715,185 @@ func TestRunIncludeAncestorAuthorizationDoesNotWidenExplicitDescendantTarget(t *
 	}
 }
 
+// Deep-include rewrite: `catclip <target> --include <deep-file>` (the
+// include value lives inside the target) must produce the same output
+// as the manual `--include <target> --only <deep-file>` form, instead
+// of the pre-v0.5.3 "your --include does not cover this target" error.
+// See docs/versions/v0.5.3/reports/ACTIVE_BUG_include_ancestor_target_not_authorized.md.
+func TestRunDeepIncludeFileRewritesToIncludeAncestorOnly(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	files := map[string]string{
+		".gitignore":          "docs/\n",
+		"docs/a/keep.md":      "keep\n",
+		"docs/a/other.md":     "other\n",
+		"docs/b/elsewhere.md": "elsewhere\n",
+	}
+	project := setupTestProject(t, files)
+	initGitRepo(t, project)
+
+	deepCfg := parseInProject(t, project, []string{"--quiet", "--print", "docs", "--include", "docs/a/keep.md"})
+	var deepOut, deepErr bytes.Buffer
+	if err := run(deepCfg, &deepOut, &deepErr); err != nil {
+		t.Fatalf("deep-include form returned error: %v", err)
+	}
+
+	project2 := setupTestProject(t, files)
+	initGitRepo(t, project2)
+	manualCfg := parseInProject(t, project2, []string{"--quiet", "--print", "docs", "--include", "docs", "--only", "docs/a/keep.md"})
+	var manualOut, manualErr bytes.Buffer
+	if err := run(manualCfg, &manualOut, &manualErr); err != nil {
+		t.Fatalf("manual --include/--only form returned error: %v", err)
+	}
+
+	if deepOut.String() != manualOut.String() {
+		t.Fatalf("deep-include output != manual form output\ndeep:\n%s\nmanual:\n%s", deepOut.String(), manualOut.String())
+	}
+	if !strings.Contains(deepOut.String(), `<file path="docs/a/keep.md">`) {
+		t.Fatalf("expected docs/a/keep.md in output, got:\n%s", deepOut.String())
+	}
+	if strings.Contains(deepOut.String(), "other.md") || strings.Contains(deepOut.String(), "elsewhere.md") {
+		t.Fatalf("deep-include should narrow to exactly docs/a/keep.md, got:\n%s", deepOut.String())
+	}
+}
+
+// Deep-include of a directory narrows to that subtree, same as
+// `--include <target> --only <deep-dir>`.
+func TestRunDeepIncludeDirectoryNarrowsToSubtree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	project := setupTestProject(t, map[string]string{
+		".gitignore":          "docs/\n",
+		"docs/a/one.md":       "one\n",
+		"docs/a/two.md":       "two\n",
+		"docs/b/elsewhere.md": "elsewhere\n",
+	})
+	initGitRepo(t, project)
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "docs", "--include", "docs/a"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("deep-include directory form returned error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `<file path="docs/a/one.md">`) || !strings.Contains(out, `<file path="docs/a/two.md">`) {
+		t.Fatalf("expected both files under docs/a, got:\n%s", out)
+	}
+	if strings.Contains(out, "elsewhere.md") {
+		t.Fatalf("deep-include docs/a should not pull in docs/b, got:\n%s", out)
+	}
+}
+
+// An include value that is NOT under any target must still produce the
+// "include does not cover this target" error — the rewrite only fires
+// when every include value is covered by a target.
+func TestRunDeepIncludeUncoveredValueStillErrors(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	project := setupTestProject(t, map[string]string{
+		".gitignore":     "docs/\n",
+		"docs/a/keep.md": "keep\n",
+		"src/main.go":    "package main\n",
+	})
+	initGitRepo(t, project)
+
+	// docs/a/keep.md is under the target, but src/main.go is not —
+	// the mixed set must not rewrite.
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "docs", "--include", "docs/a/keep.md", "src/main.go"})
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected error for mixed covered/uncovered include set, got output:\n%s", stdout.String())
+	}
+	// The ignored-target message is written to stderr; run() returns a
+	// sentinel error. Assert against stderr, matching the other
+	// blocked-target tests in this file.
+	if !strings.Contains(stderr.String(), "is ignored by") {
+		t.Fatalf("expected ignored-target message on stderr, got:\n%s", stderr.String())
+	}
+}
+
+// rewriteDeepIncludeScope unit coverage: the pure transform itself.
+func TestRewriteDeepIncludeScope(t *testing.T) {
+	t.Run("deep file rewrites to include-ancestor plus only", func(t *testing.T) {
+		in := executionScope{
+			Targets:         []string{"docs"},
+			IncludedTargets: []string{"docs/a/keep.md"},
+			Stages: []scopeStage{
+				{Kind: scopeStageInclude, Values: []string{"docs/a/keep.md"}},
+			},
+		}
+		got := rewriteDeepIncludeScope(in)
+		if len(got.IncludedTargets) != 1 || got.IncludedTargets[0] != "docs" {
+			t.Fatalf("IncludedTargets = %v, want [docs]", got.IncludedTargets)
+		}
+		if len(got.Stages) != 2 {
+			t.Fatalf("expected 2 stages (include + only), got %d: %#v", len(got.Stages), got.Stages)
+		}
+		if got.Stages[0].Kind != scopeStageInclude || got.Stages[0].Values[0] != "docs" {
+			t.Fatalf("stage 0 should be include[docs], got %#v", got.Stages[0])
+		}
+		if got.Stages[1].Kind != scopeStageOnly || got.Stages[1].Values[0] != "docs/a/keep.md" {
+			t.Fatalf("stage 1 should be only[docs/a/keep.md], got %#v", got.Stages[1])
+		}
+	})
+
+	t.Run("plain include of target is untouched", func(t *testing.T) {
+		in := executionScope{
+			Targets:         []string{"docs"},
+			IncludedTargets: []string{"docs"},
+			Stages:          []scopeStage{{Kind: scopeStageInclude, Values: []string{"docs"}}},
+		}
+		got := rewriteDeepIncludeScope(in)
+		if len(got.IncludedTargets) != 1 || got.IncludedTargets[0] != "docs" {
+			t.Fatalf("plain include should be unchanged, got %v", got.IncludedTargets)
+		}
+		if len(got.Stages) != 1 {
+			t.Fatalf("plain include should not gain an --only stage, got %#v", got.Stages)
+		}
+	})
+
+	t.Run("uncovered include bails", func(t *testing.T) {
+		in := executionScope{
+			Targets:         []string{"docs"},
+			IncludedTargets: []string{"docs/a/keep.md", "src/main.go"},
+			Stages:          []scopeStage{{Kind: scopeStageInclude, Values: []string{"docs/a/keep.md", "src/main.go"}}},
+		}
+		got := rewriteDeepIncludeScope(in)
+		if len(got.Stages) != 1 || got.Stages[0].Kind != scopeStageInclude {
+			t.Fatalf("uncovered include should leave stages untouched, got %#v", got.Stages)
+		}
+	})
+
+	t.Run("wildcard include bails", func(t *testing.T) {
+		in := executionScope{
+			Targets:         []string{"docs"},
+			IncludedTargets: []string{"*"},
+			Stages:          []scopeStage{{Kind: scopeStageInclude, Values: []string{"*"}}},
+		}
+		got := rewriteDeepIncludeScope(in)
+		if len(got.Stages) != 1 {
+			t.Fatalf("wildcard include should be untouched, got %#v", got.Stages)
+		}
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		in := executionScope{
+			Targets:         []string{"docs"},
+			IncludedTargets: []string{"docs/a/keep.md"},
+			Stages:          []scopeStage{{Kind: scopeStageInclude, Values: []string{"docs/a/keep.md"}}},
+		}
+		once := rewriteDeepIncludeScope(in)
+		twice := rewriteDeepIncludeScope(once)
+		if len(twice.Stages) != len(once.Stages) || len(twice.IncludedTargets) != len(once.IncludedTargets) {
+			t.Fatalf("rewrite not idempotent: once=%#v twice=%#v", once, twice)
+		}
+	})
+}
+
 func TestRunDotTargetWithIncludeStillWidensToIncludedIgnoredDirectory(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -4794,6 +5046,8 @@ func TestHelpTextIncludesShellParitySections(t *testing.T) {
 }
 
 func TestClipboardCommandShowsInstallHint(t *testing.T) {
+	skipUnlessLinux(t, "linux clipboard install hint")
+
 	t.Setenv("PATH", "")
 	t.Setenv("WAYLAND_DISPLAY", "")
 	t.Setenv("XDG_SESSION_TYPE", "")
@@ -4803,7 +5057,7 @@ func TestClipboardCommandShowsInstallHint(t *testing.T) {
 		t.Fatal("expected clipboard lookup error")
 	}
 	// xsel was previously suggested as a fallback. Removed because it
-	// can't reliably serve the bundle path's text/uri-list MIME type;
+	// can't reliably serve the bundle path's file-reference MIME targets;
 	// see emit.go::clipboardCommand for the rationale.
 	if !strings.Contains(err.Error(), "Install xclip") {
 		t.Fatalf("expected xclip install hint, got: %v", err)
@@ -4814,6 +5068,8 @@ func TestClipboardCommandShowsInstallHint(t *testing.T) {
 }
 
 func TestClipboardInstallHintWaylandIncludesFedora(t *testing.T) {
+	skipUnlessLinux(t, "wayland clipboard install hint")
+
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	hint := clipboardInstallHint("linux", colorPalette{})
 	for _, want := range []string{"wl-clipboard", "Debian/Ubuntu", "Arch", "Fedora"} {
@@ -4824,6 +5080,8 @@ func TestClipboardInstallHintWaylandIncludesFedora(t *testing.T) {
 }
 
 func TestClipboardInstallHintX11IncludesFedora(t *testing.T) {
+	skipUnlessLinux(t, "x11 clipboard install hint")
+
 	t.Setenv("WAYLAND_DISPLAY", "")
 	t.Setenv("XDG_SESSION_TYPE", "")
 	hint := clipboardInstallHint("linux", colorPalette{})
@@ -4841,6 +5099,8 @@ func TestClipboardInstallHintX11IncludesFedora(t *testing.T) {
 // and emits the same install-hint shape so both sinks teach the user
 // identically.
 func TestEmitBundleSurfacesMultiDistroHintOnToolNotFound(t *testing.T) {
+	skipUnlessLinux(t, "linux bundle clipboard install hint")
+
 	originalCopy := fileclipCopy
 	defer func() { fileclipCopy = originalCopy }()
 	fileclipCopy = func(...string) error {
@@ -4850,7 +5110,7 @@ func TestEmitBundleSurfacesMultiDistroHintOnToolNotFound(t *testing.T) {
 	t.Setenv("XDG_SESSION_TYPE", "")
 
 	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir)
+	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
 
 	_, err := emitBundle(emitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, colorPalette{})
 	if err == nil {
@@ -4870,6 +5130,73 @@ func TestEmitBundleSurfacesMultiDistroHintOnToolNotFound(t *testing.T) {
 	}
 }
 
+func TestEmitBundlePreservesBundleOnX11Unsupported(t *testing.T) {
+	originalCopy := fileclipCopy
+	defer func() { fileclipCopy = originalCopy }()
+	fileclipCopy = func(...string) error {
+		return fileclip.ErrX11Unsupported
+	}
+
+	dir := t.TempDir()
+	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
+
+	_, err := emitBundle(emitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, colorPalette{})
+	if err == nil {
+		t.Fatal("expected emitBundle to surface X11 unsupported error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"X11 file clipboard is not supported", "Your catclip bundle was written to:", "Documents/catclip", "drag and drop", "--no-bundle", "supported Wayland GNOME session"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("X11 unsupported message missing %q, got: %s", want, msg)
+		}
+	}
+
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("read bundle dir: %v", readErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected preserved bundle file, got %d entries", len(entries))
+	}
+	body, readErr := os.ReadFile(filepath.Join(dir, entries[0].Name()))
+	if readErr != nil {
+		t.Fatalf("read preserved bundle: %v", readErr)
+	}
+	if string(body) != "bundle payload" {
+		t.Fatalf("preserved bundle body = %q", body)
+	}
+}
+
+func TestEmitBundlePreservesBundleOnLegacyGNOMEUnsupported(t *testing.T) {
+	originalCopy := fileclipCopy
+	defer func() { fileclipCopy = originalCopy }()
+	fileclipCopy = func(...string) error {
+		return fileclip.ErrLegacyGNOMEUnsupported
+	}
+
+	dir := t.TempDir()
+	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
+
+	_, err := emitBundle(emitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, colorPalette{})
+	if err == nil {
+		t.Fatalf("expected emitBundle to surface GNOME below %d unsupported error", fileclip.MinimumGNOMEFileClipboardMajor)
+	}
+	msg := err.Error()
+	for _, want := range []string{fmt.Sprintf("GNOME below %d file clipboard is not supported", fileclip.MinimumGNOMEFileClipboardMajor), "Your catclip bundle was written to:", "Documents/catclip", "drag and drop", "--no-bundle", "supported Wayland GNOME session"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("GNOME below %d unsupported message missing %q, got: %s", fileclip.MinimumGNOMEFileClipboardMajor, want, msg)
+		}
+	}
+
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		t.Fatalf("read bundle dir: %v", readErr)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected preserved bundle file, got %d entries", len(entries))
+	}
+}
+
 // Non-ErrToolNotFound errors keep the generic "clipboard command failed"
 // framing — those represent runtime failures from a present binary, not
 // a missing-tool situation, and the install hint would be misleading.
@@ -4879,9 +5206,11 @@ func TestEmitBundleKeepsGenericFramingForToolFailures(t *testing.T) {
 	fileclipCopy = func(...string) error {
 		return fmt.Errorf("%w: xclip: exit status 1", fileclip.ErrToolFailed)
 	}
+	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("XDG_SESSION_TYPE", "")
 
 	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir)
+	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
 
 	_, err := emitBundle(emitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, colorPalette{})
 	if err == nil {
@@ -4896,9 +5225,8 @@ func TestEmitBundleKeepsGenericFramingForToolFailures(t *testing.T) {
 }
 
 func TestWithPayloadWriterDoesNotBlockOnResidentWaylandClipboard(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("wayland clipboard handoff is a Linux protocol; Windows has no /bin/sh to run the fake wl-copy stub")
-	}
+	skipUnlessLinux(t, "wayland clipboard handoff")
+
 	dir := t.TempDir()
 	wlCopy := filepath.Join(dir, "wl-copy")
 	script := "#!/bin/sh\ncat >/dev/null\nsleep 2\n"
@@ -6500,6 +6828,175 @@ exit 91
 	}
 	if got, want := strings.Join(args, "\n"), "docs/versions/v0.4.0\n--include\ndocs/versions/v0.4.0"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveInteractiveStartupArgsEscFromStageReopensModifierMenu(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "fzf-state")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+case "$prompt" in
+	"filter> ")
+		count=0
+		if [ -f %[1]q ]; then
+			count="$(cat %[1]q)"
+		fi
+		count=$((count + 1))
+		printf '%%s' "$count" > %[1]q
+		case "$count" in
+			1)
+				printf '%%s\n' 'only'
+				;;
+			2)
+				printf '%%s\n' 'paths'
+				;;
+			*)
+				echo "unexpected filter count: $count" >&2
+				exit 91
+				;;
+		esac
+		;;
+	"only> ")
+		exit 130
+		;;
+	*)
+		echo "unexpected prompt: $prompt" >&2
+		exit 91
+		;;
+esac
+`, stateFile))
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{"src", "--"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected undo flow to use fzf")
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--paths"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveInteractiveStartupArgsEscFromThenTargetUndoesThenChoice(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "fzf-state")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+case "$prompt" in
+	"filter> ")
+		count=0
+		if [ -f %[1]q ]; then
+			count="$(cat %[1]q)"
+		fi
+		count=$((count + 1))
+		printf '%%s' "$count" > %[1]q
+		case "$count" in
+			1)
+				printf '%%s\n' 'then'
+				;;
+			2)
+				printf '%%s\n' 'paths'
+				;;
+			*)
+				echo "unexpected filter count: $count" >&2
+				exit 91
+				;;
+		esac
+		;;
+	"then> ")
+		exit 130
+		;;
+	*)
+		echo "unexpected prompt: $prompt" >&2
+		exit 91
+		;;
+esac
+`, stateFile))
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{"src", "--"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected undo flow to use fzf")
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--paths"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveInteractiveStartupArgsEscOnFirstWindowExits(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('src')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+exit 130
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	_, _, _, err = resolveInteractiveStartupArgs(resolver, nil)
+	if !errors.Is(err, errSelectionCancelled) {
+		t.Fatalf("expected first-window Esc to cancel invocation, got %v", err)
 	}
 }
 

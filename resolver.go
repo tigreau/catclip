@@ -46,6 +46,7 @@ type scopeResolver struct {
 	scopeTargets         []string
 	interactiveTargets   []targetMatch
 	interactiveTargetsOk bool
+	startupEscHint       string
 	ignoredTargets       []targetMatch
 	ignoredTargetsOk     bool
 	visibleDirs          visibleDirIndex
@@ -323,6 +324,165 @@ func (r *scopeResolver) includedDescendantsOf(target string) []string {
 	}
 	sort.Strings(descendants)
 	return descendants
+}
+
+// rewriteDeepIncludeScope detects the "deep include" form — every
+// --include value names a path inside a scope target — and rewrites it
+// to the equivalent "--include <ancestor> --only <deep paths>" form.
+//
+// Motivating bug (ACTIVE_BUG_include_ancestor_target_not_authorized):
+// `catclip docs --include docs/versions/X.json` was rejected with
+// "your --include does not cover this target", because targetIncluded
+// only recognized the include set as covering a target when an include
+// value EQUALED the target or was its ancestor — never when an include
+// value was a descendant. The user's intent ("authorize docs, give me
+// exactly X.json") matches the manual form
+// `--include docs --only docs/versions/X.json`, which works. This
+// rewrite produces that form automatically, so the deep-include shape
+// (whether typed or produced by the interactive include picker) just
+// works.
+//
+// Pure path-string transform — no filesystem access. No-op (returns s
+// unchanged) unless EVERY --include value is either equal to a scope
+// target or a strict descendant of one, and at least one is a strict
+// descendant. Any include value outside every target, any glob in an
+// include value, a wildcard include, or a "." target leaves the scope
+// untouched so existing behavior / errors are preserved. Idempotent:
+// once rewritten, every include value equals a target, so a second
+// pass is a no-op.
+func rewriteDeepIncludeScope(s executionScope) executionScope {
+	if len(s.IncludedTargets) == 0 {
+		return s
+	}
+	if includeTargetsContainWildcard(s.IncludedTargets) {
+		return s
+	}
+	targetSet := make(map[string]struct{}, len(s.Targets))
+	normTargets := make([]string, 0, len(s.Targets))
+	for _, t := range s.Targets {
+		t = normalizeRelPath(t)
+		if t == "" || t == "." {
+			// A root target authorizes everything already; the
+			// deep-include rejection cannot arise. Bail.
+			return s
+		}
+		if _, dup := targetSet[t]; dup {
+			continue
+		}
+		targetSet[t] = struct{}{}
+		normTargets = append(normTargets, t)
+	}
+	if len(normTargets) == 0 {
+		return s
+	}
+
+	keptOrder := make([]string, 0, len(s.IncludedTargets))
+	keptSet := make(map[string]struct{}, len(s.IncludedTargets))
+	deepOrder := make([]string, 0, len(s.IncludedTargets))
+	ancestorSet := make(map[string]struct{}, len(normTargets))
+
+	for _, inc := range s.IncludedTargets {
+		n := normalizeRelPath(inc)
+		if n == "" || n == "." {
+			return s
+		}
+		if hasGlobChars(n) {
+			// Globbed include — out of scope for this rewrite; leave
+			// the glob to its existing handling.
+			return s
+		}
+		if _, isTarget := targetSet[n]; isTarget {
+			if _, dup := keptSet[n]; !dup {
+				keptSet[n] = struct{}{}
+				keptOrder = append(keptOrder, n)
+			}
+			continue
+		}
+		anc := longestAncestorTarget(n, normTargets)
+		if anc == "" {
+			// inc is not under any target — a genuine "include does
+			// not cover this target" case for that path. Don't
+			// rewrite; let the existing resolution / error stand.
+			return s
+		}
+		deepOrder = append(deepOrder, n)
+		ancestorSet[anc] = struct{}{}
+	}
+
+	if len(deepOrder) == 0 {
+		// Every include value equals a target already — this is the
+		// plain, already-correct --include form. Nothing to rewrite.
+		return s
+	}
+
+	ancestors := make([]string, 0, len(ancestorSet))
+	for a := range ancestorSet {
+		ancestors = append(ancestors, a)
+	}
+	sort.Strings(ancestors)
+	newIncludes := make([]string, 0, len(keptOrder)+len(ancestors))
+	newIncludes = append(newIncludes, keptOrder...)
+	for _, a := range ancestors {
+		if _, dup := keptSet[a]; dup {
+			continue
+		}
+		newIncludes = append(newIncludes, a)
+	}
+
+	out := s
+	out.IncludedTargets = newIncludes
+	out.Stages = rewriteStagesForDeepInclude(s.Stages, newIncludes, deepOrder)
+	return out
+}
+
+// longestAncestorTarget returns the longest entry in targets that is a
+// strict ancestor of path (path lives under target+"/"), or "" if none.
+// Longest wins so the most specific authorizing target is chosen when
+// the scope has nested targets.
+func longestAncestorTarget(path string, targets []string) string {
+	best := ""
+	for _, t := range targets {
+		if strings.HasPrefix(path, t+"/") && len(t) > len(best) {
+			best = t
+		}
+	}
+	return best
+}
+
+// rewriteStagesForDeepInclude collapses every scopeStageInclude into a
+// single include stage carrying newIncludes, and inserts a
+// scopeStageOnly stage (carrying the deep paths) immediately after it.
+// Non-include stages keep their relative order; the synthesized --only
+// runs right after include so the deep paths narrow the authorized
+// scope before any downstream filter.
+func rewriteStagesForDeepInclude(stages []scopeStage, newIncludes, deep []string) []scopeStage {
+	out := make([]scopeStage, 0, len(stages)+1)
+	insertedInclude := false
+	for _, st := range stages {
+		if st.Kind == scopeStageInclude {
+			if insertedInclude {
+				// Additional include stages — their values are already
+				// folded into newIncludes; drop the duplicates.
+				continue
+			}
+			insertedInclude = true
+			out = append(out,
+				scopeStage{Kind: scopeStageInclude, Values: append([]string(nil), newIncludes...)},
+				scopeStage{Kind: scopeStageOnly, Values: append([]string(nil), deep...)},
+			)
+			continue
+		}
+		out = append(out, st)
+	}
+	if !insertedInclude {
+		// Defensive: IncludedTargets was non-empty but no include stage
+		// existed. Prepend the synthesized pair.
+		out = append([]scopeStage{
+			{Kind: scopeStageInclude, Values: append([]string(nil), newIncludes...)},
+			{Kind: scopeStageOnly, Values: append([]string(nil), deep...)},
+		}, out...)
+	}
+	return out
 }
 
 func (r *scopeResolver) targetPathExists(relTarget string) (bool, error) {
@@ -1169,7 +1329,7 @@ func (r *scopeResolver) chooseRootTargetMatches(query, prompt string, includeCop
 	}
 
 	labels, index := targetMatchLabels(options)
-	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, targetPickerHeader(prompt), labels, false)
+	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, targetPickerHeaderWithEscHint(prompt, r.startupEscHint), labels, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1220,7 +1380,7 @@ func (r *scopeResolver) chooseIgnoredTargetMatches(query, prompt string, selecte
 		return nil, 0, err
 	}
 	labels, index := targetMatchLabels(options)
-	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, ignoredTargetPickerHeader(), labels, true)
+	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, ignoredTargetPickerHeaderWithEscHint(r.startupEscHint), labels, true)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -2266,6 +2426,10 @@ func fzfDiffFilePreviewCommand(currentArgs []string) string {
 }
 
 func chooseContentMatchesWithFzf(query string, currentArgs []string, flag string) (fzfChooseResult, error) {
+	return chooseContentMatchesWithFzfAndEscHint(query, currentArgs, flag, "")
+}
+
+func chooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, flag string, escHint string) (fzfChooseResult, error) {
 	bin, err := fuzzyResolverBinary()
 	if err != nil {
 		return fzfChooseResult{}, err
@@ -2283,7 +2447,7 @@ func chooseContentMatchesWithFzf(query string, currentArgs []string, flag string
 		Prompt:         "match> ",
 		WithNth:        "1",
 		Nth:            "1",
-		Header:         contentMatchPickerHeader(flag),
+		Header:         contentMatchPickerHeaderWithEscHint(flag, escHint),
 		PreviewCommand: fzfContentPreviewCommand(flag, checkpointPath),
 		PreviewWindow:  contentMatchPreviewWindow(flag),
 		Disabled:       true,
@@ -2525,6 +2689,10 @@ func contentMatchPreviewWindow(flag string) string {
 }
 
 func contentMatchPickerHeader(flag string) string {
+	return contentMatchPickerHeaderWithEscHint(flag, "")
+}
+
+func contentMatchPickerHeaderWithEscHint(flag, escHint string) string {
 	firstLine := "Keep files whose contents match a regex."
 	if flag == "--snippet" {
 		firstLine = "Extract snippets whose contents match a regex."
@@ -2532,7 +2700,7 @@ func contentMatchPickerHeader(flag string) string {
 	return pickerHeader(
 		firstLine,
 		"Type a regex.",
-		fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
+		fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  %s", multiSelectToggleAllKey(), startupEscLabel(escHint)),
 	)
 }
 
@@ -2676,6 +2844,10 @@ func targetMatchKey(match targetMatch) string {
 }
 
 func targetPickerHeader(prompt string) string {
+	return targetPickerHeaderWithEscHint(prompt, "")
+}
+
+func targetPickerHeaderWithEscHint(prompt, escHint string) string {
 	firstLine := "Pick files and folders to include."
 	if prompt == "then> " {
 		firstLine = "Add more files and folders."
@@ -2683,7 +2855,7 @@ func targetPickerHeader(prompt string) string {
 	return pickerHeader(
 		firstLine,
 		"Type to search by name.",
-		"[Up/Down] move  [Enter] confirm  [Tab] mark  [Esc] cancel",
+		fmt.Sprintf("[Up/Down] move  [Enter] confirm  [Tab] mark  %s", startupEscLabel(escHint)),
 	)
 }
 
@@ -2692,10 +2864,14 @@ func safeTargetPickerHeader() string {
 }
 
 func ignoredTargetPickerHeader() string {
+	return ignoredTargetPickerHeaderWithEscHint("")
+}
+
+func ignoredTargetPickerHeaderWithEscHint(escHint string) string {
 	return pickerHeader(
 		"Add files and folders ignored by .gitignore or .hiss.",
 		"Type to search by name.",
-		fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
+		fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  %s", multiSelectToggleAllKey(), startupEscLabel(escHint)),
 	)
 }
 

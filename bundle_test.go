@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,15 +29,86 @@ func withBundleStub(t *testing.T) (*string, func()) {
 	return &captured, func() { fileclipCopy = prev }
 }
 
-// withCatclipTempDir points os.TempDir to a fresh directory for the duration of
-// the test so bundle cleanup doesn't touch real /tmp/catclip/.
-func withCatclipTempDir(t *testing.T) {
+// withCatclipBundleDir points CATCLIP_BUNDLE_DIR to a fresh directory for the
+// duration of tests that should not touch the real Documents/catclip folder.
+func withCatclipBundleDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir)
+	t.Setenv("CATCLIP_BUNDLE_DIR", filepath.Join(dir, "catclip"))
+	return filepath.Join(dir, "catclip")
+}
+
+func TestBundleDirDefaultsToDocumentsForSnapReadableFiles(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Setenv("TEMP", dir)
-		t.Setenv("TMP", dir)
+		t.Skip("Unix-style home path expectation")
+	}
+	home := t.TempDir()
+	config := filepath.Join(home, ".config")
+	if err := os.MkdirAll(config, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	userDirs := strings.Join([]string{
+		`XDG_DOCUMENTS_DIR="$HOME/My Documents"`,
+		`XDG_DOWNLOAD_DIR="$HOME/My Downloads"`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(config, "user-dirs.dirs"), []byte(userDirs), 0o644); err != nil {
+		t.Fatalf("write user-dirs.dirs: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", config)
+
+	got := bundleDirForEnv(emitEnvironment{Platform: "linux"})
+	want := filepath.Join(home, "My Documents", "catclip")
+	if got != want {
+		t.Fatalf("bundleDirForEnv = %q, want %q", got, want)
+	}
+}
+
+func TestBundleDirDefaultsToDocumentsForNonLinuxPlatforms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-style home path expectation")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	got := bundleDirForEnv(emitEnvironment{Platform: "macos"})
+	want := filepath.Join(home, "Documents", "catclip")
+	if got != want {
+		t.Fatalf("bundleDirForEnv = %q, want %q", got, want)
+	}
+}
+
+func TestBundleDirFallsBackToDefaultDocuments(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-style home path expectation")
+	}
+	home := t.TempDir()
+	config := filepath.Join(home, ".config")
+	if err := os.MkdirAll(config, 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(config, "user-dirs.dirs"), []byte(`XDG_DOWNLOAD_DIR="$HOME/My Downloads"`+"\n"), 0o644); err != nil {
+		t.Fatalf("write user-dirs.dirs: %v", err)
+	}
+
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", config)
+
+	got := bundleDirForEnv(emitEnvironment{Platform: "linux"})
+	want := filepath.Join(home, "Documents", "catclip")
+	if got != want {
+		t.Fatalf("bundleDirForEnv = %q, want %q", got, want)
+	}
+}
+
+func TestBundleDirOverrideWins(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "custom-bundles")
+	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
+
+	if got := bundleDirForEnv(emitEnvironment{Platform: "linux"}); got != dir {
+		t.Fatalf("bundleDirForEnv override = %q, want %q", got, dir)
 	}
 }
 
@@ -70,7 +142,7 @@ func TestBundleTempPathShape(t *testing.T) {
 }
 
 func TestBundleBelowThresholdSkipsBundleBranch(t *testing.T) {
-	withCatclipTempDir(t)
+	withCatclipBundleDir(t)
 	captured, restore := withBundleStub(t)
 	defer restore()
 
@@ -89,7 +161,7 @@ func TestBundleBelowThresholdSkipsBundleBranch(t *testing.T) {
 }
 
 func TestBundleAtOrAboveThresholdCreatesFile(t *testing.T) {
-	withCatclipTempDir(t)
+	withCatclipBundleDir(t)
 	captured, restore := withBundleStub(t)
 	defer restore()
 
@@ -128,11 +200,122 @@ func TestBundleAtOrAboveThresholdCreatesFile(t *testing.T) {
 	}
 }
 
+func TestBundleWarnsForOldPortalOnWayland(t *testing.T) {
+	withCatclipBundleDir(t)
+	_, restore := withBundleStub(t)
+	defer restore()
+
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.18.4")
+
+	cfg := emitConfig{
+		OutputMode: outputModeClipboard,
+	}
+	env := emitEnvironment{
+		Platform:   "linux",
+		WorkingDir: t.TempDir(),
+	}
+
+	stats, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
+		_, werr := io.WriteString(w, strings.Repeat("a", 5000))
+		return werr
+	})
+	if err != nil {
+		t.Fatalf("withPayloadWriter returned error: %v", err)
+	}
+	if len(stats.Warnings) != 1 {
+		t.Fatalf("expected one portal warning, got %#v", stats.Warnings)
+	}
+	for _, want := range []string{"xdg-desktop-portal 1.18", "recommended 1.21 baseline", "Firefox Snap", "drag and drop"} {
+		if !strings.Contains(stats.Warnings[0], want) {
+			t.Fatalf("portal warning missing %q: %q", want, stats.Warnings[0])
+		}
+	}
+	if strings.Contains(stats.Warnings[0], "--no-bundle") {
+		t.Fatalf("portal warning should not repeat --no-bundle guidance: %q", stats.Warnings[0])
+	}
+}
+
+func TestBundleWarnsWhenPortalVersionCannotBeDetectedOnWayland(t *testing.T) {
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_BIN", filepath.Join(t.TempDir(), "missing-portal"))
+
+	warnings := bundleWarnings(emitEnvironment{Platform: "linux"})
+	if len(warnings) != 1 {
+		t.Fatalf("expected one portal warning, got %#v", warnings)
+	}
+	for _, want := range []string{"xdg-desktop-portal was not found", "could not be verified", "Firefox Snap", "drag and drop"} {
+		if !strings.Contains(warnings[0], want) {
+			t.Fatalf("portal warning missing %q: %q", want, warnings[0])
+		}
+	}
+	if strings.Contains(warnings[0], "--no-bundle") {
+		t.Fatalf("portal warning should not repeat --no-bundle guidance: %q", warnings[0])
+	}
+}
+
+func TestBundleDoesNotWarnForNewPortalOnWayland(t *testing.T) {
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.21.0")
+
+	warnings := bundleWarnings(emitEnvironment{Platform: "linux"})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no portal warnings, got %#v", warnings)
+	}
+}
+
+func TestParseMajorMinorVersion(t *testing.T) {
+	major, minor, ok := parseMajorMinorVersion("xdg-desktop-portal 1.21.0")
+	if !ok {
+		t.Fatal("expected version to parse")
+	}
+	if major != 1 || minor != 21 {
+		t.Fatalf("version = %d.%d, want 1.21", major, minor)
+	}
+}
+
+func TestXDGDesktopPortalVersionUsesConfiguredBinary(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell script test")
+	}
+	bin := filepath.Join(t.TempDir(), "xdg-desktop-portal")
+	script := "#!/bin/sh\nprintf 'xdg-desktop-portal 1.18.4\\n'\n"
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatalf("write portal stub: %v", err)
+	}
+	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_BIN", bin)
+
+	major, minor, ok := xdgDesktopPortalVersion()
+	if !ok {
+		t.Fatal("expected configured portal binary version to parse")
+	}
+	if major != 1 || minor != 18 {
+		t.Fatalf("version = %d.%d, want 1.18", major, minor)
+	}
+}
+
+func TestXDGDesktopPortalVersionCandidatePathsIncludeDistroLibexecLocations(t *testing.T) {
+	candidates := xdgDesktopPortalVersionCandidatePaths()
+	for _, want := range []string{
+		"xdg-desktop-portal",
+		"/usr/libexec/xdg-desktop-portal",
+		"/usr/lib/xdg-desktop-portal",
+		"/usr/lib/xdg-desktop-portal/xdg-desktop-portal",
+	} {
+		if !slices.Contains(candidates, want) {
+			t.Fatalf("portal candidate paths missing %q: %#v", want, candidates)
+		}
+	}
+}
+
 func TestBundleFilePermissionsAre0600(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix file mode semantics; Windows perms work differently.")
 	}
-	withCatclipTempDir(t)
+	withCatclipBundleDir(t)
 	_, restore := withBundleStub(t)
 	defer restore()
 
@@ -161,7 +344,7 @@ func TestBundleFilePermissionsAre0600(t *testing.T) {
 }
 
 func TestBundleFilenameMatchesProjectAndTimestamp(t *testing.T) {
-	withCatclipTempDir(t)
+	withCatclipBundleDir(t)
 	captured, restore := withBundleStub(t)
 	defer restore()
 
@@ -195,11 +378,14 @@ func TestBundleFilenameMatchesProjectAndTimestamp(t *testing.T) {
 }
 
 func TestBundleClearsPriorBundles(t *testing.T) {
-	withCatclipTempDir(t)
+	withCatclipBundleDir(t)
 	_, restore := withBundleStub(t)
 	defer restore()
 
-	dir := bundleTempDir()
+	env := emitEnvironment{
+		WorkingDir: t.TempDir(),
+	}
+	dir := bundleDirForEnv(env)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -207,12 +393,13 @@ func TestBundleClearsPriorBundles(t *testing.T) {
 	if err := os.WriteFile(stale, []byte("stale"), 0o600); err != nil {
 		t.Fatalf("write stale: %v", err)
 	}
+	keep := filepath.Join(dir, "keep-me.txt")
+	if err := os.WriteFile(keep, []byte("not a catclip bundle"), 0o600); err != nil {
+		t.Fatalf("write keep file: %v", err)
+	}
 
 	cfg := emitConfig{
 		OutputMode: outputModeClipboard,
-	}
-	env := emitEnvironment{
-		WorkingDir: t.TempDir(),
 	}
 	_, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, strings.Repeat("y", 5000))
@@ -223,6 +410,9 @@ func TestBundleClearsPriorBundles(t *testing.T) {
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("expected stale bundle %q removed, stat err = %v", stale, err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Fatalf("expected non-bundle file %q preserved, stat err = %v", keep, err)
 	}
 }
 
@@ -250,7 +440,7 @@ func TestBundleNoBundleParsesToConfig(t *testing.T) {
 }
 
 func TestBundleNoBundleSkipsBundleBranchAtLargePayload(t *testing.T) {
-	withCatclipTempDir(t)
+	withCatclipBundleDir(t)
 	captured, restore := withBundleStub(t)
 	defer restore()
 

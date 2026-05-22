@@ -17,6 +17,12 @@ import (
 // dispatches on this exact string to render the open-ended form.
 const linesPickerEOFToken = "EOF"
 
+type startupLinesPickerSession struct {
+	CheckpointPath string
+	Cleanup        func()
+	MaxLines       int
+}
+
 // resolveStartupLinesArgs runs the two-stage lines picker (start line, then
 // end line) and returns currentArgs extended with the chosen --lines values.
 //
@@ -30,46 +36,25 @@ const linesPickerEOFToken = "EOF"
 // Returns currentArgs+["--lines", "START"] for the open-ended choice and
 // currentArgs+["--lines", "START", "END"] otherwise.
 func resolveStartupLinesArgs(currentArgs []string) ([]string, bool, error) {
-	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
-	if err != nil {
-		return nil, false, err
-	}
-	entries := ensureEntryAbsPaths(view.Entries, view.Invocation.WorkingDir)
-	if len(entries) == 0 {
-		return nil, false, errSelectionCancelled
-	}
-	absPaths := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if strings.TrimSpace(e.AbsPath) == "" {
-			continue
-		}
-		absPaths = append(absPaths, e.AbsPath)
-	}
-	maxLines, err := maxLinesForFiles(absPaths)
-	if err != nil {
-		return nil, false, err
-	}
-	if maxLines <= 0 {
-		return nil, false, errSelectionCancelled
-	}
-	if maxLines == 1 {
-		// Single-line files in scope. A one-row picker is friction without
-		// value; emit --lines 1 directly.
-		return append(append([]string(nil), currentArgs...), "--lines", "1"), false, nil
-	}
+	return resolveStartupLinesArgsWithEscHint(currentArgs, "")
+}
 
-	checkpointPath, cleanup, err := writeLinesPickerCheckpoint(view, entries)
+func resolveStartupLinesArgsWithEscHint(currentArgs []string, escHint string) ([]string, bool, error) {
+	session, directArgs, err := prepareStartupLinesPickerSession(currentArgs)
 	if err != nil {
 		return nil, false, err
 	}
-	defer cleanup()
+	if directArgs != nil {
+		return directArgs, false, nil
+	}
+	defer session.Cleanup()
 
 	for {
-		start, err := chooseStartupStartLine(checkpointPath, maxLines)
+		start, err := chooseStartupStartLineWithEscHint(session.CheckpointPath, session.MaxLines, escHint)
 		if err != nil {
 			return nil, true, err
 		}
-		end, isOpenEnd, err := chooseStartupEndLine(checkpointPath, start, maxLines)
+		end, isOpenEnd, err := chooseStartupEndLine(session.CheckpointPath, start, session.MaxLines)
 		if errors.Is(err, errSelectionCancelled) {
 			// Two-stage backtrack: reopen the start picker.
 			continue
@@ -83,6 +68,42 @@ func resolveStartupLinesArgs(currentArgs []string) ([]string, bool, error) {
 		}
 		return args, true, nil
 	}
+}
+
+func prepareStartupLinesPickerSession(currentArgs []string) (startupLinesPickerSession, []string, error) {
+	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
+	if err != nil {
+		return startupLinesPickerSession{}, nil, err
+	}
+	entries := ensureEntryAbsPaths(view.Entries, view.Invocation.WorkingDir)
+	if len(entries) == 0 {
+		return startupLinesPickerSession{}, nil, errSelectionCancelled
+	}
+	absPaths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if strings.TrimSpace(e.AbsPath) == "" {
+			continue
+		}
+		absPaths = append(absPaths, e.AbsPath)
+	}
+	maxLines, err := maxLinesForFiles(absPaths)
+	if err != nil {
+		return startupLinesPickerSession{}, nil, err
+	}
+	if maxLines <= 0 {
+		return startupLinesPickerSession{}, nil, errSelectionCancelled
+	}
+	if maxLines == 1 {
+		// Single-line files in scope. A one-row picker is friction without
+		// value; emit --lines 1 directly.
+		return startupLinesPickerSession{}, append(append([]string(nil), currentArgs...), "--lines", "1"), nil
+	}
+
+	checkpointPath, cleanup, err := writeLinesPickerCheckpoint(view, entries)
+	if err != nil {
+		return startupLinesPickerSession{}, nil, err
+	}
+	return startupLinesPickerSession{CheckpointPath: checkpointPath, Cleanup: cleanup, MaxLines: maxLines}, nil, nil
 }
 
 // writeLinesPickerCheckpoint writes a prediscovered SCC checkpoint file
@@ -119,9 +140,13 @@ func writeLinesPickerCheckpoint(view resolvedScopeView, entries []fileEntry) (st
 }
 
 func chooseStartupStartLine(checkpointPath string, maxLines int) (int, error) {
+	return chooseStartupStartLineWithEscHint(checkpointPath, maxLines, "")
+}
+
+func chooseStartupStartLineWithEscHint(checkpointPath string, maxLines int, escHint string) (int, error) {
 	previewCmd := buildLinesPickerStartPreviewCommand(checkpointPath)
 	lines := startupLinePickerLines(1, maxLines)
-	selected, err := chooseLineWithFzf("start-line> ", linesPickerStartHeader(), lines, previewCmd)
+	selected, err := chooseLineWithFzf("start-line> ", linesPickerStartHeaderWithEscHint(escHint), lines, previewCmd)
 	if err != nil {
 		return 0, err
 	}
@@ -136,9 +161,13 @@ func chooseStartupStartLine(checkpointPath string, maxLines int) (int, error) {
 }
 
 func chooseStartupEndLine(checkpointPath string, startLine, maxLines int) (int, bool, error) {
+	return chooseStartupEndLineWithEscHint(checkpointPath, startLine, maxLines, "")
+}
+
+func chooseStartupEndLineWithEscHint(checkpointPath string, startLine, maxLines int, escHint string) (int, bool, error) {
 	previewCmd := buildLinesPickerEndPreviewCommand(checkpointPath, startLine)
 	lines := startupLineEndPickerLines(startLine, maxLines)
-	selected, err := chooseLineWithFzf("end-line> ", linesPickerEndHeader(), lines, previewCmd)
+	selected, err := chooseLineWithFzf("end-line> ", linesPickerEndHeaderWithEscHint(escHint), lines, previewCmd)
 	if err != nil {
 		return 0, false, err
 	}
@@ -234,18 +263,30 @@ func chooseLineWithFzf(prompt, header string, lines []string, previewCommand str
 }
 
 func linesPickerStartHeader() string {
+	return linesPickerStartHeaderWithEscHint("")
+}
+
+func linesPickerStartHeaderWithEscHint(escHint string) string {
 	return pickerHeader(
 		"Pick the start line.",
 		"Hover a line to preview from there to EOF.",
-		"[Up/Down] move  [Enter] confirm  [Esc] cancel",
+		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
 	)
 }
 
 func linesPickerEndHeader() string {
+	return linesPickerEndHeaderWithEscHint("")
+}
+
+func linesPickerEndHeaderWithEscHint(escHint string) string {
+	controls := "[Up/Down] move  [Enter] confirm  [Esc] back to start"
+	if escHint != "" {
+		controls = fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint))
+	}
 	return pickerHeader(
 		"Pick the end line.",
 		"[to end of file] keeps the slice open-ended.",
-		"[Up/Down] move  [Enter] confirm  [Esc] back to start",
+		controls,
 	)
 }
 

@@ -1,6 +1,7 @@
 package catclip
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,7 +12,11 @@ import (
 )
 
 func resolveStartupDepthArgs(currentArgs []string) ([]string, bool, error) {
-	depth, usedFzf, err := chooseStartupDepth(currentArgs, "")
+	return resolveStartupDepthArgsWithEscHint(currentArgs, "")
+}
+
+func resolveStartupDepthArgsWithEscHint(currentArgs []string, escHint string) ([]string, bool, error) {
+	depth, usedFzf, err := chooseStartupDepthWithEscHint(currentArgs, "", escHint)
 	if err != nil {
 		return nil, usedFzf, err
 	}
@@ -35,6 +40,10 @@ func validateStartupDepthValue(currentArgs []string, value string) (int, error) 
 }
 
 func chooseStartupDepth(currentArgs []string, query string) (int, bool, error) {
+	return chooseStartupDepthWithEscHint(currentArgs, query, "")
+}
+
+func chooseStartupDepthWithEscHint(currentArgs []string, query string, escHint string) (int, bool, error) {
 	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
 	if err != nil {
 		return 0, false, err
@@ -50,7 +59,7 @@ func chooseStartupDepth(currentArgs []string, query string) (int, bool, error) {
 		defer os.RemoveAll(tmpdir)
 	}
 
-	selected, err := chooseDepthWithFzf(query, startupDepthPickerLines(buckets), previewCmd)
+	selected, err := chooseDepthWithFzf(query, startupDepthPickerLines(buckets), previewCmd, escHint)
 	if err != nil {
 		return 0, true, err
 	}
@@ -120,7 +129,11 @@ func uniqueSortedRelPaths(entries []fileEntry) []string {
 	return out
 }
 
-func chooseDepthWithFzf(query string, lines []string, previewCommand string) (string, error) {
+func chooseDepthWithFzf(query string, lines []string, previewCommand string, escHint ...string) (string, error) {
+	hint := ""
+	if len(escHint) > 0 {
+		hint = escHint[0]
+	}
 	bin, err := fuzzyResolverBinary()
 	if err != nil {
 		return "", err
@@ -132,7 +145,7 @@ func chooseDepthWithFzf(query string, lines []string, previewCommand string) (st
 		Prompt:         "depth> ",
 		WithNth:        "1,3",
 		Nth:            "1",
-		Header:         depthPickerHeader(),
+		Header:         depthPickerHeaderWithEscHint(hint),
 		PreviewCommand: previewCommand,
 		NoSort:         true,
 		Exact:          true,
@@ -151,10 +164,14 @@ func chooseDepthWithFzf(query string, lines []string, previewCommand string) (st
 }
 
 func depthPickerHeader() string {
+	return depthPickerHeaderWithEscHint("")
+}
+
+func depthPickerHeaderWithEscHint(escHint string) string {
 	return pickerHeader(
 		"Pick maximum path depth.",
 		"Depth counts path segments from the working directory root.",
-		"[Up/Down] move  [Enter] confirm  [Esc] cancel",
+		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
 	)
 }
 

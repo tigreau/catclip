@@ -387,7 +387,6 @@ package catclip
 // =============================================================================
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -701,22 +700,11 @@ func Main() {
 	args = normResult.Args
 	startupResult := startupPickerResult{Args: args}
 	handled := false
-	startupResult, handled, err = maybeResolveStartupPickerArgs(args)
+	startupResult, handled, err = maybeResolveStartupPickerAndSinkArgs(args)
 	if err != nil {
 		exitWithError(err, os.Stderr)
 		return
 	} else if handled {
-		if startupResult.Args == nil {
-			return
-		}
-		startupResult, err = maybeResolveStartupSinkPickerArgs(args, startupResult)
-		if err != nil {
-			if errors.Is(err, errSelectionCancelled) {
-				return
-			}
-			exitWithError(err, os.Stderr)
-			return
-		}
 		if startupResult.Args == nil {
 			return
 		}
@@ -797,4 +785,3 @@ func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
 	_, err := fmt.Fprintf(stderr, "Resolved command:\n  %s\n\n", formatResolvedStartupCommand(args))
 	return err
 }
-

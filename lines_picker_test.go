@@ -1,6 +1,7 @@
 package catclip
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,8 +21,8 @@ func TestMaxLinesForFilesEmpty(t *testing.T) {
 func TestMaxLinesForFiles(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		"short.txt": "a\nb\nc\n",                // 3 lines
-		"mid.txt":   "a\nb\nc\nd\ne\nf\ng\n",    // 7 lines
+		"short.txt": "a\nb\nc\n",                  // 3 lines
+		"mid.txt":   "a\nb\nc\nd\ne\nf\ng\n",      // 7 lines
 		"long.txt":  strings.Repeat("line\n", 25), // 25 lines
 	}
 	abs := make([]string, 0, len(files))
@@ -263,5 +264,111 @@ func TestResolveStartupLinesArgsCancelStart(t *testing.T) {
 	}
 	if err.Error() != errSelectionCancelled.Error() {
 		t.Fatalf("expected errSelectionCancelled, got %v", err)
+	}
+}
+
+func TestStartupUndoLinesEndEscReopensStartLineFrame(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"data.txt": strings.Repeat("x\n", 30),
+	})
+	_ = parseInProject(t, project, []string{"data.txt"})
+
+	treeBin := filepath.Join(t.TempDir(), "catclip-tree")
+	if err := os.WriteFile(treeBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write fake catclip-tree: %v", err)
+	}
+	t.Setenv("CATCLIP_TREE", treeBin)
+
+	stateFile := filepath.Join(t.TempDir(), "lines-state")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+header=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt) prompt="$2"; shift 2 ;;
+		--header) header="$2"; shift 2 ;;
+		*) shift ;;
+	esac
+done
+input="$(cat)"
+
+case "$prompt" in
+	"filter> ")
+		printf '%%s\n' 'lines'
+		exit 0
+		;;
+	"start-line> ")
+		printf '%%s\n' "$header" | grep -F "[Esc] undo" >/dev/null || {
+			echo "start-line header should show undo: $header" >&2
+			exit 91
+		}
+		count=0
+		if [ -f %[1]q.start ]; then
+			count="$(cat %[1]q.start)"
+		fi
+		count=$((count + 1))
+		printf '%%s' "$count" > %[1]q.start
+		case "$count" in
+			1)
+				printf '%%s\n' "$input" | grep -F $'5\t5\tLine 5' | head -n 1
+				;;
+			2)
+				printf '%%s\n' "$input" | grep -F $'10\t10\tLine 10' | head -n 1
+				;;
+			*)
+				echo "unexpected start count: $count" >&2
+				exit 91
+				;;
+		esac
+		;;
+	"end-line> ")
+		printf '%%s\n' "$header" | grep -F "[Esc] undo" >/dev/null || {
+			echo "end-line header should show undo: $header" >&2
+			exit 91
+		}
+		count=0
+		if [ -f %[1]q.end ]; then
+			count="$(cat %[1]q.end)"
+		fi
+		count=$((count + 1))
+		printf '%%s' "$count" > %[1]q.end
+		case "$count" in
+			1)
+				exit 130
+				;;
+			2)
+				printf '%%s\n' "$input" | grep -F $'15\t15\tLine 15' | head -n 1
+				;;
+			*)
+				echo "unexpected end count: $count" >&2
+				exit 91
+				;;
+		esac
+		;;
+	*)
+		echo "unexpected prompt: $prompt" >&2
+		exit 91
+		;;
+esac
+`, stateFile))
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{"data.txt", "--"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected lines undo flow to use fzf")
+	}
+	if got, want := strings.Join(args, "\n"), "data.txt\n--lines\n10\n15"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }

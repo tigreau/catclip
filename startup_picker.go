@@ -217,6 +217,14 @@ var startupModifierChoices = []startupModifierChoice{
 }
 
 func maybeResolveStartupPickerArgs(args []string) (startupPickerResult, bool, error) {
+	return maybeResolveStartupInteractiveArgs(args, false)
+}
+
+func maybeResolveStartupPickerAndSinkArgs(args []string) (startupPickerResult, bool, error) {
+	return maybeResolveStartupInteractiveArgs(args, true)
+}
+
+func maybeResolveStartupInteractiveArgs(args []string, includeSink bool) (startupPickerResult, bool, error) {
 	if rawArgsHasHeadless(args) {
 		return startupPickerResult{}, false, nil
 	}
@@ -248,6 +256,17 @@ func maybeResolveStartupPickerArgs(args []string) (startupPickerResult, bool, er
 	}
 	if direct {
 		return startupPickerResult{}, false, nil
+	}
+
+	if includeSink {
+		result, err := resolveStartupPickerResultWithUndo(resolver, args)
+		if err != nil {
+			if errors.Is(err, errSelectionCancelled) {
+				return startupPickerResult{}, true, nil
+			}
+			return startupPickerResult{}, true, err
+		}
+		return result, true, nil
 	}
 
 	resolvedArgs, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, args)
@@ -870,7 +889,7 @@ func resolveStartupArgs(resolver *scopeResolver, args []string) ([]string, []str
 }
 
 func resolveInteractiveStartupArgs(resolver *scopeResolver, args []string) ([]string, []string, bool, error) {
-	return resolveStartupArgsWithMode(resolver, args, true)
+	return resolveStartupArgsWithUndo(resolver, args)
 }
 
 func resolveStartupArgsWithMode(resolver *scopeResolver, args []string, requireScopeBeforeModifiers bool) ([]string, []string, bool, error) {
@@ -1154,6 +1173,10 @@ func trimTrailingModifierPlaceholders(args []string) []string {
 }
 
 func chooseStartupModifier(currentArgs []string) (startupModifierChoice, error) {
+	return chooseStartupModifierWithEscHint(currentArgs, "")
+}
+
+func chooseStartupModifierWithEscHint(currentArgs []string, escHint string) (startupModifierChoice, error) {
 	state, err := startupCurrentScopeStateForArgs(currentArgs)
 	if err != nil {
 		return startupModifierChoice{}, err
@@ -1174,7 +1197,7 @@ func chooseStartupModifier(currentArgs []string) (startupModifierChoice, error) 
 		Prompt:  "filter> ",
 		WithNth: "1,3",
 		Nth:     "1",
-		Header:  startupModifierPickerHeader(),
+		Header:  startupModifierPickerHeaderWithEscHint(escHint),
 		NoSort:  true,
 		Lines:   lines,
 	}
@@ -1278,11 +1301,19 @@ func resolveStartupRecentArgs(currentArgs []string) ([]string, error) {
 	return resolveStartupRecentPickerArgs(currentArgs, "")
 }
 
+func resolveStartupRecentArgsWithEscHint(currentArgs []string, escHint string) ([]string, error) {
+	return resolveStartupRecentPickerArgsWithEscHint(currentArgs, "", escHint)
+}
+
 func resolveStartupContentArgs(currentArgs []string, flag string) ([]string, bool, error) {
+	return resolveStartupContentArgsWithEscHint(currentArgs, flag, "")
+}
+
+func resolveStartupContentArgsWithEscHint(currentArgs []string, flag string, escHint string) ([]string, bool, error) {
 	if err := validateCurrentScopeFlagAddition(currentArgs, flag); err != nil {
 		return nil, false, err
 	}
-	result, err := chooseContentMatchesWithFzf("", currentArgs, flag)
+	result, err := chooseContentMatchesWithFzfAndEscHint("", currentArgs, flag, escHint)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1314,11 +1345,15 @@ func resolveStartupScopeFileSetArgs(currentArgs []string, flag, prompt string) (
 }
 
 func resolveStartupScopeFileSetArgsWithQuery(currentArgs []string, flag, prompt, query string) ([]string, bool, error) {
+	return resolveStartupScopeFileSetArgsWithQueryAndEscHint(currentArgs, flag, prompt, query, "")
+}
+
+func resolveStartupScopeFileSetArgsWithQueryAndEscHint(currentArgs []string, flag, prompt, query string, escHint string) ([]string, bool, error) {
 	var values []string
 	if query != "" {
 		values = []string{query}
 	}
-	stageValues, usedFzf, err := resolveStartupModifierStageValues(currentArgs, flag, prompt, values, query == "", "")
+	stageValues, usedFzf, err := resolveStartupModifierStageValuesWithEscHint(currentArgs, flag, prompt, values, query == "", "", escHint)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1333,6 +1368,10 @@ func resolveStartupScopeFileSetArgsWithQuery(currentArgs []string, flag, prompt,
 }
 
 func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentScopeTargets, currentScopeExplicitTargets []string, choiceArgs, remaining []string, allowInteractiveCompletion bool) ([]string, []string, bool, int, error) {
+	return resolveStartupModifierStageWithEscHint(resolver, currentArgs, currentScopeTargets, currentScopeExplicitTargets, choiceArgs, remaining, allowInteractiveCompletion, "")
+}
+
+func resolveStartupModifierStageWithEscHint(resolver *scopeResolver, currentArgs, currentScopeTargets, currentScopeExplicitTargets []string, choiceArgs, remaining []string, allowInteractiveCompletion bool, escHint string) ([]string, []string, bool, int, error) {
 	if len(choiceArgs) == 0 {
 		return nil, nil, false, 0, errSelectionCancelled
 	}
@@ -1386,7 +1425,7 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 		if len(values) == 0 && !allowInteractiveCompletion {
 			return nil, nil, false, 0, requiredStageValueError(flag)
 		}
-		stageValues, usedFzf, err := resolveStartupModifierStageValues(currentArgs, flag, startupStagePrompt(flag), values, len(values) == 0, "")
+		stageValues, usedFzf, err := resolveStartupModifierStageValuesWithEscHint(currentArgs, flag, startupStagePrompt(flag), values, len(values) == 0, "", escHint)
 		if err != nil {
 			return nil, nil, false, 0, err
 		}
@@ -1403,7 +1442,7 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 				finalArgs := append(append([]string(nil), currentArgs...), flag)
 				return finalArgs, append([]string(nil), currentScopeTargets...), false, 0, nil
 			}
-			args, err := resolveStartupRecentArgs(currentArgs)
+			args, err := resolveStartupRecentArgsWithEscHint(currentArgs, escHint)
 			return args, append([]string(nil), currentScopeTargets...), true, 0, err
 		}
 		limit, err := parseRecentLimitToken(remaining[0])
@@ -1420,7 +1459,7 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 			if !allowInteractiveCompletion {
 				return nil, append([]string(nil), currentScopeTargets...), false, 0, requiredStageValueError("--depth")
 			}
-			args, usedFzf, err := resolveStartupDepthArgs(currentArgs)
+			args, usedFzf, err := resolveStartupDepthArgsWithEscHint(currentArgs, escHint)
 			return args, append([]string(nil), currentScopeTargets...), usedFzf, 0, err
 		}
 		depth, err := validateStartupDepthValue(currentArgs, remaining[0])
@@ -1441,7 +1480,7 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 		}
 		if len(remaining) == 0 || (allowInteractiveCompletion && startupRemainingIsBarePlaceholderChain(remaining)) {
 			if allowInteractiveCompletion {
-				args, usedFzf, err := resolveStartupLinesArgs(currentArgs)
+				args, usedFzf, err := resolveStartupLinesArgsWithEscHint(currentArgs, escHint)
 				return args, append([]string(nil), currentScopeTargets...), usedFzf, 0, err
 			}
 			// Bare --lines without numerics in non-interactive mode keeps
@@ -1465,7 +1504,7 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 			if !allowInteractiveCompletion {
 				return nil, append([]string(nil), currentScopeTargets...), false, 0, containsMissingPatternError(currentArgs, len(currentArgs))
 			}
-			args, usedFzf, err := resolveStartupContentArgs(currentArgs, "--contains")
+			args, usedFzf, err := resolveStartupContentArgsWithEscHint(currentArgs, "--contains", escHint)
 			return args, append([]string(nil), currentScopeTargets...), usedFzf, 0, err
 		}
 		finalArgs := append(append([]string(nil), currentArgs...), flag, remaining[0])
@@ -1478,7 +1517,7 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 			if !allowInteractiveCompletion {
 				return nil, append([]string(nil), currentScopeTargets...), false, 0, requiredStageValueError("--snippet")
 			}
-			args, usedFzf, err := resolveStartupContentArgs(currentArgs, "--snippet")
+			args, usedFzf, err := resolveStartupContentArgsWithEscHint(currentArgs, "--snippet", escHint)
 			return args, append([]string(nil), currentScopeTargets...), usedFzf, 0, err
 		}
 		finalArgs := append(append([]string(nil), currentArgs...), flag, remaining[0])
@@ -1498,7 +1537,7 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 			return finalArgs, append([]string(nil), currentScopeTargets...), false, 0, nil
 		}
 		diffPreview := false
-		argsAfterStage, usedFzf, err := resolveStartupGitScopeArgs(resolver, finalArgs, startupGitStagePrompt(flag), nil, true, diffPreview)
+		argsAfterStage, usedFzf, err := resolveStartupGitScopeArgsWithEscHint(resolver, finalArgs, startupGitStagePrompt(flag), nil, true, diffPreview, escHint)
 		if err != nil {
 			return nil, nil, false, 0, err
 		}
@@ -1514,7 +1553,7 @@ func resolveStartupModifierStage(resolver *scopeResolver, currentArgs, currentSc
 		if !resolver.gitCtx.Enabled {
 			return finalArgs, append([]string(nil), currentScopeTargets...), false, 0, nil
 		}
-		argsAfterStage, usedFzf, err := resolveStartupGitScopeArgs(resolver, finalArgs, startupGitStagePrompt(flag), nil, true, true)
+		argsAfterStage, usedFzf, err := resolveStartupGitScopeArgsWithEscHint(resolver, finalArgs, startupGitStagePrompt(flag), nil, true, true, escHint)
 		if err != nil {
 			return nil, nil, false, 0, err
 		}
@@ -1562,6 +1601,10 @@ func startupValidateGitStageArgs(currentArgs []string, flag string, choiceArgs, 
 }
 
 func resolveStartupGitScopeArgs(resolver *scopeResolver, currentArgs []string, prompt string, values []string, allowInteractiveEmpty bool, diffPreview bool) ([]string, bool, error) {
+	return resolveStartupGitScopeArgsWithEscHint(resolver, currentArgs, prompt, values, allowInteractiveEmpty, diffPreview, "")
+}
+
+func resolveStartupGitScopeArgsWithEscHint(resolver *scopeResolver, currentArgs []string, prompt string, values []string, allowInteractiveEmpty bool, diffPreview bool, escHint string) ([]string, bool, error) {
 	if !resolver.gitCtx.Enabled {
 		return append([]string(nil), currentArgs...), false, nil
 	}
@@ -1582,7 +1625,7 @@ func resolveStartupGitScopeArgs(resolver *scopeResolver, currentArgs []string, p
 	if diffPreview {
 		previewCommand = startupFileSetPreviewCommand(currentArgs, stageFlag, diffPreview)
 	}
-	stageValues, usedFzf, err := resolveStartupModifierStageValues(currentArgs, stageFlag, prompt, values, allowInteractiveEmpty, previewCommand)
+	stageValues, usedFzf, err := resolveStartupModifierStageValuesWithEscHint(currentArgs, stageFlag, prompt, values, allowInteractiveEmpty, previewCommand, escHint)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1641,6 +1684,10 @@ func startupStageSelectionCoversAll(selected, candidates []string) bool {
 }
 
 func resolveStartupModifierStageValues(currentArgs []string, flag, prompt string, values []string, allowInteractiveEmpty bool, previewCommand string) ([]string, bool, error) {
+	return resolveStartupModifierStageValuesWithEscHint(currentArgs, flag, prompt, values, allowInteractiveEmpty, previewCommand, "")
+}
+
+func resolveStartupModifierStageValuesWithEscHint(currentArgs []string, flag, prompt string, values []string, allowInteractiveEmpty bool, previewCommand string, escHint string) ([]string, bool, error) {
 	cleanupPreview := func() {}
 	defer func() {
 		cleanupPreview()
@@ -1665,7 +1712,7 @@ func resolveStartupModifierStageValues(currentArgs []string, flag, prompt string
 		if len(relPaths) == 0 {
 			return nil, false, errSelectionCancelled
 		}
-		selected, err := chooseManyStartupFileSetRowsWithFzf("", prompt, startupFileSetPickerHeader(flag), ensurePreviewCommand(), startupFileSetRows(flag, relPaths))
+		selected, err := chooseManyStartupFileSetRowsWithFzf("", prompt, startupFileSetPickerHeaderWithEscHint(flag, escHint), ensurePreviewCommand(), startupFileSetRows(flag, relPaths))
 		if err != nil {
 			return nil, false, err
 		}
@@ -1691,7 +1738,7 @@ func resolveStartupModifierStageValues(currentArgs []string, flag, prompt string
 			}
 			rows = startupFileSetRows(flag, relPaths)
 		}
-		selected, err := chooseManyStartupFileSetRowsWithFzf(value, prompt, startupFileSetPickerHeader(flag), ensurePreviewCommand(), rows)
+		selected, err := chooseManyStartupFileSetRowsWithFzf(value, prompt, startupFileSetPickerHeaderWithEscHint(flag, escHint), ensurePreviewCommand(), rows)
 		if err != nil {
 			return nil, false, err
 		}
@@ -1769,12 +1816,17 @@ func startupStagePrompt(flag string) string {
 }
 
 func startupFileSetPickerHeader(flag string) string {
+	return startupFileSetPickerHeaderWithEscHint(flag, "")
+}
+
+func startupFileSetPickerHeaderWithEscHint(flag, escHint string) string {
+	controls := fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  %s", multiSelectToggleAllKey(), startupEscLabel(escHint))
 	switch flag {
 	case "--exclude":
 		return pickerHeader(
 			"Remove files whose paths match.",
 			"Type a path pattern.",
-			fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
+			controls,
 		)
 	case "--changed", "--changed-diff":
 		firstLine := "Pick git-changed files."
@@ -1784,7 +1836,7 @@ func startupFileSetPickerHeader(flag string) string {
 		return pickerHeader(
 			firstLine,
 			"Type a path to narrow the list.",
-			fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
+			controls,
 		)
 	case "--staged", "--staged-diff":
 		firstLine := "Pick git-staged files."
@@ -1794,7 +1846,7 @@ func startupFileSetPickerHeader(flag string) string {
 		return pickerHeader(
 			firstLine,
 			"Type a path to narrow the list.",
-			fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
+			controls,
 		)
 	case "--unstaged", "--unstaged-diff":
 		firstLine := "Pick git-unstaged files."
@@ -1804,19 +1856,19 @@ func startupFileSetPickerHeader(flag string) string {
 		return pickerHeader(
 			firstLine,
 			"Type a path to narrow the list.",
-			fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
+			controls,
 		)
 	case "--untracked":
 		return pickerHeader(
 			"Pick untracked files.",
 			"Type a path to narrow the list.",
-			fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
+			controls,
 		)
 	default:
 		return pickerHeader(
 			"Keep only files whose paths match.",
 			"Type a path pattern.",
-			fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  [Esc] cancel", multiSelectToggleAllKey()),
+			controls,
 		)
 	}
 }
@@ -2490,9 +2542,13 @@ func startupModifierChoiceLines(choices []startupModifierChoice) ([]string, map[
 }
 
 func startupModifierPickerHeader() string {
+	return startupModifierPickerHeaderWithEscHint("")
+}
+
+func startupModifierPickerHeaderWithEscHint(escHint string) string {
 	return pickerHeader(
 		"Choose what to do next.",
 		"Preview shows the current files.",
-		"[Up/Down] move  [Enter] confirm  [Esc] cancel",
+		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
 	)
 }

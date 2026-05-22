@@ -238,6 +238,102 @@ exit 91
 	}
 }
 
+func TestStartupUndoEscFromSinkReturnsToPreviousPicker(t *testing.T) {
+	if !canPromptInteractively() {
+		t.Skip("interactive terminal not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.go":     "package src\n",
+		"shared/util.go":  "package shared\n",
+		"shared/extra.go": "package shared\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "fzf-state")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+case "$prompt" in
+	"select> ")
+		select_count=0
+		if [ -f %[1]q.select ]; then
+			select_count="$(cat %[1]q.select)"
+		fi
+		select_count=$((select_count + 1))
+		printf '%%s' "$select_count" > %[1]q.select
+		case "$select_count" in
+			1)
+				printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+				;;
+			2)
+				printf '%%s\n' "$input" | grep -F "[dir] shared" | head -n 1
+				;;
+			*)
+				echo "unexpected select count: $select_count" >&2
+				exit 91
+				;;
+		esac
+		;;
+	"output> ")
+		output_count=0
+		if [ -f %[1]q.output ]; then
+			output_count="$(cat %[1]q.output)"
+		fi
+		output_count=$((output_count + 1))
+		printf '%%s' "$output_count" > %[1]q.output
+		case "$output_count" in
+			1)
+				exit 130
+				;;
+			2)
+				printf '%%s\n' 'stdout'
+				;;
+			*)
+				echo "unexpected output count: $output_count" >&2
+				exit 91
+				;;
+		esac
+		;;
+	*)
+		echo "unexpected prompt: $prompt" >&2
+		exit 91
+		;;
+esac
+`, stateFile))
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	result, err := resolveStartupPickerResultWithUndo(resolver, nil)
+	if err != nil {
+		t.Fatalf("resolveStartupPickerResultWithUndo returned error: %v", err)
+	}
+	if !result.UsedFzf {
+		t.Fatal("expected sink undo flow to use fzf")
+	}
+	if result.PreparedOutput == nil {
+		t.Fatal("expected prepared output from selected sink")
+	}
+	if got, want := strings.Join(result.Args, "\n"), "shared\n-p"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
 func TestSinkPreviewTogglePersistsAcrossPreviewReruns(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script preview toggle cannot run on Windows")

@@ -221,6 +221,10 @@ func measureOutputForSinkMenu(plan outputPlan, emitCfg emitConfig) sinkPayloadMe
 }
 
 func pickOutputSink(ctx startupSinkPickerContext, measurement sinkPayloadMeasurement) ([]string, bool, error) {
+	return pickOutputSinkWithEscHint(ctx, measurement, "")
+}
+
+func pickOutputSinkWithEscHint(ctx startupSinkPickerContext, measurement sinkPayloadMeasurement, escHint string) ([]string, bool, error) {
 	choices := startupSinkChoicesSmall
 	if measurement.WouldBundle {
 		choices = startupSinkChoicesLarge
@@ -240,7 +244,7 @@ func pickOutputSink(ctx startupSinkPickerContext, measurement sinkPayloadMeasure
 		Prompt:         "output> ",
 		WithNth:        "1,3",
 		Nth:            "1,3",
-		Header:         startupSinkPickerHeader(),
+		Header:         startupSinkPickerHeaderWithEscHint(escHint),
 		PreviewCommand: files.PreviewCommand,
 		PreviewWindow:  picker.DefaultPreviewWindow,
 		Bindings:       []string{files.ToggleBinding},
@@ -282,11 +286,15 @@ func startupSinkChoiceLines(choices []startupSinkChoice) ([]string, map[string]s
 }
 
 func startupSinkPickerHeader() string {
+	return startupSinkPickerHeaderWithEscHint("")
+}
+
+func startupSinkPickerHeaderWithEscHint(escHint string) string {
 	return pickerHeader(
 		"Pick where the output should go.",
 		"Preview defaults to output text.",
 		"[Ctrl-T] toggle output/tree preview",
-		"[Up/Down] move  [Enter] confirm  [Esc] cancel",
+		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
 	)
 }
 

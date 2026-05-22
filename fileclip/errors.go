@@ -1,6 +1,13 @@
 package fileclip
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
+
+// MinimumGNOMEFileClipboardMajor is the oldest GNOME major version verified to
+// support browser-oriented Wayland file-reference clipboard writes.
+const MinimumGNOMEFileClipboardMajor = 46
 
 var (
 	// ErrFileNotFound is returned when a path does not exist on disk.
@@ -14,8 +21,17 @@ var (
 	// yet have a clipboard implementation.
 	ErrUnsupportedPlatform = errors.New("fileclip: unsupported platform")
 
+	// ErrX11Unsupported is returned on Linux X11 sessions. X11 file-reference
+	// clipboard offers are not supported because browser file-upload paste is
+	// unreliable even for native Nautilus clipboard states.
+	ErrX11Unsupported = errors.New("fileclip: X11 file-reference clipboard is not supported")
+
+	// ErrLegacyGNOMEUnsupported is returned on GNOME Wayland versions older
+	// than the tested browser/file-reference clipboard support baseline.
+	ErrLegacyGNOMEUnsupported = errors.New(fmt.Sprintf("fileclip: GNOME below %d file-reference clipboard is not supported", MinimumGNOMEFileClipboardMajor))
+
 	// ErrToolNotFound is returned when the required clipboard tool
-	// (osascript, xclip, wl-copy, powershell) is not installed.
+	// (osascript, wl-copy, powershell) is not installed.
 	// Callers can use this to fall back to text clipboard or prompt the
 	// user to install the missing tool.
 	ErrToolNotFound = errors.New("fileclip: clipboard tool not found")

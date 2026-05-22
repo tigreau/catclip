@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // isWSL detects Windows Subsystem for Linux.
@@ -24,14 +26,88 @@ func isWSL() bool {
 }
 
 func isWayland() bool {
-	return os.Getenv("WAYLAND_DISPLAY") != ""
+	return strings.EqualFold(os.Getenv("XDG_SESSION_TYPE"), "wayland") || os.Getenv("WAYLAND_DISPLAY") != ""
+}
+
+func isGNOMEDesktop() bool {
+	desktop := strings.ToLower(os.Getenv("XDG_CURRENT_DESKTOP"))
+	for _, part := range strings.FieldsFunc(desktop, func(r rune) bool {
+		return r == ':' || r == ';' || r == ',' || r == ' '
+	}) {
+		if part == "gnome" {
+			return true
+		}
+	}
+	return false
+}
+
+func gnomeMajorVersion() (int, bool) {
+	raw := strings.TrimSpace(os.Getenv("CATCLIP_GNOME_VERSION"))
+	if raw == "" {
+		out, err := exec.Command("gnome-shell", "--version").Output()
+		if err != nil {
+			return 0, false
+		}
+		raw = string(out)
+	}
+
+	for _, field := range strings.Fields(raw) {
+		field = strings.TrimLeft(field, "vV")
+		majorText := field
+		if idx := strings.IndexAny(majorText, ".-+"); idx >= 0 {
+			majorText = majorText[:idx]
+		}
+		if majorText == "" {
+			continue
+		}
+		var major int
+		if _, err := fmt.Sscanf(majorText, "%d", &major); err == nil {
+			return major, true
+		}
+	}
+	return 0, false
+}
+
+func legacyGNOMEWaylandUnsupported() bool {
+	if !isGNOMEDesktop() {
+		return false
+	}
+	major, ok := gnomeMajorVersion()
+	return ok && major < MinimumGNOMEFileClipboardMajor
 }
 
 // pathToFileURI converts an absolute path to a file:// URI with proper
-// percent-encoding (spaces → %20, etc.), matching the text/uri-list spec.
+// percent-encoding (spaces -> %20, etc.), matching the text/uri-list spec.
 func pathToFileURI(path string) string {
 	u := url.URL{Scheme: "file", Path: path}
 	return u.String()
+}
+
+// linuxClipboardPayload holds the MIME type and body for a Wayland clipboard
+// write. GNOME Wayland browser upload paste works from a live text/uri-list
+// offer.
+type linuxClipboardPayload struct {
+	MIMEType string
+	Body     string
+}
+
+func linuxFileURIs(paths []string) []string {
+	uris := make([]string, 0, len(paths))
+	for _, p := range paths {
+		uris = append(uris, pathToFileURI(p))
+	}
+	return uris
+}
+
+// linuxClipboardPayloadForWayland builds the clipboard payload for the Wayland
+// backend. X11 file-reference clipboard writes are intentionally unsupported.
+func linuxClipboardPayloadForWayland(paths []string) linuxClipboardPayload {
+	uris := linuxFileURIs(paths)
+	return linuxClipboardPayload{
+		MIMEType: "text/uri-list",
+		// Standard text/uri-list payloads use CRLF line endings (RFC 2483).
+		Body: strings.Join(uris, "\r\n") + "\r\n",
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -43,54 +119,66 @@ func copyPlatform(paths []string) error {
 		return copyWSL(paths)
 	}
 
-	// Build text/uri-list payload with CRLF line endings (per RFC 2483).
-	var uris []string
-	for _, p := range paths {
-		uris = append(uris, pathToFileURI(p))
-	}
-	payload := strings.Join(uris, "\r\n") + "\r\n"
-
 	if isWayland() {
-		return copyWayland(payload)
+		if legacyGNOMEWaylandUnsupported() {
+			return ErrLegacyGNOMEUnsupported
+		}
+		payload := linuxClipboardPayloadForWayland(paths)
+		return copyWayland(payload.Body, payload.MIMEType)
 	}
-	return copyX11(payload)
+	return ErrX11Unsupported
 }
 
-func copyX11(payload string) error {
-	if _, err := exec.LookPath("xclip"); err != nil {
-		// Keep the error minimal — catclip overrides the presentation with
-		// a multi-distro install hint via clipboardInstallHint. Standalone
-		// fileclip consumers see a sensible base message they can format.
-		return fmt.Errorf("%w: xclip not found", ErrToolNotFound)
-	}
-	cmd := exec.Command("xclip", "-selection", "clipboard", "-t", "text/uri-list")
-	cmd.Stdin = strings.NewReader(payload)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("%w: xclip: %v", ErrToolFailed, err)
-	}
-	return nil
-}
-
-func copyWayland(payload string) error {
+func copyWayland(payload, mimeType string) error {
 	if _, err := exec.LookPath("wl-copy"); err != nil {
-		// See copyX11: minimal message; catclip provides the install hint.
+		// Keep the message minimal; catclip provides the install hint.
 		return fmt.Errorf("%w: wl-copy not found", ErrToolNotFound)
 	}
-	cmd := exec.Command("wl-copy", "--type", "text/uri-list")
-	cmd.Stdin = strings.NewReader(payload)
-	// Do not capture stderr. wl-copy forks into the background holding the pipe,
-	// which causes cmd.Run() to block forever.
-	if err := cmd.Run(); err != nil {
+
+	payloadFile, err := os.CreateTemp("", "fileclip-wayland-payload-*")
+	if err != nil {
+		return fmt.Errorf("%w: wl-copy: %v", ErrToolFailed, err)
+	}
+	payloadPath := payloadFile.Name()
+	defer os.Remove(payloadPath)
+	if _, err := payloadFile.WriteString(payload); err != nil {
+		_ = payloadFile.Close()
+		return fmt.Errorf("%w: wl-copy: %v", ErrToolFailed, err)
+	}
+	if err := payloadFile.Close(); err != nil {
+		return fmt.Errorf("%w: wl-copy: %v", ErrToolFailed, err)
+	}
+
+	stdin, err := os.Open(payloadPath)
+	if err != nil {
+		return fmt.Errorf("%w: wl-copy: %v", ErrToolFailed, err)
+	}
+	defer stdin.Close()
+
+	devNull, err := os.Open(os.DevNull)
+	if err != nil {
+		return fmt.Errorf("%w: wl-copy: %v", ErrToolFailed, err)
+	}
+	defer devNull.Close()
+
+	cmd := exec.Command("wl-copy", "--foreground", "--type", mimeType)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	cmd.Stdin = stdin
+	cmd.Stdout = devNull
+	cmd.Stderr = devNull
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("%w: wl-copy: %v", ErrToolFailed, err)
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	// wl-copy must remain alive to serve the Wayland clipboard. Running it in
+	// foreground mode and releasing the process lets this short-lived CLI exit.
+	if err := cmd.Process.Release(); err != nil {
 		return fmt.Errorf("%w: wl-copy: %v", ErrToolFailed, err)
 	}
 	return nil
 }
 
-// copyWSL uses powershell.exe to set file references on the Windows clipboard.
-// Note: clip.exe is text-only and cannot set file references — we must use
-// PowerShell's Set-Clipboard -Path which sets the CF_HDROP format.
-// Paths are converted from WSL format (/mnt/c/...) to Windows format (C:\...)
-// using wslpath.
 func copyWSL(paths []string) error {
 	var winPaths []string
 	for _, p := range paths {
@@ -142,23 +230,20 @@ func pastePlatform() ([]string, error) {
 	if isWayland() {
 		return pasteWayland()
 	}
-	return pasteX11()
-}
-
-func pasteX11() ([]string, error) {
-	cmd := exec.Command("xclip", "-selection", "clipboard", "-t", "text/uri-list", "-o")
-	out, err := cmd.Output()
-	if err != nil {
-		return nil, ErrNoFileRefs
-	}
-	return parseURIList(string(out))
+	return nil, ErrX11Unsupported
 }
 
 func pasteWayland() ([]string, error) {
+	// Try standard text/uri-list first, then fall back to
+	// x-special/gnome-copied-files for GNOME-family desktops.
 	cmd := exec.Command("wl-paste", "--type", "text/uri-list")
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, ErrNoFileRefs
+		cmd = exec.Command("wl-paste", "--type", "x-special/gnome-copied-files")
+		out, err = cmd.Output()
+		if err != nil {
+			return nil, ErrNoFileRefs
+		}
 	}
 	return parseURIList(string(out))
 }
@@ -192,7 +277,8 @@ func pasteWSL() ([]string, error) {
 	return paths, nil
 }
 
-// parseURIList parses a text/uri-list payload (RFC 2483) into file paths.
+// parseURIList parses a text/uri-list payload (RFC 2483) or an
+// x-special/gnome-copied-files payload into file paths.
 // Lines starting with # are comments. URIs are percent-decoded.
 func parseURIList(raw string) ([]string, error) {
 	var paths []string
@@ -201,6 +287,12 @@ func parseURIList(raw string) ([]string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+
+		// x-special/gnome-copied-files starts with "copy" or "cut".
+		if line == "copy" || line == "cut" {
+			continue
+		}
+
 		u, err := url.Parse(line)
 		if err != nil || u.Scheme != "file" {
 			continue
@@ -224,25 +316,19 @@ func hasPlatform() (bool, error) {
 	if isWayland() {
 		return hasWayland()
 	}
-	return hasX11()
-}
-
-func hasX11() (bool, error) {
-	cmd := exec.Command("xclip", "-selection", "clipboard", "-t", "TARGETS", "-o")
-	out, err := cmd.Output()
-	if err != nil {
-		return false, nil
-	}
-	return strings.Contains(string(out), "text/uri-list"), nil
+	return false, ErrX11Unsupported
 }
 
 func hasWayland() (bool, error) {
+	// Check available types for either text/uri-list (KDE, standard) or
+	// x-special/gnome-copied-files (GNOME-family desktops).
 	cmd := exec.Command("wl-paste", "--list-types")
 	out, err := cmd.Output()
 	if err != nil {
 		return false, nil
 	}
-	return strings.Contains(string(out), "text/uri-list"), nil
+	outStr := string(out)
+	return strings.Contains(outStr, "text/uri-list") || strings.Contains(outStr, "x-special/gnome-copied-files"), nil
 }
 
 func hasWSL() (bool, error) {

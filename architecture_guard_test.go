@@ -30,6 +30,7 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	// genuinely needs the bare binary path (not the wrapped operations).
 	requireCallOnlyInAllowedFiles(t, files, "ripgrepBinary",
 		[]string{"ripgrep.go", "bundled_tools.go"})
+	requireInteractivePickersAvoidPersistentSideEffects(t, files)
 }
 
 type parsedGoFile struct {
@@ -157,6 +158,60 @@ func requireCallOnlyInAllowedFiles(t *testing.T, files []parsedGoFile, callee st
 			}
 			if ident.Name == callee {
 				t.Errorf("%s calls %s; expected calls only from %v", parsed.name, callee, allowed)
+			}
+			return true
+		})
+	}
+}
+
+func requireInteractivePickersAvoidPersistentSideEffects(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	pickerFiles := []string{
+		"depth_picker.go",
+		"lines_picker.go",
+		"recent_picker.go",
+		"startup_picker.go",
+		"startup_sink_picker.go",
+		"startup_undo.go",
+	}
+	// Undo depends on picker frames being replayable. Temp checkpoint writes
+	// and emit-shaped previews are allowed, but final sinks, editor launch,
+	// user-file mutation, and git mutation do not belong in picker files.
+	for _, callee := range []string{
+		"emitOutputPlan",
+		"streamToTextClipboard",
+		"emitBufferedToTextClipboard",
+		"emitBundle",
+		"fileclipCopy",
+		"writeClipboardSuccess",
+		"runEditHiss",
+		"runResetHiss",
+		"resolveEditorCommand",
+		"ensureGlobalHiss",
+		"runGitNoOutput",
+	} {
+		requireNoDirectCallsInFiles(t, files, pickerFiles, callee)
+	}
+}
+
+func requireNoDirectCallsInFiles(t *testing.T, files []parsedGoFile, filenames []string, callee string) {
+	t.Helper()
+	fileSet := make(map[string]struct{}, len(filenames))
+	for _, name := range filenames {
+		fileSet[name] = struct{}{}
+	}
+	for _, parsed := range files {
+		if _, ok := fileSet[parsed.name]; !ok {
+			continue
+		}
+		ast.Inspect(parsed.file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := call.Fun.(*ast.Ident)
+			if ok && ident.Name == callee {
+				t.Errorf("%s calls %s; interactive picker frames must stay replayable and side-effect free", parsed.name, callee)
 			}
 			return true
 		})

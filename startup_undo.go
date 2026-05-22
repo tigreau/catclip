@@ -1,0 +1,586 @@
+package catclip
+
+import (
+	"strconv"
+	"strings"
+)
+
+type startupInteractiveFrameKind string
+
+const (
+	startupInteractiveFrameTarget     startupInteractiveFrameKind = "target"
+	startupInteractiveFrameModifier   startupInteractiveFrameKind = "modifier"
+	startupInteractiveFrameStage      startupInteractiveFrameKind = "stage"
+	startupInteractiveFrameLinesStart startupInteractiveFrameKind = "lines-start"
+	startupInteractiveFrameLinesEnd   startupInteractiveFrameKind = "lines-end"
+	startupInteractiveFrameSink       startupInteractiveFrameKind = "sink"
+)
+
+type startupInteractiveFrame struct {
+	Kind                       startupInteractiveFrameKind
+	StartArgs                  []string
+	PendingArgs                []string
+	EscHint                    string
+	TargetTokens               []string
+	IncludeQueries             []string
+	TargetPrompt               string
+	ChoiceArgs                 []string
+	AllowInteractiveCompletion bool
+	LinesCheckpointPath        string
+	LinesCleanup               func()
+	LinesMax                   int
+	LinesStart                 int
+}
+
+type startupInteractiveFrameResult struct {
+	Args                 []string
+	Pending              []string
+	UsedFzf              bool
+	NextFrame            *startupInteractiveFrame
+	ScopePaths           []string
+	PreparedOutput       *startupPreparedOutputState
+	ForceResolvedCommand bool
+	SinkResolved         bool
+}
+
+func resolveStartupArgsWithUndo(resolver *scopeResolver, args []string) ([]string, []string, bool, error) {
+	result, err := resolveStartupWithUndo(resolver, args, startupUndoOptions{})
+	if err != nil {
+		return nil, nil, result.UsedFzf, err
+	}
+	return result.Args, result.ScopePaths, result.UsedFzf, nil
+}
+
+func resolveStartupPickerResultWithUndo(resolver *scopeResolver, rawArgs []string) (startupPickerResult, error) {
+	result, err := resolveStartupWithUndo(resolver, rawArgs, startupUndoOptions{
+		RawArgs:     rawArgs,
+		IncludeSink: true,
+	})
+	if err != nil {
+		return startupPickerResult{UsedFzf: result.UsedFzf}, err
+	}
+	return startupPickerResult{
+		Args:                 result.Args,
+		UsedFzf:              result.UsedFzf,
+		PreparedOutput:       result.PreparedOutput,
+		ForceResolvedCommand: result.ForceResolvedCommand,
+	}, nil
+}
+
+type startupUndoOptions struct {
+	RawArgs     []string
+	IncludeSink bool
+}
+
+type startupUndoResult struct {
+	Args                 []string
+	ScopePaths           []string
+	UsedFzf              bool
+	PreparedOutput       *startupPreparedOutputState
+	ForceResolvedCommand bool
+}
+
+func resolveStartupWithUndo(resolver *scopeResolver, args []string, opts startupUndoOptions) (startupUndoResult, error) {
+	currentArgs := []string{}
+	pendingArgs := cloneStringSlice(args)
+	history := make([]startupInteractiveFrame, 0, 8)
+	var queuedFrame *startupInteractiveFrame
+	usedFzf := false
+	sinkResolved := false
+	var preparedOutput *startupPreparedOutputState
+	forceResolvedCommand := false
+
+	for {
+		var frame startupInteractiveFrame
+		if queuedFrame != nil {
+			frame = *queuedFrame
+			queuedFrame = nil
+		} else {
+			next, doneArgs, done, err := nextStartupInteractiveFrame(resolver, currentArgs, pendingArgs)
+			if err != nil {
+				return startupUndoResult{}, err
+			}
+			if done {
+				if opts.IncludeSink && !sinkResolved && usedFzf && len(doneArgs) > 0 && !rawArgsSkipOutputSinkPicker(opts.RawArgs) {
+					frame = startupInteractiveFrame{
+						Kind:      startupInteractiveFrameSink,
+						StartArgs: cloneStringSlice(doneArgs),
+					}
+				} else {
+					scopePaths, _ := startupFrameCurrentScopeSelections(doneArgs)
+					cleanupStartupFrames(history)
+					return startupUndoResult{
+						Args:                 doneArgs,
+						ScopePaths:           scopePaths,
+						UsedFzf:              usedFzf,
+						PreparedOutput:       preparedOutput,
+						ForceResolvedCommand: forceResolvedCommand,
+					}, nil
+				}
+			} else {
+				frame = next
+			}
+		}
+
+		frame.EscHint = startupEscHintForDepth(len(history) + 1)
+		result, err := runStartupInteractiveFrame(resolver, frame, opts.RawArgs)
+		if err != nil {
+			if err == errSelectionCancelled {
+				preparedOutput = nil
+				forceResolvedCommand = false
+				sinkResolved = false
+				if len(history) == 0 {
+					return startupUndoResult{UsedFzf: usedFzf}, errSelectionCancelled
+				}
+				previous := history[len(history)-1]
+				history = history[:len(history)-1]
+				currentArgs = cloneStringSlice(previous.StartArgs)
+				pendingArgs = cloneStringSlice(previous.PendingArgs)
+				queuedFrame = &previous
+				continue
+			}
+			cleanupStartupFrames(history)
+			return startupUndoResult{}, err
+		}
+
+		if result.UsedFzf {
+			history = append(history, frame)
+			usedFzf = true
+		}
+		if result.SinkResolved {
+			sinkResolved = true
+			preparedOutput = result.PreparedOutput
+			forceResolvedCommand = forceResolvedCommand || result.ForceResolvedCommand
+		}
+		currentArgs = cloneStringSlice(result.Args)
+		pendingArgs = cloneStringSlice(result.Pending)
+		if result.NextFrame != nil {
+			queuedFrame = result.NextFrame
+		}
+	}
+}
+
+func nextStartupInteractiveFrame(resolver *scopeResolver, currentArgs, pendingArgs []string) (startupInteractiveFrame, []string, bool, error) {
+	args := cloneStringSlice(currentArgs)
+	pending := cloneStringSlice(pendingArgs)
+
+	for {
+		if len(pending) == 0 {
+			if !startupFrameCurrentScopeHasInput(args) {
+				return startupInteractiveFrame{
+					Kind:         startupInteractiveFrameTarget,
+					StartArgs:    cloneStringSlice(args),
+					PendingArgs:  nil,
+					TargetPrompt: startupFrameTargetPrompt(args),
+				}, nil, false, nil
+			}
+			return startupInteractiveFrame{}, args, true, nil
+		}
+
+		arg := pending[0]
+		if !startupFrameCurrentScopeHasInput(args) && startupLeadingModifierNeedsInitialScope(arg) {
+			return startupInteractiveFrame{
+				Kind:         startupInteractiveFrameTarget,
+				StartArgs:    cloneStringSlice(args),
+				PendingArgs:  cloneStringSlice(pending),
+				TargetPrompt: startupFrameTargetPrompt(args),
+			}, nil, false, nil
+		}
+
+		switch arg {
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
+			args = append(args, arg)
+			pending = pending[1:]
+			continue
+		case "--then":
+			args = append(args, "--then")
+			pending = pending[1:]
+			continue
+		case "--":
+			return startupInteractiveFrame{
+				Kind:        startupInteractiveFrameModifier,
+				StartArgs:   cloneStringSlice(args),
+				PendingArgs: cloneStringSlice(pending[1:]),
+			}, nil, false, nil
+		case "--include", "--only", "--exclude", "--contains", "--snippet", "--recent", "--depth", "--paths", "--lines",
+			"--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff":
+			return startupInteractiveFrame{
+				Kind:                       startupInteractiveFrameStage,
+				StartArgs:                  cloneStringSlice(args),
+				PendingArgs:                cloneStringSlice(pending[1:]),
+				ChoiceArgs:                 []string{arg},
+				AllowInteractiveCompletion: false,
+			}, nil, false, nil
+		default:
+			switch {
+			case strings.HasPrefix(arg, "--contains="):
+				return startupInteractiveFrame{}, nil, false, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
+			case strings.HasPrefix(arg, "--recent="):
+				return startupInteractiveFrame{}, nil, false, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
+			case strings.HasPrefix(arg, "--depth="):
+				return startupInteractiveFrame{}, nil, false, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
+			case strings.HasPrefix(arg, "--"):
+				return startupInteractiveFrame{}, nil, false, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
+			case strings.HasPrefix(arg, "-") && len(arg) > 1:
+				return startupInteractiveFrame{}, nil, false, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
+			}
+			if startupFrameCurrentScopeHasModifier(args) {
+				return startupInteractiveFrame{}, nil, false, positionalAfterModifierError()
+			}
+			return startupInteractiveFrame{
+				Kind:         startupInteractiveFrameTarget,
+				StartArgs:    cloneStringSlice(args),
+				PendingArgs:  cloneStringSlice(pending[1:]),
+				TargetTokens: []string{arg},
+				TargetPrompt: startupFrameTargetPrompt(args),
+			}, nil, false, nil
+		}
+	}
+}
+
+func runStartupInteractiveFrame(resolver *scopeResolver, frame startupInteractiveFrame, rawArgs []string) (startupInteractiveFrameResult, error) {
+	switch frame.Kind {
+	case startupInteractiveFrameTarget:
+		return runStartupTargetFrame(resolver, frame)
+	case startupInteractiveFrameModifier:
+		return runStartupModifierFrame(frame)
+	case startupInteractiveFrameStage:
+		return runStartupStageFrame(resolver, frame)
+	case startupInteractiveFrameLinesStart:
+		return runStartupLinesStartFrame(frame)
+	case startupInteractiveFrameLinesEnd:
+		return runStartupLinesEndFrame(frame)
+	case startupInteractiveFrameSink:
+		return runStartupSinkFrame(frame, rawArgs)
+	default:
+		return startupInteractiveFrameResult{}, errSelectionCancelled
+	}
+}
+
+func cleanupStartupFrames(frames []startupInteractiveFrame) {
+	for _, frame := range frames {
+		if frame.LinesCleanup != nil {
+			frame.LinesCleanup()
+		}
+	}
+}
+
+func runStartupSinkFrame(frame startupInteractiveFrame, rawArgs []string) (startupInteractiveFrameResult, error) {
+	ctx, err := buildStartupSinkPickerContext(frame.StartArgs)
+	if err != nil {
+		return startupInteractiveFrameResult{}, err
+	}
+	measurement := measureOutputForSinkMenu(ctx.Plan, ctx.Emit)
+	sinkArgs, usedFzf, err := pickOutputSinkWithEscHint(ctx, measurement, frame.EscHint)
+	if err != nil {
+		return startupInteractiveFrameResult{UsedFzf: usedFzf}, err
+	}
+	return startupInteractiveFrameResult{
+		Args:                 append(cloneStringSlice(frame.StartArgs), sinkArgs...),
+		UsedFzf:              usedFzf,
+		PreparedOutput:       &startupPreparedOutputState{Git: ctx.Git, Discovery: ctx.Discovery, Plan: ctx.Plan},
+		ForceResolvedCommand: argsContain(sinkArgs, "--headless") && !rawArgsRequestQuiet(rawArgs),
+		SinkResolved:         true,
+	}, nil
+}
+
+func runStartupLinesStartFrame(frame startupInteractiveFrame) (startupInteractiveFrameResult, error) {
+	start, err := chooseStartupStartLineWithEscHint(frame.LinesCheckpointPath, frame.LinesMax, frame.EscHint)
+	if err != nil {
+		if frame.LinesCleanup != nil {
+			frame.LinesCleanup()
+		}
+		return startupInteractiveFrameResult{UsedFzf: true}, err
+	}
+	next := frame
+	next.Kind = startupInteractiveFrameLinesEnd
+	next.LinesStart = start
+	return startupInteractiveFrameResult{
+		Args:      cloneStringSlice(frame.StartArgs),
+		Pending:   cloneStringSlice(frame.PendingArgs),
+		UsedFzf:   true,
+		NextFrame: &next,
+	}, nil
+}
+
+func runStartupLinesEndFrame(frame startupInteractiveFrame) (startupInteractiveFrameResult, error) {
+	end, isOpenEnd, err := chooseStartupEndLineWithEscHint(frame.LinesCheckpointPath, frame.LinesStart, frame.LinesMax, frame.EscHint)
+	if err != nil {
+		if err != errSelectionCancelled && frame.LinesCleanup != nil {
+			frame.LinesCleanup()
+		}
+		return startupInteractiveFrameResult{UsedFzf: true}, err
+	}
+	args := append(cloneStringSlice(frame.StartArgs), "--lines", strconv.Itoa(frame.LinesStart))
+	if !isOpenEnd {
+		args = append(args, strconv.Itoa(end))
+	}
+	return startupInteractiveFrameResult{
+		Args:    args,
+		Pending: cloneStringSlice(frame.PendingArgs),
+		UsedFzf: true,
+	}, nil
+}
+
+func runStartupTargetFrame(resolver *scopeResolver, frame startupInteractiveFrame) (startupInteractiveFrameResult, error) {
+	currentScopeTargets, currentScopeExplicitTargets := startupFrameCurrentScopeSelections(frame.StartArgs)
+	oldEscHint := resolver.startupEscHint
+	resolver.startupEscHint = frame.EscHint
+	defer func() {
+		resolver.startupEscHint = oldEscHint
+	}()
+	resolvedArgs, resolvedTargets, _, usedFzf, err := resolveStartupScopeInputsWithPrompt(
+		resolver,
+		frame.TargetTokens,
+		frame.IncludeQueries,
+		currentScopeTargets,
+		currentScopeExplicitTargets,
+		frame.TargetPrompt,
+	)
+	if err != nil {
+		return startupInteractiveFrameResult{UsedFzf: usedFzf}, err
+	}
+	finalArgs := append(cloneStringSlice(frame.StartArgs), resolvedArgs...)
+	return startupInteractiveFrameResult{
+		Args:       finalArgs,
+		Pending:    cloneStringSlice(frame.PendingArgs),
+		UsedFzf:    usedFzf,
+		ScopePaths: append(currentScopeTargets, resolvedTargets...),
+	}, nil
+}
+
+func runStartupModifierFrame(frame startupInteractiveFrame) (startupInteractiveFrameResult, error) {
+	choice, err := chooseStartupModifierWithEscHint(frame.StartArgs, frame.EscHint)
+	if err != nil {
+		return startupInteractiveFrameResult{UsedFzf: true}, err
+	}
+	if err := startupValidateModifierChoice(frame.StartArgs, choice); err != nil {
+		return startupInteractiveFrameResult{UsedFzf: true}, err
+	}
+
+	finalArgs := trimTrailingModifierPlaceholders(cloneStringSlice(frame.StartArgs))
+	switch choice.Mode {
+	case startupModifierModeThen:
+		return startupInteractiveFrameResult{
+			Args:    append(finalArgs, "--then"),
+			Pending: cloneStringSlice(frame.PendingArgs),
+			UsedFzf: true,
+		}, nil
+	case startupModifierModeFlags:
+		return startupInteractiveFrameResult{
+			Args:    append(finalArgs, choice.Args...),
+			Pending: cloneStringSlice(frame.PendingArgs),
+			UsedFzf: true,
+		}, nil
+	default:
+		next := startupInteractiveFrame{
+			Kind:                       startupInteractiveFrameStage,
+			StartArgs:                  finalArgs,
+			PendingArgs:                cloneStringSlice(frame.PendingArgs),
+			ChoiceArgs:                 cloneStringSlice(choice.Args),
+			AllowInteractiveCompletion: true,
+		}
+		return startupInteractiveFrameResult{
+			Args:      finalArgs,
+			Pending:   cloneStringSlice(frame.PendingArgs),
+			UsedFzf:   true,
+			NextFrame: &next,
+		}, nil
+	}
+}
+
+func runStartupStageFrame(resolver *scopeResolver, frame startupInteractiveFrame) (startupInteractiveFrameResult, error) {
+	if startupStageFrameShouldUseLinesFrames(frame) {
+		session, directArgs, err := prepareStartupLinesPickerSession(frame.StartArgs)
+		if err != nil {
+			return startupInteractiveFrameResult{}, err
+		}
+		if directArgs != nil {
+			return startupInteractiveFrameResult{
+				Args:    directArgs,
+				Pending: cloneStringSlice(frame.PendingArgs),
+			}, nil
+		}
+		next := startupInteractiveFrame{
+			Kind:                startupInteractiveFrameLinesStart,
+			StartArgs:           cloneStringSlice(frame.StartArgs),
+			PendingArgs:         cloneStringSlice(frame.PendingArgs),
+			LinesCheckpointPath: session.CheckpointPath,
+			LinesCleanup:        session.Cleanup,
+			LinesMax:            session.MaxLines,
+		}
+		return startupInteractiveFrameResult{
+			Args:      cloneStringSlice(frame.StartArgs),
+			Pending:   cloneStringSlice(frame.PendingArgs),
+			NextFrame: &next,
+		}, nil
+	}
+
+	currentScopeTargets, currentScopeExplicitTargets := startupFrameCurrentScopeSelections(frame.StartArgs)
+	oldEscHint := resolver.startupEscHint
+	resolver.startupEscHint = frame.EscHint
+	defer func() {
+		resolver.startupEscHint = oldEscHint
+	}()
+	argsAfterStage, newScopeTargets, usedFzf, consumed, err := resolveStartupModifierStageWithEscHint(
+		resolver,
+		frame.StartArgs,
+		currentScopeTargets,
+		currentScopeExplicitTargets,
+		frame.ChoiceArgs,
+		frame.PendingArgs,
+		frame.AllowInteractiveCompletion,
+		frame.EscHint,
+	)
+	if err != nil {
+		return startupInteractiveFrameResult{UsedFzf: usedFzf}, err
+	}
+	if consumed > len(frame.PendingArgs) {
+		consumed = len(frame.PendingArgs)
+	}
+	return startupInteractiveFrameResult{
+		Args:       argsAfterStage,
+		Pending:    cloneStringSlice(frame.PendingArgs[consumed:]),
+		UsedFzf:    usedFzf,
+		ScopePaths: newScopeTargets,
+	}, nil
+}
+
+func startupStageFrameShouldUseLinesFrames(frame startupInteractiveFrame) bool {
+	if !frame.AllowInteractiveCompletion || len(frame.ChoiceArgs) == 0 || frame.ChoiceArgs[0] != "--lines" {
+		return false
+	}
+	return len(frame.PendingArgs) == 0 || startupRemainingIsBarePlaceholderChain(frame.PendingArgs)
+}
+
+func startupFrameCurrentScopeHasInput(args []string) bool {
+	selected, _ := startupFrameCurrentScopeSelections(args)
+	return len(selected) > 0
+}
+
+func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
+	selected := make([]string, 0, len(args))
+	explicit := make([]string, 0, len(args))
+	inModifierMode := false
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--then":
+			selected = selected[:0]
+			explicit = explicit[:0]
+			inModifierMode = false
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
+			continue
+		case "--include":
+			inModifierMode = true
+			values, next := consumeModifierValues(args, i+1)
+			selected = append(selected, values...)
+			i = next - 1
+		case "--only", "--exclude":
+			inModifierMode = true
+			_, next := consumeModifierValues(args, i+1)
+			i = next - 1
+		case "--contains", "--snippet", "--depth":
+			inModifierMode = true
+			if i+1 < len(args) {
+				i++
+			}
+		case "--recent":
+			inModifierMode = true
+			if i+1 < len(args) && !isModifierBoundaryToken(args[i+1]) {
+				if _, err := parseRecentLimitToken(args[i+1]); err == nil {
+					i++
+				}
+			}
+		case "--lines":
+			inModifierMode = true
+			for i+1 < len(args) {
+				if _, err := strconv.Atoi(args[i+1]); err != nil {
+					break
+				}
+				i++
+			}
+		case "--paths", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
+			inModifierMode = true
+		default:
+			if strings.HasPrefix(arg, "-") {
+				continue
+			}
+			if !inModifierMode {
+				selected = append(selected, arg)
+				explicit = append(explicit, arg)
+			}
+		}
+	}
+
+	return cloneStringSlice(selected), cloneStringSlice(explicit)
+}
+
+func startupFrameCurrentScopeHasModifier(args []string) bool {
+	inModifierMode := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch arg {
+		case "--then":
+			inModifierMode = false
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
+			continue
+		case "--include", "--only", "--exclude":
+			inModifierMode = true
+			_, next := consumeModifierValues(args, i+1)
+			i = next - 1
+		case "--contains", "--snippet", "--depth":
+			inModifierMode = true
+			if i+1 < len(args) {
+				i++
+			}
+		case "--recent":
+			inModifierMode = true
+			if i+1 < len(args) && !isModifierBoundaryToken(args[i+1]) {
+				if _, err := parseRecentLimitToken(args[i+1]); err == nil {
+					i++
+				}
+			}
+		case "--lines":
+			inModifierMode = true
+			for i+1 < len(args) {
+				if _, err := strconv.Atoi(args[i+1]); err != nil {
+					break
+				}
+				i++
+			}
+		case "--paths", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
+			inModifierMode = true
+		}
+	}
+	return inModifierMode
+}
+
+func startupFrameTargetPrompt(args []string) string {
+	for i := len(args) - 1; i >= 0; i-- {
+		switch args[i] {
+		case "--then":
+			return "then> "
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
+			continue
+		default:
+			return "select> "
+		}
+	}
+	return "select> "
+}
+
+func startupEscHintForDepth(depth int) string {
+	if depth > 1 {
+		return "undo"
+	}
+	return "exit"
+}
+
+func startupEscLabel(hint string) string {
+	if hint == "undo" {
+		return "[Esc] undo"
+	}
+	return "[Esc] exit"
+}

@@ -207,7 +207,7 @@ func writeClipboardSuccess(w io.Writer, plan outputPlan, stats emitStats, colors
 func writeBundleSuccess(w io.Writer, count int, word string, stats emitStats, colors colorPalette) error {
 	size := humanByteSize(stats.PayloadBytes)
 	path := displayPath(stats.BundlePath)
-	_, err := fmt.Fprintf(w,
+	if _, err := fmt.Fprintf(w,
 		"\n%sBundled%s %s%d %s%s %s→%s %s%s%s %s(%s)%s\n%sPaste attaches a file — works in web UIs and file managers, not terminals.%s\n%sUse --no-bundle to copy text instead.%s\n",
 		colors.OK, colors.Reset,
 		colors.Bold, count, word, colors.Reset,
@@ -216,8 +216,15 @@ func writeBundleSuccess(w io.Writer, count int, word string, stats emitStats, co
 		colors.Dim, size, colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset,
-	)
-	return err
+	); err != nil {
+		return err
+	}
+	for _, warning := range stats.Warnings {
+		if _, err := fmt.Fprintf(w, "%sWarning: %s%s\n", colors.Warn, warning, colors.Reset); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func humanByteSize(n int64) string {

@@ -130,6 +130,16 @@ func prepareFileUnit(gitCtx gitContext, entry fileEntry, snippetMatches snippetM
 			if err != nil {
 				return preparedFileUnit{}, false, err
 			}
+			if bodyBytes == 0 {
+				// No line in the requested range exists in this file —
+				// it is shorter than LinesStart. Drop the unit entirely
+				// so the file is absent from the tree, the file count,
+				// and the emit. emitLinesFile already emits zero bytes
+				// for this case; dropping here keeps the tree/count in
+				// step with the body. Mirrors the snippet branch above,
+				// which drops units with empty payload.
+				return preparedFileUnit{}, false, nil
+			}
 			unit.BodyBytes = bodyBytes
 			return unit, true, nil
 		}

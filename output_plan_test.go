@@ -370,6 +370,34 @@ func TestWriteClipboardSuccessUsesDistinctSummarySubjects(t *testing.T) {
 	}
 }
 
+func TestWriteBundleSuccessIncludesWarnings(t *testing.T) {
+	plan := outputPlan{
+		items: []outputPlanItem{
+			newFileOutputPlanItem(preparedFileUnit{Entry: fileEntry{RelPath: "src/a.ts", Mode: entryModeFull}, BodyBytes: 10}),
+		},
+	}
+	stats := emitStats{
+		SinkName:     "bundle",
+		BundlePath:   "/tmp/catclip/catclip-123.txt",
+		PayloadBytes: 5000,
+		Warnings:     []string{"xdg-desktop-portal 1.18 is older than the recommended 1.21 baseline. Sandboxed apps such as Firefox Snap may not attach this bundle from the clipboard; drag and drop the file if paste fails."},
+	}
+
+	var out bytes.Buffer
+	if err := writeClipboardSuccess(&out, plan, stats, colorPalette{}); err != nil {
+		t.Fatalf("writeClipboardSuccess returned error: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"Warning:", "xdg-desktop-portal 1.18", "Firefox Snap", "drag and drop"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("bundle success output missing %q:\n%s", want, got)
+		}
+	}
+	if !strings.Contains(got, "Use --no-bundle to copy text instead.") {
+		t.Fatalf("bundle success output missing success-level --no-bundle guidance:\n%s", got)
+	}
+}
+
 func TestEmitOutputPlanUsesPreparedPayload(t *testing.T) {
 	unit := preparedFileUnit{
 		Entry: fileEntry{

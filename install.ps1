@@ -269,7 +269,12 @@ function Ensure-SourceFzfCompatible {
 
     "a`n" | & $FzfBin --info=inline-right --filter a *> $null
     if ($LASTEXITCODE -ne 0) {
-        Fail "Your local fzf is too old for catclip source installs.`ncatclip's current picker UI requires an fzf build that supports --info=inline-right.`nUpgrade fzf, or use the published Windows release installer instead of building locally."
+        Fail "Your local fzf is too old for catclip source installs.`ncatclip's current picker UI requires an fzf build that supports --info=inline-right.`nUpgrade fzf to >= v0.71.0, or use the published Windows release installer instead of building locally."
+    }
+
+    "a`n" | & $FzfBin --bind 'multi:refresh-preview' --filter a *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Fail "Your local fzf is too old for catclip source installs.`ncatclip's multi-select behavior requires an fzf build that supports multi bind events.`nUpgrade fzf to >= v0.71.0, or use the published Windows release installer instead of building locally."
     }
 }
 
@@ -281,7 +286,7 @@ function Ensure-SourceRgCompatible {
 
     & $RgBin --files --hidden -0 $SourceDir *> $null
     if ($LASTEXITCODE -ne 0) {
-        Fail "Your local ripgrep is too old for catclip source installs.`ncatclip's current file discovery requires an rg build that supports --files with -0 output.`nUpgrade ripgrep, or use the published Windows release installer instead of building locally."
+        Fail "Your local ripgrep is too old for catclip source installs.`ncatclip's current file discovery requires an rg build that supports --files with -0 output.`nUpgrade ripgrep to >= v14.1.1, or use the published Windows release installer instead of building locally."
     }
 
     $tmpFile = New-TemporaryFile
@@ -289,7 +294,12 @@ function Ensure-SourceRgCompatible {
         [System.IO.File]::WriteAllText($tmpFile.FullName, "catclip-rg-check`n", [System.Text.Encoding]::ASCII)
         & $RgBin --color=never --no-messages --files-with-matches -0 -m 1 -e 'catclip-rg-check' -- $tmpFile.FullName *> $null
         if ($LASTEXITCODE -ne 0) {
-            Fail "Your local ripgrep is too old for catclip source installs.`ncatclip's current content filtering requires an rg build that supports --files-with-matches with -0 output.`nUpgrade ripgrep, or use the published Windows release installer instead of building locally."
+            Fail "Your local ripgrep is too old for catclip source installs.`ncatclip's current content filtering requires an rg build that supports --files-with-matches with -0 output.`nUpgrade ripgrep to >= v14.1.1, or use the published Windows release installer instead of building locally."
+        }
+
+        & $RgBin --pcre2 -e 'a' $tmpFile.FullName *> $null
+        if ($LASTEXITCODE -eq 2) {
+            Fail "Your local ripgrep is too old for catclip source installs.`ncatclip requires a ripgrep build with PCRE2 support.`nUpgrade ripgrep to >= v14.1.1, or use the published Windows release installer instead of building locally."
         }
     } finally {
         Remove-Item -LiteralPath $tmpFile.FullName -Force -ErrorAction SilentlyContinue

@@ -24,6 +24,10 @@ type recentPreviewEntry struct {
 }
 
 func resolveStartupRecentPickerArgs(currentArgs []string, query string) ([]string, error) {
+	return resolveStartupRecentPickerArgsWithEscHint(currentArgs, query, "")
+}
+
+func resolveStartupRecentPickerArgsWithEscHint(currentArgs []string, query string, escHint string) ([]string, error) {
 	entries, err := startupRecentPickerEntries(currentArgs)
 	if err != nil {
 		return nil, err
@@ -35,7 +39,7 @@ func resolveStartupRecentPickerArgs(currentArgs []string, query string) ([]strin
 	}
 	defer os.Remove(dataPath)
 
-	result, err := chooseRecentWithFzf(query, startupRecentPickerLines(entries), dataPath)
+	result, err := chooseRecentWithFzf(query, startupRecentPickerLines(entries), dataPath, escHint)
 	if err != nil {
 		return nil, err
 	}
@@ -82,7 +86,11 @@ func startupRecentPickerLinesAt(entries []fileEntry, now time.Time) []string {
 	return lines
 }
 
-func chooseRecentWithFzf(query string, lines []string, dataPath string) (picker.Result, error) {
+func chooseRecentWithFzf(query string, lines []string, dataPath string, escHint ...string) (picker.Result, error) {
+	hint := ""
+	if len(escHint) > 0 {
+		hint = escHint[0]
+	}
 	bin, err := fuzzyResolverBinary()
 	if err != nil {
 		return picker.Result{}, err
@@ -94,7 +102,7 @@ func chooseRecentWithFzf(query string, lines []string, dataPath string) (picker.
 		Prompt:         "recent> ",
 		WithNth:        "1,3",
 		Nth:            "1",
-		Header:         recentPickerHeader(),
+		Header:         recentPickerHeaderWithEscHint(hint),
 		PreviewCommand: recentPickerPreviewCommand(dataPath),
 		NoSort:         true,
 		Exact:          true,
@@ -128,10 +136,14 @@ func applyStartupRecentSelection(currentArgs []string, result picker.Result) ([]
 }
 
 func recentPickerHeader() string {
+	return recentPickerHeaderWithEscHint("")
+}
+
+func recentPickerHeaderWithEscHint(escHint string) string {
 	return pickerHeader(
 		"Pick recent files.",
 		"Type a number to choose how many to keep.",
-		"[Up/Down] move  [Enter] confirm  [Esc] cancel",
+		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
 	)
 }
 

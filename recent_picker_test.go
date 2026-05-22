@@ -59,7 +59,7 @@ input="$(cat)"
 		echo "missing Enter header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "[Up/Down] move  [Enter] confirm  [Esc] cancel" >/dev/null || {
+	printf '%s\n' "$header" | grep -F "[Up/Down] move  [Enter] confirm  [Esc] exit" >/dev/null || {
 		echo "missing preview header" >&2
 		exit 91
 	}

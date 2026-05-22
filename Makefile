@@ -1,32 +1,103 @@
-.PHONY: dev dev-check test run clean release-local release-clean
+.PHONY: dev test run clean release-local release-clean catclip catclip-tree
 
 BIN_DIR := bin
 DIST_DIR := dist
-RIPGREP_VERSION := 14.1.1
-FZF_VERSION := 0.71.0
 
-# make dev — one-time setup to symlink system rg/fzf into bin/ for go run/test.
-dev: $(BIN_DIR)/rg $(BIN_DIR)/fzf
-	@printf 'Dev tools ready in %s/\n' "$(BIN_DIR)"
+UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
+# Pinned versions
+RG_V := 14.1.1
+FZF_V := 0.71.0
+FZF_TAG := v$(FZF_V)
+
+# Platform-specific asset URLs for manual install hints.
+ifeq ($(UNAME_S),Darwin)
+	ifeq ($(UNAME_M),arm64)
+		RG_URL := https://github.com/BurntSushi/ripgrep/releases/download/$(RG_V)/ripgrep-$(RG_V)-aarch64-apple-darwin.tar.gz
+		FZF_URL := https://github.com/junegunn/fzf/releases/download/$(FZF_TAG)/fzf-$(FZF_V)-darwin_arm64.tar.gz
+	else
+		RG_URL := https://github.com/BurntSushi/ripgrep/releases/download/$(RG_V)/ripgrep-$(RG_V)-x86_64-apple-darwin.tar.gz
+		FZF_URL := https://github.com/junegunn/fzf/releases/download/$(FZF_TAG)/fzf-$(FZF_V)-darwin_amd64.tar.gz
+	endif
+else ifeq ($(UNAME_S),Linux)
+	ifeq ($(UNAME_M),aarch64)
+		RG_URL := https://github.com/BurntSushi/ripgrep/releases/download/$(RG_V)/ripgrep-$(RG_V)-aarch64-unknown-linux-gnu.tar.gz
+		FZF_URL := https://github.com/junegunn/fzf/releases/download/$(FZF_TAG)/fzf-$(FZF_V)-linux_arm64.tar.gz
+	else
+		RG_URL := https://github.com/BurntSushi/ripgrep/releases/download/$(RG_V)/ripgrep-$(RG_V)-x86_64-unknown-linux-musl.tar.gz
+		FZF_URL := https://github.com/junegunn/fzf/releases/download/$(FZF_TAG)/fzf-$(FZF_V)-linux_amd64.tar.gz
+	endif
+endif
+
+# make dev — setup local toolchain and build catclip for development.
+# If the system tools are missing or too old, print a copy-pasteable manual
+# install command for the pinned local version.
+dev: $(BIN_DIR)/rg $(BIN_DIR)/fzf catclip catclip-tree
+	@printf '\nDev toolchain ready in ./%s/\n' "$(BIN_DIR)"
+	@printf 'catclip uses these scoped binaries to ensure feature compatibility.\n\n'
+	@printf 'Run locally:\n'
+	@printf '  ./catclip --help\n'
+
+catclip:
+	@go build -o catclip ./cmd/catclip
+
+catclip-tree:
+	@go build -o catclip-tree ./cmd/catclip-tree
 
 $(BIN_DIR)/rg:
 	@mkdir -p $(BIN_DIR)
-	@rg_path=$$(command -v rg 2>/dev/null) || { printf 'Error: rg not found on PATH.\n  Install ripgrep first.\n' >&2; exit 1; }; \
-	printf 'Checking rg capabilities...\n'; \
-	"$$rg_path" --files --hidden -0 . >/dev/null 2>&1 || { printf 'Error: rg too old — missing --files --hidden -0 support.\n  Upgrade ripgrep.\n' >&2; exit 1; }; \
-	tmp=$$(mktemp); printf 'catclip-rg-check\n' > "$$tmp"; \
-	"$$rg_path" --color=never --no-messages --files-with-matches -0 -m 1 -e 'catclip-rg-check' -- "$$tmp" >/dev/null 2>&1 || { rm -f "$$tmp"; printf 'Error: rg too old — missing --files-with-matches -0 support.\n  Upgrade ripgrep.\n' >&2; exit 1; }; \
-	rm -f "$$tmp"; \
-	ln -sf "$$rg_path" $(BIN_DIR)/rg; \
-	printf '  rg -> %s\n' "$$rg_path"
+	@rg_path=$$(command -v rg 2>/dev/null); \
+	rg_detected="not found"; \
+	capable=0; \
+	if [ -n "$$rg_path" ]; then \
+		rg_detected=$$("$$rg_path" --version 2>/dev/null | head -n 1 || printf 'not found'); \
+		capable=1; \
+		"$$rg_path" --files --hidden -0 . >/dev/null 2>&1 || capable=0; \
+		tmp=$$(mktemp); \
+		printf 'catclip-rg-check\n' > "$$tmp"; \
+		"$$rg_path" --color=never --no-messages --files-with-matches -0 -m 1 -e 'catclip-rg-check' -- "$$tmp" >/dev/null 2>&1 || capable=0; \
+		"$$rg_path" --pcre2 -e 'a' /dev/null >/dev/null 2>&1; \
+		if [ $$? -eq 2 ]; then capable=0; fi; \
+		rm -f "$$tmp"; \
+	fi; \
+	if [ $$capable -eq 1 ]; then \
+		ln -sf "$$rg_path" $(BIN_DIR)/rg; \
+		printf '  rg -> %s\n' "$$rg_path"; \
+	else \
+		printf 'Error: rg too old or missing PCRE2 support.\n\n' >&2; \
+		printf 'Required: ripgrep >= %s with PCRE2\n' "$(RG_V)" >&2; \
+		printf 'Detected: %s\n\n' "$$rg_detected" >&2; \
+		printf 'Install local pinned version:\n' >&2; \
+		printf '  curl -fL '\''%s'\'' | tar -xz && mv ripgrep-*/rg %s/rg && rm -rf ripgrep-*\n' "$(RG_URL)" "$(BIN_DIR)" >&2; \
+		exit 1; \
+	fi
 
 $(BIN_DIR)/fzf:
 	@mkdir -p $(BIN_DIR)
-	@fzf_path=$$(command -v fzf 2>/dev/null) || { printf 'Error: fzf not found on PATH.\n  Install fzf first.\n' >&2; exit 1; }; \
-	printf 'Checking fzf capabilities...\n'; \
-	printf 'a\n' | "$$fzf_path" --info=inline-right --filter a >/dev/null 2>&1 || { printf 'Error: fzf too old — missing --info=inline-right support.\n  Upgrade fzf.\n' >&2; exit 1; }; \
-	ln -sf "$$fzf_path" $(BIN_DIR)/fzf; \
-	printf '  fzf -> %s\n' "$$fzf_path"
+	@fzf_path=$$(command -v fzf 2>/dev/null); \
+	fzf_detected="not found"; \
+	capable=0; \
+	if [ -n "$$fzf_path" ]; then \
+		fzf_detected=$$("$$fzf_path" --version 2>/dev/null | head -n 1 || printf 'not found'); \
+		capable=1; \
+		printf 'a\n' | "$$fzf_path" --info=inline-right --filter a >/dev/null 2>&1 || capable=0; \
+		printf 'a\n' | "$$fzf_path" --bind 'multi:refresh-preview' --filter a >/dev/null 2>&1 || capable=0; \
+	fi; \
+	if [ $$capable -eq 1 ]; then \
+		ln -sf "$$fzf_path" $(BIN_DIR)/fzf; \
+		printf '  fzf -> %s\n' "$$fzf_path"; \
+	else \
+		printf 'Error: fzf too old or missing required feature support.\n\n' >&2; \
+		printf 'Required: fzf >= %s\n' "$(FZF_V)" >&2; \
+		printf 'Detected: %s\n\n' "$$fzf_detected" >&2; \
+		printf 'Install local pinned version:\n' >&2; \
+		printf '  curl -fL '\''%s'\'' | tar -xz -C %s\n' "$(FZF_URL)" "$(BIN_DIR)" >&2; \
+		exit 1; \
+	fi
+
+RIPGREP_VERSION := 14.1.1
+FZF_VERSION := 0.71.0
 
 test: dev
 	go test ./...

@@ -64,7 +64,12 @@ func executionScopeFromCommandScopeSpec(s commandScopeSpec) executionScope {
 	if s.OutputMode() == entryModeDiff {
 		out.Diff = true
 	}
-	return out
+	// Deep-include rewrite: `--include <path-inside-target>` becomes
+	// `--include <target> --only <path-inside-target>`. Applied at the
+	// single point every executionScope is constructed so the CLI form,
+	// the interactive picker form, and previews all go through it
+	// uniformly. See rewriteDeepIncludeScope in resolver.go.
+	return rewriteDeepIncludeScope(out)
 }
 
 func executionScopesFromCommandSpec(spec commandSpec) []executionScope {

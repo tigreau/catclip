@@ -440,7 +440,7 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  catclip auto-selects the clipboard delivery mode based on payload size:\n\n")
 	b.WriteString("    < 4096 bytes   text clipboard (pbcopy / xclip / wl-copy / clip.exe)\n")
 	b.WriteString("                   pastes anywhere — terminals, editors, web UIs, etc.\n")
-	b.WriteString("    ≥ 4096 bytes   bundle file at {TempDir}/catclip/{project}-{HHMMSS}.txt\n")
+	b.WriteString("    ≥ 4096 bytes   bundle file at {Documents}/catclip/{project}-{HHMMSS}.txt\n")
 	b.WriteString("                   placed on the clipboard as a file reference; pastes as\n")
 	b.WriteString("                   an attachment in web UIs (Claude, ChatGPT, etc.) and\n")
 	b.WriteString("                   as a file in file managers (Finder, Explorer). Does NOT\n")
@@ -449,6 +449,7 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("                   want to paste raw text into a terminal or editor and\n")
 	b.WriteString("                   the output would otherwise exceed 4KB.\n\n")
 	b.WriteString("  Bundle file contents are byte-identical to -p (stdout) output.\n")
+	b.WriteString("  CATCLIP_BUNDLE_DIR overrides the bundle directory.\n")
 	b.WriteString("  --headless implies stdout, so bundling never applies in headless mode.\n\n")
 
 	// ── Exit codes ──────────────────────────────────────────────────────
