@@ -99,14 +99,21 @@ jobs:
             head -c 1000 </dev/zero | tr '\0' 'a' > "$fixture/file$i.txt"
           done
 
-          runner=()
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            runner=(xvfb-run -a)
+            stub_dir=$(mktemp -d)
+            cat >"$stub_dir/wl-copy" <<'EOF'
+          #!/usr/bin/env bash
+          cat >/dev/null
+          EOF
+            chmod +x "$stub_dir/wl-copy"
+            export PATH="$stub_dir:$PATH"
+            export XDG_SESSION_TYPE=wayland
+            export WAYLAND_DISPLAY=wayland-0
           fi
 
           (
             cd "$fixture"
-            "${runner[@]+"${runner[@]}"}" "$OLDPWD/catclip-bin${bin_ext}" -y . >/dev/null
+            "$OLDPWD/catclip-bin${bin_ext}" -y . >/dev/null
           )
 
           bundle_dir="$HOME/Documents/catclip"
@@ -155,7 +162,7 @@ jobs:
           # --no-bundle should not error and should not write a new bundle file.
           (
             cd "$fixture"
-            "${runner[@]+"${runner[@]}"}" "$OLDPWD/catclip-bin${bin_ext}" -y --no-bundle . >/dev/null
+            "$OLDPWD/catclip-bin${bin_ext}" -y --no-bundle . >/dev/null
           )
 
       - name: --contains smoke test
@@ -223,14 +230,21 @@ jobs:
           fixture=$(mktemp -d)
           echo "tiny payload" > "$fixture/small.txt"
 
-          runner=()
           if [[ "${{ runner.os }}" == "Linux" ]]; then
-            runner=(xvfb-run -a)
+            stub_dir=$(mktemp -d)
+            cat >"$stub_dir/wl-copy" <<'EOF'
+          #!/usr/bin/env bash
+          cat >/dev/null
+          EOF
+            chmod +x "$stub_dir/wl-copy"
+            export PATH="$stub_dir:$PATH"
+            export XDG_SESSION_TYPE=wayland
+            export WAYLAND_DISPLAY=wayland-0
           fi
 
           (
             cd "$fixture"
-            "${runner[@]+"${runner[@]}"}" "$OLDPWD/catclip-bin${bin_ext}" -y small.txt >/dev/null
+            "$OLDPWD/catclip-bin${bin_ext}" -y small.txt >/dev/null
           )
 
           # A <4KB payload must take the text clipboard path; no bundle file.
