@@ -10497,8 +10497,8 @@ func TestRunInternalFilePreviewOutputsSnippetPayload(t *testing.T) {
 	if got := doc.File.Path; got != "src/main.ts" {
 		t.Fatalf("doc.File.Path = %q, want src/main.ts", got)
 	}
-	if got := doc.File.MatchPattern; got != "" {
-		t.Fatalf("doc.File.MatchPattern = %q, want empty for snippet block preview", got)
+	if got := doc.File.MatchPattern; got != "TODO" {
+		t.Fatalf("doc.File.MatchPattern = %q, want \"TODO\" for snippet block preview", got)
 	}
 	if got, want := doc.File.FocusLines, []int{2, 3, 4, 7, 8, 9}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("doc.File.FocusLines = %v, want %v", got, want)

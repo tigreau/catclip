@@ -428,7 +428,12 @@ func runSinkPreviewCommand(t *testing.T, command string) string {
 
 func runShellCommand(t *testing.T, command string) string {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", "-c", command)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.Command("cmd", "/c", command)
+	} else {
+		cmd = exec.Command("/bin/sh", "-c", command)
+	}
 	cmd.Env = append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
