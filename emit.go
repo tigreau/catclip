@@ -1001,7 +1001,16 @@ func emitBundle(env emitEnvironment, payload []byte, generateDuration time.Durat
 	}
 	if err := fileclipCopy(tmpPath); err != nil {
 		if errors.Is(err, fileclip.ErrX11Unsupported) || errors.Is(err, fileclip.ErrLegacyGNOMEUnsupported) {
-			return emitStats{}, fmt.Errorf("Error: %s.\n\nYour catclip bundle was written to:\n  %s\n\nTo attach it, copy that file from Documents/catclip manually or drag and drop it into the target application.\n\nFor script-friendly text clipboard output, rerun with --no-bundle.\nFor browser paste from catclip, use a supported Wayland GNOME session.", unsupportedFileClipboardReason(err), tmpPath)
+			return emitStats{}, fmt.Errorf(
+				"Error: %s. Nothing was placed on your clipboard.\n\n"+
+					"Your catclip bundle was saved to:\n  %s\n\n"+
+					"Drag it into the target application, or copy it from your file manager.\n\n"+
+					"For text clipboard output, rerun with --no-bundle.\n"+
+					"%s",
+				unsupportedFileClipboardReason(err),
+				tmpPath,
+				unsupportedFileClipboardRemedy(err),
+			)
 		}
 		_ = os.Remove(tmpPath)
 		// fileclip.ErrToolNotFound is the "no clipboard binary on PATH"
@@ -1029,12 +1038,28 @@ func emitBundle(env emitEnvironment, payload []byte, generateDuration time.Durat
 
 func unsupportedFileClipboardReason(err error) string {
 	if errors.Is(err, fileclip.ErrX11Unsupported) {
-		return "X11 file clipboard is not supported"
+		return "X11 file-reference clipboard is not supported"
 	}
 	if errors.Is(err, fileclip.ErrLegacyGNOMEUnsupported) {
-		return fmt.Sprintf("GNOME below %d file clipboard is not supported", fileclip.MinimumGNOMEFileClipboardMajor)
+		return fmt.Sprintf(
+			"GNOME below %d file-reference clipboard is not supported",
+			fileclip.MinimumGNOMEFileClipboardMajor,
+		)
 	}
-	return "file clipboard is not supported"
+	return "file-reference clipboard is not supported"
+}
+
+func unsupportedFileClipboardRemedy(err error) string {
+	if errors.Is(err, fileclip.ErrX11Unsupported) {
+		return "For one-step paste, log into a Wayland session."
+	}
+	if errors.Is(err, fileclip.ErrLegacyGNOMEUnsupported) {
+		return fmt.Sprintf(
+			"For one-step paste, upgrade to GNOME %d or newer.",
+			fileclip.MinimumGNOMEFileClipboardMajor,
+		)
+	}
+	return ""
 }
 
 func bundleWarnings(env emitEnvironment) []string {

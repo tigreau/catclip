@@ -4,12 +4,56 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestWritePrediscoveredCheckpointCapturesEntrySizes(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		if err := os.WriteFile(filepath.Join(dir, rel), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+	write("a.txt", "hello\n") // 6 bytes
+	write("b.txt", "hi\n")    // 3 bytes
+
+	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
+	if err := writePrediscoveredCheckpoint(checkpointPath, dir, prediscoveredCheckpointData{
+		GitStatus: map[string]string{},
+		Entries: []fileEntry{
+			{RelPath: "a.txt"}, // AbsPath empty -> resolve via workingDir
+			{RelPath: "b.txt", AbsPath: filepath.Join(dir, "b.txt")}, // AbsPath already set
+			{RelPath: "kept.txt", SizeBytes: 99, SizeKnown: true},    // already known -> preserved, not re-stat'd
+			{RelPath: "missing.txt"},                                 // no file -> graceful, stays unknown
+		},
+	}); err != nil {
+		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
+	}
+	decoded, err := readPrediscoveredCheckpoint(checkpointPath)
+	if err != nil {
+		t.Fatalf("readPrediscoveredCheckpoint returned error: %v", err)
+	}
+	entries := decoded.Entries
+
+	if !entries[0].SizeKnown || entries[0].SizeBytes != 6 {
+		t.Errorf("a.txt (abs resolved from workingDir): want 6/known, got %d/%v", entries[0].SizeBytes, entries[0].SizeKnown)
+	}
+	if !entries[1].SizeKnown || entries[1].SizeBytes != 3 {
+		t.Errorf("b.txt (abs preset): want 3/known, got %d/%v", entries[1].SizeBytes, entries[1].SizeKnown)
+	}
+	if !entries[2].SizeKnown || entries[2].SizeBytes != 99 {
+		t.Errorf("kept.txt: already-known size must be preserved untouched, got %d/%v", entries[2].SizeBytes, entries[2].SizeKnown)
+	}
+	if entries[3].SizeKnown {
+		t.Errorf("missing.txt: stat failure must leave SizeKnown=false (graceful), got size %d", entries[3].SizeBytes)
+	}
+}
 
 func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 	modTime := time.Date(2026, 5, 17, 10, 11, 12, 345678901, time.UTC)
@@ -87,6 +131,13 @@ func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 		t.Fatalf("unmarshalPrediscoveredCheckpoint returned error: %v", err)
 	}
 
+	// AbsPath is intentionally not serialized — it is re-derived at read by
+	// ensureEntryAbsPaths (workingDir + RelPath). Reset it on the expected
+	// entries so the round-trip comparison reflects that contract.
+	for i := range data.Entries {
+		data.Entries[i].AbsPath = ""
+	}
+
 	if !reflect.DeepEqual(decoded, data) {
 		t.Fatalf("decoded checkpoint differs from input\n got: %#v\nwant: %#v\njson:\n%s", decoded, data, string(raw))
 	}
@@ -99,7 +150,6 @@ func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 
 func TestPrediscoveredCheckpointFileEntrySchemaCoversAllFields(t *testing.T) {
 	wantSerialized := []string{
-		"AbsPath",
 		"RelPath",
 		"ModTime",
 		"SizeBytes",
@@ -116,11 +166,20 @@ func TestPrediscoveredCheckpointFileEntrySchemaCoversAllFields(t *testing.T) {
 		"AllowedByInclude",
 		"BlockSource",
 	}
-	wantResetOnRoundtrip := []string{}
+	// AbsPath is a runtime-derived filesystem handle, intentionally not
+	// serialized — re-derived at read by ensureEntryAbsPaths.
+	wantResetOnRoundtrip := []string{"AbsPath"}
 
+	// fileEntry must be fully accounted for: every exported field is either
+	// serialized or intentionally reset on round-trip. Compare as sets —
+	// declaration order is irrelevant to coverage (AbsPath is declared first
+	// but reset, so order would otherwise mismatch).
 	covered := append([]string(nil), wantSerialized...)
 	covered = append(covered, wantResetOnRoundtrip...)
-	if got := exportedFieldNames(reflect.TypeOf(fileEntry{})); !reflect.DeepEqual(got, covered) {
+	got := exportedFieldNames(reflect.TypeOf(fileEntry{}))
+	slices.Sort(got)
+	slices.Sort(covered)
+	if !reflect.DeepEqual(got, covered) {
 		t.Fatalf("fileEntry schema decision list is stale\n got: %v\nwant serialized + reset-on-roundtrip: %v", got, covered)
 	}
 
@@ -182,7 +241,6 @@ func TestPrediscoveredCheckpointJSONFieldNames(t *testing.T) {
 		t.Fatalf("checkpoint entry has unexpected shape: %#v", entries[0])
 	}
 	for _, key := range []string{
-		"abs",
 		"rel",
 		"mod_time",
 		"size_bytes",
@@ -255,7 +313,7 @@ func TestRunInternalPrediscoveredTreePayloadMatchesFreshEvaluation(t *testing.T)
 	}
 
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+	if err := writePrediscoveredCheckpoint(checkpointPath, parentCfg.WorkingDir, prediscoveredCheckpointData{
 		GitContext: gitCtx,
 		GitStatus:  map[string]string{},
 		Entries:    discovered.Entries,
@@ -300,13 +358,75 @@ func TestRunInternalPrediscoveredTreePayloadMatchesFreshEvaluation(t *testing.T)
 	}
 }
 
+func TestRunInternalPrediscoveredTreePreviewMatchesPayloadRenderer(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a.go":  "package main\n",
+		"src/b.go":  "package b\n",
+		"src/c.txt": "notes\n",
+	})
+	parentCfg := parseInProject(t, project, []string{"src"})
+	gitCtx := detectGitContext(parentCfg.WorkingDir)
+	discovered, err := evaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, colorPalette{})
+	if err != nil {
+		t.Fatalf("evaluateScope returned error: %v", err)
+	}
+
+	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
+	if err := writePrediscoveredCheckpoint(checkpointPath, parentCfg.WorkingDir, prediscoveredCheckpointData{
+		GitContext: gitCtx,
+		GitStatus: map[string]string{
+			"src/a.go": "M",
+		},
+		Entries: discovered.Entries,
+	}); err != nil {
+		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
+	}
+
+	commonArgs := []string{
+		"--internal-prediscovered", checkpointPath,
+		"--only", "*.go",
+		"--internal-tree-target", "src",
+		"--internal-tree-kind", treeTargetKindDir,
+		"--internal-tree-state", treeTargetStateOK,
+	}
+	payloadCfg, err := parseArgs(append([]string{"--quiet", "--internal-tree-payload"}, commonArgs...))
+	if err != nil {
+		t.Fatalf("parseArgs payload returned error: %v", err)
+	}
+	previewCfg, err := parseArgs(append([]string{"--quiet", "--internal-tree-preview"}, commonArgs...))
+	if err != nil {
+		t.Fatalf("parseArgs preview returned error: %v", err)
+	}
+
+	var payloadStdout bytes.Buffer
+	if err := run(payloadCfg, &payloadStdout, io.Discard); err != nil {
+		t.Fatalf("payload run returned error: %v", err)
+	}
+	doc, err := decodeTreePayload(bytes.NewReader(payloadStdout.Bytes()))
+	if err != nil {
+		t.Fatalf("decodeTreePayload returned error: %v", err)
+	}
+	var renderedPayload bytes.Buffer
+	if err := renderTreeDocument(&renderedPayload, doc, fzfFilterTreeRenderOptions(), ansiColorPalette()); err != nil {
+		t.Fatalf("renderTreeDocument returned error: %v", err)
+	}
+
+	var previewStdout bytes.Buffer
+	if err := run(previewCfg, &previewStdout, io.Discard); err != nil {
+		t.Fatalf("preview run returned error: %v", err)
+	}
+	if !bytes.Equal(previewStdout.Bytes(), renderedPayload.Bytes()) {
+		t.Fatalf("direct tree preview differs from payload renderer\npayload-rendered:\n%s\npreview:\n%s", renderedPayload.String(), previewStdout.String())
+	}
+}
+
 func TestRunInternalPrediscoveredTreePayloadUsesCheckpointGitStatus(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"a.txt": "hello\n",
 	})
 	_ = parseInProject(t, project, []string{"."})
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+	if err := writePrediscoveredCheckpoint(checkpointPath, project, prediscoveredCheckpointData{
 		GitContext: gitContext{
 			Enabled: true,
 			Root:    "/definitely/missing",
@@ -359,7 +479,7 @@ func TestRunInternalPrediscoveredContentMatchListMatchesFreshEvaluation(t *testi
 		t.Fatalf("evaluateScope returned error: %v", err)
 	}
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+	if err := writePrediscoveredCheckpoint(checkpointPath, parentCfg.WorkingDir, prediscoveredCheckpointData{
 		GitContext: gitCtx,
 		GitStatus:  map[string]string{},
 		Entries:    discovered.Entries,
@@ -389,7 +509,7 @@ func TestRunInternalPrediscoveredContentMatchListMatchesFreshEvaluation(t *testi
 }
 
 // fzf substitutes {q} as an empty string before the user types anything,
-// so the picker's preview command runs with `--contains ''` on its
+// so the picker's preview command runs with `--contains ”` on its
 // empty-state frame. The internal prediscovered handler must short-
 // circuit on empty pattern and return zero rows instead of letting the
 // pattern reach the validator (which exits 2 and surfaces as
@@ -407,7 +527,7 @@ func TestRunInternalPrediscoveredContentMatchListShortCircuitsEmptyPattern(t *te
 		t.Fatalf("evaluateScope returned error: %v", err)
 	}
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+	if err := writePrediscoveredCheckpoint(checkpointPath, parentCfg.WorkingDir, prediscoveredCheckpointData{
 		GitContext: gitCtx,
 		GitStatus:  map[string]string{},
 		Entries:    discovered.Entries,
@@ -451,7 +571,7 @@ func TestRunInternalPrediscoveredRequiresTreePayload(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected --internal-prediscovered without --internal-tree-payload to fail")
 	}
-	if !strings.Contains(err.Error(), "--internal-prediscovered requires --internal-tree-payload, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview") {
+	if !strings.Contains(err.Error(), "--internal-prediscovered requires --internal-tree-payload, --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

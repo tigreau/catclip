@@ -1,6 +1,7 @@
 package picker
 
 import (
+	"slices"
 	"testing"
 )
 
@@ -77,10 +78,5 @@ func containsArgPair(args []string, key, value string) bool {
 }
 
 func containsArg(args []string, want string) bool {
-	for _, arg := range args {
-		if arg == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(args, want)
 }

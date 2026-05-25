@@ -2,7 +2,6 @@ package tree
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,7 +35,7 @@ func TestRunCLIRendersRichTree(t *testing.T) {
 		"",
 	}, "\n")
 
-	stdout, stderr, err := runCLIForTest(t, nil, payload)
+	stdout, stderr, err := runCLIForTest(t, []string{"--entry-sizes", "--git-badges", "--summary-footer"}, payload)
 	if err != nil {
 		t.Fatalf("RunCLI returned error: %v", err)
 	}
@@ -60,7 +59,7 @@ func TestRunCLIBareHidesMetadata(t *testing.T) {
 		"",
 	}, "\n")
 
-	stdout, _, err := runCLIForTest(t, []string{"--bare"}, payload)
+	stdout, _, err := runCLIForTest(t, nil, payload)
 	if err != nil {
 		t.Fatalf("RunCLI returned error: %v", err)
 	}
@@ -86,7 +85,7 @@ func TestRunCLIBareStartsAtTargetParentContext(t *testing.T) {
 		"",
 	}, "\n")
 
-	stdout, _, err := runCLIForTest(t, []string{"--bare"}, payload)
+	stdout, _, err := runCLIForTest(t, nil, payload)
 	if err != nil {
 		t.Fatalf("RunCLI returned error: %v", err)
 	}
@@ -177,7 +176,7 @@ func TestRunCLIFilePreviewHighlightsFocusedLineNumbers(t *testing.T) {
 }
 
 func TestRunCLIBareEmptyPayloadShowsFriendlyMessage(t *testing.T) {
-	stdout, stderr, err := runCLIForTest(t, []string{"--bare"}, "")
+	stdout, stderr, err := runCLIForTest(t, nil, "")
 	if err != nil {
 		t.Fatalf("RunCLI returned error: %v", err)
 	}
@@ -199,7 +198,7 @@ func TestRunCLIBareRendersNoTextDirectoryTargetState(t *testing.T) {
 		"",
 	}, "\n")
 
-	stdout, _, err := runCLIForTest(t, []string{"--bare"}, payload)
+	stdout, _, err := runCLIForTest(t, nil, payload)
 	if err != nil {
 		t.Fatalf("RunCLI returned error: %v", err)
 	}
@@ -211,10 +210,54 @@ func TestRunCLIBareRendersNoTextDirectoryTargetState(t *testing.T) {
 	}
 }
 
-func TestRunCLIRichEmptyPayloadStillErrors(t *testing.T) {
-	_, _, err := runCLIForTest(t, nil, "")
-	if !errors.Is(err, ErrEmptyPayload) {
-		t.Fatalf("expected empty tree payload error, got: %v", err)
+func TestRunCLIRejectsRemovedBareFlag(t *testing.T) {
+	// --bare was removed in the composable-flag refactor: bare is the default,
+	// so passing the old flag must fail rather than silently no-op.
+	_, _, err := runCLIForTest(t, []string{"--bare"}, "")
+	if err == nil {
+		t.Fatalf("expected --bare to be rejected as an unknown flag")
+	}
+	if !strings.Contains(err.Error(), "bare") {
+		t.Fatalf("expected error to mention the unknown flag, got: %v", err)
+	}
+}
+
+func TestRunCLIComposableMetadataToggles(t *testing.T) {
+	payload := strings.Join([]string{
+		`{"type":"meta","version":1,"mode":"tree","root":"src"}`,
+		`{"type":"entry","path":"src/main.go","kind":"file","size":1024,"git":"M","tag":"snippet"}`,
+		"",
+	}, "\n")
+
+	cases := []struct {
+		name     string
+		args     []string
+		wantSize bool
+		wantGit  bool
+		wantTag  bool
+	}{
+		{"default bare", nil, false, false, false},
+		{"git only", []string{"--git-badges"}, false, true, false},
+		{"shape only", []string{"--shape-tags"}, false, false, true},
+		{"size only", []string{"--entry-sizes"}, true, false, false},
+		{"filter tier", []string{"--shape-tags", "--git-badges"}, false, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, _, err := runCLIForTest(t, tc.args, payload)
+			if err != nil {
+				t.Fatalf("RunCLI returned error: %v", err)
+			}
+			if got := strings.Contains(stdout, "(1.0KB)"); got != tc.wantSize {
+				t.Fatalf("size column: got %v want %v\n%s", got, tc.wantSize, stdout)
+			}
+			if got := strings.Contains(stdout, "[M]"); got != tc.wantGit {
+				t.Fatalf("git badge: got %v want %v\n%s", got, tc.wantGit, stdout)
+			}
+			if got := strings.Contains(stdout, "[snippet]"); got != tc.wantTag {
+				t.Fatalf("shape tag: got %v want %v\n%s", got, tc.wantTag, stdout)
+			}
+		})
 	}
 }
 

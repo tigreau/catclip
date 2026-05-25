@@ -128,7 +128,7 @@ func writeLinesPickerCheckpoint(view resolvedScopeView, entries []fileEntry) (st
 			return "", func() {}, err
 		}
 	}
-	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+	if err := writePrediscoveredCheckpoint(checkpointPath, view.Invocation.WorkingDir, prediscoveredCheckpointData{
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    entries,

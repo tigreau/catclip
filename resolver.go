@@ -2397,7 +2397,7 @@ func fzfFileSetPreviewCommand(currentArgs []string, previewFlag string) string {
 		"--internal-tree-state", "{5}",
 	)
 	parts = append(parts, "|", shellQuoteArg(treeBin))
-	parts = append(parts, fzfTreeRenderArgs()...)
+	parts = append(parts, fzfFilterTreeRenderArgs()...)
 	return strings.Join(parts, " ")
 }
 
@@ -2584,7 +2584,7 @@ func fzfContentPreviewCommand(flag, checkpointPath string) string {
 	// breaks regex input that includes spaces or quote characters.
 	parts = append(parts, flag, "{q}")
 	parts = append(parts, "|", shellQuoteArg(treeBin))
-	parts = append(parts, fzfTreeRenderArgs()...)
+	parts = append(parts, fzfFilterTreeRenderArgs()...)
 	return strings.Join(parts, " ")
 }
 
@@ -2650,7 +2650,7 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 			return fallback(), "", noop
 		}
 	}
-	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+	if err := writePrediscoveredCheckpoint(checkpointPath, view.Invocation.WorkingDir, prediscoveredCheckpointData{
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,

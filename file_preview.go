@@ -11,103 +11,92 @@ const internalDiffHighlightPath = "diff"
 
 // internalContainsPreviewEmptyHint is rendered in the preview pane when the
 // content match picker opens for --contains and the user hasn't typed a
-// regex yet (or whenever the live query is empty). It teaches smart-case
-// behavior and useful pattern shapes. The smart-case examples here must
-// match isSmartCaseInsensitive's behavior in ripgrep.go: all-lowercase ->
-// case-insensitive, any uppercase -> exact case.
-const internalContainsPreviewEmptyHint = `Content search — PCRE2 regex
+// regex yet (or whenever the live query is empty). It shows the kind of
+// regexes people actually run against file contents.
+// The smart-case note must match isSmartCaseInsensitive in ripgrep.go:
+// all-lowercase -> case-insensitive, any uppercase -> exact case.
+const internalContainsPreviewEmptyHint = `Content search — PCRE2 regex (smart-case)
+
+  Lists every matching line across the file set. Type a pattern to begin.
 
   Smart-case:
     todo          → case-insensitive (matches TODO, Todo, todo)
     TODO          → case-sensitive   (matches only TODO)
-    Config        → case-sensitive   (matches only Config)
 
-  Patterns:
-    func.*Handle  → function signatures
-    import.*from  → ES module imports
+  Everyday searches:
+    TODO|FIXME|HACK|XXX          → work markers
+    func\s+\w+|def\s+\w+         → function definitions
+    class\s+\w+                  → class / type definitions
+    import\s+.*from              → ES module imports
+    console\.(log|warn|error)    → debug leftovers
+    throw\s+new\s+\w+            → thrown errors
+    process\.env\.\w+            → environment-variable reads
 
-  Code hygiene:
-    TODO|FIXME               → work markers
-    [ \t]+$                  → trailing whitespace
-    .{120,}                  → lines over 120 chars
-    <<<<<<<|=======|>>>>>>>  → merge conflicts
-
-  Security:
+  Spot risky code:
     password|secret|api[_-]?key  → possible credentials
-    https?://[^\s"'<>]+          → URLs
-
-  Debug:
-    console\.log|debugger        → debug leftovers
-    (?i)\b(deprecated|workaround)\b  → risky code comments
-
-  Flags:
-    (?i)error     → force case-insensitive
-    ^package      → lines starting with "package"
+    https?://[^\s"'<>]+          → hardcoded URLs
+    <<<<<<<|=======|>>>>>>>      → merge-conflict markers
+    [ \t]+$                      → trailing whitespace
+    .{120,}                      → lines over 120 chars
 
   Symbols:
     .             → any single character
-    *             → 0 or more of previous    (ab* matches a, ab, abb)
-    +             → 1 or more of previous    (ab+ matches ab, abb; not a)
-    ?             → optional, 0 or 1         (https? matches http or https)
-    ^             → start of line            (^TODO matches line-initial TODO)
-    $             → end of line              (\.js$ matches paths ending in .js)
-    \.            → literal dot              (without \ the dot matches anything)
-    \s            → any whitespace           (\s+ matches one or more spaces)
-    \t            → tab character
-    \b            → word boundary            (\berror\b won't match handleError)
-    [abc]         → any one of these chars   ([tj]s matches ts or js)
-    {n,}          → n or more of previous   (.{120,} matches 120+ char lines)
-    a|b           → a or b                  (cat|dog matches cat or dog)
+    *             → 0 or more of the previous   (ab* matches a, ab, abb)
+    +             → 1 or more of the previous   (ab+ matches ab; not a)
+    ?             → optional, 0 or 1            (https? matches http, https)
+    ^             → start of line               (^TODO matches line-initial)
+    $             → end of line                 (\.js$ matches paths ending .js)
+    \.            → literal dot                 (plain . matches any char)
+    \s            → any whitespace
+    \b            → word boundary               (\berror\b skips handleError)
+    [abc]         → any one of these chars      ([tj]s matches ts or js)
+    a|b           → either a or b               (cat|dog matches cat or dog)
+    {n,}          → n or more of the previous   (.{120,} matches 120+ chars)
 
-  Watch out:
-    .  vs  \.     → wildcard vs literal dot
-    *  vs  +      → "maybe something" vs "definitely something"
-    ^TODO         → line starts with TODO
-    [^abc]        → any char that is NOT a, b, or c  (^ means opposite inside [])
+  Focus a file on the left to preview it; matches are highlighted.`
 
-  Focus a file on the left to preview it here.
-  Matched lines are highlighted in the preview.`
+// internalSnippetPreviewEmptyHint is the snippet-mode equivalent. Because
+// --snippet returns the blank-line-separated block around each match, the
+// examples here target signature lines (func/def/class/type) so the whole
+// block comes back as one focused snippet. Smart-case matches ripgrep.go.
+const internalSnippetPreviewEmptyHint = `Snippet search — PCRE2 regex (smart-case)
 
-// internalSnippetPreviewEmptyHint is the snippet-mode equivalent. It replaces
-// the v0.5.0 two-line placeholder with smart-case guidance and pattern
-// examples specific to snippet extraction (blank-line-separated blocks).
-const internalSnippetPreviewEmptyHint = `Snippet search — PCRE2 regex
-
-  Extracts blank-line-separated blocks around matches.
-  Returns focused code blocks, not full files.
+  Returns the blank-line-separated block around each match — focused
+  code blocks, not whole files. Match a line inside the block you want
+  (usually its signature) and the whole block comes back.
 
   Smart-case:
     todo          → case-insensitive (matches TODO, Todo, todo)
     Config        → case-sensitive   (matches only Config)
 
-  Patterns:
-    func.*Handle  → function blocks
-    type.*struct  → struct definitions
-    import.*from  → ES module imports
-    TODO          → comment blocks with TODOs
+  Grab a definition:
+    func\s+HandleLogin          → that function's block
+    def\s+process_\w+           → matching Python functions
+    class\s+\w+Controller       → controller classes
+    type\s+\w+\s+struct         → Go struct definitions
+    interface\s+\w+             → interface blocks
+
+  Grab by role:
+    describe\(|it\(|test\(      → test blocks
+    @app\.route|@router\.       → route handlers
+    throw\s+new|raise\s+\w+     → error-handling blocks
+    TODO|FIXME                  → comment blocks with markers
 
   Symbols:
     .             → any single character
-    *             → 0 or more of previous    (ab* matches a, ab, abb)
-    +             → 1 or more of previous    (ab+ matches ab, abb; not a)
-    ?             → optional, 0 or 1         (https? matches http or https)
-    ^             → start of line            (^TODO matches line-initial TODO)
-    $             → end of line              (\.js$ matches paths ending in .js)
-    \.            → literal dot              (without \ the dot matches anything)
-    \s            → any whitespace           (\s+ matches one or more spaces)
-    \t            → tab character
-    \b            → word boundary            (\berror\b won't match handleError)
-    [abc]         → any one of these chars   ([tj]s matches ts or js)
-    {n,}          → n or more of previous   (.{120,} matches 120+ char lines)
-    a|b           → a or b                  (cat|dog matches cat or dog)
+    *             → 0 or more of the previous   (ab* matches a, ab, abb)
+    +             → 1 or more of the previous   (ab+ matches ab; not a)
+    ?             → optional, 0 or 1            (https? matches http, https)
+    ^             → start of line               (^TODO matches line-initial)
+    $             → end of line                 (\.js$ matches paths ending .js)
+    \.            → literal dot                 (plain . matches any char)
+    \s            → any whitespace
+    \b            → word boundary               (\berror\b skips handleError)
+    [abc]         → any one of these chars      ([tj]s matches ts or js)
+    a|b           → either a or b               (cat|dog matches cat or dog)
+    {n,}          → n or more of the previous   (.{120,} matches 120+ chars)
 
-  Watch out:
-    .  vs  \.     → wildcard vs literal dot
-    *  vs  +      → "maybe something" vs "definitely something"
-    ^TODO         → line starts with TODO
-    [^abc]        → any char that is NOT a, b, or c  (^ means opposite inside [])
-
-  Focus a file on the left to preview matching blocks here.`
+  Focus a file on the left to preview matching blocks.`
 
 type filePreviewConfig struct {
 	WorkingDir     string
@@ -263,7 +252,11 @@ func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string) (tree
 }
 
 func buildInternalSnippetHintDocument() treeDocument {
-	return buildTreeFilePreviewDocument("", "", internalSnippetPreviewEmptyHint, "", false, nil)
+	// HighlightPath "hint.go" forces a deterministic Go lexer (it is used only
+	// for highlighting, never displayed), so the cheat-sheet colors consistently
+	// instead of depending on chroma's content sniffing — which colored the
+	// contains hint (detected as Go) but left this one plain.
+	return buildTreeFilePreviewDocument("", "hint.go", internalSnippetPreviewEmptyHint, "", false, nil)
 }
 
 // internalPreviewPatternIsEmpty reports whether the content-picker preview
@@ -290,7 +283,7 @@ func buildInternalContentHintDocument(s executionScope) treeDocument {
 	if s.Snippet || executionScopeHasStage(s, scopeStageSnippet) {
 		return buildInternalSnippetHintDocument()
 	}
-	return buildTreeFilePreviewDocument("", "", internalContainsPreviewEmptyHint, "", false, nil)
+	return buildTreeFilePreviewDocument("", "hint.go", internalContainsPreviewEmptyHint, "", false, nil)
 }
 
 func buildInternalDiffPreviewDocument(relPath, absPath string, gitCtx gitContext, s executionScope) (treeDocument, bool) {

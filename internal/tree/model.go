@@ -27,12 +27,13 @@ const (
 // Document is the serialized/rendered tree payload shared by catclip and
 // catclip-tree.
 type Document struct {
-	Mode    DocumentMode
-	Root    string
-	Target  *DocumentTarget
-	Entries []DocumentEntry
-	File    *FilePreview
-	Summary *DocumentSummary
+	Mode          DocumentMode
+	Root          string
+	Target        *DocumentTarget
+	Entries       []DocumentEntry
+	EntriesSorted bool
+	File          *FilePreview
+	Summary       *DocumentSummary
 }
 
 // DocumentTarget describes the focused file or directory for an empty or
@@ -74,8 +75,14 @@ type DocumentSummary struct {
 }
 
 // RenderOptions controls which metadata fields are shown by the renderer.
+//
+// Bare is a layout field (hide root, suppress landmarks and target-path
+// hints); it is independent of the metadata toggles. Each Show* field gates
+// one metadata column, so callers compose exactly the columns they can afford
+// (see docs/versions/v0.5.5 interactive-tree-shape-preview).
 type RenderOptions struct {
 	Bare          bool
+	ShowModeTags  bool
 	ShowSizes     bool
 	ShowGitStatus bool
 	ShowSummary   bool
@@ -100,15 +107,25 @@ type Palette struct {
 	Git    string
 }
 
-// DefaultRenderOptions returns the standard rich tree rendering defaults.
+// DefaultRenderOptions returns the standard rich tree rendering defaults used
+// by the in-process final render: non-bare layout, every metadata column on.
 func DefaultRenderOptions() RenderOptions {
 	return RenderOptions{
+		ShowModeTags:  true,
 		ShowSizes:     true,
 		ShowGitStatus: true,
 		ShowSummary:   true,
 		ShowTokens:    true,
 		MaxLines:      0,
 	}
+}
+
+// BareRenderOptions returns the catclip-tree CLI default: bare layout with no
+// metadata columns. Each column is then opted in via its flag. This is the
+// base the picker tiers build on (target tier = bare; filter tier adds
+// --shape-tags and --git-badges).
+func BareRenderOptions() RenderOptions {
+	return RenderOptions{Bare: true}
 }
 
 // BuildTarget normalizes and validates a payload target descriptor.

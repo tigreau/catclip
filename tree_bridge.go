@@ -45,6 +45,7 @@ func buildTreeDocumentFromPreview(cfg renderConfig, plan outputPlan, report outp
 	}
 
 	doc.Entries = treepkg.SortedEntries(doc.Entries)
+	doc.EntriesSorted = true
 	doc.Summary = buildTreeSummaryFromReport(report)
 	return doc
 }

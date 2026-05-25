@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -49,23 +50,34 @@ type prediscoveredCheckpointGit struct {
 	HasHead    bool   `json:"has_head"`
 }
 
+// The checkpoint is rel-only by contract: AbsPath is NOT serialized. It is a
+// runtime-derived filesystem handle (workingDir + RelPath) that
+// applyPrediscoveredScopeTail re-derives via ensureEntryAbsPaths before any
+// disk-backed stage, so storing it duplicates RelPath and bloats the decode
+// that profiling showed dominates preview cost
+// (docs/versions/v0.5.5/reports/ACTIVE_PLAN_preview_refresh_cost.md).
+//
+// json tags also use omitempty on the fields a typical full-file visible entry
+// leaves at their zero value (target_root, snippet/lines/diff fields,
+// allowed_by_include, block_source, …); for such entries this drops ~9 fields
+// from the serialized form. Zero values round-trip transparently (absent →
+// decoded as zero). RelPath, ModTime, and Mode are kept unconditional.
 type prediscoveredCheckpointEntry struct {
-	AbsPath          string    `json:"abs"`
 	RelPath          string    `json:"rel"`
 	ModTime          time.Time `json:"mod_time"`
-	SizeBytes        int64     `json:"size_bytes"`
-	SizeKnown        bool      `json:"size_known"`
-	TargetRoot       string    `json:"target_root"`
-	GitVisible       bool      `json:"git_visible"`
+	SizeBytes        int64     `json:"size_bytes,omitempty"`
+	SizeKnown        bool      `json:"size_known,omitempty"`
+	TargetRoot       string    `json:"target_root,omitempty"`
+	GitVisible       bool      `json:"git_visible,omitempty"`
 	Mode             entryMode `json:"mode"`
-	SnippetPattern   string    `json:"snippet_pattern"`
-	Lines            bool      `json:"lines"`
-	LinesStart       int       `json:"lines_start"`
-	LinesEnd         int       `json:"lines_end"`
-	DiffWantStaged   bool      `json:"diff_want_staged"`
-	DiffWantUnstaged bool      `json:"diff_want_unstaged"`
-	AllowedByInclude bool      `json:"allowed_by_include"`
-	BlockSource      string    `json:"block_source"`
+	SnippetPattern   string    `json:"snippet_pattern,omitempty"`
+	Lines            bool      `json:"lines,omitempty"`
+	LinesStart       int       `json:"lines_start,omitempty"`
+	LinesEnd         int       `json:"lines_end,omitempty"`
+	DiffWantStaged   bool      `json:"diff_want_staged,omitempty"`
+	DiffWantUnstaged bool      `json:"diff_want_unstaged,omitempty"`
+	AllowedByInclude bool      `json:"allowed_by_include,omitempty"`
+	BlockSource      string    `json:"block_source,omitempty"`
 }
 
 func marshalPrediscoveredCheckpoint(data prediscoveredCheckpointData) ([]byte, error) {
@@ -80,12 +92,48 @@ func unmarshalPrediscoveredCheckpoint(raw []byte) (prediscoveredCheckpointData, 
 	return decodePrediscoveredCheckpoint(bytes.NewReader(raw))
 }
 
-func writePrediscoveredCheckpoint(path string, data prediscoveredCheckpointData) error {
+func writePrediscoveredCheckpoint(path, workingDir string, data prediscoveredCheckpointData) error {
+	data.Entries = fillEntrySizes(workingDir, data.Entries)
 	raw, err := marshalPrediscoveredCheckpoint(data)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, raw, 0o600)
+}
+
+// fillEntrySizes captures file sizes once, at checkpoint creation, so that
+// per-refresh preview plan rebuilds read entry.SizeBytes (fileBodySize's fast
+// path) instead of re-Lstat'ing every file on every fzf refresh. rg discovery
+// yields paths only (SizeKnown=false), so without this each refresh re-stats
+// the scope. See docs/versions/v0.5.5/reports/ACTIVE_PLAN_checkpoint_size_capture.md.
+//
+// Serial by decision: the one-time open cost is amortized over the picker
+// session and small next to the rg discovery picker-open already runs. A
+// per-file Lstat failure leaves that entry SizeKnown=false; it falls back to
+// the prior per-refresh behavior for that one file; the checkpoint is never
+// failed. Lstat (not Stat) matches fileBodySize and keeps symlinks excluded by
+// policy. Sizes freeze at this point; previews are transient and the final
+// emit re-reads bodies, so a file resized mid-session is never copied stale.
+func fillEntrySizes(workingDir string, entries []fileEntry) []fileEntry {
+	for i := range entries {
+		if entries[i].SizeKnown {
+			continue
+		}
+		abs := entries[i].AbsPath
+		if abs == "" {
+			if strings.TrimSpace(entries[i].RelPath) == "" {
+				continue
+			}
+			abs = filepath.Join(workingDir, filepath.FromSlash(entries[i].RelPath))
+		}
+		info, err := os.Lstat(abs)
+		if err != nil {
+			continue
+		}
+		entries[i].SizeBytes = info.Size()
+		entries[i].SizeKnown = true
+	}
+	return entries
 }
 
 func readPrediscoveredCheckpoint(path string) (prediscoveredCheckpointData, error) {
@@ -98,13 +146,48 @@ func readPrediscoveredCheckpoint(path string) (prediscoveredCheckpointData, erro
 }
 
 func runInternalPrediscoveredTreePayload(cfg prediscoveredCommandConfig, stdout io.Writer) error {
-	checkpoint, err := readPrediscoveredCheckpoint(cfg.CheckpointPath)
+	plan, checkpoint, err := buildPrediscoveredTreePlan(cfg)
 	if err != nil {
 		return err
 	}
+	return encodeTreePayloadFromPlan(stdout, cfg.Render, checkpoint.GitContext, plan, nil, checkpoint.GitStatus)
+}
+
+// runInternalPrediscoveredTreePreview renders the checkpoint-backed filter
+// preview directly from heavy catclip. This preserves the same tree text the
+// old `--internal-tree-payload | catclip-tree` pipe produced, but removes one
+// process spawn plus the intermediate payload JSON encode/decode on every fzf
+// refresh. It is deliberately limited to prediscovered checkpoints; target-tier
+// previews still use the payload renderer until they have a settled scope.
+func runInternalPrediscoveredTreePreview(cfg prediscoveredCommandConfig, stdout io.Writer) error {
+	plan, checkpoint, err := buildPrediscoveredTreePlan(cfg)
+	if err != nil {
+		return err
+	}
+	renderCfg := cfg.Render
+	renderCfg.TreePayload = true
+	if len(plan.items) == 0 {
+		doc, ok := buildEmptyTreeDocument(renderCfg)
+		if !ok {
+			return errTreePayloadEmptyNoTarget
+		}
+		return renderTreeDocument(stdout, doc, fzfFilterTreeRenderOptions(), ansiColorPalette())
+	}
+	report, err := buildOutputReportForPlan(renderCfg, checkpoint.GitContext, plan, nil, checkpoint.GitStatus)
+	if err != nil {
+		return err
+	}
+	return renderTreeDocument(stdout, buildTreeDocumentFromPreview(renderCfg, plan, report), fzfFilterTreeRenderOptions(), ansiColorPalette())
+}
+
+func buildPrediscoveredTreePlan(cfg prediscoveredCommandConfig) (outputPlan, prediscoveredCheckpointData, error) {
+	checkpoint, err := readPrediscoveredCheckpoint(cfg.CheckpointPath)
+	if err != nil {
+		return outputPlan{}, prediscoveredCheckpointData{}, err
+	}
 
 	if len(cfg.Scopes) > 1 {
-		return newUsageError("Error: --internal-prediscovered accepts one preview scope.")
+		return outputPlan{}, prediscoveredCheckpointData{}, newUsageError("Error: --internal-prediscovered accepts one preview scope.")
 	}
 	var scope executionScope
 	if len(cfg.Scopes) == 1 {
@@ -113,7 +196,7 @@ func runInternalPrediscoveredTreePayload(cfg prediscoveredCommandConfig, stdout 
 
 	entries, err := applyPrediscoveredScopeTail(cfg.Invocation, checkpoint.GitContext, scope, checkpoint.Entries)
 	if err != nil {
-		return err
+		return outputPlan{}, prediscoveredCheckpointData{}, err
 	}
 	evaluatedScopes := []evaluatedOutputScope{{
 		Paths:   scope.Paths,
@@ -121,9 +204,21 @@ func runInternalPrediscoveredTreePayload(cfg prediscoveredCommandConfig, stdout 
 	}}
 	plan, err := buildOutputPlanForResolvedScopes(checkpoint.GitContext, []executionScope{scope}, evaluatedScopes, entries)
 	if err != nil {
-		return err
+		return outputPlan{}, prediscoveredCheckpointData{}, err
 	}
-	return encodeTreePayloadFromPlan(stdout, cfg.Render, checkpoint.GitContext, plan, nil, checkpoint.GitStatus)
+	return plan, checkpoint, nil
+}
+
+func fzfFilterTreeRenderOptions() treeRenderOptions {
+	return treeRenderOptions{
+		Bare:          true,
+		ShowModeTags:  true,
+		ShowSizes:     true,
+		ShowGitStatus: true,
+		ShowSummary:   true,
+		ShowTokens:    true,
+		PreviewTheme:  fzfTreePreviewTheme,
+	}
 }
 
 // runInternalLinesPreview emits byte-faithful file content for the lines
@@ -283,7 +378,7 @@ func fileEntriesToCheckpointEntries(entries []fileEntry) []prediscoveredCheckpoi
 	out := make([]prediscoveredCheckpointEntry, 0, len(entries))
 	for _, entry := range entries {
 		out = append(out, prediscoveredCheckpointEntry{
-			AbsPath:          entry.AbsPath,
+			// AbsPath intentionally not serialized — re-derived at read.
 			RelPath:          entry.RelPath,
 			ModTime:          entry.ModTime,
 			SizeBytes:        entry.SizeBytes,
@@ -308,7 +403,8 @@ func checkpointEntriesToFileEntries(entries []prediscoveredCheckpointEntry) []fi
 	out := make([]fileEntry, 0, len(entries))
 	for _, entry := range entries {
 		out = append(out, fileEntry{
-			AbsPath:          entry.AbsPath,
+			// AbsPath left empty — ensureEntryAbsPaths re-derives it from
+			// workingDir + RelPath before any disk-backed stage.
 			RelPath:          entry.RelPath,
 			ModTime:          entry.ModTime,
 			SizeBytes:        entry.SizeBytes,

@@ -40,7 +40,7 @@ func RenderDocument(w io.Writer, doc Document, opts RenderOptions, colors Palett
 			if err := renderEmptyTarget(w, doc.Target, opts, colors); err != nil {
 				return err
 			}
-		} else if err := renderEntries(w, doc.Entries, opts, colors); err != nil {
+		} else if err := renderEntries(w, doc.Entries, doc.EntriesSorted, opts, colors); err != nil {
 			return err
 		}
 	}
@@ -139,8 +139,10 @@ func renderTargetLabel(target *DocumentTarget, opts RenderOptions) string {
 	return label
 }
 
-func renderEntries(w io.Writer, entries []DocumentEntry, opts RenderOptions, colors Palette) error {
-	entries = SortedEntries(entries)
+func renderEntries(w io.Writer, entries []DocumentEntry, entriesSorted bool, opts RenderOptions, colors Palette) error {
+	if !entriesSorted {
+		entries = SortedEntries(entries)
+	}
 	lastParts := []string{}
 	lineCount := 0
 	landmarks := map[string]bool{}
@@ -168,7 +170,7 @@ func renderEntries(w io.Writer, entries []DocumentEntry, opts RenderOptions, col
 		}
 
 		accum := ""
-		for i := 0; i < fileIndex; i++ {
+		for i := range fileIndex {
 			if accum == "" {
 				accum = parts[i]
 			} else {
@@ -219,7 +221,7 @@ func renderEntries(w io.Writer, entries []DocumentEntry, opts RenderOptions, col
 		if opts.ShowGitStatus && entry.GitStatus != "" {
 			fileLine += " " + styleStatus(entry.GitStatus, colors)
 		}
-		if !opts.Bare && entry.ModeTag != "" {
+		if opts.ShowModeTags && entry.ModeTag != "" {
 			fileLine += " " + colors.Git + "[" + entry.ModeTag + "]" + colors.Reset
 		}
 		if _, err := fmt.Fprintln(w, fileLine); err != nil {
@@ -261,10 +263,7 @@ func renderFilePreview(w io.Writer, file *FilePreview, opts RenderOptions, color
 		truncated = true
 	}
 
-	width := len(strconv.Itoa(len(lines)))
-	if width < 1 {
-		width = 1
-	}
+	width := max(len(strconv.Itoa(len(lines))), 1)
 	for i, line := range lines {
 		lineNo := i + 1
 		lineNumber := stylePreviewLineNumber(fmt.Sprintf("%*d", width, lineNo), lineNo, highlightedLineNumbers, opts, colors)
@@ -439,10 +438,7 @@ func overlayPreviewMatchHighlights(lines, rawLines []string, pattern string) []s
 		return lines
 	}
 
-	limit := len(lines)
-	if len(rawLines) < limit {
-		limit = len(rawLines)
-	}
+	limit := min(len(rawLines), len(lines))
 	for i := 0; i < limit; i++ {
 		lines[i] = highlightMatchLineANSI(lines[i], rawLines[i], re)
 	}
@@ -630,7 +626,7 @@ func detectLandmarks(entries []DocumentEntry) map[string]bool {
 			continue
 		}
 		accum := ""
-		for _, segment := range strings.Split(dir, "/") {
+		for segment := range strings.SplitSeq(dir, "/") {
 			if segment == "" || segment == "." {
 				continue
 			}

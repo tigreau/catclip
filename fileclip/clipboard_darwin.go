@@ -100,7 +100,7 @@ func pastePlatformSimple() ([]string, error) {
 
 func parsePathList(raw string) ([]string, error) {
 	var paths []string
-	for _, line := range strings.Split(raw, "\n") {
+	for line := range strings.SplitSeq(raw, "\n") {
 		p := strings.TrimSpace(line)
 		if p != "" {
 			paths = append(paths, p)

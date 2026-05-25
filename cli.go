@@ -73,6 +73,9 @@ func run(cfg parsedCommand, stdout, stderr io.Writer, preparedOpt ...*startupPre
 			if cfg.LinesPreview {
 				return runInternalLinesPreview(prediscoveredCfg, emitConfigFromParsedCommand(cfg), stdout)
 			}
+			if cfg.TreePreview {
+				return runInternalPrediscoveredTreePreview(prediscoveredCfg, stdout)
+			}
 			// --internal-file-preview paired with --internal-prediscovered
 			// routes through the file-preview handler so it can dispatch on
 			// (empty pattern, empty focused path, checkpoint present) — see
@@ -416,31 +419,33 @@ func runResetHiss(cfg hissConfig, stderr io.Writer) error {
 }
 
 type internalCommandConfig struct {
-	TreePayload       bool
-	PrediscoveredPath string
-	FilePreview       bool
-	ContentMatchList  bool
-	RecentPreview     bool
-	LinesPreview      bool
+	TreePayload         bool
+	TreePreview         bool
+	PrediscoveredPath   string
+	FilePreview         bool
+	ContentMatchList    bool
+	RecentPreview       bool
+	LinesPreview        bool
 	SinkTogglePath      string
 	SinkPreviewModePath string
 }
 
 func internalCommandConfigFromParsedCommand(cfg parsedCommand) internalCommandConfig {
 	return internalCommandConfig{
-		TreePayload:       cfg.TreePayload,
-		PrediscoveredPath: cfg.PrediscoveredPath,
-		FilePreview:       cfg.FilePreview,
-		ContentMatchList:  cfg.ContentMatchList,
-		RecentPreview:     cfg.RecentPreview,
-		LinesPreview:      cfg.LinesPreview,
-		SinkTogglePath:    cfg.SinkTogglePath,
+		TreePayload:         cfg.TreePayload,
+		TreePreview:         cfg.TreePreview,
+		PrediscoveredPath:   cfg.PrediscoveredPath,
+		FilePreview:         cfg.FilePreview,
+		ContentMatchList:    cfg.ContentMatchList,
+		RecentPreview:       cfg.RecentPreview,
+		LinesPreview:        cfg.LinesPreview,
+		SinkTogglePath:      cfg.SinkTogglePath,
 		SinkPreviewModePath: cfg.SinkPreviewModePath,
 	}
 }
 
 func (cfg internalCommandConfig) isInternalKind() bool {
-	return cfg.TreePayload || cfg.FilePreview ||
+	return cfg.TreePayload || cfg.TreePreview || cfg.FilePreview ||
 		cfg.ContentMatchList || cfg.RecentPreview ||
 		cfg.LinesPreview ||
 		cfg.PrediscoveredPath != "" ||
@@ -574,8 +579,11 @@ func formatDuration(d time.Duration) string {
 }
 
 func validateImplementedFeatureSet(cfg internalCommandConfig) error {
-	if cfg.PrediscoveredPath != "" && !cfg.TreePayload && !cfg.ContentMatchList && !cfg.LinesPreview && !cfg.FilePreview {
-		return newUsageError("Error: --internal-prediscovered requires --internal-tree-payload, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview.")
+	if cfg.PrediscoveredPath != "" && !cfg.TreePayload && !cfg.TreePreview && !cfg.ContentMatchList && !cfg.LinesPreview && !cfg.FilePreview {
+		return newUsageError("Error: --internal-prediscovered requires --internal-tree-payload, --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview.")
+	}
+	if cfg.TreePreview && cfg.PrediscoveredPath == "" {
+		return newUsageError("Error: --internal-tree-preview requires --internal-prediscovered.")
 	}
 	if cfg.LinesPreview && cfg.PrediscoveredPath == "" {
 		return newUsageError("Error: --internal-lines-preview requires --internal-prediscovered.")
@@ -761,6 +769,8 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (parsedCommand
 			cfg.Preview = true
 		case "--internal-tree-payload":
 			cfg.TreePayload = true
+		case "--internal-tree-preview":
+			cfg.TreePreview = true
 		case "--internal-prediscovered":
 			if i+1 >= len(args) {
 				return parsedCommand{}, newUsageError("Error: --internal-prediscovered requires a checkpoint path.")

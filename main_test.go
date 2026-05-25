@@ -2566,7 +2566,7 @@ func TestFzfPreviewCommandUsesCatclipTreeRenderer(t *testing.T) {
 	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-tree-payload --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} {+2}") {
 		t.Fatalf("expected preview command to invoke catclip payload producer, got %q", command)
 	}
-	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
+	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --preview-theme "+fzfTreePreviewTheme+" --color always") {
 		t.Fatalf("expected preview command to pipe into themed catclip-tree preview renderer, got %q", command)
 	}
 }
@@ -2604,8 +2604,8 @@ func TestFzfContentPreviewCommandUsesFilePreviewPayload(t *testing.T) {
 	if !strings.Contains(command, shellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path {3} --contains {q}`) {
 		t.Fatalf("expected contains preview to invoke file preview payload producer, got %q", command)
 	}
-	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
-		t.Fatalf("expected contains preview command to pipe into themed catclip-tree preview renderer, got %q", command)
+	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --shape-tags --git-badges --entry-sizes --summary-footer --preview-theme "+fzfTreePreviewTheme+" --color always") {
+		t.Fatalf("expected contains preview command to pipe into themed catclip-tree filter renderer, got %q", command)
 	}
 }
 
@@ -2655,7 +2655,7 @@ func TestFzfDiffFilePreviewCommandUsesFilePreviewPayload(t *testing.T) {
 	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path {3} cmd --include Formula --changed-diff --only {+2}") {
 		t.Fatalf("expected diff file preview command to invoke internal file preview payload producer with scope-narrowing --only, got %q", command)
 	}
-	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
+	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --preview-theme "+fzfTreePreviewTheme+" --color always") {
 		t.Fatalf("expected diff file preview command to pipe into themed catclip-tree preview renderer, got %q", command)
 	}
 }
@@ -2675,6 +2675,9 @@ func TestFzfFileSetPreviewCommandInheritsCurrentScope(t *testing.T) {
 
 	if !strings.Contains(command, shellQuoteArg(self)+" --quiet --internal-tree-payload cmd --include Formula --only {+2} --internal-tree-target {3} --internal-tree-kind {4} --internal-tree-state {5}") {
 		t.Fatalf("expected file-set preview to inherit current scope and refine by selected rows with hovered-row metadata, got %q", command)
+	}
+	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --shape-tags --git-badges --entry-sizes --summary-footer --preview-theme "+fzfTreePreviewTheme+" --color always") {
+		t.Fatalf("expected file-set preview command to pipe into themed catclip-tree filter renderer, got %q", command)
 	}
 }
 
@@ -2712,7 +2715,7 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "only> " ]; then
-	printf '%s\n' "$preview" | grep -F -- '--internal-tree-payload --internal-prediscovered' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-tree-preview --internal-prediscovered' >/dev/null || {
 		echo "preview command did not use prediscovered checkpoint: $preview" >&2
 		exit 91
 	}
@@ -2784,7 +2787,7 @@ if [ "$prompt" = "filter> " ]; then
 fi
 
 if [ "$prompt" = "only> " ]; then
-	printf '%s\n' "$preview" | grep -F -- '--internal-tree-payload --internal-prediscovered' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-tree-preview --internal-prediscovered' >/dev/null || {
 		echo "preview command did not use prediscovered checkpoint: $preview" >&2
 		exit 91
 	}
@@ -2850,7 +2853,7 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "exclude> " ]; then
-	printf '%s\n' "$preview" | grep -F -- '--internal-tree-payload --internal-prediscovered' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-tree-preview --internal-prediscovered' >/dev/null || {
 		echo "preview command did not use prediscovered checkpoint: $preview" >&2
 		exit 91
 	}
@@ -2964,7 +2967,7 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "changed> " ]; then
-	printf '%s\n' "$preview" | grep -F -- '--internal-tree-payload --internal-prediscovered' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-tree-preview --internal-prediscovered' >/dev/null || {
 		echo "preview command did not use prediscovered checkpoint: $preview" >&2
 		exit 91
 	}
@@ -3031,8 +3034,8 @@ func TestStartupModifierCurrentScopePreviewCommandUsesCurrentScopeTree(t *testin
 	if strings.Contains(command, " src --only '*.ts'") {
 		t.Fatalf("expected modifier preview to exclude earlier scopes, got %q", command)
 	}
-	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --bare --preview-theme "+fzfTreePreviewTheme+" --color always") {
-		t.Fatalf("expected modifier preview command to pipe into themed catclip-tree preview renderer, got %q", command)
+	if !strings.Contains(command, "| "+shellQuoteArg(treeBin)+" --shape-tags --git-badges --entry-sizes --summary-footer --preview-theme "+fzfTreePreviewTheme+" --color always") {
+		t.Fatalf("expected modifier preview command to pipe into themed catclip-tree filter renderer, got %q", command)
 	}
 }
 
@@ -5149,7 +5152,7 @@ func TestEmitBundlePreservesBundleOnX11Unsupported(t *testing.T) {
 		t.Fatal("expected emitBundle to surface X11 unsupported error")
 	}
 	msg := err.Error()
-	for _, want := range []string{"X11 file clipboard is not supported", "Your catclip bundle was written to:", "Documents/catclip", "drag and drop", "--no-bundle", "supported Wayland GNOME session"} {
+	for _, want := range []string{"X11 file-reference clipboard is not supported", "Nothing was placed on your clipboard", "Your catclip bundle was saved to:", "Drag it into the target application", "--no-bundle", "For one-step paste, log into a Wayland session."} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("X11 unsupported message missing %q, got: %s", want, msg)
 		}
@@ -5186,7 +5189,7 @@ func TestEmitBundlePreservesBundleOnLegacyGNOMEUnsupported(t *testing.T) {
 		t.Fatalf("expected emitBundle to surface GNOME below %d unsupported error", fileclip.MinimumGNOMEFileClipboardMajor)
 	}
 	msg := err.Error()
-	for _, want := range []string{fmt.Sprintf("GNOME below %d file clipboard is not supported", fileclip.MinimumGNOMEFileClipboardMajor), "Your catclip bundle was written to:", "Documents/catclip", "drag and drop", "--no-bundle", "supported Wayland GNOME session"} {
+	for _, want := range []string{fmt.Sprintf("GNOME below %d file-reference clipboard is not supported", fileclip.MinimumGNOMEFileClipboardMajor), "Nothing was placed on your clipboard", "Your catclip bundle was saved to:", "Drag it into the target application", "--no-bundle", fmt.Sprintf("For one-step paste, upgrade to GNOME %d or newer.", fileclip.MinimumGNOMEFileClipboardMajor)} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("GNOME below %d unsupported message missing %q, got: %s", fileclip.MinimumGNOMEFileClipboardMajor, want, msg)
 		}
@@ -7317,68 +7320,20 @@ exit 91
 	}
 }
 
-func TestMaybeResolveStartupPickerArgsLeadingOnlyPicksTargetsFirst(t *testing.T) {
+func TestMaybeResolveStartupPickerArgsLeadingOnlyRequiresPattern(t *testing.T) {
 	if !canPromptInteractively() {
 		t.Skip("interactive terminal not available")
 	}
 
-	project := setupTestProject(t, map[string]string{
-		"src/main.ts":    "console.log('src')\n",
-		"shared/util.ts": "console.log('shared')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-	stateFile := filepath.Join(t.TempDir(), "picker-order-only")
-	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
-prompt=""
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--prompt)
-			prompt="$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
-
-input="$(cat)"
-
-if [ "$prompt" = "select> " ]; then
-	printf 'pick\n' > %q
-	printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
-	exit 0
-fi
-
-if [ "$prompt" = "only> " ]; then
-	[ -f %q ] || {
-		echo "only picker opened before target picker" >&2
-		exit 91
-	}
-	if printf '%%s\n' "$input" | grep -F "shared/util.ts" >/dev/null; then
-		echo "only picker should stay scoped to src" >&2
-		exit 91
-	fi
-	printf '%%s\n' "$input" | grep -F "src/main.ts" | head -n 1
-	exit 0
-fi
-
-echo "unexpected prompt: $prompt" >&2
-exit 91
-`, stateFile, stateFile))
-
-	result, handled, err := maybeResolveStartupPickerArgs([]string{"--only"})
-	if err != nil {
-		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
+	_, handled, err := maybeResolveStartupPickerArgs([]string{"--only"})
+	if err == nil {
+		t.Fatal("expected leading --only to require a pattern")
 	}
 	if !handled {
-		t.Fatal("expected leading --only to be handled by startup picker")
+		t.Fatal("expected leading --only error to be handled by startup picker")
 	}
-	if !result.UsedFzf {
-		t.Fatal("expected leading --only flow to use fzf")
-	}
-	if got, want := strings.Join(result.Args, "\n"), "src\n--only\nsrc/main.ts"; got != want {
-		t.Fatalf("expected resolved args %q, got %q", want, got)
+	if !strings.Contains(err.Error(), "--only requires a pattern") {
+		t.Fatalf("expected --only requires a pattern error, got %v", err)
 	}
 }
 
@@ -8307,56 +8262,6 @@ exit 91
 		t.Fatalf("resolveStartupScopeFileSetArgs returned error: %v", err)
 	}
 	if got, want := strings.Join(args, "\n"), "src\n--exclude\n*.ts\n*.tsx"; got != want {
-		t.Fatalf("expected resolved args %q, got %q", want, got)
-	}
-}
-
-func TestResolveStartupTrailingActionArgsConsumesBareModifierSentinel(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"src/main.ts":    "console.log('src')\n",
-		"shared/util.ts": "console.log('shared')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
-prompt=""
-header=""
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--prompt)
-			prompt="$2"
-			shift 2
-			;;
-		--header)
-			header="$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
-
-input="$(cat)"
-
-if [ "$prompt" = "only> " ]; then
-	printf '%s\n' "$input" | grep -F "src/main.ts" | head -n 1
-	exit 0
-fi
-
-echo "unexpected prompt: $prompt" >&2
-exit 91
-`)
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	args, _, err := resolveStartupTrailingActionArgs(resolver, []string{".", "--"}, startupTrailingActionOnly)
-	if err != nil {
-		t.Fatalf("resolveStartupTrailingActionArgs returned error: %v", err)
-	}
-	if got, want := strings.Join(args, "\n"), ".\n--only\nsrc/main.ts"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -10705,7 +10610,7 @@ func TestRunInternalFilePreviewEmitsTreeFromCheckpointForAllMatches(t *testing.T
 		t.Fatalf("evaluateScope returned error: %v", err)
 	}
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+	if err := writePrediscoveredCheckpoint(checkpointPath, parentCfg.WorkingDir, prediscoveredCheckpointData{
 		GitContext: gitCtx,
 		GitStatus:  map[string]string{},
 		Entries:    discovered.Entries,

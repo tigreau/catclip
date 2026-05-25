@@ -353,6 +353,7 @@ func printPreviewTree(w io.Writer, plan outputPlan, report outputReport, colors 
 		Mode:    treeDocumentModeTree,
 		Entries: plan.TreeEntries(report),
 	}, treeRenderOptions{
+		ShowModeTags:  true,
 		ShowSizes:     true,
 		ShowGitStatus: true,
 		ShowSummary:   false,

@@ -6,10 +6,7 @@ import (
 	"strings"
 )
 
-const (
-	dynamicFileSetInferenceThreshold    = 2
-	dynamicFileSetInferenceCandidateCap = 512
-)
+const dynamicFileSetInferenceThreshold = 2
 
 type interactiveFileSetSelectedValue struct {
 	raw         string
@@ -185,71 +182,169 @@ func inferDynamicFileSetPatterns(selectedExact, scopeFiles []string, selectedRel
 	for _, relPath := range selectedExact {
 		for _, pattern := range dynamicPatternCandidatesForBasename(path.Base(normalizeRelPath(relPath))) {
 			candidateSet[pattern] = struct{}{}
-			if len(candidateSet) > dynamicFileSetInferenceCandidateCap {
-				return nil, append([]string(nil), selectedExact...), nil
-			}
 		}
 	}
 	if len(candidateSet) == 0 {
 		return nil, append([]string(nil), selectedExact...), nil
 	}
 
-	valid := make([]dynamicFileSetPatternCandidate, 0, len(candidateSet))
+	// Split candidates into prefix ("P*") and suffix ("*S") forms. Every
+	// candidate has exactly one "*" at one end (appendDynamicPatternCandidate
+	// guarantees this), so matching is HasPrefix/HasSuffix, not regex. We probe
+	// each file's own substrings against these sets, so the per-file cost is
+	// O(basename length) regardless of how many candidates exist — that is what
+	// lets us drop the old candidate-count cap and still collapse very large
+	// selections at 50k+ scope into globs (see
+	// docs/versions/v0.5.5/reports/ACTIVE_PLAN_dynamic_pattern_inference_testing.md).
+	prefixCandidates := make(map[string]struct{}, len(candidateSet))
+	suffixCandidates := make(map[string]struct{}, len(candidateSet))
+	maxPrefixLen := 0
 	for pattern := range candidateSet {
-		matcher, err := classifyStageValue(pattern)
-		if err != nil {
+		switch {
+		case strings.HasSuffix(pattern, "*"):
+			p := pattern[:len(pattern)-1]
+			prefixCandidates[p] = struct{}{}
+			if len(p) > maxPrefixLen {
+				maxPrefixLen = len(p)
+			}
+		case strings.HasPrefix(pattern, "*"):
+			suffixCandidates[pattern[1:]] = struct{}{}
+		}
+	}
+
+	// patternsForFile reports the candidate patterns a file matches, reproducing
+	// the compiled-glob semantics exactly (`*` -> `.*`, anchored, matched against
+	// basename OR relpath): a prefix candidate "P*" matches if P prefixes the
+	// basename or the relpath; a suffix candidate "*S" matches if S suffixes the
+	// basename (equivalent to the relpath suffix since S has no slash). Buffers
+	// are reused across calls; the caller consumes the result before the next
+	// call.
+	seen := make(map[string]struct{}, 16)
+	matchBuf := make([]string, 0, 16)
+	patternsForFile := func(rel string) []string {
+		clear(seen)
+		matchBuf = matchBuf[:0]
+		base := path.Base(rel)
+		add := func(pattern string) {
+			if _, ok := seen[pattern]; ok {
+				return
+			}
+			seen[pattern] = struct{}{}
+			matchBuf = append(matchBuf, pattern)
+		}
+		for i := 1; i <= len(base); i++ {
+			if _, ok := prefixCandidates[base[:i]]; ok {
+				add(base[:i] + "*")
+			}
+		}
+		for i := 1; i <= len(rel) && i <= maxPrefixLen; i++ {
+			if _, ok := prefixCandidates[rel[:i]]; ok {
+				add(rel[:i] + "*")
+			}
+		}
+		for i := 0; i < len(base); i++ {
+			if _, ok := suffixCandidates[base[i:]]; ok {
+				add("*" + base[i:])
+			}
+		}
+		return matchBuf
+	}
+
+	// One pass over the scope tallies, per candidate, how many scope files match
+	// and how many of those are selected (mirrors the old per-candidate loop:
+	// selectedMatches counts scope files that are selected, so covered ⊆ scope).
+	type matchCounts struct {
+		scope    int
+		selected int
+		covered  []string
+	}
+	stats := make(map[string]*matchCounts, len(candidateSet))
+	for _, relPath := range scopeFiles {
+		normalized := normalizeRelPath(relPath)
+		if normalized == "" {
 			continue
 		}
-		candidate := dynamicFileSetPatternCandidate{
-			pattern:       pattern,
-			literalChars:  dynamicPatternLiteralCharCount(pattern),
-			wildcardCount: dynamicPatternWildcardCount(pattern),
-		}
-		scopeMatches := 0
-		for _, relPath := range scopeFiles {
-			normalized := normalizeRelPath(relPath)
-			if normalized == "" || !matchesStageValue(normalized, matcher) {
-				continue
+		_, isSelected := selectedRelPaths[normalized]
+		for _, pattern := range patternsForFile(normalized) {
+			c := stats[pattern]
+			if c == nil {
+				c = &matchCounts{}
+				stats[pattern] = c
 			}
-			scopeMatches++
-			if _, ok := selectedRelPaths[normalized]; ok {
-				candidate.selectedMatches++
-				candidate.covered = append(candidate.covered, normalized)
+			c.scope++
+			if isSelected {
+				c.selected++
+				c.covered = append(c.covered, normalized)
 			}
 		}
-		if scopeMatches == candidate.selectedMatches && candidate.selectedMatches >= dynamicFileSetInferenceThreshold {
-			valid = append(valid, candidate)
+	}
+
+	// A candidate is valid when it matches no unselected file (scope == selected)
+	// and characterizes at least the threshold of the selection.
+	valid := make([]dynamicFileSetPatternCandidate, 0, len(stats))
+	for pattern, c := range stats {
+		if c.scope != c.selected || c.selected < dynamicFileSetInferenceThreshold {
+			continue
 		}
+		valid = append(valid, dynamicFileSetPatternCandidate{
+			pattern:         pattern,
+			selectedMatches: c.selected,
+			literalChars:    dynamicPatternLiteralCharCount(pattern),
+			wildcardCount:   dynamicPatternWildcardCount(pattern),
+			covered:         c.covered,
+		})
 	}
 	if len(valid) == 0 {
 		return nil, append([]string(nil), selectedExact...), nil
 	}
 
-	sort.Slice(valid, func(i, j int) bool {
-		return dynamicFileSetPatternCandidateLess(valid[i], valid[j])
-	})
-
-	uncovered := make(map[string]struct{}, len(selectedRelPaths))
-	for relPath := range selectedRelPaths {
-		uncovered[relPath] = struct{}{}
-	}
 	coveredByInferred := make(map[string]struct{}, len(selectedRelPaths))
-	inferred := make([]string, 0, len(valid))
-	for _, candidate := range valid {
-		coversUncovered := false
-		for _, relPath := range candidate.covered {
-			if _, ok := uncovered[relPath]; ok {
-				coversUncovered = true
-				break
-			}
-		}
-		if !coversUncovered {
+	var inferred []string
+
+	// If a single clean pattern covers the entire selection, emit the broadest
+	// such pattern (fewest literal characters). This is the chosen tie rule:
+	// selecting every Go file yields `*.go`, not a longer prefix.
+	totalSelected := len(selectedRelPaths)
+	best := -1
+	for i := range valid {
+		if valid[i].selectedMatches != totalSelected {
 			continue
 		}
-		inferred = append(inferred, candidate.pattern)
-		for _, relPath := range candidate.covered {
-			delete(uncovered, relPath)
+		if best == -1 || dynamicFileSetPatternCandidateBroader(valid[i], valid[best]) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		inferred = []string{valid[best].pattern}
+		for _, relPath := range valid[best].covered {
 			coveredByInferred[relPath] = struct{}{}
+		}
+	} else {
+		// No single full cover: keep the most-specific-first greedy assembly so
+		// multi-family selections stay precise.
+		sort.Slice(valid, func(i, j int) bool {
+			return dynamicFileSetPatternCandidateLess(valid[i], valid[j])
+		})
+		uncovered := make(map[string]struct{}, len(selectedRelPaths))
+		for relPath := range selectedRelPaths {
+			uncovered[relPath] = struct{}{}
+		}
+		for _, candidate := range valid {
+			coversUncovered := false
+			for _, relPath := range candidate.covered {
+				if _, ok := uncovered[relPath]; ok {
+					coversUncovered = true
+					break
+				}
+			}
+			if !coversUncovered {
+				continue
+			}
+			inferred = append(inferred, candidate.pattern)
+			for _, relPath := range candidate.covered {
+				delete(uncovered, relPath)
+				coveredByInferred[relPath] = struct{}{}
+			}
 		}
 	}
 	if len(inferred) == 0 {
@@ -318,6 +413,19 @@ func dynamicFileSetPatternCandidateLess(a, b dynamicFileSetPatternCandidate) boo
 	}
 	if a.literalChars != b.literalChars {
 		return a.literalChars > b.literalChars
+	}
+	if a.wildcardCount != b.wildcardCount {
+		return a.wildcardCount < b.wildcardCount
+	}
+	return a.pattern < b.pattern
+}
+
+// dynamicFileSetPatternCandidateBroader reports whether a is the broader of two
+// full-cover candidates: fewest literal characters wins (e.g. `*.go` over
+// `auth_*`, and `auth*` over `auth_*`), then fewest wildcards, then lexical.
+func dynamicFileSetPatternCandidateBroader(a, b dynamicFileSetPatternCandidate) bool {
+	if a.literalChars != b.literalChars {
+		return a.literalChars < b.literalChars
 	}
 	if a.wildcardCount != b.wildcardCount {
 		return a.wildcardCount < b.wildcardCount

@@ -15,29 +15,29 @@ const payloadVersion = 1
 var ErrEmptyPayload = errors.New("empty tree payload")
 
 type payloadRecord struct {
-	Type        string `json:"type"`
-	Version     int    `json:"version,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Root        string `json:"root,omitempty"`
-	Path        string `json:"path,omitempty"`
-	Kind        string `json:"kind,omitempty"`
-	State       string `json:"state,omitempty"`
-	Size        *int64 `json:"size,omitempty"`
-	Git         string `json:"git,omitempty"`
-	Tag         string `json:"tag,omitempty"`
+	Type             string `json:"type"`
+	Version          int    `json:"version,omitempty"`
+	Mode             string `json:"mode,omitempty"`
+	Root             string `json:"root,omitempty"`
+	Path             string `json:"path,omitempty"`
+	Kind             string `json:"kind,omitempty"`
+	State            string `json:"state,omitempty"`
+	Size             *int64 `json:"size,omitempty"`
+	Git              string `json:"git,omitempty"`
+	Tag              string `json:"tag,omitempty"`
 	TargetRoot       string `json:"target_root,omitempty"`
 	AllowedByInclude bool   `json:"allowed_by_include,omitempty"`
 	BlockSource      string `json:"block_source,omitempty"`
-	Content     string `json:"content,omitempty"`
-	Highlight   string `json:"highlight,omitempty"`
-	Focus       []int  `json:"focus,omitempty"`
-	Pattern     string `json:"pattern,omitempty"`
-	Truncated   bool   `json:"truncated,omitempty"`
-	Count       *int   `json:"count,omitempty"`
-	Bytes       *int64 `json:"bytes,omitempty"`
-	HumanSize   string `json:"human_size,omitempty"`
-	Tokens      *int64 `json:"tokens,omitempty"`
-	FileWord    string `json:"file_word,omitempty"`
+	Content          string `json:"content,omitempty"`
+	Highlight        string `json:"highlight,omitempty"`
+	Focus            []int  `json:"focus,omitempty"`
+	Pattern          string `json:"pattern,omitempty"`
+	Truncated        bool   `json:"truncated,omitempty"`
+	Count            *int   `json:"count,omitempty"`
+	Bytes            *int64 `json:"bytes,omitempty"`
+	HumanSize        string `json:"human_size,omitempty"`
+	Tokens           *int64 `json:"tokens,omitempty"`
+	FileWord         string `json:"file_word,omitempty"`
 }
 
 // EncodePayload writes a tree document as newline-delimited JSON records.
@@ -83,9 +83,13 @@ func EncodePayload(w io.Writer, doc Document) error {
 			}
 		}
 	default:
-		for _, entry := range SortedEntries(doc.Entries) {
+		entries := doc.Entries
+		if !doc.EntriesSorted {
+			entries = SortedEntries(entries)
+		}
+		for _, entry := range entries {
 			record := payloadRecord{
-				Type:        "entry",
+				Type:             "entry",
 				Path:             entry.Path,
 				Kind:             "file",
 				Git:              entry.GitStatus,
@@ -225,6 +229,7 @@ func DecodePayload(r io.Reader) (Document, error) {
 		return Document{}, ErrEmptyPayload
 	}
 	doc.Entries = SortedEntries(doc.Entries)
+	doc.EntriesSorted = true
 	return doc, nil
 }
 

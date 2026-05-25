@@ -35,7 +35,6 @@ type startupTrailingAction string
 const (
 	startupTrailingActionNone         startupTrailingAction = ""
 	startupTrailingActionModifierMenu startupTrailingAction = "modifier-menu"
-	startupTrailingActionOnly         startupTrailingAction = "only"
 	startupTrailingActionExclude      startupTrailingAction = "exclude"
 	startupTrailingActionRecent       startupTrailingAction = "recent"
 	startupTrailingActionContains     startupTrailingAction = "contains"
@@ -1140,9 +1139,6 @@ func resolveStartupTrailingActionArgs(resolver *scopeResolver, prefixArgs []stri
 	case startupTrailingActionModifierMenu:
 		args, _, usedFzf, err := resolveStartupArgs(resolver, append(append([]string(nil), prefixArgs...), "--"))
 		return args, usedFzf, err
-	case startupTrailingActionOnly:
-		args, usedFzf, err := resolveStartupScopeFileSetArgs(prefixArgs, "--only", "only> ")
-		return args, usedFzf, err
 	case startupTrailingActionExclude:
 		args, usedFzf, err := resolveStartupScopeFileSetArgs(prefixArgs, "--exclude", "exclude> ")
 		return args, usedFzf, err
@@ -1964,10 +1960,6 @@ func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, d
 }
 
 func buildFileSetCheckpointPreview(view resolvedScopeView, previewFlag string) (cmd string, tmpdir string) {
-	treeBin, ok := treePreviewBinary()
-	if !ok {
-		return "", ""
-	}
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
 		return "", ""
@@ -1985,7 +1977,7 @@ func buildFileSetCheckpointPreview(view resolvedScopeView, previewFlag string) (
 			return "", ""
 		}
 	}
-	if err := writePrediscoveredCheckpoint(checkpointPath, prediscoveredCheckpointData{
+	if err := writePrediscoveredCheckpoint(checkpointPath, view.Invocation.WorkingDir, prediscoveredCheckpointData{
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,
@@ -1994,7 +1986,7 @@ func buildFileSetCheckpointPreview(view resolvedScopeView, previewFlag string) (
 		return "", ""
 	}
 
-	parts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload", "--internal-prediscovered", shellQuoteArg(checkpointPath)}
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-preview", "--internal-prediscovered", shellQuoteArg(checkpointPath)}
 	if previewFlag != "" {
 		parts = append(parts, previewFlag, "{+2}")
 	}
@@ -2003,8 +1995,6 @@ func buildFileSetCheckpointPreview(view resolvedScopeView, previewFlag string) (
 		"--internal-tree-kind", "{4}",
 		"--internal-tree-state", "{5}",
 	)
-	parts = append(parts, "|", shellQuoteArg(treeBin))
-	parts = append(parts, fzfTreeRenderArgs()...)
 	return strings.Join(parts, " "), tmpdir
 }
 
@@ -2034,7 +2024,9 @@ func startupModifierCurrentScopePreviewCommand(state startupCurrentScopeState) s
 	parts := []string{shellQuoteArg(self), "--quiet", "--internal-tree-payload"}
 	parts = append(parts, scopeArgs...)
 	parts = append(parts, "|", shellQuoteArg(treeBin))
-	parts = append(parts, fzfTreeRenderArgs()...)
+	// Modifier menu is a filter-stage preview, pinned once at menu open, so
+	// surfacing shape tags + git badges adds no per-keystroke cost.
+	parts = append(parts, fzfFilterTreeRenderArgs()...)
 	return strings.Join(parts, " ")
 }
 

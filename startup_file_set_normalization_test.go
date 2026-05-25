@@ -1,6 +1,7 @@
 package catclip
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -223,7 +224,7 @@ func TestInferDynamicFileSetPatternsCollapsesSharedPrefixFamily(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inferDynamicFileSetPatterns returned error: %v", err)
 	}
-	if want := []string{"editor_command*"}; strings.Join(inferred, "\n") != strings.Join(want, "\n") {
+	if want := []string{"*.go"}; strings.Join(inferred, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("inferred = %q, want %q", inferred, want)
 	}
 	if len(remaining) != 0 {
@@ -256,7 +257,7 @@ func TestInferDynamicFileSetPatternsCompleteCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inferDynamicFileSetPatterns returned error: %v", err)
 	}
-	if want := []string{"*Controller.java"}; strings.Join(inferred, "\n") != strings.Join(want, "\n") {
+	if want := []string{"*.java"}; strings.Join(inferred, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("inferred = %q, want %q", inferred, want)
 	}
 	if len(remaining) != 0 {
@@ -296,7 +297,7 @@ func TestNormalizeInteractiveFileSetStageValuesCollapsesControllers(t *testing.T
 	if err != nil {
 		t.Fatalf("normalizeInteractiveFileSetStageValues returned error: %v", err)
 	}
-	if want := []string{"*Controller.java"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if want := []string{"*.java"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("normalized values = %q, want %q", got, want)
 	}
 }
@@ -338,7 +339,7 @@ func TestNormalizeInteractiveFileSetStageValuesCollapsesDelimiterPatterns(t *tes
 	if err != nil {
 		t.Fatalf("normalizeInteractiveFileSetStageValues returned error: %v", err)
 	}
-	if want := []string{"*_controller_test.go"}; strings.Join(goTests, "\n") != strings.Join(want, "\n") {
+	if want := []string{"*_test.go"}; strings.Join(goTests, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("normalized Go test values = %q, want %q", goTests, want)
 	}
 
@@ -372,7 +373,7 @@ func TestNormalizeInteractiveFileSetStageValuesCollapsesCommandPrefixFamily(t *t
 	if err != nil {
 		t.Fatalf("normalizeInteractiveFileSetStageValues returned error: %v", err)
 	}
-	if want := []string{"command_*"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if want := []string{"command*"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("normalized values = %q, want %q", got, want)
 	}
 }
@@ -396,7 +397,7 @@ func TestNormalizeInteractiveFileSetStageValuesCollapsesEditorCommandPrefixFamil
 	if err != nil {
 		t.Fatalf("normalizeInteractiveFileSetStageValues returned error: %v", err)
 	}
-	if want := []string{"editor_command*"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+	if want := []string{"editor*"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("normalized values = %q, want %q", got, want)
 	}
 }
@@ -457,6 +458,102 @@ func TestNormalizeInteractiveFileSetStageValuesPrunesPatternCoveredByBroaderInfe
 		t.Fatalf("normalizeInteractiveFileSetStageValues returned error: %v", err)
 	}
 	if want := []string{"*_test.go"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("normalized values = %q, want %q", got, want)
+	}
+}
+
+func TestInferDynamicFileSetPatternsPrefixCollisionKeepsDelimiterUntilSafe(t *testing.T) {
+	selected := []string{
+		"deploy_config.test.js",
+		"deploy_script.test.js",
+	}
+	scope := append(append([]string(nil), selected...),
+		"deployment.test.js",
+		"build_script.test.js",
+	)
+	inferred, remaining, err := inferDynamicFileSetPatterns(selected, scope, nil)
+	if err != nil {
+		t.Fatalf("inferDynamicFileSetPatterns returned error: %v", err)
+	}
+	if want := []string{"deploy_*"}; strings.Join(inferred, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("inferred = %q, want %q", inferred, want)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining = %q, want none", remaining)
+	}
+
+	selected = append(append([]string(nil), selected...), "deployment.test.js")
+	inferred, remaining, err = inferDynamicFileSetPatterns(selected, scope, nil)
+	if err != nil {
+		t.Fatalf("inferDynamicFileSetPatterns returned error: %v", err)
+	}
+	if want := []string{"deploy*"}; strings.Join(inferred, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("inferred = %q, want %q", inferred, want)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining = %q, want none", remaining)
+	}
+}
+
+func TestInferDynamicFileSetPatternsDoesNotInventMiddleWildcard(t *testing.T) {
+	selected := []string{
+		"user.service.ts",
+		"auth.service.js",
+	}
+	inferred, remaining, err := inferDynamicFileSetPatterns(selected, selected, nil)
+	if err != nil {
+		t.Fatalf("inferDynamicFileSetPatterns returned error: %v", err)
+	}
+	if len(inferred) != 0 {
+		t.Fatalf("inferred = %q, want none", inferred)
+	}
+	if strings.Join(remaining, "\n") != strings.Join(selected, "\n") {
+		t.Fatalf("remaining = %q, want %q", remaining, selected)
+	}
+}
+
+func TestInferDynamicFileSetPatternsGreedyDecomposesOverlappingFamilies(t *testing.T) {
+	selected := []string{
+		"auth_controller.go",
+		"auth_model.go",
+		"auth_view.ts",
+		"shared_model.go",
+		"user_controller.go",
+		"user_model.go",
+		"user_view.ts",
+	}
+	inferred, remaining, err := inferDynamicFileSetPatterns(selected, selected, nil)
+	if err != nil {
+		t.Fatalf("inferDynamicFileSetPatterns returned error: %v", err)
+	}
+	if want := []string{"*.go", "auth_*", "user_*"}; strings.Join(inferred, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("inferred = %q, want %q", inferred, want)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining = %q, want none", remaining)
+	}
+}
+
+func TestNormalizeInteractiveFileSetStageValuesKeepsExplicitPatternAndCollapsesRest(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"core_main.go":       "package main\n",
+		"server.go":          "package main\n",
+		"web_login_test.ts":  "test('web')\n",
+		"api_logout_test.ts": "test('api')\n",
+		"web_login.ts":       "console.log('web')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+
+	got, err := normalizeInteractiveFileSetStageValues([]string{"."}, []string{
+		"*.go",
+		"core_main.go",
+		"web_login_test.ts",
+		"api_logout_test.ts",
+	})
+	if err != nil {
+		t.Fatalf("normalizeInteractiveFileSetStageValues returned error: %v", err)
+	}
+	if want := []string{"*.go", "*_test.ts"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("normalized values = %q, want %q", got, want)
 	}
 }
@@ -554,7 +651,244 @@ exit 91
 	if err != nil {
 		t.Fatalf("resolveStartupScopeFileSetArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(args, "\n"), ".\n--exclude\n*Controller.java"; got != want {
+	if got, want := strings.Join(args, "\n"), ".\n--exclude\n*.java"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
+}
+
+func backslashPaths(paths []string) []string {
+	out := make([]string, len(paths))
+	for i, p := range paths {
+		out[i] = strings.ReplaceAll(p, "/", `\`)
+	}
+	return out
+}
+
+// TestInferDynamicFileSetPatternsSeparatorAgnostic is the automated stand-in for
+// the plan's "manual smoke on linux + windows". Inference is computed from
+// path.Base(normalizeRelPath(...)), and normalizeRelPath converts "\" to "/"
+// (discovery.go), so a Windows-style selection must infer exactly the same
+// patterns as the POSIX form. Each case is run in both separator styles.
+func TestInferDynamicFileSetPatternsSeparatorAgnostic(t *testing.T) {
+	tests := []struct {
+		name     string
+		selected []string
+		scope    []string
+		want     []string // expected inferred patterns; remaining must be empty
+	}{
+		{
+			// user_profile.go (a .go file) is unselected, so *.go is invalid;
+			// the broadest valid full cover is the prefix auth* (fewest literal,
+			// delimiter dropped per the chosen tie rule).
+			name:     "prefix family across directories",
+			selected: []string{"src/auth_login.go", "src/auth_logout.go"},
+			scope:    []string{"src/auth_login.go", "src/auth_logout.go", "src/user_profile.go"},
+			want:     []string{"auth*"},
+		},
+		{
+			name:     "extension family",
+			selected: []string{"pkg/a.go", "pkg/b.go"},
+			scope:    []string{"pkg/a.go", "pkg/b.go", "pkg/notes.md"},
+			want:     []string{"*.go"},
+		},
+		{
+			name:     "camel prefix across extensions",
+			selected: []string{"web/fooBar.js", "web/fooBaz.ts"},
+			scope:    []string{"web/fooBar.js", "web/fooBaz.ts"},
+			want:     []string{"foo*"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, sep := range []string{"posix", "windows"} {
+				selected, scope := tt.selected, tt.scope
+				if sep == "windows" {
+					selected, scope = backslashPaths(tt.selected), backslashPaths(tt.scope)
+				}
+				inferred, remaining, err := inferDynamicFileSetPatterns(selected, scope, nil)
+				if err != nil {
+					t.Fatalf("[%s] returned error: %v", sep, err)
+				}
+				if got := strings.Join(inferred, "\n"); got != strings.Join(tt.want, "\n") {
+					t.Fatalf("[%s] inferred = %q, want %q", sep, inferred, tt.want)
+				}
+				if len(remaining) != 0 {
+					t.Fatalf("[%s] remaining = %q, want none", sep, remaining)
+				}
+			}
+		})
+	}
+}
+
+// TestInferDynamicFileSetPatternsBackslashCrossDirectoryStaysExact mirrors the
+// POSIX cross-directory guard with Windows separators. Patterns are
+// basename-based and cannot distinguish directories, so an unselected sibling
+// sharing the basename family (legacy\AuthController.java) makes the only
+// 2-match candidate (*Controller.java) over-match and be rejected.
+func TestInferDynamicFileSetPatternsBackslashCrossDirectoryStaysExact(t *testing.T) {
+	selected := backslashPaths([]string{"src/UserController.java", "src/AdminController.java"})
+	scope := backslashPaths([]string{
+		"src/UserController.java",
+		"src/AdminController.java",
+		"legacy/AuthController.java",
+	})
+	inferred, remaining, err := inferDynamicFileSetPatterns(selected, scope, nil)
+	if err != nil {
+		t.Fatalf("returned error: %v", err)
+	}
+	if len(inferred) != 0 {
+		t.Fatalf("inferred = %q, want none", inferred)
+	}
+	if strings.Join(remaining, "\n") != strings.Join(selected, "\n") {
+		t.Fatalf("remaining = %q, want %q", remaining, selected)
+	}
+}
+
+// TestInferDynamicFileSetPatternsNicheBoundaryCases exercises the niche
+// boundary/normalization paths: camelCase false positives (goal 3 — minified or
+// obfuscated names must not over-collapse), digit boundaries, and "./"/".\"
+// prefix + mixed-separator normalization.
+func TestInferDynamicFileSetPatternsNicheBoundaryCases(t *testing.T) {
+	tests := []struct {
+		name          string
+		selected      []string
+		scope         []string
+		wantInferred  []string
+		wantRemaining []string
+	}{
+		{
+			name:          "camel false positive stays exact",
+			selected:      []string{"fooBar.js", "fooBaz.js"},
+			scope:         []string{"fooBar.js", "fooBaz.js", "fooQux.js"},
+			wantInferred:  nil,
+			wantRemaining: []string{"fooBar.js", "fooBaz.js"},
+		},
+		{
+			name:          "digit boundary prefix isolates numbered family",
+			selected:      []string{"img1.png", "img2.png"},
+			scope:         []string{"img1.png", "img2.png", "icon.png"},
+			wantInferred:  []string{"img*"},
+			wantRemaining: nil,
+		},
+		{
+			name:          "dot-slash and mixed separators normalize",
+			selected:      []string{"./a.go", `.\b.go`},
+			scope:         []string{"./a.go", `.\b.go`, "c.txt"},
+			wantInferred:  []string{"*.go"},
+			wantRemaining: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inferred, remaining, err := inferDynamicFileSetPatterns(tt.selected, tt.scope, nil)
+			if err != nil {
+				t.Fatalf("returned error: %v", err)
+			}
+			if strings.Join(inferred, "\n") != strings.Join(tt.wantInferred, "\n") {
+				t.Fatalf("inferred = %q, want %q", inferred, tt.wantInferred)
+			}
+			if strings.Join(remaining, "\n") != strings.Join(tt.wantRemaining, "\n") {
+				t.Fatalf("remaining = %q, want %q", remaining, tt.wantRemaining)
+			}
+		})
+	}
+}
+
+// TestInferDynamicFileSetPatternsLargeSelectionStillCollapses locks in the fix
+// to the old candidate-count cap: a large selection must still collapse into a
+// glob. Previously, once candidate enumeration exceeded the 512 cap, inference
+// bailed to the exact file list (so selecting 200 .go files across a big repo
+// emitted 200 paths instead of *.go). Now there is no cap, and 200 .go files in
+// a .go-only scope collapse to the broadest clean glob, *.go.
+func TestInferDynamicFileSetPatternsLargeSelectionStillCollapses(t *testing.T) {
+	const n = 200
+	selected := make([]string, 0, n)
+	for i := range n {
+		selected = append(selected, fmt.Sprintf("pkg%03d/file%03d_mod.go", i, i))
+	}
+	inferred, remaining, err := inferDynamicFileSetPatterns(selected, selected, nil)
+	if err != nil {
+		t.Fatalf("returned error: %v", err)
+	}
+	if want := []string{"*.go"}; strings.Join(inferred, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("inferred = %q, want %q (large selection must collapse, not bail to exact)", inferred, want)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining = %q, want none", remaining)
+	}
+}
+
+// benchInferenceScope builds a synthetic repo file set: directory-nested paths
+// across a spread of extensions. No filesystem involved — inference is pure over
+// these strings, so a 50k+ "repo" is just a slice.
+func benchInferenceScope(n int) []string {
+	exts := [...]string{"go", "ts", "js", "md", "txt", "json"}
+	scope := make([]string, n)
+	for i := range n {
+		scope[i] = fmt.Sprintf("pkg%03d/module%05d.%s", i%256, i, exts[i%len(exts)])
+	}
+	return scope
+}
+
+// benchInferSink prevents the compiler from eliminating the benchmarked call.
+var benchInferSink int
+
+// BenchmarkInferDynamicFileSetPatterns is the automated stand-in for the plan's
+// ">50k file" performance check (goal 1) — no real repo needed. After the cap
+// removal + fast prefix/suffix matching, cost is O(scope × basename length),
+// independent of candidate count. These confirm that even large/diverse
+// selections at 50k scope collapse into globs in the millisecond range (the old
+// regex path took ~10 s on the diverse case).
+func BenchmarkInferDynamicFileSetPatterns(b *testing.B) {
+	// Family selection: few candidates, scope grows 1k → 50k.
+	familySelected := []string{
+		"feature/auth_login.go",
+		"feature/auth_logout.go",
+		"feature/auth_refresh.go",
+		"feature/auth_session.go",
+	}
+	for _, n := range []int{1000, 10000, 50000} {
+		scope := append(benchInferenceScope(n), familySelected...)
+		b.Run(fmt.Sprintf("family_select/scope=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				inferred, _, _ := inferDynamicFileSetPatterns(familySelected, scope, nil)
+				benchInferSink += len(inferred)
+			}
+		})
+	}
+
+	// Large selection: 5k files selected in a 55k scope. Used to exceed the old
+	// candidate cap and bail to exact; now it collapses to a glob and must stay
+	// fast despite the huge candidate set.
+	bigScope := benchInferenceScope(50000)
+	bigSelected := make([]string, 0, 5000)
+	for i := range 5000 {
+		bigSelected = append(bigSelected, fmt.Sprintf("diverse/item%05d_part.go", i))
+	}
+	bigScope = append(bigScope, bigSelected...)
+	b.Run("large_select/select=5000/scope=50000", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			inferred, _, _ := inferDynamicFileSetPatterns(bigSelected, bigScope, nil)
+			benchInferSink += len(inferred)
+		}
+	})
+
+	// Diverse selection: ~90 files with distinct multi-boundary basenames (~450
+	// candidates) at 50k scope. This was the old worst case (~10 s under the
+	// regex path, just under the cap so it did not bail); it must now be fast.
+	diverseSelected := make([]string, 0, 90)
+	for i := range 90 {
+		diverseSelected = append(diverseSelected, fmt.Sprintf("near/worst%02d_mod.go", i))
+	}
+	diverseScope := append(benchInferenceScope(50000), diverseSelected...)
+	b.Run("diverse_select/select=90/scope=50000", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			inferred, _, _ := inferDynamicFileSetPatterns(diverseSelected, diverseScope, nil)
+			benchInferSink += len(inferred)
+		}
+	})
 }

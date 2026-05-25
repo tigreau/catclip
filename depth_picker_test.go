@@ -163,7 +163,7 @@ if [ "$prompt" != "depth> " ]; then
 fi
 
 # Pull the tmpdir out of the preview command. Pattern looks like:
-#   "<treeBin>" --bare ... --input-dir "<tmpdir>" --input-stem {2}
+#   "<treeBin>" --shape-tags --git-badges ... --input-dir "<tmpdir>" --input-stem {2}
 tmpdir_token="$(printf '%s\n' "$preview" | sed -n 's/.*--input-dir "\{0,1\}\([^" ]*\)"\{0,1\} --input-stem.*/\1/p')"
 if [ -z "$tmpdir_token" ]; then
 	echo "could not extract tmpdir from preview command: $preview" >&2

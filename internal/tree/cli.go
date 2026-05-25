@@ -35,27 +35,25 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 	}
 
 	var (
-		bare         bool
-		showSizes    bool
-		showGit      bool
-		showSum      bool
-		showTok      bool
-		colorMode    string
-		previewTheme string
-		maxLines     int
-		showVer      bool
-		inputFile    string
-		inputDir     string
-		inputStem    string
+		shapeTags     bool
+		gitBadges     bool
+		entrySizes    bool
+		summaryFooter bool
+		colorMode     string
+		previewTheme  string
+		maxLines      int
+		showVer       bool
+		inputFile     string
+		inputDir      string
+		inputStem     string
 	)
 
 	fs := flag.NewFlagSet("catclip-tree", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	fs.BoolVar(&bare, "bare", false, "render a minimal tree")
-	fs.BoolVar(&showSizes, "sizes", false, "show file sizes if present in the payload")
-	fs.BoolVar(&showGit, "git", false, "show git status badges if present in the payload")
-	fs.BoolVar(&showSum, "summary", false, "show summary section if present in the payload")
-	fs.BoolVar(&showTok, "tokens", false, "show token estimate in the summary")
+	fs.BoolVar(&shapeTags, "shape-tags", false, "show output-shape tags if present in the payload")
+	fs.BoolVar(&gitBadges, "git-badges", false, "show git status badges if present in the payload")
+	fs.BoolVar(&entrySizes, "entry-sizes", false, "show per-entry sizes if present in the payload")
+	fs.BoolVar(&summaryFooter, "summary-footer", false, "show count + size + token footer if present in the payload")
 	fs.StringVar(&colorMode, "color", "auto", "color mode: auto, always, or never")
 	fs.StringVar(&previewTheme, "preview-theme", "", "internal preview theme")
 	fs.IntVar(&maxLines, "max-lines", 0, "maximum rendered lines for file preview mode (0 = unlimited)")
@@ -81,7 +79,9 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 		return usageErrorf("Error: catclip-tree reads payload from stdin and does not accept path arguments.\n  Example: catclip --internal-tree-payload src | catclip-tree")
 	}
 
-	opts := DefaultRenderOptions()
+	// CLI starts bare; each metadata column is opted in additively. The
+	// in-process final render uses DefaultRenderOptions() instead.
+	opts := BareRenderOptions()
 	opts.MaxLines = maxLines
 	opts.PreviewTheme = normalizePreviewTheme(previewTheme)
 	switch opts.PreviewTheme {
@@ -89,23 +89,16 @@ func RunCLI(args []string, stdin io.Reader, stdout, stderr io.Writer, cfg CLICon
 	default:
 		return usageErrorf("Error: invalid preview theme %s\n  Use one of: %s", singleQuoted(previewTheme), singleQuoted(previewThemeFzfDark))
 	}
-	if bare {
-		opts.Bare = true
-		opts.ShowSizes = false
-		opts.ShowGitStatus = false
-		opts.ShowSummary = false
-		opts.ShowTokens = false
+	if shapeTags {
+		opts.ShowModeTags = true
 	}
-	if showSizes {
-		opts.ShowSizes = true
-	}
-	if showGit {
+	if gitBadges {
 		opts.ShowGitStatus = true
 	}
-	if showSum {
-		opts.ShowSummary = true
+	if entrySizes {
+		opts.ShowSizes = true
 	}
-	if showTok {
+	if summaryFooter {
 		opts.ShowSummary = true
 		opts.ShowTokens = true
 	}
@@ -172,11 +165,11 @@ func helpText(version string) string {
 	b.WriteString("Usage:\n")
 	b.WriteString("  catclip --internal-tree-payload src | catclip-tree [options]\n\n")
 	b.WriteString("Options:\n")
-	b.WriteString("  --bare            Render a minimal tree\n")
-	b.WriteString("  --sizes           Show file sizes if present in the payload\n")
-	b.WriteString("  --git             Show git status badges if present in the payload\n")
-	b.WriteString("  --summary         Show summary section if present in the payload\n")
-	b.WriteString("  --tokens          Show token estimate in the summary\n")
+	b.WriteString("  Default is a bare tree (paths only). Each flag adds one metadata column.\n")
+	b.WriteString("  --shape-tags      Show output-shape tags if present in the payload\n")
+	b.WriteString("  --git-badges      Show git status badges if present in the payload\n")
+	b.WriteString("  --entry-sizes     Show per-entry sizes if present in the payload\n")
+	b.WriteString("  --summary-footer  Show count + size + token footer if present in the payload\n")
 	b.WriteString("  --color MODE      auto, always, or never\n")
 	b.WriteString("  --max-lines N     Maximum lines in file preview mode (0 = unlimited)\n")
 	b.WriteString("  --input-file PATH Read payload from PATH instead of stdin\n")

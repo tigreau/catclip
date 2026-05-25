@@ -21,14 +21,21 @@ var (
 	// yet have a clipboard implementation.
 	ErrUnsupportedPlatform = errors.New("fileclip: unsupported platform")
 
-	// ErrX11Unsupported is returned on Linux X11 sessions. X11 file-reference
-	// clipboard offers are not supported because browser file-upload paste is
-	// unreliable even for native Nautilus clipboard states.
+	// ErrX11Unsupported is returned when catclip refuses to write a
+	// file-reference clipboard offer to the X11 selection. Browser upload paste
+	// is unreliable end-to-end on X11 even for native Nautilus clipboard states,
+	// so fileclip leaves the clipboard untouched on X11 sessions.
 	ErrX11Unsupported = errors.New("fileclip: X11 file-reference clipboard is not supported")
 
 	// ErrLegacyGNOMEUnsupported is returned on GNOME Wayland versions older
-	// than the tested browser/file-reference clipboard support baseline.
-	ErrLegacyGNOMEUnsupported = errors.New(fmt.Sprintf("fileclip: GNOME below %d file-reference clipboard is not supported", MinimumGNOMEFileClipboardMajor))
+	// than the tested file-reference clipboard baseline. Below the baseline,
+	// the combination of Mutter, xdg-desktop-portal, and shipping browsers
+	// is not trusted to deliver a file-reference paste, so fileclip writes
+	// nothing rather than a half-working offer.
+	ErrLegacyGNOMEUnsupported = errors.New(fmt.Sprintf(
+		"fileclip: GNOME below %d file-reference clipboard is not supported",
+		MinimumGNOMEFileClipboardMajor,
+	))
 
 	// ErrToolNotFound is returned when the required clipboard tool
 	// (osascript, wl-copy, powershell) is not installed.

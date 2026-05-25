@@ -8,9 +8,6 @@ on:
 env:
   RIPGREP_VERSION: 14.1.1
   FZF_VERSION: 0.71.0
-  # See test.yml and docs/versions/v0.5.4/reports/ACTIVE_NOTE_github_actions_node24_action_bumps.md.
-  # Mirrors the opt-in so release builds run under the same Node.js runtime as CI tests.
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
   build:
@@ -70,8 +67,8 @@ jobs:
             bin_ext: ".exe"
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
           go-version: '1.26'
 
@@ -134,7 +131,7 @@ jobs:
             tar -czf "../${{ matrix.artifact }}" .
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
@@ -164,9 +161,9 @@ jobs:
             bin_ext: ".exe"
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: ${{ matrix.artifact }}
 
@@ -217,7 +214,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
           merge-multiple: true
@@ -245,7 +242,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: tigreau/homebrew-catclip
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

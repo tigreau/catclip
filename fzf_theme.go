@@ -54,6 +54,22 @@ func fzfColorSpecs(palette colorPalette, hasPreview bool) []string {
 	return specs
 }
 
+// fzfTreeRenderArgs is the target-tier preview render: bare tree, no metadata
+// columns. Bare is now catclip-tree's default, so no flag is needed for it.
 func fzfTreeRenderArgs() []string {
-	return []string{"--bare", "--preview-theme", fzfTreePreviewTheme, "--color", "always"}
+	return []string{"--preview-theme", fzfTreePreviewTheme, "--color", "always"}
+}
+
+// fzfFilterTreeRenderArgs is the filter-tier preview render: bare layout plus
+// the shape-tag, git-badge, and entry-size columns and the count/size/token
+// summary footer. Every one of those is computed while building the preview
+// plan regardless of whether it is displayed, so rendering them adds no
+// per-refresh cost — the size collection (one Lstat per non-SizeKnown entry)
+// is the same work the plan build already does (see the v0.5.5 tree-shape
+// plan, "Why entry sizes are free in the filter tier"; measured ~3.5 µs/file).
+// The footer's token estimate is the load-bearing reason to show it: it tells
+// the user whether the current selection will blow the context window before
+// they commit the command.
+func fzfFilterTreeRenderArgs() []string {
+	return []string{"--shape-tags", "--git-badges", "--entry-sizes", "--summary-footer", "--preview-theme", fzfTreePreviewTheme, "--color", "always"}
 }

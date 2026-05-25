@@ -205,7 +205,7 @@ func buildDepthPickerPreview(view resolvedScopeView, buckets []depthBucket) (cmd
 	}
 
 	parts := []string{shellQuoteArg(treeBin)}
-	parts = append(parts, fzfTreeRenderArgs()...)
+	parts = append(parts, fzfFilterTreeRenderArgs()...)
 	// Pass --input-dir and --input-stem as separate args so the {2}
 	// substitution lives as a standalone token. POSIX sh and Windows cmd.exe
 	// quote differently for placeholder substitutions; keeping {2} away
