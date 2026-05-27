@@ -539,7 +539,64 @@ func emitEntry(w io.Writer, unit preparedFileUnit, index int, prefetcher *emitPr
 		_, err := w.Write(unit.Payload)
 		return err
 	}
+	if len(unit.SnippetRanges) > 0 {
+		return emitSnippetRangesFile(w, unit.Entry, unit.SnippetRanges)
+	}
 	return emitFile(w, unit, index, prefetcher)
+}
+
+func emitSnippetRangesFile(w io.Writer, entry fileEntry, ranges []snippetRange) error {
+	f, err := os.Open(entry.AbsPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, readBufferSize()), 10*1024*1024)
+	rangeIndex := 0
+	lineNum := 0
+	inRange := false
+	for scanner.Scan() {
+		lineNum++
+		for rangeIndex < len(ranges) && lineNum > ranges[rangeIndex].End {
+			if inRange {
+				if _, err := w.Write(fileCloseTag); err != nil {
+					return err
+				}
+				inRange = false
+			}
+			rangeIndex++
+		}
+		if rangeIndex >= len(ranges) {
+			break
+		}
+		current := ranges[rangeIndex]
+		if lineNum < current.Start {
+			continue
+		}
+		if !inRange {
+			if _, err := w.Write(buildFileOpenTagWithLines(entry.RelPath, "", fmt.Sprintf("%d-%d", current.Start, current.End))); err != nil {
+				return err
+			}
+			inRange = true
+		}
+		if _, err := w.Write(scanner.Bytes()); err != nil {
+			return fmt.Errorf("failed while writing %s: %w", entry.AbsPath, err)
+		}
+		if _, err := w.Write([]byte{'\n'}); err != nil {
+			return fmt.Errorf("failed while writing %s: %w", entry.AbsPath, err)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return err
+	}
+	if inRange {
+		if _, err := w.Write(fileCloseTag); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func emitFile(w io.Writer, unit preparedFileUnit, index int, prefetcher *emitPrefetcher) error {

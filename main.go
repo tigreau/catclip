@@ -39,32 +39,35 @@ type parsedCommand struct {
 	WorkingDir string
 	OutputMode outputMode
 
-	Verbose               bool
-	Quiet                 bool
-	Headless              bool
-	WithBinaries          bool
-	Yes                   bool
-	Raw                   bool
-	Preview               bool
-	NoTree                bool
-	NoBundle              bool
-	TreePayload           bool
-	TreePreview           bool
-	PrediscoveredPath     string
-	TreeTarget            string
-	TreeKind              string
-	TreeState             string
-	FilePreview           bool
-	FilePath              string
-	ContentMatchList      bool
-	RecentPreview         bool
-	RecentData            string
-	RecentSelect          string
-	LinesPreview          bool
-	SinkTogglePath        string
-	SinkPreviewModePath   string
-	SinkPreviewOutputPath string
-	SinkPreviewTreePath   string
+	Verbose                bool
+	Quiet                  bool
+	Headless               bool
+	WithBinaries           bool
+	Yes                    bool
+	Raw                    bool
+	Preview                bool
+	NoTree                 bool
+	NoBundle               bool
+	TreePayload            bool
+	TreePreview            bool
+	PrediscoveredPath      string
+	TreeTarget             string
+	TreeKind               string
+	TreeState              string
+	FilePreview            bool
+	FilePath               string
+	ContentMatchList       bool
+	RecentPreview          bool
+	RecentData             string
+	RecentSelect           string
+	LinesPreview           bool
+	SnippetBoundaryPreview bool
+	BoundarySourcePath     string
+	BoundaryKey            string
+	SinkTogglePath         string
+	SinkPreviewModePath    string
+	SinkPreviewOutputPath  string
+	SinkPreviewTreePath    string
 
 	Command commandSpec
 
@@ -103,17 +106,22 @@ type executionScope struct {
 	Exclude         []string
 	Contains        string
 	SnippetPattern  string
-	Lines           bool
-	LinesStart      int
-	LinesEnd        int
-	Stages          []scopeStage
-	Paths           bool
-	Snippet         bool
-	Changed         bool
-	Staged          bool
-	Unstaged        bool
-	Untracked       bool
-	Diff            bool
+	// SnippetContextSet=false is blank-line block mode (the default).
+	// SnippetContextSet=true is fixed-context mode: SnippetContextLines (0..200)
+	// lines before and after each match; 0 emits matching lines only.
+	SnippetContextSet   bool
+	SnippetContextLines int
+	Lines               bool
+	LinesStart          int
+	LinesEnd            int
+	Stages              []scopeStage
+	Paths               bool
+	Snippet             bool
+	Changed             bool
+	Staged              bool
+	Unstaged            bool
+	Untracked           bool
+	Diff                bool
 }
 
 func executionScopeOutputMode(s executionScope) entryMode {
@@ -177,22 +185,24 @@ type scopeStage struct {
 }
 
 type fileEntry struct {
-	AbsPath          string
-	RelPath          string
-	ModTime          time.Time
-	SizeBytes        int64
-	SizeKnown        bool
-	TargetRoot       string
-	GitVisible       bool
-	Mode             entryMode
-	SnippetPattern   string
-	Lines            bool
-	LinesStart       int
-	LinesEnd         int
-	DiffWantStaged   bool
-	DiffWantUnstaged bool
-	AllowedByInclude bool
-	BlockSource      string
+	AbsPath             string
+	RelPath             string
+	ModTime             time.Time
+	SizeBytes           int64
+	SizeKnown           bool
+	TargetRoot          string
+	GitVisible          bool
+	Mode                entryMode
+	SnippetPattern      string
+	SnippetContextSet   bool
+	SnippetContextLines int
+	Lines               bool
+	LinesStart          int
+	LinesEnd            int
+	DiffWantStaged      bool
+	DiffWantUnstaged    bool
+	AllowedByInclude    bool
+	BlockSource         string
 }
 
 type gitContext struct {
@@ -285,6 +295,10 @@ const (
 )
 
 const tokenWarnThreshold = 100000
+
+// snippetContextMax bounds --snippet REGEX N. Above this the context is close
+// to "read most of the file" and should be an explicit --lines/full request.
+const snippetContextMax = 200
 
 func (e usageError) Error() string {
 	return e.message

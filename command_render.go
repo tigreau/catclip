@@ -134,14 +134,17 @@ func canonicalScopeArgs(s executionScope) []string {
 		case scopeStageContains:
 			parts = append(parts, "--contains")
 			for _, value := range stage.Values {
-				parts = append(parts, shellQuoteArg(value))
+				parts = append(parts, shellEnforceSingleQuote(value))
 			}
 		case scopeStagePaths:
 			parts = append(parts, "--paths")
 		case scopeStageSnippet:
 			parts = append(parts, "--snippet")
 			for _, value := range stage.Values {
-				parts = append(parts, shellQuoteArg(value))
+				parts = append(parts, shellEnforceSingleQuote(value))
+			}
+			if s.SnippetContextSet {
+				parts = append(parts, strconv.Itoa(s.SnippetContextLines))
 			}
 		case scopeStageLines:
 			parts = append(parts, "--lines")

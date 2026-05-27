@@ -99,7 +99,7 @@ func runRipgrepFiles(workingDir string, opts ripgrepFileOptions) ([]string, erro
 		args = append(args, pathArgs...)
 	}
 
-	cmd := exec.Command(bin, args...)
+	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 	cmd.Dir = workingDir
 	t0 := time.Now()
 	out, err := cmd.Output()
@@ -244,7 +244,7 @@ func runRipgrepTextFiles(workingDir string, targets []string) (map[string]struct
 		args = append(args, targets...)
 	}
 
-	cmd := exec.Command(bin, args...)
+	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 	cmd.Dir = workingDir
 	t0 := time.Now()
 	out, err := cmd.Output()
@@ -350,7 +350,7 @@ func runRipgrepVisibleFiles(workingDir, hissPath string) (map[string]struct{}, e
 		args = append(args, "--ignore-file", hissPath)
 	}
 
-	cmd := exec.Command(bin, args...)
+	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 	cmd.Dir = workingDir
 	t0 := time.Now()
 	out, err := cmd.Output()
@@ -434,7 +434,7 @@ func runRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 		args = append(args, "-e", pattern, "--")
 		args = append(args, chunk...)
 
-		cmd := exec.Command(bin, args...)
+		cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		t0 := time.Now()
@@ -514,6 +514,8 @@ func firstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 			"--pcre2",
 			"-H",
 			"--max-count", "1",
+			"--only-matching",
+			"--replace", "",
 		}
 		if isSmartCaseInsensitive(pattern) {
 			args = append(args, "--ignore-case")
@@ -521,7 +523,7 @@ func firstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 		args = append(args, "-e", pattern, "--")
 		args = append(args, chunk...)
 
-		cmd := exec.Command(bin, args...)
+		cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		result, err := cmd.Output()
@@ -590,7 +592,7 @@ func runRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, 
 		args = append(args, "-e", pattern, "--")
 		args = append(args, chunk...)
 
-		cmd := exec.Command(bin, args...)
+		cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 		var stderr bytes.Buffer
 		cmd.Stderr = &stderr
 		t0 := time.Now()
@@ -815,35 +817,126 @@ func maxLinesForFiles(absPaths []string) (int, error) {
 	}
 	maxLines := 0
 	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
-		args := []string{"-c", "--no-messages", "--color=never", "-e", "^", "--"}
-		args = append(args, chunk...)
-		cmd := exec.Command(bin, args...)
-		out, err := cmd.Output()
+		chunkMax, err := maxLinesForFileChunk(bin, chunk)
 		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-				continue
-			}
 			return 0, err
 		}
-		for _, line := range bytes.Split(out, []byte{'\n'}) {
-			if len(line) == 0 {
-				continue
-			}
-			// rg prints `path:count` when there are multiple positionals
-			// but just `count` for a single positional. Handle both: prefer
-			// LastIndexByte for the colon (also right for Windows drives),
-			// fall back to the bare-count form.
-			tail := line
-			if colon := bytes.LastIndexByte(line, ':'); colon >= 0 {
-				tail = line[colon+1:]
-			}
-			n, err := strconv.Atoi(string(bytes.TrimSpace(tail)))
-			if err != nil {
-				continue
-			}
-			if n > maxLines {
-				maxLines = n
-			}
+		if chunkMax > maxLines {
+			maxLines = chunkMax
+		}
+	}
+	return maxLines, nil
+}
+
+type sizedLineCountCandidate struct {
+	absPath   string
+	sizeBytes int64
+}
+
+func maxLinesForSizedEntries(entries []fileEntry) (int, error) {
+	if len(entries) == 0 {
+		return 0, nil
+	}
+
+	absPaths := make([]string, 0, len(entries))
+	candidates := make([]sizedLineCountCandidate, 0, len(entries))
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.AbsPath) == "" {
+			continue
+		}
+		absPaths = append(absPaths, entry.AbsPath)
+		if !entry.SizeKnown || entry.SizeBytes < 0 {
+			continue
+		}
+		candidates = append(candidates, sizedLineCountCandidate{
+			absPath:   entry.AbsPath,
+			sizeBytes: entry.SizeBytes,
+		})
+	}
+	if len(absPaths) == 0 {
+		return 0, nil
+	}
+	if len(candidates) != len(absPaths) {
+		return maxLinesForFiles(absPaths)
+	}
+
+	bin, ok := ripgrepBinary()
+	if !ok {
+		return 0, errRipgrepUnavailable
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].sizeBytes > candidates[j].sizeBytes
+	})
+
+	maxLines := 0
+	for start := 0; start < len(candidates); {
+		if candidates[start].sizeBytes <= int64(maxLines) {
+			return maxLines, nil
+		}
+		chunk, next := sizedLineCountCandidateChunk(candidates, start, 256, 60*1024)
+		chunkMax, err := maxLinesForFileChunk(bin, chunk)
+		if err != nil {
+			return 0, err
+		}
+		if chunkMax > maxLines {
+			maxLines = chunkMax
+		}
+		start = next
+	}
+	return maxLines, nil
+}
+
+func sizedLineCountCandidateChunk(candidates []sizedLineCountCandidate, start, maxCount, maxBytes int) ([]string, int) {
+	chunk := make([]string, 0, maxCount)
+	currentBytes := 0
+	i := start
+	for i < len(candidates) {
+		path := candidates[i].absPath
+		size := len(path) + 1
+		if len(chunk) > 0 && (len(chunk) >= maxCount || currentBytes+size > maxBytes) {
+			break
+		}
+		chunk = append(chunk, path)
+		currentBytes += size
+		i++
+	}
+	return chunk, i
+}
+
+func maxLinesForFileChunk(bin string, absPaths []string) (int, error) {
+	if len(absPaths) == 0 {
+		return 0, nil
+	}
+	args := []string{"-c", "--no-messages", "--color=never", "-e", "^", "--"}
+	args = append(args, absPaths...)
+	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return 0, nil
+		}
+		return 0, err
+	}
+
+	maxLines := 0
+	for _, line := range bytes.Split(out, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
+		// rg prints `path:count` when there are multiple positionals
+		// but just `count` for a single positional. Handle both: prefer
+		// LastIndexByte for the colon (also right for Windows drives),
+		// fall back to the bare-count form.
+		tail := line
+		if colon := bytes.LastIndexByte(line, ':'); colon >= 0 {
+			tail = line[colon+1:]
+		}
+		n, err := strconv.Atoi(string(bytes.TrimSpace(tail)))
+		if err != nil {
+			continue
+		}
+		if n > maxLines {
+			maxLines = n
 		}
 	}
 	return maxLines, nil

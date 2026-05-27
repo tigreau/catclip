@@ -582,6 +582,16 @@ func TestParseStartupInputTokensAllowsModifierLikeRegexValues(t *testing.T) {
 	}
 }
 
+func TestParseStartupInputTokensKeepsSnippetContext(t *testing.T) {
+	parsed, err := parseStartupInputTokens([]string{"src", "--snippet", "TODO", "3"})
+	if err != nil {
+		t.Fatalf("parseStartupInputTokens returned error: %v", err)
+	}
+	if got, want := strings.Join(parsed.modifiers, "\n"), "--snippet\nTODO\n3"; got != want {
+		t.Fatalf("parsed.modifiers = %q, want %q", got, want)
+	}
+}
+
 func TestParseStartupInputTokensRejectsInvalidIncludeValue(t *testing.T) {
 	_, err := parseStartupInputTokens([]string{"--include", "src/../vendor"})
 	if err == nil {
@@ -666,7 +676,9 @@ func TestParseArgsRejectsExtraContainsValueAfterModifierMode(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for extra plain token after --contains")
 	}
-	if !strings.Contains(err.Error(), "positional targets must come before modifiers") {
+	// --contains is a regex, so an extra bare token gets the quote hint (the
+	// usual cause is an unquoted regex with spaces split by the shell).
+	if !strings.Contains(err.Error(), "quote it if it contains spaces") || !strings.Contains(err.Error(), "--contains 'TODO extra'") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -1312,6 +1324,10 @@ func TestRunRawRejectsSnippetOutput(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--raw cannot be combined with snippet output") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(err.Error(), "multiple regex-derived ranges per file") ||
+		!strings.Contains(err.Error(), `<file ... lines="..."> wrappers`) {
+		t.Fatalf("expected snippet/raw ambiguity reason, got: %v", err)
 	}
 }
 
@@ -2461,13 +2477,14 @@ func TestSafeTargetPickerHeaderOmitsCtrlO(t *testing.T) {
 
 func TestPickerHeadersUseFourLinesMax60Chars(t *testing.T) {
 	headers := map[string]string{
-		"safe":     safeTargetPickerHeader(),
-		"ignored":  ignoredTargetPickerHeader(),
-		"contains": contentMatchPickerHeader("--contains"),
-		"snippet":  contentMatchPickerHeader("--snippet"),
-		"modifier": startupModifierPickerHeader(),
-		"only":     startupFileSetPickerHeader("--only"),
-		"exclude":  startupFileSetPickerHeader("--exclude"),
+		"safe":         safeTargetPickerHeader(),
+		"ignored":      ignoredTargetPickerHeader(),
+		"contains":     contentMatchPickerHeader("--contains"),
+		"snippet":      contentMatchPickerHeader("--snippet"),
+		"snippet-mode": snippetBoundaryPickerHeader(),
+		"modifier":     startupModifierPickerHeader(),
+		"only":         startupFileSetPickerHeader("--only"),
+		"exclude":      startupFileSetPickerHeader("--exclude"),
 	}
 	for name, header := range headers {
 		lines := strings.Split(header, "\n")
@@ -2487,6 +2504,7 @@ func TestPickerHeadersCanShowEscExitAndUndo(t *testing.T) {
 		"target":         targetPickerHeaderWithEscHint("select> ", "undo"),
 		"ignored":        ignoredTargetPickerHeaderWithEscHint("undo"),
 		"contains":       contentMatchPickerHeaderWithEscHint("--contains", "undo"),
+		"snippet-mode":   snippetBoundaryPickerHeaderWithEscHint("undo"),
 		"modifier":       startupModifierPickerHeaderWithEscHint("undo"),
 		"only":           startupFileSetPickerHeaderWithEscHint("--only", "undo"),
 		"depth":          depthPickerHeaderWithEscHint("undo"),
@@ -4200,7 +4218,7 @@ func TestRunPreviewNoTreeShowsSummaryOnly(t *testing.T) {
 	}
 }
 
-func TestRunPreviewShowsSnippetOnlyTags(t *testing.T) {
+func TestRunPreviewShowsSnippetRangeTags(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/app.ts": "const a = 1\nTODO: fix\nconst b = 2\n",
 	})
@@ -4213,8 +4231,8 @@ func TestRunPreviewShowsSnippetOnlyTags(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, "app.ts") || !strings.Contains(out, "[snippet only]") {
-		t.Fatalf("expected snippet-only preview tag, got:\n%s", out)
+	if !strings.Contains(out, "app.ts") || !strings.Contains(out, "[snippet 1-3]") {
+		t.Fatalf("expected snippet range preview tag, got:\n%s", out)
 	}
 }
 
@@ -8764,6 +8782,11 @@ if [ "$prompt" = "match> " ]; then
 	exit 0
 fi
 
+if [ "$prompt" = "snippet mode> " ]; then
+	printf 'block\n'
+	exit 0
+fi
+
 echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
@@ -8867,6 +8890,11 @@ if [ "$prompt" = "match> " ]; then
 	exit 0
 fi
 
+if [ "$prompt" = "snippet mode> " ]; then
+	printf 'block\n'
+	exit 0
+fi
+
 echo "unexpected prompt: $prompt" >&2
 exit 91
 `, "["+expectedKey+"] toggle", expectedBinding))
@@ -8928,12 +8956,238 @@ if [ "$prompt" = "match> " ]; then
 	exit 0
 fi
 
+if [ "$prompt" = "snippet mode> " ]; then
+	printf 'block\n'
+	exit 0
+fi
+
 echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
 	if _, _, err := resolveStartupContentArgs([]string{"."}, "--snippet"); err != nil {
 		t.Fatalf("resolveStartupContentArgs returned error: %v", err)
+	}
+}
+
+func TestChooseSnippetBoundaryWithFzfReturnsNumericContext(t *testing.T) {
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+header=""
+with_nth=""
+nth=""
+no_sort=0
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--header)
+			header="$2"
+			shift 2
+			;;
+		--with-nth)
+			with_nth="$2"
+			shift 2
+			;;
+		--nth)
+			nth="$2"
+			shift 2
+			;;
+		--no-sort)
+			no_sort=1
+			shift
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "snippet mode> " ]; then
+	[ "$with_nth" = "1,3" ] || { echo "expected --with-nth 1,3, got $with_nth" >&2; exit 91; }
+	[ "$nth" = "1" ] || { echo "expected --nth 1, got $nth" >&2; exit 91; }
+	[ "$no_sort" -eq 1 ] || { echo "expected snippet mode picker to disable sorting" >&2; exit 91; }
+	printf '%s\n' "$header" | grep -F "Choose snippet boundaries." >/dev/null || {
+		echo "missing snippet boundary header" >&2
+		exit 91
+	}
+	first="$(printf '%s\n' "$input" | head -n 1 | cut -f2)"
+	[ "$first" = "block" ] || { echo "expected block default row first, got $first" >&2; exit 91; }
+	printf '%s\n' "$input" | grep -F $'\t3\tmatch +/- 3 lines' >/dev/null || {
+		echo "missing context 3 row" >&2
+		exit 91
+	}
+	printf '3\t3\tmatch +/- 3 lines\n'
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	choice, err := chooseSnippetBoundaryWithFzfAndEscHint("", "")
+	if err != nil {
+		t.Fatalf("chooseSnippetBoundaryWithFzfAndEscHint returned error: %v", err)
+	}
+	if !choice.SnippetContextSet || choice.SnippetContextLines != 3 {
+		t.Fatalf("choice context = set:%v lines:%d, want set:true lines:3", choice.SnippetContextSet, choice.SnippetContextLines)
+	}
+}
+
+func TestBuildSnippetBoundaryPreviewForScopeStreamsSnippetOutput(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "before main\nTODO: one\nafter main\n",
+		"src/util.ts": "before util\nTODO: two\nafter util\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	view, err := resolvedCurrentScopeViewForArgs([]string{"src"})
+	if err != nil {
+		t.Fatalf("resolvedCurrentScopeViewForArgs returned error: %v", err)
+	}
+
+	matched, err := snippetBoundaryPreviewMatchedEntries(view, "TODO", nil)
+	if err != nil {
+		t.Fatalf("snippetBoundaryPreviewMatchedEntries: %v", err)
+	}
+	cmd, tmpdir := buildSnippetBoundaryPreviewForScope(view, "TODO", matched, nil)
+	if cmd == "" || tmpdir == "" {
+		t.Fatal("expected snippet boundary preview command and tmpdir")
+	}
+	defer os.RemoveAll(tmpdir)
+
+	// The preview streams raw snippet output through the internal handler — there
+	// is no catclip-tree pipe, so it works even when catclip-tree is absent.
+	if strings.Contains(cmd, "catclip-tree") {
+		t.Fatalf("streamed boundary preview must not pipe to catclip-tree, got %q", cmd)
+	}
+	for _, want := range []string{"--internal-snippet-boundary-preview", "--internal-boundary-source", "--internal-boundary-key {2}"} {
+		if !strings.Contains(cmd, want) {
+			t.Fatalf("preview command missing %q, got %q", want, cmd)
+		}
+	}
+
+	sourcePath := filepath.Join(tmpdir, "source.json")
+
+	// The handler syntax-highlights bodies, so strip the ANSI sequences before
+	// substring checks (the <file> wrappers are not highlighted, but body text
+	// like "TODO: one" is split by color escapes).
+	stripANSI := func(b []byte) string { return string(ansiEscape.ReplaceAll(b, nil)) }
+
+	// Block boundary: the full blank-line-delimited block around each match.
+	var blockBuf bytes.Buffer
+	if err := runInternalSnippetBoundaryPreview(sourcePath, "block", &blockBuf); err != nil {
+		t.Fatalf("stream block boundary: %v", err)
+	}
+	blockContent := stripANSI(blockBuf.Bytes())
+	for _, want := range []string{`<file path="src/main.ts"`, `TODO: one`, `before main`, `after main`, `<file path="src/util.ts"`, `TODO: two`, `before util`, `after util`} {
+		if !strings.Contains(blockContent, want) {
+			t.Fatalf("block preview missing %q in:\n%s", want, blockContent)
+		}
+	}
+
+	// Zero-context boundary: only the matching lines, no neighbors.
+	var zeroBuf bytes.Buffer
+	if err := runInternalSnippetBoundaryPreview(sourcePath, "0", &zeroBuf); err != nil {
+		t.Fatalf("stream zero-context boundary: %v", err)
+	}
+	zeroContent := stripANSI(zeroBuf.Bytes())
+	if !strings.Contains(zeroContent, "TODO: one") || !strings.Contains(zeroContent, "TODO: two") {
+		t.Fatalf("zero-context preview should include both matching lines, got %q", zeroContent)
+	}
+	if strings.Contains(zeroContent, "before main") || strings.Contains(zeroContent, "after main") ||
+		strings.Contains(zeroContent, "before util") || strings.Contains(zeroContent, "after util") {
+		t.Fatalf("zero-context preview should not include neighboring lines, got %q", zeroContent)
+	}
+}
+
+func TestBuildSnippetBoundaryPreviewForScopePreservesRecentOrder(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a_old.go":    "package main\n\nfunc oldMatch() {}\n",
+		"src/z_recent.go": "package main\n\nfunc recentMatch() {}\n",
+	})
+	now := time.Date(2026, time.May, 25, 12, 0, 0, 0, time.UTC)
+	setProjectModTime(t, project, "src/a_old.go", now.Add(-1*time.Hour))
+	setProjectModTime(t, project, "src/z_recent.go", now)
+	_ = parseInProject(t, project, []string{"."})
+
+	view, err := resolvedCurrentScopeViewForArgs([]string{"src", "--only", "*.go", "--recent", "2"})
+	if err != nil {
+		t.Fatalf("resolvedCurrentScopeViewForArgs returned error: %v", err)
+	}
+	matched, err := snippetBoundaryPreviewMatchedEntries(view, "func", nil)
+	if err != nil {
+		t.Fatalf("snippetBoundaryPreviewMatchedEntries: %v", err)
+	}
+	cmd, tmpdir := buildSnippetBoundaryPreviewForScope(view, "func", matched, nil)
+	if cmd == "" || tmpdir == "" {
+		t.Fatal("expected snippet boundary preview command and tmpdir")
+	}
+	defer os.RemoveAll(tmpdir)
+
+	// Lazy preview: the picker open serializes a source; the per-focus handler
+	// streams one boundary. Stream the zero-context ("0") boundary the way the
+	// handler would and verify --recent order survives into it.
+	var zeroBuf bytes.Buffer
+	if err := runInternalSnippetBoundaryPreview(filepath.Join(tmpdir, "source.json"), "0", &zeroBuf); err != nil {
+		t.Fatalf("stream zero-context boundary: %v", err)
+	}
+	content := zeroBuf.String()
+	recentIndex := strings.Index(content, `path="src/z_recent.go"`)
+	oldIndex := strings.Index(content, `path="src/a_old.go"`)
+	if recentIndex < 0 || oldIndex < 0 {
+		t.Fatalf("preview missing expected files:\n%s", content)
+	}
+	if recentIndex > oldIndex {
+		t.Fatalf("preview should preserve --recent order, got:\n%s", content)
+	}
+}
+
+func TestResolveStartupSnippetArgsNumericBoundaryAppendsContext(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "TODO: one\n",
+		"src/util.ts": "TODO: two\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+if [ "$prompt" = "match> " ]; then
+	printf 'TODO\n'
+	printf '[all current matches]\t\t\t\t\n'
+	printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
+	exit 0
+fi
+
+if [ "$prompt" = "snippet mode> " ]; then
+	printf '3\n'
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	args, _, err := resolveStartupContentArgs([]string{"src"}, "--snippet")
+	if err != nil {
+		t.Fatalf("resolveStartupContentArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--snippet\nTODO\n3"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
 
@@ -9276,6 +9530,11 @@ if [ "$prompt" = "match> " ]; then
 	exit 0
 fi
 
+if [ "$prompt" = "snippet mode> " ]; then
+	printf 'block\n'
+	exit 0
+fi
+
 echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
@@ -9314,6 +9573,11 @@ if [ "$prompt" = "match> " ]; then
 		printf 'TODO\n'
 		printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
 	}
+	exit 0
+fi
+
+if [ "$prompt" = "snippet mode> " ]; then
+	printf 'block\n'
 	exit 0
 fi
 
@@ -9585,6 +9849,11 @@ if [ "$prompt" = "match> " ]; then
 	esac
 	printf '[all current matches]\t\t\t\t\n'
 	printf 'main.ts\tsrc/main.ts\tfile\ttext\n'
+	exit 0
+fi
+
+if [ "$prompt" = "snippet mode> " ]; then
+	printf 'block\n'
 	exit 0
 fi
 
@@ -9909,6 +10178,11 @@ if [ "$prompt" = "match> " ]; then
 	exit 0
 fi
 
+if [ "$prompt" = "snippet mode> " ]; then
+	printf 'block\n'
+	exit 0
+fi
+
 echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
@@ -9929,7 +10203,9 @@ exit 91
 
 func TestFormatResolvedStartupCommandShellQuotesArgs(t *testing.T) {
 	got := formatResolvedStartupCommand([]string{"src", "--contains", "TODO items", "--only", "src/a test.ts"})
-	want := `catclip src --contains "TODO items" --only "src/a test.ts"`
+	// --contains is a regex modifier: always single-quoted. --only is a glob
+	// pattern: conditionally quoted (double quotes only when it has spaces).
+	want := `catclip src --contains 'TODO items' --only "src/a test.ts"`
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
@@ -10009,7 +10285,7 @@ func TestWriteResolvedStartupCommandPrintsCanonicalCommand(t *testing.T) {
 		t.Fatalf("writeResolvedStartupCommand returned error: %v", err)
 	}
 
-	want := "Resolved command:\n  catclip src --contains TODO --only src/a.ts\n\n"
+	want := "Resolved command:\n  catclip src --contains 'TODO' --only src/a.ts\n\n"
 	if stderr.String() != want {
 		t.Fatalf("expected stderr %q, got %q", want, stderr.String())
 	}

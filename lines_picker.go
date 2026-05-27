@@ -79,14 +79,8 @@ func prepareStartupLinesPickerSession(currentArgs []string) (startupLinesPickerS
 	if len(entries) == 0 {
 		return startupLinesPickerSession{}, nil, errSelectionCancelled
 	}
-	absPaths := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if strings.TrimSpace(e.AbsPath) == "" {
-			continue
-		}
-		absPaths = append(absPaths, e.AbsPath)
-	}
-	maxLines, err := maxLinesForFiles(absPaths)
+	entries = fillEntrySizes(view.Invocation.WorkingDir, entries)
+	maxLines, err := maxLinesForSizedEntries(entries)
 	if err != nil {
 		return startupLinesPickerSession{}, nil, err
 	}

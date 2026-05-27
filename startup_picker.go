@@ -66,6 +66,14 @@ type startupModifierChoice struct {
 	Mode        startupModifierMode
 }
 
+type startupSnippetBoundaryChoice struct {
+	Key                 string
+	Label               string
+	Description         string
+	SnippetContextSet   bool
+	SnippetContextLines int
+}
+
 type startupPickerResult struct {
 	Args                 []string
 	UsedFzf              bool
@@ -212,6 +220,63 @@ var startupModifierChoices = []startupModifierChoice{
 		Description: "Chain a new scope with its own targets and filters",
 		Args:        []string{"--then"},
 		Mode:        startupModifierModeThen,
+	},
+}
+
+var startupSnippetBoundaryChoices = []startupSnippetBoundaryChoice{
+	{
+		Key:         "block",
+		Label:       "block",
+		Description: "blank-line bounded block",
+	},
+	{
+		Key:                 "0",
+		Label:               "0",
+		Description:         "matching lines only",
+		SnippetContextSet:   true,
+		SnippetContextLines: 0,
+	},
+	{
+		Key:                 "1",
+		Label:               "1",
+		Description:         "match +/- 1 line",
+		SnippetContextSet:   true,
+		SnippetContextLines: 1,
+	},
+	{
+		Key:                 "2",
+		Label:               "2",
+		Description:         "match +/- 2 lines",
+		SnippetContextSet:   true,
+		SnippetContextLines: 2,
+	},
+	{
+		Key:                 "3",
+		Label:               "3",
+		Description:         "match +/- 3 lines",
+		SnippetContextSet:   true,
+		SnippetContextLines: 3,
+	},
+	{
+		Key:                 "5",
+		Label:               "5",
+		Description:         "match +/- 5 lines",
+		SnippetContextSet:   true,
+		SnippetContextLines: 5,
+	},
+	{
+		Key:                 "10",
+		Label:               "10",
+		Description:         "match +/- 10 lines",
+		SnippetContextSet:   true,
+		SnippetContextLines: 10,
+	},
+	{
+		Key:                 "20",
+		Label:               "20",
+		Description:         "match +/- 20 lines",
+		SnippetContextSet:   true,
+		SnippetContextLines: 20,
 	},
 }
 
@@ -405,6 +470,11 @@ func startupHasUnresolvedScope(args []string) bool {
 			}
 			if i+1 < len(args) {
 				i++
+				if args[i-1] == "--snippet" && i+1 < len(args) {
+					if _, err := strconv.Atoi(args[i+1]); err == nil {
+						i++
+					}
+				}
 			}
 			continue
 		case "--paths", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
@@ -480,6 +550,11 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 			if arg == "--contains" || arg == "--snippet" {
 				if i+1 < len(args) {
 					i++
+					if arg == "--snippet" && i+1 < len(args) {
+						if _, err := strconv.Atoi(args[i+1]); err == nil {
+							i++
+						}
+					}
 				}
 				continue
 			}
@@ -587,8 +662,9 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 				parsed.modifiers = append(parsed.modifiers, tokens[i])
 			}
 		case "--only", "--exclude", "--contains", "--snippet", "--depth":
+			flag := tokens[i]
 			if i+1 >= len(tokens) {
-				switch tokens[i] {
+				switch flag {
 				case "--only":
 					return startupInputParse{}, requiredStageValueError("--only")
 				case "--exclude":
@@ -601,13 +677,22 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 					return startupInputParse{}, containsMissingPatternError(tokens, i)
 				}
 			}
-			if tokens[i] == "--depth" {
+			if flag == "--depth" {
 				if _, err := parseDepthToken(tokens[i+1]); err != nil {
 					return startupInputParse{}, err
 				}
 			}
-			parsed.modifiers = append(parsed.modifiers, tokens[i], tokens[i+1])
+			parsed.modifiers = append(parsed.modifiers, flag, tokens[i+1])
 			i++
+			if flag == "--snippet" && i+1 < len(tokens) {
+				if n, err := strconv.Atoi(tokens[i+1]); err == nil {
+					if n < 0 || n > snippetContextMax {
+						return startupInputParse{}, newUsageError("Error: --snippet context must be between 0 and %d (got %d).\n  Use: --snippet 'REGEX' N for N lines around each match (0 = matching line only).", snippetContextMax, n)
+					}
+					i++
+					parsed.modifiers = append(parsed.modifiers, strconv.Itoa(n))
+				}
+			}
 		case "--recent":
 			parsed.modifiers = append(parsed.modifiers, tokens[i])
 			if i+1 >= len(tokens) || isModifierBoundaryToken(tokens[i+1]) {
@@ -1319,12 +1404,43 @@ func resolveStartupContentArgsWithEscHint(currentArgs []string, flag string, esc
 
 	finalArgs := append([]string(nil), currentArgs...)
 	finalArgs = append(finalArgs, flag, result.Query)
+
+	// matchPaths is the set of files matching the query in the current scope; it
+	// drives the --only coverage check below. For --snippet we compute the match
+	// set ONCE here and reuse it for both the boundary preview and the coverage
+	// check, instead of the boundary flow re-scanning the same pattern 2-3x. The
+	// reused set is equivalent to contentMatchPathsForArgs, gated by
+	// TestSnippetBoundaryMatchSetEquivalence.
+	var matchPaths []string
+	matchPathsReady := false
+
+	if flag == "--snippet" {
+		view, matched, scanErr := snippetBoundaryScopeMatch(currentArgs, result.Query)
+		previewCommand := ""
+		cleanupPreview := func() {}
+		if scanErr == nil {
+			previewCommand, cleanupPreview = buildSnippetBoundaryPreviewCommand(view, result.Query, result.Matches, matched)
+			matchPaths = entryRelPaths(matched)
+			matchPathsReady = true
+		}
+		defer cleanupPreview()
+		boundary, err := chooseSnippetBoundaryWithFzfAndEscHint(previewCommand, escHint)
+		if err != nil {
+			return nil, false, err
+		}
+		if boundary.SnippetContextSet {
+			finalArgs = append(finalArgs, strconv.Itoa(boundary.SnippetContextLines))
+		}
+	}
+
 	if contentMatchSelectionIncludesAllRow(result.Matches) {
 		return finalArgs, true, nil
 	}
-	matchPaths, err := contentMatchPathsForArgs(currentArgs, flag, result.Query)
-	if err != nil {
-		return nil, false, err
+	if !matchPathsReady {
+		matchPaths, err = contentMatchPathsForArgs(currentArgs, flag, result.Query)
+		if err != nil {
+			return nil, false, err
+		}
 	}
 	if startupStageSelectionCoversAll(result.Matches, matchPaths) {
 		return finalArgs, true, nil
@@ -1334,6 +1450,224 @@ func resolveStartupContentArgsWithEscHint(currentArgs []string, flag string, esc
 		finalArgs = append(finalArgs, result.Matches...)
 	}
 	return finalArgs, true, nil
+}
+
+// snippetBoundaryScopeMatch resolves the current scope and finds the files
+// matching pattern — the single content scan the boundary flow needs. Its
+// result feeds both the boundary preview and the --only coverage check, which
+// previously re-ran the same scan up to three times. The matched paths are
+// equivalent to contentMatchPathsForArgs (gated by
+// TestSnippetBoundaryMatchSetEquivalence).
+func snippetBoundaryScopeMatch(currentArgs []string, pattern string) (resolvedScopeView, []fileEntry, error) {
+	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
+	if err != nil {
+		return resolvedScopeView{}, nil, err
+	}
+	if len(view.Entries) == 0 {
+		return view, nil, nil
+	}
+	matched, err := filterEntriesByContent(ensureEntryAbsPaths(view.Entries, view.Invocation.WorkingDir), pattern)
+	if err != nil {
+		return view, nil, err
+	}
+	return view, matched, nil
+}
+
+func entryRelPaths(entries []fileEntry) []string {
+	paths := make([]string, 0, len(entries))
+	for _, e := range entries {
+		paths = append(paths, e.RelPath)
+	}
+	return paths
+}
+
+func chooseSnippetBoundaryWithFzf(previewCommand string) (startupSnippetBoundaryChoice, error) {
+	return chooseSnippetBoundaryWithFzfAndEscHint(previewCommand, "")
+}
+
+func chooseSnippetBoundaryWithFzfAndEscHint(previewCommand, escHint string) (startupSnippetBoundaryChoice, error) {
+	bin, err := fuzzyResolverBinary()
+	if err != nil {
+		return startupSnippetBoundaryChoice{}, err
+	}
+	lines, index := startupSnippetBoundaryChoiceLines()
+	stopActiveSpinner()
+	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
+		Prompt:         "snippet mode> ",
+		WithNth:        "1,3",
+		Nth:            "1",
+		Header:         snippetBoundaryPickerHeaderWithEscHint(escHint),
+		NoSort:         true,
+		PreviewCommand: previewCommand,
+		Lines:          lines,
+	}))
+	if errors.Is(err, picker.ErrSelectionCancelled) {
+		return startupSnippetBoundaryChoice{}, errSelectionCancelled
+	}
+	if err != nil {
+		return startupSnippetBoundaryChoice{}, err
+	}
+	if len(result.Matches) == 0 {
+		return startupSnippetBoundaryChoice{}, errSelectionCancelled
+	}
+	choice, ok := index[result.Matches[0]]
+	if !ok {
+		return startupSnippetBoundaryChoice{}, errSelectionCancelled
+	}
+	return choice, nil
+}
+
+// buildSnippetBoundaryPreviewCommand builds the boundary-picker preview from an
+// already-resolved view and the already-scanned matched entries (the single
+// scan from snippetBoundaryScopeMatch). It does no content scanning of its own.
+func buildSnippetBoundaryPreviewCommand(view resolvedScopeView, pattern string, selected []string, matched []fileEntry) (string, func()) {
+	noop := func() {}
+	if strings.TrimSpace(pattern) == "" || len(view.Entries) == 0 || len(matched) == 0 {
+		return "", noop
+	}
+	onlyValues := snippetBoundaryPreviewOnlyValues(selected, entryRelPaths(matched))
+	cmd, tmpdir := buildSnippetBoundaryPreviewForScope(view, pattern, matched, onlyValues)
+	if cmd == "" {
+		return "", noop
+	}
+	return cmd, func() {
+		_ = os.RemoveAll(tmpdir)
+	}
+}
+
+// snippetBoundaryPreviewOnlyValues decides whether the preview should narrow to
+// the user's explicit file selection. It compares the selection against the
+// already-computed matchPaths (no scan); when the selection covers the whole
+// match set it returns nil (preview the full set).
+func snippetBoundaryPreviewOnlyValues(selected []string, matchPaths []string) []string {
+	if contentMatchSelectionIncludesAllRow(selected) {
+		return nil
+	}
+	values := make([]string, 0, len(selected))
+	for _, value := range selected {
+		relPath := normalizeRelPath(value)
+		if relPath == "" || relPath == contentMatchAllMatchesLabel {
+			continue
+		}
+		values = append(values, relPath)
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	if startupStageSelectionCoversAll(values, matchPaths) {
+		return nil
+	}
+	return values
+}
+
+// buildSnippetBoundaryPreviewForScope sets up the lazy `snippet mode>` preview:
+// it runs the one width-independent rg pass (batchSnippetMatches) for match
+// lines, serializes the source once, and returns a per-focus preview command.
+// fzf renders only the focused boundary on demand — no eager pre-render of all
+// 8 widths, which was ~1.3 s of blocking work before the picker painted on the
+// 195k corpus. The per-focus handler STREAMS the focused width's raw snippet
+// output (same shape as the `--lines` preview); there is no catclip-tree pipe,
+// so this preview works even when catclip-tree is absent.
+func buildSnippetBoundaryPreviewForScope(view resolvedScopeView, pattern string, matched []fileEntry, onlyValues []string) (cmd string, tmpdir string) {
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return "", ""
+	}
+
+	source, err := buildSnippetBoundarySource(view, pattern, matched, onlyValues)
+	if err != nil || len(source.Entries) == 0 {
+		return "", ""
+	}
+
+	tmpdir, err = os.MkdirTemp("", "catclip-snippet-boundary-*")
+	if err != nil {
+		return "", ""
+	}
+	sourcePath := filepath.Join(tmpdir, "source.json")
+	if err := writeSnippetBoundarySource(sourcePath, source); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return "", ""
+	}
+
+	// Trivial-value property (depth-picker pattern): the boundary key {2} is a
+	// bare token fzf substitutes per focus; the hazardous source path is a fixed
+	// shellQuoteArg-quoted argument catclip controls.
+	parts := []string{shellQuoteArg(self), "--quiet", "--internal-snippet-boundary-preview",
+		"--internal-boundary-source", shellQuoteArg(sourcePath), "--internal-boundary-key", "{2}"}
+	return strings.Join(parts, " "), tmpdir
+}
+
+func snippetBoundaryPreviewMatchedEntries(view resolvedScopeView, pattern string, onlyValues []string) ([]fileEntry, error) {
+	entries := append([]fileEntry(nil), view.Entries...)
+	entries = ensureEntryAbsPaths(entries, view.Invocation.WorkingDir)
+	entries, err := filterEntriesByContent(entries, pattern)
+	if err != nil {
+		return nil, err
+	}
+	if len(onlyValues) > 0 {
+		entries = filterEntriesByExactStagePaths(entries, onlyValues, true)
+	}
+	return entries, nil
+}
+
+// buildSnippetBoundarySource runs the one width-independent rg pass and assembles
+// the context-independent source the streaming boundary preview replays per focus:
+// the matched files in emission order, each with its match lines. Match lines and
+// bodies do not depend on the context width — only the range slicing does — so this
+// is computed ONCE at picker open and the per-focus handler slices the focused width
+// out of it.
+//
+// The stamping/dedup order mirrors buildOutputPlanForResolvedScopes exactly so the
+// streamed per-width output is byte-identical to what `--snippet PATTERN N` copies
+// (verified by TestSnippetBoundaryStreamMatchesCommit and the corpus no-drop test).
+func buildSnippetBoundarySource(view resolvedScopeView, pattern string, matchedEntries []fileEntry, onlyValues []string) (snippetBoundarySource, error) {
+	// Stamp once as snippet mode so batchSnippetMatches sees the pattern. The
+	// boundary choice is irrelevant here: match lines are context-independent.
+	scope := snippetBoundaryPreviewScope(view.Scope, pattern, startupSnippetBoundaryChoice{})
+	entries := append([]fileEntry(nil), matchedEntries...)
+	if len(onlyValues) > 0 {
+		entries = filterEntriesByExactStagePaths(entries, onlyValues, true)
+	}
+	stampEntriesWithScopeOutputMode(entries, entryModeSnippet, scope)
+	entries = ensureEntryAbsPaths(entries, view.Invocation.WorkingDir)
+	// Match buildOutputPlanForResolvedScopes's emission order exactly: --recent
+	// preserves input (mtime) order, otherwise dedupe sorts by relative path.
+	if executionScopesUseRecentStage([]executionScope{scope}) {
+		entries = dedupeEntriesByPathPreserveOrder(entries)
+	} else {
+		entries = dedupeEntriesByPath(entries)
+	}
+
+	matchCache, err := batchSnippetMatches(entries)
+	if err != nil {
+		return snippetBoundarySource{}, err
+	}
+	source := snippetBoundarySource{Pattern: pattern}
+	for _, e := range entries {
+		if e.AbsPath == "" {
+			continue
+		}
+		lines := matchCache.lookup(pattern, e.AbsPath)
+		if len(lines) == 0 {
+			continue
+		}
+		source.Entries = append(source.Entries, snippetBoundarySourceEntry{RelPath: e.RelPath, AbsPath: e.AbsPath, Lines: lines})
+	}
+	return source, nil
+}
+
+func snippetBoundaryPreviewScope(base executionScope, pattern string, choice startupSnippetBoundaryChoice) executionScope {
+	scope := base
+	scope.Snippet = true
+	scope.SnippetPattern = pattern
+	scope.SnippetContextSet = choice.SnippetContextSet
+	scope.SnippetContextLines = choice.SnippetContextLines
+	scope.Stages = append([]scopeStage(nil), base.Stages...)
+	scope.Stages = append(scope.Stages, scopeStage{
+		Kind:   scopeStageSnippet,
+		Values: []string{pattern},
+	})
+	return scope
 }
 
 func resolveStartupScopeFileSetArgs(currentArgs []string, flag, prompt string) ([]string, bool, error) {
@@ -1517,7 +1851,17 @@ func resolveStartupModifierStageWithEscHint(resolver *scopeResolver, currentArgs
 			return args, append([]string(nil), currentScopeTargets...), usedFzf, 0, err
 		}
 		finalArgs := append(append([]string(nil), currentArgs...), flag, remaining[0])
-		return finalArgs, append([]string(nil), currentScopeTargets...), false, 1, nil
+		consumed := 1
+		if len(remaining) > 1 {
+			if n, err := strconv.Atoi(remaining[1]); err == nil {
+				if n < 0 || n > snippetContextMax {
+					return nil, append([]string(nil), currentScopeTargets...), false, 0, newUsageError("Error: --snippet context must be between 0 and %d (got %d).\n  Use: --snippet 'REGEX' N for N lines around each match (0 = matching line only).", snippetContextMax, n)
+				}
+				finalArgs = append(finalArgs, strconv.Itoa(n))
+				consumed = 2
+			}
+		}
+		return finalArgs, append([]string(nil), currentScopeTargets...), false, consumed, nil
 	case "--changed", "--staged", "--unstaged", "--untracked":
 		if err := validateCurrentScopeFlagAddition(currentArgs, flag); err != nil {
 			return nil, append([]string(nil), currentScopeTargets...), false, 0, err
@@ -2533,6 +2877,23 @@ func startupModifierChoiceLines(choices []startupModifierChoice) ([]string, map[
 	return lines, index
 }
 
+func startupSnippetBoundaryChoiceLines() ([]string, map[string]startupSnippetBoundaryChoice) {
+	lines := make([]string, 0, len(startupSnippetBoundaryChoices))
+	index := make(map[string]startupSnippetBoundaryChoice, len(startupSnippetBoundaryChoices))
+	labelWidth := 0
+	for _, choice := range startupSnippetBoundaryChoices {
+		if len(choice.Label) > labelWidth {
+			labelWidth = len(choice.Label)
+		}
+	}
+	for _, choice := range startupSnippetBoundaryChoices {
+		label := fmt.Sprintf("%-*s", labelWidth, choice.Label)
+		lines = append(lines, strings.Join([]string{label, choice.Key, choice.Description}, "\t"))
+		index[choice.Key] = choice
+	}
+	return lines, index
+}
+
 func startupModifierPickerHeader() string {
 	return startupModifierPickerHeaderWithEscHint("")
 }
@@ -2541,6 +2902,18 @@ func startupModifierPickerHeaderWithEscHint(escHint string) string {
 	return pickerHeader(
 		"Choose what to do next.",
 		"Preview shows the current files.",
+		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
+	)
+}
+
+func snippetBoundaryPickerHeader() string {
+	return snippetBoundaryPickerHeaderWithEscHint("")
+}
+
+func snippetBoundaryPickerHeaderWithEscHint(escHint string) string {
+	return pickerHeader(
+		"Choose snippet boundaries.",
+		"Default keeps blank-line blocks.",
 		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
 	)
 }

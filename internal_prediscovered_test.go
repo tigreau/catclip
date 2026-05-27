@@ -158,6 +158,8 @@ func TestPrediscoveredCheckpointFileEntrySchemaCoversAllFields(t *testing.T) {
 		"GitVisible",
 		"Mode",
 		"SnippetPattern",
+		"SnippetContextSet",
+		"SnippetContextLines",
 		"Lines",
 		"LinesStart",
 		"LinesEnd",

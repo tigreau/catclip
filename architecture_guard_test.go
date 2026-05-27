@@ -67,6 +67,7 @@ var previewCommandBuilders = map[string]struct{}{
 	"startupFileSetPreviewCommand":              {},
 	"buildFileSetCheckpointPreview":             {},
 	"startupModifierCurrentScopePreviewCommand": {},
+	"buildSnippetBoundaryPreviewForScope":       {},
 	"buildDepthPickerPreview":                   {},
 	"recentPickerPreviewCommand":                {},
 	"buildLinesPickerStartPreviewCommand":       {},

@@ -236,13 +236,32 @@ func startupPreflightCommandSpec(args []string) (commandSpec, error) {
 				return commandSpec{}, requiredStageValueError("--snippet")
 			}
 			i++
+			regex := args[i]
 			if arg == "--contains" {
-				current.Contains = args[i]
+				current.Contains = regex
 			} else {
 				current.Snippet = true
-				current.SnippetPattern = args[i]
+				current.SnippetPattern = regex
+				// Optional fixed-context number after the snippet regex; mirrors
+				// parseArgs so the startup/interactive path carries it too.
+				if i+1 < len(args) {
+					if n, err := strconv.Atoi(args[i+1]); err == nil {
+						if n < 0 || n > snippetContextMax {
+							return commandSpec{}, newUsageError("Error: --snippet context must be between 0 and %d (got %d).\n  Use: --snippet 'REGEX' N for N lines around each match (0 = matching line only).", snippetContextMax, n)
+						}
+						i++
+						current.SnippetContextSet = true
+						current.SnippetContextLines = n
+					}
+				}
 			}
-			current.Stages = append(current.Stages, scopeStage{Kind: kind, Values: []string{args[i]}})
+			// A bare token after the regex (and snippet's optional N) is almost
+			// always an unquoted regex with spaces the shell split; give a quote
+			// hint instead of the generic positional-after-modifier error.
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return commandSpec{}, regexModifierExtraValueError(arg, regex, args[i+1])
+			}
+			current.Stages = append(current.Stages, scopeStage{Kind: kind, Values: []string{regex}})
 			continue
 		case "--changed":
 			inModifierMode = true

@@ -206,7 +206,7 @@ func buildInternalPreviewDocument(cfg filePreviewConfig, gitCtx gitContext, relP
 
 	switch executionScopeOutputMode(s) {
 	case entryModeSnippet:
-		return buildInternalSnippetPreviewDocument(relPath, absPath, s.SnippetPattern)
+		return buildInternalSnippetPreviewDocument(relPath, absPath, s.SnippetPattern, snippetOptionsFor(s.SnippetContextSet, s.SnippetContextLines))
 	case entryModeDiff:
 		return buildInternalDiffPreviewDocument(relPath, absPath, gitCtx, s)
 	default:
@@ -229,7 +229,7 @@ func buildInternalFullFilePreviewDocument(relPath, absPath, matchPattern string)
 	return buildTreeFilePreviewDocument(relPath, "", snapshot.PreviewText(), matchPattern, false, nil), true
 }
 
-func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string) (treeDocument, bool) {
+func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string, opts snippetOptions) (treeDocument, bool) {
 	if strings.TrimSpace(pattern) == "" {
 		return buildInternalSnippetHintDocument(), true
 	}
@@ -242,7 +242,7 @@ func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string) (tree
 	if err != nil {
 		return treeDocument{}, false
 	}
-	snippet, err := resolveSnippetFromSnapshot(snapshot, matches[absPath])
+	snippet, err := resolveSnippetFromSnapshot(snapshot, matches[absPath], opts)
 	if err != nil || len(snippet.Ranges) == 0 {
 		return treeDocument{}, false
 	}

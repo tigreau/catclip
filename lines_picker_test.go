@@ -3,6 +3,7 @@ package catclip
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,6 +42,119 @@ func TestMaxLinesForFiles(t *testing.T) {
 	if got != 25 {
 		t.Fatalf("expected max=25 (longest file), got %d", got)
 	}
+}
+
+func TestMaxLinesForSizedEntriesIsExactAndPreservesOrder(t *testing.T) {
+	dir := t.TempDir()
+	files := []struct {
+		rel     string
+		content string
+	}{
+		{
+			rel:     "large-one-line.txt",
+			content: strings.Repeat("x", 2048),
+		},
+		{
+			rel:     "many-lines.txt",
+			content: strings.Repeat("x\n", 75),
+		},
+		{
+			rel:     "small-lines.txt",
+			content: strings.Repeat("x\n", 20),
+		},
+	}
+	entries := make([]fileEntry, 0, len(files))
+	for _, f := range files {
+		abs := filepath.Join(dir, f.rel)
+		if err := os.WriteFile(abs, []byte(f.content), 0o600); err != nil {
+			t.Fatalf("write %s: %v", f.rel, err)
+		}
+		info, err := os.Lstat(abs)
+		if err != nil {
+			t.Fatalf("stat %s: %v", f.rel, err)
+		}
+		entries = append(entries, fileEntry{
+			AbsPath:    abs,
+			RelPath:    f.rel,
+			SizeBytes:  info.Size(),
+			SizeKnown:  true,
+			GitVisible: true,
+			Mode:       entryModeFull,
+		})
+	}
+	before := []string{entries[0].RelPath, entries[1].RelPath, entries[2].RelPath}
+
+	got, err := maxLinesForSizedEntries(entries)
+	if err != nil {
+		t.Fatalf("maxLinesForSizedEntries returned error: %v", err)
+	}
+	if got != 75 {
+		t.Fatalf("expected exact max line count 75, got %d", got)
+	}
+	after := []string{entries[0].RelPath, entries[1].RelPath, entries[2].RelPath}
+	if strings.Join(after, "\n") != strings.Join(before, "\n") {
+		t.Fatalf("maxLinesForSizedEntries must not reorder entries: before=%v after=%v", before, after)
+	}
+}
+
+func BenchmarkMaxLinesForCatclipTestData(b *testing.B) {
+	entries := benchmarkCatclipTestDataEntries(b)
+	b.Logf("files=%d", len(entries))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		maxLines, err := maxLinesForSizedEntries(entries)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if maxLines <= 0 {
+			b.Fatalf("expected positive max line count, got %d", maxLines)
+		}
+	}
+}
+
+func benchmarkCatclipTestDataEntries(tb testing.TB) []fileEntry {
+	tb.Helper()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		tb.Skipf("user home unavailable: %v", err)
+	}
+	root := filepath.Join(home, "Desktop", "catclip-test-data")
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		tb.Skipf("%s not available", root)
+	}
+	bin, ok := ripgrepBinary()
+	if !ok {
+		tb.Skip("ripgrep unavailable")
+	}
+	cmd := exec.Command(bin, "--files", "--no-require-git", "-0")
+	cmd.Dir = root
+	raw, err := cmd.Output()
+	if err != nil {
+		tb.Fatalf("rg --files %s: %v", root, err)
+	}
+	rels := splitNullSeparated(raw)
+	entries := make([]fileEntry, 0, len(rels))
+	for _, rel := range rels {
+		abs := filepath.Join(root, filepath.FromSlash(rel))
+		info, err := os.Lstat(abs)
+		if err != nil {
+			continue
+		}
+		entries = append(entries, fileEntry{
+			AbsPath:    abs,
+			RelPath:    normalizeRelPath(rel),
+			SizeBytes:  info.Size(),
+			SizeKnown:  true,
+			GitVisible: true,
+			Mode:       entryModeFull,
+		})
+	}
+	if len(entries) == 0 {
+		tb.Fatalf("no benchmark entries under %s", root)
+	}
+	return entries
 }
 
 func TestLinesPickerPreviewCommandsUseLinesPreviewFlag(t *testing.T) {

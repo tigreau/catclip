@@ -24,14 +24,15 @@ type outputPlanSection struct {
 }
 
 type outputPlanItem struct {
-	kind       outputSectionKind
-	unit       preparedFileUnit
-	entry      fileEntry
-	relPath    string
-	mode       entryMode
-	bodyBytes  int64
-	linesStart int
-	linesEnd   int
+	kind          outputSectionKind
+	unit          preparedFileUnit
+	entry         fileEntry
+	relPath       string
+	mode          entryMode
+	bodyBytes     int64
+	linesStart    int
+	linesEnd      int
+	snippetRanges []snippetRange
 }
 
 type evaluatedOutputScope struct {
@@ -62,14 +63,15 @@ func buildOutputPlan(units []preparedFileUnit) outputPlan {
 
 func newFileOutputPlanItem(unit preparedFileUnit) outputPlanItem {
 	return outputPlanItem{
-		kind:       outputSectionKindFiles,
-		unit:       unit,
-		entry:      unit.Entry,
-		relPath:    unit.Entry.RelPath,
-		mode:       unit.Entry.Mode,
-		bodyBytes:  unit.BodyBytes,
-		linesStart: unit.Entry.LinesStart,
-		linesEnd:   unit.Entry.LinesEnd,
+		kind:          outputSectionKindFiles,
+		unit:          unit,
+		entry:         unit.Entry,
+		relPath:       unit.Entry.RelPath,
+		mode:          unit.Entry.Mode,
+		bodyBytes:     unit.BodyBytes,
+		linesStart:    unit.Entry.LinesStart,
+		linesEnd:      unit.Entry.LinesEnd,
+		snippetRanges: append([]snippetRange(nil), unit.SnippetRanges...),
 	}
 }
 
@@ -89,6 +91,30 @@ func prepareOutputPlan(gitCtx gitContext, entries []fileEntry) (outputPlan, erro
 		return outputPlan{}, err
 	}
 	return buildOutputPlan(units), nil
+}
+
+// buildLinesPreviewPlan prepares the file-output items needed by the hovered
+// --lines preview without computing exact slice body sizes. The preview path
+// does not render count/size/token summaries, so bodyBytes are unused there;
+// skipping slicedLinesBodySize avoids scanning every file once during plan
+// prep and again during emit. Final committed --lines output still goes through
+// the normal exact-body-size path.
+func buildLinesPreviewPlan(entries []fileEntry) outputPlan {
+	plan := outputPlan{
+		items: make([]outputPlanItem, 0, len(entries)),
+	}
+	for _, entry := range entries {
+		plan.items = append(plan.items, newFileOutputPlanItem(preparedFileUnit{
+			Entry: entry,
+		}))
+	}
+	if len(plan.items) > 0 {
+		plan.sections = []outputPlanSection{{
+			kind:  outputSectionKindFiles,
+			items: append([]outputPlanItem(nil), plan.items...),
+		}}
+	}
+	return plan
 }
 
 func prepareSectionedOutputPlan(gitCtx gitContext, scopes []evaluatedOutputScope, preserveFileOrder bool) (outputPlan, error) {
@@ -323,10 +349,11 @@ type previewLinesRange struct {
 
 func (p outputPlan) PreviewModeTags(statuses map[string]string) map[string]string {
 	type presence struct {
-		hasPath     bool
-		hasFile     bool
-		mode        entryMode
-		linesRanges []previewLinesRange
+		hasPath       bool
+		hasFile       bool
+		mode          entryMode
+		linesRanges   []previewLinesRange
+		snippetRanges []snippetRange
 	}
 
 	seen := make(map[string]presence)
@@ -347,6 +374,9 @@ func (p outputPlan) PreviewModeTags(statuses map[string]string) map[string]strin
 					end:   item.linesEnd,
 				})
 			}
+			if mode == entryModeSnippet {
+				state.snippetRanges = append(state.snippetRanges, item.snippetRanges...)
+			}
 			if entryModePriority(mode) >= entryModePriority(state.mode) {
 				state.mode = mode
 			}
@@ -359,7 +389,7 @@ func (p outputPlan) PreviewModeTags(statuses map[string]string) map[string]strin
 		modeTag := ""
 		switch state.mode {
 		case entryModeSnippet:
-			modeTag = "snippet"
+			modeTag = snippetTagFromRanges(state.snippetRanges)
 		case entryModeDiff:
 			modeTag = "diff"
 		case entryModeLines:
@@ -375,11 +405,32 @@ func (p outputPlan) PreviewModeTags(statuses map[string]string) map[string]strin
 			tags[relPath] = "path + file"
 		case state.mode == entryModeLines:
 			tags[relPath] = modeTag
+		case state.mode == entryModeSnippet:
+			tags[relPath] = modeTag
 		case modeTag != "":
 			tags[relPath] = modeTag + " only"
 		}
 	}
 	return tags
+}
+
+func snippetTagFromRanges(ranges []snippetRange) string {
+	if len(ranges) == 0 {
+		return "snippet"
+	}
+	first := formatSnippetRange(ranges[0])
+	if len(ranges) == 1 {
+		return "snippet " + first
+	}
+	second := formatSnippetRange(ranges[1])
+	if len(ranges) == 2 {
+		return fmt.Sprintf("2 snippets %s,%s", first, second)
+	}
+	return fmt.Sprintf("%d snippets %s,%s,...", len(ranges), first, second)
+}
+
+func formatSnippetRange(r snippetRange) string {
+	return fmt.Sprintf("%d-%d", r.Start, r.End)
 }
 
 func linesTagFromRanges(ranges []previewLinesRange) string {

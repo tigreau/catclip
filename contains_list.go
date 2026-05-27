@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -118,16 +119,20 @@ func contentMatchRowsForScope(cfg contentMatchListConfig) ([]contentMatchRow, er
 
 	scopeIndex := len(cfg.Scopes) - 1
 	currentScope := cfg.Scopes[scopeIndex]
-	patternText := strings.TrimSpace(contentMatchScopePattern(currentScope))
-	if patternText == "" {
+	pattern := contentMatchScopePattern(currentScope)
+	if strings.TrimSpace(pattern) == "" {
 		return nil, nil
 	}
-	if err := validateContainsPattern(patternText); err != nil {
+	if err := validateContainsPattern(pattern); err != nil {
 		return nil, nil
 	}
 
 	gitCtx := detectGitContext(cfg.Invocation.WorkingDir)
-	discovered, err := evaluateScope(cfg.Invocation, gitCtx, scopeIndex, currentScope, io.Discard, colorPalette{})
+	candidateScope, ok := scopeWithoutTerminalLiveContentMatchStage(currentScope)
+	if !ok {
+		return contentMatchRowsForScopeDoublePass(cfg, gitCtx, scopeIndex, currentScope, pattern)
+	}
+	discovered, err := evaluateScope(cfg.Invocation, gitCtx, scopeIndex, candidateScope, io.Discard, colorPalette{})
 	if err != nil {
 		// While the user types in the interactive picker the pattern can be
 		// incomplete (e.g., `[` mid-character-class). rg surfaces this as a
@@ -139,8 +144,26 @@ func contentMatchRowsForScope(cfg contentMatchListConfig) ([]contentMatchRow, er
 		}
 		return nil, err
 	}
+	rows, err := contentMatchRowsWithFirstMatchLines(discovered.Entries, pattern)
+	if err != nil {
+		if errors.Is(err, errRipgrepBadPattern) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return rows, nil
+}
+
+func contentMatchRowsForScopeDoublePass(cfg contentMatchListConfig, gitCtx gitContext, scopeIndex int, scope executionScope, pattern string) ([]contentMatchRow, error) {
+	discovered, err := evaluateScope(cfg.Invocation, gitCtx, scopeIndex, scope, io.Discard, colorPalette{})
+	if err != nil {
+		if errors.Is(err, errRipgrepBadPattern) {
+			return nil, nil
+		}
+		return nil, err
+	}
 	rows := contentMatchRowsFromEntries(discovered.Entries)
-	return attachFirstMatchLines(rows, discovered.Entries, patternText), nil
+	return attachFirstMatchLines(rows, discovered.Entries, pattern), nil
 }
 
 func contentMatchRowsFromEntries(entries []fileEntry) []contentMatchRow {
@@ -163,14 +186,71 @@ func contentMatchRowsFromEntries(entries []fileEntry) []contentMatchRow {
 	return rows
 }
 
-// attachFirstMatchLines runs rg once with --max-count 1 over the rows'
-// resolved absolute paths and fills in each row's FirstMatchLine. Rows
-// whose corresponding file is not in the rg result keep their existing
-// value (default 0, downgraded to 1 by writeContentMatchRows).
-//
-// pattern is the live content-picker query; entries provide the
-// rel->abs mapping so we can run rg with absolute paths (cwd-independent)
-// and then resolve the result back to rows.
+func scopeWithoutTerminalLiveContentMatchStage(scope executionScope) (executionScope, bool) {
+	liveKind := scopeStageContains
+	if scope.Snippet {
+		liveKind = scopeStageSnippet
+	}
+	if len(scope.Stages) == 0 || scope.Stages[len(scope.Stages)-1].Kind != liveKind {
+		return scope, false
+	}
+
+	out := scope
+	out.Stages = append([]scopeStage(nil), out.Stages[:len(out.Stages)-1]...)
+	if liveKind == scopeStageSnippet {
+		out.Snippet = false
+		out.SnippetPattern = ""
+		out.SnippetContextSet = false
+		out.SnippetContextLines = 0
+	} else {
+		out.Contains = ""
+	}
+	return out, true
+}
+
+// contentMatchRowsWithFirstMatchLines is the content picker hot path: one rg
+// pass supplies both membership (which files match) and the first-match line
+// used by fzf's preview-window offset. The old path filtered with
+// runRipgrepMatches, then ran firstMatchLinePerFile over the matched set; this
+// keeps the metadata together so large-scope picker reloads do not scan content
+// twice for the live query.
+func contentMatchRowsWithFirstMatchLines(entries []fileEntry, pattern string) ([]contentMatchRow, error) {
+	if len(entries) == 0 || strings.TrimSpace(pattern) == "" {
+		return nil, nil
+	}
+	firstLines, err := firstMatchLinePerFile(pattern, entryAbsPaths(entries))
+	if err != nil {
+		return nil, err
+	}
+	if len(firstLines) == 0 {
+		return nil, nil
+	}
+
+	rows := make([]contentMatchRow, 0, len(firstLines))
+	seen := make(map[string]struct{}, len(firstLines))
+	for _, entry := range entries {
+		relPath := normalizeRelPath(entry.RelPath)
+		if relPath == "" || strings.TrimSpace(entry.AbsPath) == "" {
+			continue
+		}
+		if _, ok := seen[relPath]; ok {
+			continue
+		}
+		if line, ok := firstLines[filepath.Clean(entry.AbsPath)]; ok && line > 0 {
+			seen[relPath] = struct{}{}
+			rows = append(rows, contentMatchRow{RelPath: relPath, FirstMatchLine: line})
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].RelPath < rows[j].RelPath
+	})
+	return rows, nil
+}
+
+// attachFirstMatchLines is the semantics-preserving fallback for unusual
+// internal invocations where the live content stage is not terminal. In normal
+// interactive picker reloads the live query is terminal, so
+// contentMatchRowsWithFirstMatchLines avoids this second rg pass.
 func attachFirstMatchLines(rows []contentMatchRow, entries []fileEntry, pattern string) []contentMatchRow {
 	if len(rows) == 0 || strings.TrimSpace(pattern) == "" {
 		return rows
@@ -184,7 +264,7 @@ func attachFirstMatchLines(rows []contentMatchRow, entries []fileEntry, pattern 
 		if _, dup := absByRel[rel]; dup {
 			continue
 		}
-		absByRel[rel] = e.AbsPath
+		absByRel[rel] = filepath.Clean(e.AbsPath)
 	}
 	absPaths := make([]string, 0, len(rows))
 	for _, row := range rows {

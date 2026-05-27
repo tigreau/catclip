@@ -69,6 +69,7 @@ func shortHelpText(version string, colors colorPalette) string {
 		{Left: "catclip . --paths --then src", Right: "Show repo structure, then copy full files from src"},
 		{Left: "catclip src --contains TODO", Right: "Find files containing specific text"},
 		{Left: "catclip src --snippet TODO", Right: "Only the matching blocks, not full files"},
+		{Left: "catclip src --snippet TODO 3", Right: "Matching lines plus 3 lines around each match"},
 		{Left: "catclip src --lines", Right: "Add line numbers to file output"},
 		{Left: "catclip src --lines 400 450", Right: "Read lines 400-450 with line numbers"},
 	})
@@ -189,6 +190,7 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  List all files:    catclip TARGET --include '*' --with-binaries --paths\n")
 	b.WriteString("  Search files:      catclip TARGET --contains 'REGEX' --paths\n")
 	b.WriteString("  Search blocks:     catclip TARGET --snippet 'REGEX'\n")
+	b.WriteString("  Search context:    catclip TARGET --snippet 'REGEX' 3\n")
 	b.WriteString("  Read files:        catclip TARGET\n")
 	b.WriteString("  Read one raw:      catclip FILE -r\n")
 	b.WriteString("  Read with lines:   catclip FILE --lines\n")
@@ -200,8 +202,8 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("    catclip . --depth 2 --paths         # top-level structure only\n")
 	b.WriteString("  Then narrow with --contains, --snippet, or full reads on specific targets.\n\n")
 	b.WriteString("  --contains --paths is like ripgrep --files-with-matches (which files match?).\n")
-	b.WriteString("  --snippet is like ripgrep with context (which blocks match?), but returns\n")
-	b.WriteString("  blank-line-bounded blocks instead of fixed line counts.\n")
+	b.WriteString("  --snippet is like ripgrep with context (which blocks match?). By default it\n")
+	b.WriteString("  returns blank-line-bounded blocks; add N for fixed +/- N line context.\n")
 	b.WriteString("  Default output (no --paths/--snippet) returns full file contents.\n\n")
 	b.WriteString("  catclip replaces find + grep + cat pipelines with a single command.\n")
 	b.WriteString("  One process handles discovery, filtering, content matching, and output —\n")
@@ -271,6 +273,7 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  (default)             Full file contents in <file> wrappers\n")
 	b.WriteString("  --paths               Bare relative paths, one per line\n")
 	b.WriteString("  --snippet 'REGEX'     Only blank-line-bounded blocks matching regex\n")
+	b.WriteString("  --snippet 'REGEX' N   Matching lines plus N lines before and after\n")
 	b.WriteString("  --changed-diff        All changed files as unified diff patches\n")
 	b.WriteString("  --staged-diff         Staged changes as unified diff\n")
 	b.WriteString("  --unstaged-diff       Unstaged changes as unified diff\n")
@@ -284,7 +287,9 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  but-unwrapped output is the worst of both modes: not parseable for edits\n")
 	b.WriteString("  (no file path) and not pipeable (numbers corrupt downstream tools). For\n")
 	b.WriteString("  numbered, edit-targetable output, drop -r and use the wrapped form.\n\n")
-	b.WriteString("  --snippet returns blank-line-bounded blocks around regex matches.\n")
+	b.WriteString("  --snippet returns blank-line-bounded blocks around regex matches by default.\n")
+	b.WriteString("  Add a context number for fixed rg/grep-style line windows: N=0 emits only\n")
+	b.WriteString("  matching lines; N=3 emits each match plus three lines before and after.\n")
 	b.WriteString("  Already focused — head/tail piping is usually unnecessary.\n\n")
 	b.WriteString("  --lines START END reads a file slice directly. Use it instead of:\n")
 	b.WriteString("    catclip FILE -r | sed -n '400,450p'\n")
@@ -317,7 +322,7 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("    --only \"*.ts\" --recent 10    keep .ts first, then take 10 newest of those\n\n")
 	b.WriteString("  Ordering constraints after output-shape modifiers:\n\n")
 	b.WriteString("    --paths             nothing can follow (terminal)\n")
-	b.WriteString("    --snippet REGEX     no --contains after (already filtered by content)\n")
+	b.WriteString("    --snippet REGEX [N] no --contains after (already filtered by content)\n")
 	b.WriteString("    --*-diff            no --contains or git filters after (diff owns both)\n\n")
 	b.WriteString("  Output modes cannot repeat or combine (--paths --snippet is an error).\n\n")
 
@@ -405,10 +410,11 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("    <file path=\"src/main.ts\">\n")
 	b.WriteString("    ...file contents...\n")
 	b.WriteString("    </file>\n\n")
-	b.WriteString("  Snippets (--snippet REGEX):\n")
+	b.WriteString("  Snippets (--snippet REGEX [N]):\n")
 	b.WriteString("    <file path=\"src/main.ts\" lines=\"42-57\">\n")
 	b.WriteString("    ...matched block...\n")
 	b.WriteString("    </file>\n\n")
+	b.WriteString("    With N set, lines=\"...\" is the fixed context window around the match.\n\n")
 	b.WriteString("  Lines (--lines):\n")
 	b.WriteString("    <file path=\"src/main.ts\">\n")
 	b.WriteString("         1\timport express from 'express';\n")
@@ -504,7 +510,7 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("    --recent [N]           Sort by mtime; optional top-N\n")
 	b.WriteString("    --depth N              Max path depth\n")
 	b.WriteString("    --contains REGEX       Content filter\n")
-	b.WriteString("    --snippet REGEX        Extract matching blocks only\n")
+	b.WriteString("    --snippet REGEX [N]    Extract matching blocks, or +/- N line context\n")
 	b.WriteString("    --lines [START [END]]  Line numbers; optional range slice\n")
 	b.WriteString("    --paths                Emit bare paths instead of file bodies\n")
 	b.WriteString("    --changed              Git-modified files\n")

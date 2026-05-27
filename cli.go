@@ -65,10 +65,23 @@ func run(cfg parsedCommand, stdout, stderr io.Writer, preparedOpt ...*startupPre
 		}
 		restorePromptGuard := pushHeadlessPromptGuard(cfg.Headless || internalCfg.isInternalKind())
 		defer restorePromptGuard()
+		if internalCfg.isInternalKind() {
+			// Internal reload/preview commands are short-lived fzf-spawned
+			// helpers. Arm signal-driven cancellation so a superseded reload's
+			// rg child is killed when fzf terminates this process, instead of
+			// orphaning a full-corpus scan.
+			installReloadCancellation()
+		}
 		if cfg.PrediscoveredPath != "" {
 			prediscoveredCfg := prediscoveredCommandConfigFromParsedCommand(cfg)
 			if cfg.ContentMatchList {
-				return runInternalPrediscoveredContentMatchList(prediscoveredCfg, stdout)
+				err := runInternalPrediscoveredContentMatchList(prediscoveredCfg, stdout)
+				if err != nil && reloadWasCancelled() {
+					// Superseded by a newer keystroke; fzf killed our rg. Exit
+					// quietly instead of surfacing "signal: killed".
+					return nil
+				}
+				return err
 			}
 			if cfg.LinesPreview {
 				return runInternalLinesPreview(prediscoveredCfg, emitConfigFromParsedCommand(cfg), stdout)
@@ -89,7 +102,18 @@ func run(cfg parsedCommand, stdout, stderr io.Writer, preparedOpt ...*startupPre
 			return runInternalFilePreview(filePreviewConfigFromParsedCommand(cfg), stdout)
 		}
 		if cfg.ContentMatchList {
-			return runInternalContentMatchList(contentMatchListConfigFromParsedCommand(cfg), stdout)
+			err := runInternalContentMatchList(contentMatchListConfigFromParsedCommand(cfg), stdout)
+			if err != nil && reloadWasCancelled() {
+				return nil
+			}
+			return err
+		}
+		if cfg.SnippetBoundaryPreview {
+			err := runInternalSnippetBoundaryPreview(cfg.BoundarySourcePath, cfg.BoundaryKey, stdout)
+			if err != nil && reloadWasCancelled() {
+				return nil
+			}
+			return err
 		}
 		if cfg.RecentPreview {
 			return runInternalRecentPreview(recentPreviewConfigFromParsedCommand(cfg), stdout)
@@ -419,34 +443,36 @@ func runResetHiss(cfg hissConfig, stderr io.Writer) error {
 }
 
 type internalCommandConfig struct {
-	TreePayload         bool
-	TreePreview         bool
-	PrediscoveredPath   string
-	FilePreview         bool
-	ContentMatchList    bool
-	RecentPreview       bool
-	LinesPreview        bool
-	SinkTogglePath      string
-	SinkPreviewModePath string
+	TreePayload            bool
+	TreePreview            bool
+	PrediscoveredPath      string
+	FilePreview            bool
+	ContentMatchList       bool
+	SnippetBoundaryPreview bool
+	RecentPreview          bool
+	LinesPreview           bool
+	SinkTogglePath         string
+	SinkPreviewModePath    string
 }
 
 func internalCommandConfigFromParsedCommand(cfg parsedCommand) internalCommandConfig {
 	return internalCommandConfig{
-		TreePayload:         cfg.TreePayload,
-		TreePreview:         cfg.TreePreview,
-		PrediscoveredPath:   cfg.PrediscoveredPath,
-		FilePreview:         cfg.FilePreview,
-		ContentMatchList:    cfg.ContentMatchList,
-		RecentPreview:       cfg.RecentPreview,
-		LinesPreview:        cfg.LinesPreview,
-		SinkTogglePath:      cfg.SinkTogglePath,
-		SinkPreviewModePath: cfg.SinkPreviewModePath,
+		TreePayload:            cfg.TreePayload,
+		TreePreview:            cfg.TreePreview,
+		PrediscoveredPath:      cfg.PrediscoveredPath,
+		FilePreview:            cfg.FilePreview,
+		ContentMatchList:       cfg.ContentMatchList,
+		SnippetBoundaryPreview: cfg.SnippetBoundaryPreview,
+		RecentPreview:          cfg.RecentPreview,
+		LinesPreview:           cfg.LinesPreview,
+		SinkTogglePath:         cfg.SinkTogglePath,
+		SinkPreviewModePath:    cfg.SinkPreviewModePath,
 	}
 }
 
 func (cfg internalCommandConfig) isInternalKind() bool {
 	return cfg.TreePayload || cfg.TreePreview || cfg.FilePreview ||
-		cfg.ContentMatchList || cfg.RecentPreview ||
+		cfg.ContentMatchList || cfg.SnippetBoundaryPreview || cfg.RecentPreview ||
 		cfg.LinesPreview ||
 		cfg.PrediscoveredPath != "" ||
 		cfg.SinkTogglePath != "" || cfg.SinkPreviewModePath != ""
@@ -601,7 +627,7 @@ func validateRawOutputPlan(cfg emitConfig, plan outputPlan) error {
 		}
 		switch item.mode {
 		case entryModeSnippet:
-			return newUsageError("Error: --raw cannot be combined with snippet output.")
+			return newUsageError("Error: --raw cannot be combined with snippet output.\n  Snippets can emit multiple regex-derived ranges per file; <file ... lines=\"...\"> wrappers keep those ranges attributable.\n  Omit --raw, or use --lines with --raw when you want one explicit raw line slice.")
 		case entryModeDiff:
 			return newUsageError("Error: --raw cannot be combined with diff output.")
 		case entryModeFull, entryModeLines:
@@ -805,6 +831,20 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (parsedCommand
 			cfg.FilePath = args[i]
 		case "--internal-content-match-list":
 			cfg.ContentMatchList = true
+		case "--internal-snippet-boundary-preview":
+			cfg.SnippetBoundaryPreview = true
+		case "--internal-boundary-source":
+			if i+1 >= len(args) {
+				return parsedCommand{}, newUsageError("Error: --internal-boundary-source requires a path.")
+			}
+			i++
+			cfg.BoundarySourcePath = args[i]
+		case "--internal-boundary-key":
+			if i+1 >= len(args) {
+				return parsedCommand{}, newUsageError("Error: --internal-boundary-key requires a value.")
+			}
+			i++
+			cfg.BoundaryKey = args[i]
 		case "--internal-lines-preview":
 			cfg.LinesPreview = true
 		case "--internal-recent-preview":
@@ -915,9 +955,29 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (parsedCommand
 				return parsedCommand{}, requiredStageValueError("--snippet")
 			}
 			i++
-			current.SnippetPattern = args[i]
+			regex := args[i]
+			current.SnippetPattern = regex
 			current.Snippet = true
-			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageSnippet, Values: []string{args[i]}})
+			// Optional fixed-context number after the regex (rg/grep -C N style).
+			// Only an integer is consumed here; a non-integer token falls through
+			// to the loop and errors as a stray positional after a modifier.
+			if i+1 < len(args) {
+				if n, err := strconv.Atoi(args[i+1]); err == nil {
+					if n < 0 || n > snippetContextMax {
+						return parsedCommand{}, newUsageError("Error: --snippet context must be between 0 and %d (got %d).\n  Use: --snippet 'REGEX' N for N lines around each match (0 = matching line only).", snippetContextMax, n)
+					}
+					i++
+					current.SnippetContextSet = true
+					current.SnippetContextLines = n
+				}
+			}
+			// A bare token after the regex (and optional N) is almost always an
+			// unquoted regex with spaces the shell split; give a quote hint
+			// instead of the generic positional-after-modifier error.
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return parsedCommand{}, regexModifierExtraValueError("--snippet", regex, args[i+1])
+			}
+			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageSnippet, Values: []string{regex}})
 			lastNoValueModifier = ""
 		case "--then":
 			if err := finalize(); err != nil {
@@ -1001,6 +1061,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (parsedCommand
 			}
 			i++
 			current.Contains = args[i]
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return parsedCommand{}, regexModifierExtraValueError("--contains", current.Contains, args[i+1])
+			}
 			current.Stages = append(current.Stages, scopeStage{Kind: scopeStageContains, Values: []string{args[i]}})
 			if looksLikeGlobConfusion(current.Contains) {
 				cfg.Warnings = append(cfg.Warnings, "Warning: --contains uses regex, not globs. Did you mean '.*' instead of '*'?\n  Example: --contains 'use.*Context' (not 'use*Context')")

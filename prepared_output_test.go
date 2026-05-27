@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -38,6 +39,9 @@ func TestPrepareFileUnitsUsesSnippetBodyBytes(t *testing.T) {
 	if !strings.Contains(string(units[0].Payload), `<file path="src/app.ts" lines="1-3">`) {
 		t.Fatalf("expected prepared snippet payload, got:\n%s", string(units[0].Payload))
 	}
+	if want := []snippetRange{{Start: 1, End: 3}}; !reflect.DeepEqual(units[0].SnippetRanges, want) {
+		t.Fatalf("SnippetRanges = %v, want %v", units[0].SnippetRanges, want)
+	}
 
 	report, err := buildOutputReportForPlan(renderConfig{NoTree: true}, gitContext{}, buildOutputPlan(units), nil)
 	if err != nil {
@@ -53,6 +57,111 @@ func TestPrepareFileUnitsUsesSnippetBodyBytes(t *testing.T) {
 	}
 	if got := report.tokens; got != wantTokens {
 		t.Fatalf("expected tokens %d, got %d", wantTokens, got)
+	}
+}
+
+func TestPrepareFileUnitsNumericSnippetUsesRangesWithoutPayload(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/app.ts": strings.Join([]string{
+			"alpha",
+			"TODO one",
+			"beta",
+			"gamma",
+			"TODO two",
+			"omega",
+		}, "\n"),
+	})
+
+	entry := fileEntry{
+		AbsPath:             filepath.Join(project, "src/app.ts"),
+		RelPath:             "src/app.ts",
+		Mode:                entryModeSnippet,
+		SnippetPattern:      "TODO",
+		SnippetContextSet:   true,
+		SnippetContextLines: 0,
+	}
+
+	units, err := prepareFileUnits(gitContext{}, []fileEntry{entry})
+	if err != nil {
+		t.Fatalf("prepareFileUnits returned error: %v", err)
+	}
+	if got, want := len(units), 1; got != want {
+		t.Fatalf("expected %d prepared unit, got %d", want, got)
+	}
+	if len(units[0].Payload) != 0 {
+		t.Fatalf("numeric snippet should not prebuild payload, got:\n%s", string(units[0].Payload))
+	}
+	wantRanges := []snippetRange{{Start: 2, End: 2}, {Start: 5, End: 5}}
+	if !reflect.DeepEqual(units[0].SnippetRanges, wantRanges) {
+		t.Fatalf("SnippetRanges = %v, want %v", units[0].SnippetRanges, wantRanges)
+	}
+	if got, want := units[0].BodyBytes, int64(len("TODO one\nTODO two\n")); got != want {
+		t.Fatalf("BodyBytes = %d, want %d", got, want)
+	}
+
+	var stdout bytes.Buffer
+	if err := writeOutputPlanPayloadWithoutPrefetch(&stdout, emitConfig{}, buildOutputPlan(units)); err != nil {
+		t.Fatalf("writeOutputPlanPayloadWithoutPrefetch returned error: %v", err)
+	}
+	want := "<file path=\"src/app.ts\" lines=\"2-2\">\nTODO one\n</file>\n\n" +
+		"<file path=\"src/app.ts\" lines=\"5-5\">\nTODO two\n</file>\n\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("numeric snippet emit mismatch\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestPrepareNumericSnippetRangesMatchesContextResolution(t *testing.T) {
+	lines := []string{
+		"alpha",
+		"TODO one",
+		"beta",
+		"gamma",
+		"delta",
+		"epsilon",
+		"TODO two",
+		"omega",
+	}
+	project := setupTestProject(t, map[string]string{
+		"src/app.ts": strings.Join(lines, "\n"),
+	})
+	relPath := "src/app.ts"
+	absPath := filepath.Join(project, filepath.FromSlash(relPath))
+	matchedLines := []int{2, 7}
+	entry := fileEntry{
+		AbsPath:             absPath,
+		RelPath:             relPath,
+		Mode:                entryModeSnippet,
+		SnippetPattern:      "TODO",
+		SnippetContextSet:   true,
+		SnippetContextLines: 1,
+	}
+
+	ranges, bodyBytes, err := prepareNumericSnippetRanges(entry, matchedLines)
+	if err != nil {
+		t.Fatalf("prepareNumericSnippetRanges returned error: %v", err)
+	}
+	snapshot, err := loadTextSnapshot(absPath, relPath)
+	if err != nil {
+		t.Fatalf("loadTextSnapshot returned error: %v", err)
+	}
+	snippet, err := resolveSnippetFromSnapshot(snapshot, matchedLines, snippetOptions{Mode: snippetBoundaryContext, Context: 1})
+	if err != nil {
+		t.Fatalf("resolveSnippetFromSnapshot returned error: %v", err)
+	}
+	if !reflect.DeepEqual(ranges, snippet.Ranges) {
+		t.Fatalf("ranges = %v, want %v", ranges, snippet.Ranges)
+	}
+
+	wantBody := strings.Join([]string{
+		"alpha",
+		"TODO one",
+		"beta",
+		"epsilon",
+		"TODO two",
+		"omega",
+	}, "\n") + "\n"
+	if got, want := bodyBytes, int64(len(wantBody)); got != want {
+		t.Fatalf("bodyBytes = %d, want %d", got, want)
 	}
 }
 

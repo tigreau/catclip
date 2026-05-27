@@ -63,21 +63,23 @@ type prediscoveredCheckpointGit struct {
 // from the serialized form. Zero values round-trip transparently (absent →
 // decoded as zero). RelPath, ModTime, and Mode are kept unconditional.
 type prediscoveredCheckpointEntry struct {
-	RelPath          string    `json:"rel"`
-	ModTime          time.Time `json:"mod_time"`
-	SizeBytes        int64     `json:"size_bytes,omitempty"`
-	SizeKnown        bool      `json:"size_known,omitempty"`
-	TargetRoot       string    `json:"target_root,omitempty"`
-	GitVisible       bool      `json:"git_visible,omitempty"`
-	Mode             entryMode `json:"mode"`
-	SnippetPattern   string    `json:"snippet_pattern,omitempty"`
-	Lines            bool      `json:"lines,omitempty"`
-	LinesStart       int       `json:"lines_start,omitempty"`
-	LinesEnd         int       `json:"lines_end,omitempty"`
-	DiffWantStaged   bool      `json:"diff_want_staged,omitempty"`
-	DiffWantUnstaged bool      `json:"diff_want_unstaged,omitempty"`
-	AllowedByInclude bool      `json:"allowed_by_include,omitempty"`
-	BlockSource      string    `json:"block_source,omitempty"`
+	RelPath             string    `json:"rel"`
+	ModTime             time.Time `json:"mod_time"`
+	SizeBytes           int64     `json:"size_bytes,omitempty"`
+	SizeKnown           bool      `json:"size_known,omitempty"`
+	TargetRoot          string    `json:"target_root,omitempty"`
+	GitVisible          bool      `json:"git_visible,omitempty"`
+	Mode                entryMode `json:"mode"`
+	SnippetPattern      string    `json:"snippet_pattern,omitempty"`
+	SnippetContextSet   bool      `json:"snippet_context_set,omitempty"`
+	SnippetContextLines int       `json:"snippet_context_lines,omitempty"`
+	Lines               bool      `json:"lines,omitempty"`
+	LinesStart          int       `json:"lines_start,omitempty"`
+	LinesEnd            int       `json:"lines_end,omitempty"`
+	DiffWantStaged      bool      `json:"diff_want_staged,omitempty"`
+	DiffWantUnstaged    bool      `json:"diff_want_unstaged,omitempty"`
+	AllowedByInclude    bool      `json:"allowed_by_include,omitempty"`
+	BlockSource         string    `json:"block_source,omitempty"`
 }
 
 func marshalPrediscoveredCheckpoint(data prediscoveredCheckpointData) ([]byte, error) {
@@ -246,14 +248,10 @@ func runInternalLinesPreview(cfg prediscoveredCommandConfig, emitCfg emitConfig,
 	if err != nil {
 		return err
 	}
-	evaluatedScopes := []evaluatedOutputScope{{
-		Paths:   scope.Paths,
-		Entries: append([]fileEntry(nil), entries...),
-	}}
-	plan, err := buildOutputPlanForResolvedScopes(checkpoint.GitContext, []executionScope{scope}, evaluatedScopes, entries)
-	if err != nil {
-		return err
-	}
+	// Hovered --lines preview renders bodies only; it does not need the exact
+	// size/count summary work the normal plan builder performs for ranged lines.
+	// Build the same deduped file list, then let emit stream the slices directly.
+	plan := buildLinesPreviewPlanForResolvedScopes([]executionScope{scope}, entries)
 	// Prefetch disabled: the preview pane only renders a screenful of
 	// output, so we never need every file body queued ahead of time.
 	return writeOutputPlanPayloadWithoutPrefetch(stdout, emitCfg, plan)
@@ -282,15 +280,34 @@ func runInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 	if strings.TrimSpace(contentMatchScopePattern(scope)) == "" {
 		return nil
 	}
-	entries, err := applyPrediscoveredScopeTail(cfg.Invocation, checkpoint.GitContext, scope, checkpoint.Entries)
+	candidateScope, ok := scopeWithoutTerminalLiveContentMatchStage(scope)
+	if !ok {
+		entries, err := applyPrediscoveredScopeTail(cfg.Invocation, checkpoint.GitContext, scope, checkpoint.Entries)
+		if err != nil {
+			if errors.Is(err, errRipgrepBadPattern) {
+				return nil
+			}
+			return err
+		}
+		rows := contentMatchRowsFromEntries(entries)
+		rows = attachFirstMatchLines(rows, entries, contentMatchScopePattern(scope))
+		return writeContentMatchRows(stdout, rows)
+	}
+
+	entries, err := applyPrediscoveredScopeTail(cfg.Invocation, checkpoint.GitContext, candidateScope, checkpoint.Entries)
 	if err != nil {
 		if errors.Is(err, errRipgrepBadPattern) {
 			return nil
 		}
 		return err
 	}
-	rows := contentMatchRowsFromEntries(entries)
-	rows = attachFirstMatchLines(rows, entries, contentMatchScopePattern(scope))
+	rows, err := contentMatchRowsWithFirstMatchLines(entries, contentMatchScopePattern(scope))
+	if err != nil {
+		if errors.Is(err, errRipgrepBadPattern) {
+			return nil
+		}
+		return err
+	}
 	return writeContentMatchRows(stdout, rows)
 }
 
@@ -379,21 +396,23 @@ func fileEntriesToCheckpointEntries(entries []fileEntry) []prediscoveredCheckpoi
 	for _, entry := range entries {
 		out = append(out, prediscoveredCheckpointEntry{
 			// AbsPath intentionally not serialized — re-derived at read.
-			RelPath:          entry.RelPath,
-			ModTime:          entry.ModTime,
-			SizeBytes:        entry.SizeBytes,
-			SizeKnown:        entry.SizeKnown,
-			TargetRoot:       entry.TargetRoot,
-			GitVisible:       entry.GitVisible,
-			Mode:             entry.Mode,
-			SnippetPattern:   entry.SnippetPattern,
-			Lines:            entry.Lines,
-			LinesStart:       entry.LinesStart,
-			LinesEnd:         entry.LinesEnd,
-			DiffWantStaged:   entry.DiffWantStaged,
-			DiffWantUnstaged: entry.DiffWantUnstaged,
-			AllowedByInclude: entry.AllowedByInclude,
-			BlockSource:      entry.BlockSource,
+			RelPath:             entry.RelPath,
+			ModTime:             entry.ModTime,
+			SizeBytes:           entry.SizeBytes,
+			SizeKnown:           entry.SizeKnown,
+			TargetRoot:          entry.TargetRoot,
+			GitVisible:          entry.GitVisible,
+			Mode:                entry.Mode,
+			SnippetPattern:      entry.SnippetPattern,
+			SnippetContextSet:   entry.SnippetContextSet,
+			SnippetContextLines: entry.SnippetContextLines,
+			Lines:               entry.Lines,
+			LinesStart:          entry.LinesStart,
+			LinesEnd:            entry.LinesEnd,
+			DiffWantStaged:      entry.DiffWantStaged,
+			DiffWantUnstaged:    entry.DiffWantUnstaged,
+			AllowedByInclude:    entry.AllowedByInclude,
+			BlockSource:         entry.BlockSource,
 		})
 	}
 	return out
@@ -405,21 +424,23 @@ func checkpointEntriesToFileEntries(entries []prediscoveredCheckpointEntry) []fi
 		out = append(out, fileEntry{
 			// AbsPath left empty — ensureEntryAbsPaths re-derives it from
 			// workingDir + RelPath before any disk-backed stage.
-			RelPath:          entry.RelPath,
-			ModTime:          entry.ModTime,
-			SizeBytes:        entry.SizeBytes,
-			SizeKnown:        entry.SizeKnown,
-			TargetRoot:       entry.TargetRoot,
-			GitVisible:       entry.GitVisible,
-			Mode:             entry.Mode,
-			SnippetPattern:   entry.SnippetPattern,
-			Lines:            entry.Lines,
-			LinesStart:       entry.LinesStart,
-			LinesEnd:         entry.LinesEnd,
-			DiffWantStaged:   entry.DiffWantStaged,
-			DiffWantUnstaged: entry.DiffWantUnstaged,
-			AllowedByInclude: entry.AllowedByInclude,
-			BlockSource:      entry.BlockSource,
+			RelPath:             entry.RelPath,
+			ModTime:             entry.ModTime,
+			SizeBytes:           entry.SizeBytes,
+			SizeKnown:           entry.SizeKnown,
+			TargetRoot:          entry.TargetRoot,
+			GitVisible:          entry.GitVisible,
+			Mode:                entry.Mode,
+			SnippetPattern:      entry.SnippetPattern,
+			SnippetContextSet:   entry.SnippetContextSet,
+			SnippetContextLines: entry.SnippetContextLines,
+			Lines:               entry.Lines,
+			LinesStart:          entry.LinesStart,
+			LinesEnd:            entry.LinesEnd,
+			DiffWantStaged:      entry.DiffWantStaged,
+			DiffWantUnstaged:    entry.DiffWantUnstaged,
+			AllowedByInclude:    entry.AllowedByInclude,
+			BlockSource:         entry.BlockSource,
 		})
 	}
 	return out

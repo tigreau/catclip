@@ -22,7 +22,7 @@ func TestOutputPlanPreviewModeTagsMatchPreparedOutputModes(t *testing.T) {
 	plan := buildOutputPlan(units)
 	got := plan.PreviewModeTags(statuses)
 	want := map[string]string{
-		"snippet.txt":      "snippet only",
+		"snippet.txt":      "snippet",
 		"tracked-diff.txt": "diff only",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -59,7 +59,7 @@ func TestOutputPlanPreviewModeTagsIncludePathsModes(t *testing.T) {
 		"path-and-snippet.txt":   "path + snippet",
 		"path-and-diff.txt":      "path + diff",
 		"path-and-untracked.txt": "path + file",
-		"snippet-only.txt":       "snippet only",
+		"snippet-only.txt":       "snippet",
 		"diff-only.txt":          "diff only",
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -171,7 +171,38 @@ func TestOutputPlanPreviewModeTagsLinesDedup(t *testing.T) {
 	}
 	got := plan.PreviewModeTags(nil)
 	want := map[string]string{
-		"snippet-wins.go": "snippet only",
+		"snippet-wins.go": "snippet",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
+	}
+}
+
+func TestOutputPlanPreviewModeTagsSnippetRanges(t *testing.T) {
+	plan := outputPlan{
+		items: []outputPlanItem{
+			newFileOutputPlanItem(preparedFileUnit{
+				Entry:         fileEntry{RelPath: "one.go", Mode: entryModeSnippet},
+				SnippetRanges: []snippetRange{{Start: 12, End: 16}},
+				BodyBytes:     10,
+			}),
+			newFileOutputPlanItem(preparedFileUnit{
+				Entry:         fileEntry{RelPath: "two.go", Mode: entryModeSnippet},
+				SnippetRanges: []snippetRange{{Start: 12, End: 16}, {Start: 80, End: 84}},
+				BodyBytes:     20,
+			}),
+			newFileOutputPlanItem(preparedFileUnit{
+				Entry:         fileEntry{RelPath: "three.go", Mode: entryModeSnippet},
+				SnippetRanges: []snippetRange{{Start: 12, End: 16}, {Start: 80, End: 84}, {Start: 120, End: 122}},
+				BodyBytes:     30,
+			}),
+		},
+	}
+	got := plan.PreviewModeTags(nil)
+	want := map[string]string{
+		"one.go":   "snippet 12-16",
+		"two.go":   "2 snippets 12-16,80-84",
+		"three.go": "3 snippets 12-16,80-84,...",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
@@ -255,7 +286,7 @@ func TestBuildOutputReportForPlanUsesOutputPlanModeTags(t *testing.T) {
 		t.Fatalf("buildOutputReportForPlan returned error: %v", err)
 	}
 	want := map[string]string{
-		"snippet.txt": "snippet only",
+		"snippet.txt": "snippet",
 		"diff.txt":    "diff only",
 	}
 	if !reflect.DeepEqual(report.modeTags, want) {
@@ -307,7 +338,7 @@ func TestBuildOutputReportForPlanUsesPlanAccounting(t *testing.T) {
 	if !reflect.DeepEqual(report.sizes, wantSizes) {
 		t.Fatalf("report.sizes = %#v, want %#v", report.sizes, wantSizes)
 	}
-	if !reflect.DeepEqual(report.modeTags, map[string]string{"snippet.txt": "snippet only"}) {
+	if !reflect.DeepEqual(report.modeTags, map[string]string{"snippet.txt": "snippet"}) {
 		t.Fatalf("report.modeTags = %#v", report.modeTags)
 	}
 	if !reflect.DeepEqual(report.notices, []string{"notice"}) {

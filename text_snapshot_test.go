@@ -55,7 +55,7 @@ func TestSnippetResolutionMatchesPreviewAndPreparedPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runRipgrepMatchLines returned error: %v", err)
 	}
-	snippet, err := resolveSnippetFromSnapshot(snapshot, matchedLines[absPath])
+	snippet, err := resolveSnippetFromSnapshot(snapshot, matchedLines[absPath], snippetOptions{Mode: snippetBoundaryBlock})
 	if err != nil {
 		t.Fatalf("resolveSnippetFromSnapshot returned error: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestSnippetResolutionMatchesPreviewAndPreparedPayload(t *testing.T) {
 		t.Fatalf("Ranges = %#v, want %#v", got, wantRanges)
 	}
 
-	doc, ok := buildInternalSnippetPreviewDocument(relPath, absPath, "TODO")
+	doc, ok := buildInternalSnippetPreviewDocument(relPath, absPath, "TODO", snippetOptions{Mode: snippetBoundaryBlock})
 	if !ok {
 		t.Fatal("expected snippet preview document")
 	}
@@ -75,7 +75,7 @@ func TestSnippetResolutionMatchesPreviewAndPreparedPayload(t *testing.T) {
 		t.Fatalf("expected preview to use shared snippet ranges, got %q", doc.File.Content)
 	}
 
-	payload, _, err := buildPreparedSnippetPayload(fileEntry{
+	payload, _, ranges, err := buildPreparedSnippetPayload(fileEntry{
 		AbsPath:        absPath,
 		RelPath:        relPath,
 		Mode:           entryModeSnippet,
@@ -87,5 +87,8 @@ func TestSnippetResolutionMatchesPreviewAndPreparedPayload(t *testing.T) {
 	if !strings.Contains(string(payload), `<file path="src/app.ts" lines="1-4">`) ||
 		!strings.Contains(string(payload), `<file path="src/app.ts" lines="6-8">`) {
 		t.Fatalf("expected payload to use shared snippet ranges, got:\n%s", string(payload))
+	}
+	if !reflect.DeepEqual(ranges, wantRanges) {
+		t.Fatalf("prepared payload ranges = %v, want %v", ranges, wantRanges)
 	}
 }

@@ -2,11 +2,40 @@ package catclip
 
 import (
 	"fmt"
+	"sort"
 )
 
 type resolvedSnippet struct {
 	Ranges []snippetRange
 	Lines  []string
+}
+
+// snippetBoundaryMode selects how a matched line expands into a snippet range.
+type snippetBoundaryMode string
+
+const (
+	// snippetBoundaryBlock expands each match outward to the nearest blank
+	// lines (the default --snippet REGEX behavior).
+	snippetBoundaryBlock snippetBoundaryMode = "block"
+	// snippetBoundaryContext expands each match to a fixed number of lines
+	// before and after (rg/grep -C N), for --snippet REGEX N.
+	snippetBoundaryContext snippetBoundaryMode = "context"
+)
+
+// snippetOptions carries the boundary mode and, for context mode, the number
+// of lines on each side of a match. Context is meaningful only in context mode.
+type snippetOptions struct {
+	Mode    snippetBoundaryMode
+	Context int
+}
+
+// snippetOptionsFor builds options from the set/lines fields carried on scopes
+// and entries: unset is block mode, set is fixed-context mode.
+func snippetOptionsFor(contextSet bool, contextLines int) snippetOptions {
+	if contextSet {
+		return snippetOptions{Mode: snippetBoundaryContext, Context: contextLines}
+	}
+	return snippetOptions{Mode: snippetBoundaryBlock}
 }
 
 // resolveSnippetFromSnapshot turns a per-file matched-line list (1-indexed,
@@ -19,15 +48,28 @@ type resolvedSnippet struct {
 // are silently skipped — they can appear if the snapshot was loaded from
 // a different revision than rg saw, which shouldn't happen in normal
 // catclip flow but isn't worth crashing over.
-func resolveSnippetFromSnapshot(snapshot textSnapshot, matchedLines []int) (resolvedSnippet, error) {
+func resolveSnippetFromSnapshot(snapshot textSnapshot, matchedLines []int, opts snippetOptions) (resolvedSnippet, error) {
 	if !snapshot.IsText {
 		return resolvedSnippet{}, nil
 	}
-	if len(matchedLines) == 0 {
+	return resolveSnippetFromLines(snapshot.SnippetLines(), matchedLines, opts)
+}
+
+// resolveSnippetFromLines is resolveSnippetFromSnapshot's core over already-split
+// lines. Callers resolving several boundary widths for one file split the body
+// once (SnippetLines re-splits the whole file on every call) and reuse the
+// lines across widths, instead of re-splitting per width.
+func resolveSnippetFromLines(lines []string, matchedLines []int, opts snippetOptions) (resolvedSnippet, error) {
+	if len(lines) == 0 || len(matchedLines) == 0 {
 		return resolvedSnippet{}, nil
 	}
-	lines := snapshot.SnippetLines()
-	ranges := buildSnippetRanges(lines, matchedLines)
+	var ranges []snippetRange
+	switch opts.Mode {
+	case snippetBoundaryContext:
+		ranges = buildContextSnippetRanges(lines, matchedLines, opts.Context)
+	default:
+		ranges = buildSnippetRanges(lines, matchedLines)
+	}
 	if len(ranges) == 0 {
 		return resolvedSnippet{}, nil
 	}
@@ -64,4 +106,54 @@ func buildSnippetRanges(lines []string, matchedLines []int) []snippetRange {
 		ranges = append(ranges, snippetRange{Start: start, End: end})
 	}
 	return ranges
+}
+
+// buildContextSnippetRanges expands each matched line to [match-context,
+// match+context], clamped to file bounds, then sorts and merges ranges that
+// overlap or are adjacent (rg/grep -C N semantics). context 0 yields the
+// matching line only. Match indices are 1-indexed.
+func buildContextSnippetRanges(lines []string, matchedLines []int, context int) []snippetRange {
+	if len(lines) == 0 || len(matchedLines) == 0 {
+		return nil
+	}
+	total := len(lines)
+	windows := make([]snippetRange, 0, len(matchedLines))
+	for _, matchLine := range matchedLines {
+		if matchLine < 1 || matchLine > total {
+			continue
+		}
+		start := matchLine - context
+		if start < 1 {
+			start = 1
+		}
+		end := matchLine + context
+		if end > total {
+			end = total
+		}
+		windows = append(windows, snippetRange{Start: start, End: end})
+	}
+	if len(windows) == 0 {
+		return nil
+	}
+	sort.Slice(windows, func(i, j int) bool {
+		if windows[i].Start != windows[j].Start {
+			return windows[i].Start < windows[j].Start
+		}
+		return windows[i].End < windows[j].End
+	})
+	merged := make([]snippetRange, 0, len(windows))
+	current := windows[0]
+	for _, w := range windows[1:] {
+		// Merge overlapping or adjacent windows (gap of zero lines).
+		if w.Start <= current.End+1 {
+			if w.End > current.End {
+				current.End = w.End
+			}
+			continue
+		}
+		merged = append(merged, current)
+		current = w
+	}
+	merged = append(merged, current)
+	return merged
 }

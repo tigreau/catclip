@@ -67,7 +67,7 @@ func TestContainsMissingPatternErrorCarriesSuggestion(t *testing.T) {
 	if got.Suggestion == "" {
 		t.Fatal("expected contains suggestion to be carried")
 	}
-	want := "Error: --contains requires a regex pattern.\n  Example: catclip src --contains 'TODO'\n  Did you mean: catclip . --snippet a"
+	want := "Error: --contains requires a regex pattern.\n  Example: catclip src --contains 'TODO'\n  Did you mean: catclip . --snippet 'a'"
 	if err.Error() != want {
 		t.Fatalf("message mismatch\n got: %q\nwant: %q", err.Error(), want)
 	}

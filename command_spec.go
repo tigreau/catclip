@@ -19,15 +19,17 @@ type commandScopeSpec struct {
 	exclude         []string
 	stages          []scopeStage
 
-	hasContainsFilter bool
-	containsPattern   string
-	hasPathsOutput    bool
-	hasSnippetOutput  bool
-	snippetPattern    string
-	hasLinesOutput    bool
-	linesStart        int
-	linesEnd          int
-	outputMode        entryMode
+	hasContainsFilter   bool
+	containsPattern     string
+	hasPathsOutput      bool
+	hasSnippetOutput    bool
+	snippetPattern      string
+	snippetContextSet   bool
+	snippetContextLines int
+	hasLinesOutput      bool
+	linesStart          int
+	linesEnd            int
+	outputMode          entryMode
 
 	changed         bool
 	staged          bool
@@ -55,6 +57,8 @@ func executionScopeFromCommandScopeSpec(s commandScopeSpec) executionScope {
 	if s.HasSnippetOutput() {
 		out.Snippet = true
 		out.SnippetPattern = s.SnippetPattern()
+		out.SnippetContextSet = s.SnippetContextSet()
+		out.SnippetContextLines = s.SnippetContextLines()
 	}
 	if s.HasLinesOutput() {
 		out.Lines = true
@@ -102,25 +106,27 @@ func commandSpecFromExecutionScopes(scopes []executionScope, state commandSpecSt
 
 func commandScopeSpecFromExecutionScope(s executionScope) commandScopeSpec {
 	return commandScopeSpec{
-		targets:           cloneStringSlice(s.Targets),
-		includedTargets:   cloneStringSlice(s.IncludedTargets),
-		only:              cloneStringSlice(s.Only),
-		exclude:           cloneStringSlice(s.Exclude),
-		stages:            cloneScopeStages(s.Stages),
-		hasContainsFilter: executionScopeHasStage(s, scopeStageContains),
-		containsPattern:   s.Contains,
-		hasPathsOutput:    s.Paths || executionScopeHasStage(s, scopeStagePaths),
-		hasSnippetOutput:  s.Snippet || executionScopeHasStage(s, scopeStageSnippet),
-		snippetPattern:    s.SnippetPattern,
-		hasLinesOutput:    s.Lines || executionScopeHasStage(s, scopeStageLines),
-		linesStart:        s.LinesStart,
-		linesEnd:          s.LinesEnd,
-		outputMode:        executionScopeOutputMode(s),
-		changed:           s.Changed,
-		staged:            s.Staged,
-		unstaged:          s.Unstaged,
-		untracked:         s.Untracked,
-		hasGitSelection:   executionScopeHasGitSelection(s),
+		targets:             cloneStringSlice(s.Targets),
+		includedTargets:     cloneStringSlice(s.IncludedTargets),
+		only:                cloneStringSlice(s.Only),
+		exclude:             cloneStringSlice(s.Exclude),
+		stages:              cloneScopeStages(s.Stages),
+		hasContainsFilter:   executionScopeHasStage(s, scopeStageContains),
+		containsPattern:     s.Contains,
+		hasPathsOutput:      s.Paths || executionScopeHasStage(s, scopeStagePaths),
+		hasSnippetOutput:    s.Snippet || executionScopeHasStage(s, scopeStageSnippet),
+		snippetPattern:      s.SnippetPattern,
+		snippetContextSet:   s.SnippetContextSet,
+		snippetContextLines: s.SnippetContextLines,
+		hasLinesOutput:      s.Lines || executionScopeHasStage(s, scopeStageLines),
+		linesStart:          s.LinesStart,
+		linesEnd:            s.LinesEnd,
+		outputMode:          executionScopeOutputMode(s),
+		changed:             s.Changed,
+		staged:              s.Staged,
+		unstaged:            s.Unstaged,
+		untracked:           s.Untracked,
+		hasGitSelection:     executionScopeHasGitSelection(s),
 	}
 }
 
@@ -174,6 +180,14 @@ func (s commandScopeSpec) HasSnippetOutput() bool {
 
 func (s commandScopeSpec) SnippetPattern() string {
 	return s.snippetPattern
+}
+
+func (s commandScopeSpec) SnippetContextSet() bool {
+	return s.snippetContextSet
+}
+
+func (s commandScopeSpec) SnippetContextLines() int {
+	return s.snippetContextLines
 }
 
 func (s commandScopeSpec) HasLinesOutput() bool {

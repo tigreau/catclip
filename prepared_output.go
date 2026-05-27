@@ -10,12 +10,14 @@ import (
 )
 
 // preparedFileUnit is the post-dedupe output contract shared by preview/report
-// and final emit. Payload holds fully prepared output for diff/snippet modes.
-// Full-file units keep Payload nil so emit can continue streaming from disk.
+// and final emit. Payload holds fully prepared output for diff/block-snippet
+// modes. Numeric snippets keep structured ranges so preview/final emit can
+// stream those ranges without prebuilding XML payload bytes.
 type preparedFileUnit struct {
-	Entry     fileEntry
-	Payload   []byte
-	BodyBytes int64
+	Entry         fileEntry
+	Payload       []byte
+	SnippetRanges []snippetRange
+	BodyBytes     int64
 }
 
 func prepareFileUnits(gitCtx gitContext, entries []fileEntry) ([]preparedFileUnit, error) {
@@ -114,7 +116,19 @@ func prepareFileUnit(gitCtx gitContext, entry fileEntry, snippetMatches snippetM
 		if len(matchedLines) == 0 {
 			return preparedFileUnit{}, false, nil
 		}
-		payload, bodyBytes, err := buildPreparedSnippetPayload(entry, matchedLines)
+		if entry.SnippetContextSet {
+			ranges, bodyBytes, err := prepareNumericSnippetRanges(entry, matchedLines)
+			if err != nil {
+				return preparedFileUnit{}, false, err
+			}
+			if len(ranges) == 0 {
+				return preparedFileUnit{}, false, nil
+			}
+			unit.SnippetRanges = ranges
+			unit.BodyBytes = bodyBytes
+			return unit, true, nil
+		}
+		payload, bodyBytes, ranges, err := buildPreparedSnippetPayload(entry, matchedLines)
 		if err != nil {
 			return preparedFileUnit{}, false, err
 		}
@@ -122,6 +136,7 @@ func prepareFileUnit(gitCtx gitContext, entry fileEntry, snippetMatches snippetM
 			return preparedFileUnit{}, false, nil
 		}
 		unit.Payload = payload
+		unit.SnippetRanges = ranges
 		unit.BodyBytes = bodyBytes
 		return unit, true, nil
 	default:
@@ -179,39 +194,154 @@ func slicedLinesBodySize(absPath string, start, end int) (int64, error) {
 	return total, nil
 }
 
-func buildPreparedSnippetPayload(entry fileEntry, matchedLines []int) ([]byte, int64, error) {
+func prepareNumericSnippetRanges(entry fileEntry, matchedLines []int) ([]snippetRange, int64, error) {
+	ranges := buildUnclampedContextSnippetRanges(matchedLines, entry.SnippetContextLines)
+	if len(ranges) == 0 {
+		return nil, 0, nil
+	}
+
+	f, err := os.Open(entry.AbsPath)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, readBufferSize()), 10*1024*1024)
+	clamped := make([]snippetRange, 0, len(ranges))
+	var bodyBytes int64
+	rangeIndex := 0
+	lineNum := 0
+	currentHadLines := false
+	currentEnd := 0
+
+	finishCurrent := func() {
+		if currentHadLines {
+			clamped = append(clamped, snippetRange{Start: ranges[rangeIndex].Start, End: currentEnd})
+		}
+		currentHadLines = false
+		currentEnd = 0
+		rangeIndex++
+	}
+
+	for scanner.Scan() {
+		lineNum++
+		for rangeIndex < len(ranges) && lineNum > ranges[rangeIndex].End {
+			finishCurrent()
+		}
+		if rangeIndex >= len(ranges) {
+			break
+		}
+		current := ranges[rangeIndex]
+		if lineNum < current.Start {
+			continue
+		}
+		currentHadLines = true
+		currentEnd = lineNum
+		bodyBytes += int64(len(scanner.Bytes())) + 1
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, 0, err
+	}
+	if rangeIndex < len(ranges) {
+		finishCurrent()
+	}
+	return clamped, bodyBytes, nil
+}
+
+func buildUnclampedContextSnippetRanges(matchedLines []int, context int) []snippetRange {
+	if len(matchedLines) == 0 {
+		return nil
+	}
+	windows := make([]snippetRange, 0, len(matchedLines))
+	for _, matchLine := range matchedLines {
+		if matchLine < 1 {
+			continue
+		}
+		start := matchLine - context
+		if start < 1 {
+			start = 1
+		}
+		windows = append(windows, snippetRange{Start: start, End: matchLine + context})
+	}
+	if len(windows) == 0 {
+		return nil
+	}
+	sort.Slice(windows, func(i, j int) bool {
+		if windows[i].Start != windows[j].Start {
+			return windows[i].Start < windows[j].Start
+		}
+		return windows[i].End < windows[j].End
+	})
+	merged := make([]snippetRange, 0, len(windows))
+	current := windows[0]
+	for _, w := range windows[1:] {
+		if w.Start <= current.End+1 {
+			if w.End > current.End {
+				current.End = w.End
+			}
+			continue
+		}
+		merged = append(merged, current)
+		current = w
+	}
+	merged = append(merged, current)
+	return merged
+}
+
+func buildPreparedSnippetPayload(entry fileEntry, matchedLines []int) ([]byte, int64, []snippetRange, error) {
 	snapshot, err := loadTextSnapshot(entry.AbsPath, entry.RelPath)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
-	snippet, err := resolveSnippetFromSnapshot(snapshot, matchedLines)
+	return buildPreparedSnippetPayloadFromSnapshot(entry.RelPath, snapshot, matchedLines, snippetOptionsFor(entry.SnippetContextSet, entry.SnippetContextLines))
+}
+
+// buildPreparedSnippetPayloadFromSnapshot is the snapshot-in byte producer for
+// snippet payloads, split out of buildPreparedSnippetPayload so callers that
+// already hold a textSnapshot (and want several boundary widths from the same
+// read) can reuse one load. Byte output is identical to the load-then-build
+// path for the same (snapshot, matchedLines, opts).
+func buildPreparedSnippetPayloadFromSnapshot(relPath string, snapshot textSnapshot, matchedLines []int, opts snippetOptions) ([]byte, int64, []snippetRange, error) {
+	if !snapshot.IsText {
+		return nil, 0, nil, nil
+	}
+	return buildPreparedSnippetPayloadFromLines(relPath, snapshot.SnippetLines(), matchedLines, opts)
+}
+
+// buildPreparedSnippetPayloadFromLines is the lines-in byte producer. The
+// boundary picker splits a file's body once (SnippetLines re-splits on every
+// call) and feeds the same lines to all 8 widths via this entry point, avoiding
+// 8x re-splitting churn per file. Byte output is identical to the snapshot path.
+func buildPreparedSnippetPayloadFromLines(relPath string, lines []string, matchedLines []int, opts snippetOptions) ([]byte, int64, []snippetRange, error) {
+	snippet, err := resolveSnippetFromLines(lines, matchedLines, opts)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, nil, err
 	}
 	if len(snippet.Ranges) == 0 {
-		return nil, 0, nil
+		return nil, 0, nil, nil
 	}
 
 	var payload bytes.Buffer
 	var bodyBytes int64
 	for _, r := range snippet.Ranges {
-		if _, err := fmt.Fprintf(&payload, "<file path=\"%s\" lines=\"%d-%d\">\n", entry.RelPath, r.Start, r.End); err != nil {
-			return nil, 0, err
+		if _, err := fmt.Fprintf(&payload, "<file path=\"%s\" lines=\"%d-%d\">\n", relPath, r.Start, r.End); err != nil {
+			return nil, 0, nil, err
 		}
 		for i := r.Start - 1; i < r.End; i++ {
 			if _, err := payload.WriteString(snippet.Lines[i]); err != nil {
-				return nil, 0, err
+				return nil, 0, nil, err
 			}
 			if err := payload.WriteByte('\n'); err != nil {
-				return nil, 0, err
+				return nil, 0, nil, err
 			}
 			bodyBytes += int64(len(snippet.Lines[i]) + 1)
 		}
 		if _, err := payload.Write(fileCloseTag); err != nil {
-			return nil, 0, err
+			return nil, 0, nil, err
 		}
 	}
-	return payload.Bytes(), bodyBytes, nil
+	return payload.Bytes(), bodyBytes, snippet.Ranges, nil
 }
 
 func buildPreparedDiffPayload(gitCtx gitContext, entry fileEntry) ([]byte, int64, bool, error) {

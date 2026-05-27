@@ -168,6 +168,8 @@ func stampEntriesWithScopeOutputMode(entries []fileEntry, mode entryMode, s exec
 	for i := range entries {
 		entries[i].Mode = mode
 		entries[i].SnippetPattern = s.SnippetPattern
+		entries[i].SnippetContextSet = s.SnippetContextSet
+		entries[i].SnippetContextLines = s.SnippetContextLines
 		entries[i].Lines = s.Lines
 		entries[i].LinesStart = s.LinesStart
 		entries[i].LinesEnd = s.LinesEnd
@@ -2743,6 +2745,15 @@ func shellQuoteArg(arg string) string {
 		return arg
 	}
 	return strconv.Quote(arg)
+}
+
+// shellEnforceSingleQuote always wraps arg in POSIX single quotes, escaping
+// embedded single quotes, so a value is rendered as an unambiguous literal even
+// when it has no shell-special characters. Used for regex modifiers so resolved
+// commands show the pattern quoted and copy-paste safely regardless of $, *, or
+// spaces in the pattern.
+func shellEnforceSingleQuote(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }
 
 func formatFzfCandidates(candidates []string, kind, state string) []string {

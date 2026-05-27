@@ -30,6 +30,16 @@ func buildOutputPlanForResolvedScopes(
 	return prepareOutputPlan(gitCtx, entries)
 }
 
+func buildLinesPreviewPlanForResolvedScopes(scopes []executionScope, allEntries []fileEntry) outputPlan {
+	entries := allEntries
+	if executionScopesUseRecentStage(scopes) {
+		entries = dedupeEntriesByPathPreserveOrder(entries)
+	} else {
+		entries = dedupeEntriesByPath(entries)
+	}
+	return buildLinesPreviewPlan(entries)
+}
+
 func buildOutputPlanForDiscoveredInvocation(gitCtx gitContext, inv discoveredInvocation) (outputPlan, error) {
 	evaluatedScopes := make([]evaluatedOutputScope, 0, len(inv.Scopes))
 	var allEntries []fileEntry

@@ -1,4 +1,4 @@
-# catclip — Architecture & Product Rules
+remove# catclip — Architecture & Product Rules
 
 catclip is a context gatherer for LLMs. This is the Go rewrite of the original Bash implementation.
 
@@ -147,6 +147,8 @@ Subpackages and platform shims:
 
 22. **Resolved command parity** — every command catclip prints as "Resolved command:" must produce an identical file selection when copy-pasted and re-run non-interactively. Startup pickers, modifier pickers, sink picker, and argv normalizations (e.g., dynamic pattern inference collapsing repeated literals into wildcards, redundant-literal removal) all participate in building this canonical argv; none of them may rely on hidden picker-frame state, RNG, or in-process side effects to reach their final selection. If a normalization rewrites the argv, the rewritten form must be a true equivalent — losing or gaining a file across the round trip is a bug, not a normalization.
 
+23. **Modifier-stage previews are scope-local** — once a scope has a stage checkpoint (`entries[N]`), any modifier-stage picker that previews or tests a pending same-scope stage must start from that checkpoint: the surviving entries produced by the current scope's accepted stages, in order. It may apply exactly the candidate stage (`N+1`) to a copy for display/search. It must not rebuild a synthetic scope, re-evaluate from original targets, inspect sibling `--then` scopes, flatten the full command, or skip/backfill earlier stages. Target pickers before a settled scope, per-file previews, and final output/sink previews have their own contracts, but they must not be used to smuggle cross-scope knowledge into a modifier-stage preview. Cross-scope unioning and final dedupe happen only after scope evaluation, in output planning.
+
 ## Execution flow
 
 1. Parse args and build scopes (via `CommandSpec` / `FlagSpec` declarative model).
@@ -237,6 +239,24 @@ Subpackages and platform shims:
 - Preview tree runs still pay per-file size collection, and large or broad tree requests can still fall back to repo-wide git status collection; quiet/no-tree paths avoid that cost.
 - On large clean repos, output emission is currently the dominant cost, not visible-file discovery.
 
+## Profiling
+
+`cmd/catclip/main.go` exposes opt-in profiling, off by default (no effect unless the env var is set, so it is safe in the shipped binary). Point each var at an output path:
+
+- `CATCLIP_CPUPROFILE=cpu.prof` — `go tool pprof cpu.prof`. On-CPU time only.
+- `CATCLIP_MEMPROFILE=mem.prof` — `go tool pprof -inuse_space mem.prof` (live memory) or `-alloc_space` (total allocations / GC churn). One file covers both via pprof's sample types.
+- `CATCLIP_TRACE=trace.out` — `go tool trace trace.out`. The full timeline: syscalls, GC, scheduling, blocking.
+
+Pick the tool by the question you are asking:
+
+- **"What's the hot function?"** → CPU profile.
+- **"Why is it slow / where does wall-clock time go?"** → trace. catclip runs are mostly *off* CPU — waiting on the rg subprocess, file-read syscalls, fzf, and GC (one investigated interactive run was only ~37% on-CPU). The CPU profile is blind to that other ~63%; the trace shows it. Reach for the trace first on latency questions, the CPU profile second.
+- **"Memory or allocation pressure?"** → mem profile (`-inuse_space` for retention — e.g. the one-body-at-a-time streaming guarantees; `-alloc_space` for the GC churn the benchmarks track).
+
+Caveat: `catclip.Main()` returns normally on success but calls `os.Exit()` on error paths, and `os.Exit` bypasses deferred funcs — so a profile is flushed only when `Main()` returns (the success path, e.g. a completed interactive run, which is what we profile). Capturing error paths too would require `Main()` to return an exit code instead of calling `os.Exit()` internally; until then, profile a run that succeeds.
+
+Profiling answers *where the time/memory goes within one process*. Pair it with the benchmarking conventions in "Notes for future passes": `hyperfine` for end-to-end per-invocation cost (it includes the spawn + runtime-init floor a profile cannot see), and `go test -bench` for pure hot functions below the spawn floor.
+
 ## Path / picker rules
 
 - In an interactive TTY, bare `catclip` opens the target selector with `[select all files]` first; non-interactive runs still default to `.`.
@@ -262,9 +282,10 @@ Subpackages and platform shims:
 - Preserve user-facing semantics over "cleaner" abstractions. If a refactor changes target meaning, preview truthfulness, or startup recovery behavior, it is probably the wrong refactor.
 - Only extract an internal package when it can own a small API without exporting half the app's internals; if a split mainly moves files around, it is premature.
 - If tree/render UX is still in flux, keep it close to the rest of the app until the behavior settles.
-- Benchmark end-to-end CLI cost with `hyperfine`, not ad-hoc `time` loops: most of catclip's perf-relevant work is per-invocation (per-refresh preview commands, full runs), and the process-spawn + runtime-init floor (~26 ms on macOS) is part of what the user pays — hyperfine captures it and handles warmup, repeats, and mean ± σ. Conventions: explicit binary paths (not PATH); set `CATCLIP_RG`/`CATCLIP_FZF` so `ensureRequiredTools` takes its real (non-error) path; `-N` to skip the intermediate shell, `-w` warmup, `-M` run cap. Use `go test -bench` instead only to isolate a *pure hot function* below the spawn floor (e.g. `PreviewModeTags`, stage application) — hyperfine would drown a µs function in the spawn cost. Caveat: hyperfine measures **warm** steady-state; cold-cache / first-touch cost is not captured (macOS `purge` needs root), so reason about cold paths separately.
+- Benchmark end-to-end CLI cost with `hyperfine`, not ad-hoc `time` loops: most of catclip's perf-relevant work is per-invocation (per-refresh preview commands, full runs), and the process-spawn + runtime-init floor (~26 ms on macOS) is part of what the user pays — hyperfine captures it and handles warmup, repeats, and mean ± σ. Conventions: explicit binary paths (not PATH); set `CATCLIP_RG`/`CATCLIP_FZF` so `ensureRequiredTools` takes its real (non-error) path; `-N` to skip the intermediate shell, `-w` warmup, `-M` run cap. Use `go test -bench` instead only to isolate a *pure hot function* below the spawn floor (e.g. `PreviewModeTags`, stage application) — hyperfine would drown a µs function in the spawn cost. Caveat: hyperfine measures **warm** steady-state; cold-cache / first-touch cost is not captured (macOS `purge` needs root), so reason about cold paths separately. hyperfine tells you *how long*; to see *where* that time goes inside one process, use the profiling env vars in the `## Profiling` section (trace especially, since most of the cost is off-CPU).
 - Benchmark explicit binaries, not just whatever `catclip` in PATH points to; old installed binaries can silently invalidate before/after results.
 - Benchmark the path you actually changed: tree/porcelain optimizations must be measured with tree-enabled commands, not `-q -t` runs that skip that work entirely.
+- For preview/content performance work, include a large-entry validation against a local directory that collects several large real-world project checkouts under one folder (e.g. clones of big repos like linux, vscode, or chromium), when you have one set up. Small fixtures catch correctness, but 100k+ file corpora expose O(N), repeated-rg, JSON decode, and file-body scan regressions that are invisible at toy sizes. The location of that directory is machine-specific and not stored in the repo — if you don't already have it in context, ask the user where it is rather than guessing a path.
 - When file counts or tree contents change, investigate selection and classification first; output-path changes should not change what files are selected.
 - For Git-performance work, use real tracked clones as the primary testbed; odd, partially detached, or effectively untracked trees can hide or distort Git costs.
 - Before adding a Git-based "optimization", compare it against the current rg + direct-filesystem baseline on a real tracked clone, not only on odd working trees; previous `git cat-file --batch` experiments lost badly.

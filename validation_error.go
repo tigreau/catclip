@@ -110,6 +110,19 @@ func requiredStageValueError(flag string) error {
 	return validationFailure{Reason: validationReasonRequiredValue, Flag: flag}
 }
 
+// regexModifierExtraValueError fires when a bare token follows a regex modifier
+// (--contains REGEX or --snippet REGEX [N]). The usual cause is an unquoted
+// regex with spaces that the shell split into separate args, so the hint
+// reconstructs the quoted form. Scoped to the regex modifiers; other modifiers
+// keep the generic positional-after-modifier error.
+func regexModifierExtraValueError(flag, regex, extra string) error {
+	takes := "one regex (quote it if it contains spaces)"
+	if flag == "--snippet" {
+		takes += " and an optional context number"
+	}
+	return newUsageError("Error: %s takes %s, got extra value %q.\n  Did you mean: %s %s", flag, takes, extra, flag, shellEnforceSingleQuote(regex+" "+extra))
+}
+
 func noValueModifierError(flag string) error {
 	return validationFailure{Reason: validationReasonNoValueModifier, Flag: flag}
 }
