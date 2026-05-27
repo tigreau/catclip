@@ -40,7 +40,8 @@ catclip src --exclude "*.css"        # skip CSS files
 catclip src --recent 5               # 5 most recently modified
 catclip src --depth 2                # shallow files only
 catclip src --contains TODO          # files mentioning TODO
-catclip src --snippet TODO           # only the matching blocks
+catclip src --snippet TODO           # blank-line-bounded blocks around matches
+catclip src --snippet TODO 3         # each match plus 3 lines of context
 
 # Git
 catclip . --changed                  # all uncommitted files
@@ -68,6 +69,14 @@ For the full reference: `catclip --help` or `catclip --help-all`.
 
 ---
 
+## Big copies become a file, automatically
+
+Large copies (over 4 KB) are saved to `~/Documents/catclip/` and placed on your clipboard as a *file* — paste it into a chat as an attachment instead of a giant blob. Smaller copies stay plain text.
+
+One-step paste works on macOS, Windows, and Wayland. On X11 the file clipboard is unsupported: drag the saved file in, or use `--no-bundle` for text.
+
+---
+
 ## Installation
 
 ### Homebrew (macOS / Linux)
@@ -85,7 +94,7 @@ curl -fsSL https://raw.githubusercontent.com/tigreau/catclip/main/install.sh | b
 irm https://raw.githubusercontent.com/tigreau/catclip/main/install.ps1 | iex
 ```
 
-Clipboard tool required: `pbcopy` (macOS, built-in), `xclip`/`xsel`/`wl-clipboard` (Linux), `clip.exe` (Windows, built-in).
+Clipboard tool required: `pbcopy` (macOS, built-in), `xclip` (X11) or `wl-clipboard` (Wayland) on Linux, `clip.exe` (Windows, built-in).
 
 catclip bundles its own `fzf` and `ripgrep` — no external dependencies needed.
 
