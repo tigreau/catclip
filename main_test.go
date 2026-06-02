@@ -1628,16 +1628,28 @@ func TestRunPreviewPathAndFileSummaryUsesCombinedPayloadStats(t *testing.T) {
 		"main.go": "package main\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--preview", "--quiet", "main.go", "--paths", "--then", "main.go"})
+	cfg := parseInProject(t, project, []string{"--preview", "--quiet", "--headless", "main.go", "--paths", "--then", "main.go"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
 	}
 
-	want := "├── main.go (21B) [path + file]\n\n  Count:   1 item\n  Size:    21.00B\n  Tokens:  ~5\n"
-	if got := stdout.String(); got != want {
-		t.Fatalf("unexpected mixed preview output\nwant:\n%s\ngot:\n%s", want, got)
+	// One file appearing as both a path and a full file: combined per-file size,
+	// shape "path + file". (The modified date varies, so we don't exact-match the row.)
+	recs := parsePreviewRecords(t, stdout.String())
+	m, ok := recs["main.go"]
+	if !ok {
+		t.Fatalf("missing main.go record in:\n%s", stdout.String())
+	}
+	if m[0] != "21.00B" || m[1] != "~5" || m[4] != "path + file" {
+		t.Fatalf("combined stats wrong: size=%q tokens=%q shape=%q\n%s", m[0], m[1], m[4], stdout.String())
+	}
+	// Footer uses the shared summary language and the combined totals.
+	for _, want := range []string{"Count:   1 item", "Size:    21.00B", "Tokens:  ~5"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("footer missing %q in:\n%s", want, stdout.String())
+		}
 	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("expected quiet preview to keep stderr empty, got:\n%s", got)
@@ -3507,8 +3519,9 @@ func TestRunNoMatchShowsShellStyleFooter(t *testing.T) {
 		"No text files found matching your criteria.",
 		"Possible causes:",
 		"1. Directory is empty or contains only binary files",
-		`Try: catclip --hiss`,
+		`Try: catclip --all-ignore-rules`,
 		`catclip --include blocked-dir`,
+		`catclip --hiss`,
 	} {
 		if !strings.Contains(errOut, want) {
 			t.Fatalf("expected stderr to contain %q, got:\n%s", want, errOut)
@@ -4136,7 +4149,7 @@ func TestRunSnippetEmitsBlankLineBoundedBlocks(t *testing.T) {
 	}
 }
 
-func TestRunPreviewRendersTreeAndSummary(t *testing.T) {
+func TestRunPreviewRendersTableAndSummary(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/a.ts":              "const ok = true\n",
 		"src/components/b.tsx":  "export const B = 1\n",
@@ -4151,8 +4164,15 @@ func TestRunPreviewRendersTreeAndSummary(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, "src/") || !strings.Contains(out, "├── a.ts") || !strings.Contains(out, "components/") {
-		t.Fatalf("expected preview tree in output, got:\n%s", out)
+	// --preview now renders the file table: full relative paths, no tree glyphs.
+	if !strings.HasPrefix(out, previewTableHeaderLines[0]+"\n") {
+		t.Fatalf("expected preview header, got:\n%s", out)
+	}
+	if strings.Contains(out, "├──") {
+		t.Fatalf("--preview must not render a tree, got:\n%s", out)
+	}
+	if !strings.Contains(out, "src/a.ts") || !strings.Contains(out, "src/components/b.tsx") {
+		t.Fatalf("expected full relative paths in table, got:\n%s", out)
 	}
 	if !strings.Contains(out, "Count:") || !strings.Contains(out, "Size:") || !strings.Contains(out, "Tokens:") {
 		t.Fatalf("expected preview summary in output, got:\n%s", out)
@@ -4162,7 +4182,7 @@ func TestRunPreviewRendersTreeAndSummary(t *testing.T) {
 	}
 }
 
-func TestRunPreviewShowsTargetPathHintForNestedResolvedTarget(t *testing.T) {
+func TestRunPreviewShowsResolvedNestedTargetPath(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		".cache/babel-loader/abc.json": "ok\n",
 	})
@@ -4174,9 +4194,11 @@ func TestRunPreviewShowsTargetPathHintForNestedResolvedTarget(t *testing.T) {
 		t.Fatalf("run returned error: %v", err)
 	}
 
+	// The table shows the full resolved path directly, so the fuzzy target's
+	// resolution is visible without a separate tree-style hint.
 	out := stdout.String()
-	if !strings.Contains(out, "babel-loader/ (.cache/babel-loader/)") {
-		t.Fatalf("expected nested target path hint in preview, got:\n%s", out)
+	if !strings.Contains(out, ".cache/babel-loader/abc.json") {
+		t.Fatalf("expected resolved file path in preview table, got:\n%s", out)
 	}
 }
 
@@ -4197,7 +4219,7 @@ func TestRunPreviewDoesNotShowTargetPathHintForRootLevelTarget(t *testing.T) {
 	}
 }
 
-func TestRunPreviewNoTreeShowsSummaryOnly(t *testing.T) {
+func TestRunPreviewNoTreeDoesNotSuppressTable(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/a.ts": "const ok = true\n",
 	})
@@ -4209,12 +4231,17 @@ func TestRunPreviewNoTreeShowsSummaryOnly(t *testing.T) {
 		t.Fatalf("run returned error: %v", err)
 	}
 
+	// --no-tree governs only the confirmation-flow tree; it does not touch
+	// --preview, which always renders its table.
 	out := stdout.String()
-	if strings.Contains(out, "├──") || strings.Contains(out, "a.ts") {
-		t.Fatalf("expected no tree output with --no-tree, got:\n%s", out)
+	if !strings.Contains(out, "src/a.ts") {
+		t.Fatalf("--no-tree must not suppress the --preview table, got:\n%s", out)
+	}
+	if strings.Contains(out, "├──") {
+		t.Fatalf("--preview must not render a tree, got:\n%s", out)
 	}
 	if !strings.Contains(out, "Count:") || !strings.Contains(out, "Tokens:") {
-		t.Fatalf("expected summary output, got:\n%s", out)
+		t.Fatalf("expected summary footer, got:\n%s", out)
 	}
 }
 
@@ -4230,9 +4257,10 @@ func TestRunPreviewShowsSnippetRangeTags(t *testing.T) {
 		t.Fatalf("run returned error: %v", err)
 	}
 
+	// The table's shape column carries the snippet range (no tree brackets).
 	out := stdout.String()
-	if !strings.Contains(out, "app.ts") || !strings.Contains(out, "[snippet 1-3]") {
-		t.Fatalf("expected snippet range preview tag, got:\n%s", out)
+	if !strings.Contains(out, "src/app.ts") || !strings.Contains(out, "snippet 1-3") {
+		t.Fatalf("expected snippet range in the shape column, got:\n%s", out)
 	}
 }
 
@@ -4978,19 +5006,26 @@ func TestRunPreviewShowsDiffOnlyTags(t *testing.T) {
 	runGit(t, project, "add", "staged.txt")
 	writeProjectFile(t, project, "new.txt", "brand new\n")
 
-	cfg := parseInProject(t, project, []string{"--preview", ".", "--changed-diff"})
+	cfg := parseInProject(t, project, []string{"--preview", "--headless", ".", "--changed-diff"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
 	}
 
-	out := stdout.String()
-	if !strings.Contains(out, "staged.txt") || !strings.Contains(out, "[diff only]") {
-		t.Fatalf("expected diff-only preview tag, got:\n%s", out)
+	recs := parsePreviewRecords(t, stdout.String())
+	staged, ok := recs["staged.txt"]
+	if !ok || staged[4] != "diff only" {
+		t.Fatalf("expected staged.txt shape=diff only, got %v in:\n%s", staged, stdout.String())
 	}
-	if strings.Contains(out, "new.txt") && strings.Contains(out, "new.txt") && strings.Contains(out, "[?] [diff only]") {
-		t.Fatalf("did not expect untracked diff-only tag, got:\n%s", out)
+	// Untracked new.txt has no diff, so it falls back to full content — not diff-only.
+	if n, ok := recs["new.txt"]; ok {
+		if n[2] != "[?]" {
+			t.Errorf("new.txt git = %q, want [?]", n[2])
+		}
+		if n[4] != "full" {
+			t.Errorf("new.txt shape = %q, want full (untracked has no diff)", n[4])
+		}
 	}
 }
 

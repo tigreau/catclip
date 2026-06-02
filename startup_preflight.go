@@ -64,7 +64,7 @@ func startupPreflightCommandSpec(args []string) (commandSpec, error) {
 		arg := args[i]
 
 		switch arg {
-		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
+		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules":
 			continue
 		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
 			continue

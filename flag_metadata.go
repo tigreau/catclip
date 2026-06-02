@@ -244,7 +244,7 @@ func isModifierBoundaryToken(arg string) bool {
 		"--recent", "--lines",
 		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
 		"--no-bundle", "--preview", "--with-binaries",
-		"-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset":
+		"-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules":
 		return true
 	}
 	return strings.HasPrefix(arg, "--")

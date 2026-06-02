@@ -17,12 +17,13 @@ import (
 type action string
 
 const (
-	actionRun       action = "run"
-	actionHelp      action = "help"
-	actionHelpAll   action = "help-all"
-	actionVersion   action = "version"
-	actionEditHiss  action = "hiss"
-	actionResetHiss action = "hiss-reset"
+	actionRun             action = "run"
+	actionHelp            action = "help"
+	actionHelpAll         action = "help-all"
+	actionVersion         action = "version"
+	actionEditHiss        action = "hiss"
+	actionResetHiss       action = "hiss-reset"
+	actionListIgnoreRules action = "list-ignore-rules"
 )
 
 type outputMode string

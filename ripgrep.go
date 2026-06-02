@@ -58,6 +58,10 @@ type ripgrepFileOptions struct {
 	Basenames []string
 	Paths     []string
 	HissPath  string
+	// Timeout caps the rg call as a hung-process guard for error-path probes
+	// like the ignored-ancestor lookup (see ACTIVE_PLAN_surface_ignored_ancestor.md).
+	// Zero means use the default reloadCancelCtx behavior (no extra timeout).
+	Timeout time.Duration
 }
 
 func ripgrepBinary() (string, bool) {
@@ -99,7 +103,13 @@ func runRipgrepFiles(workingDir string, opts ripgrepFileOptions) ([]string, erro
 		args = append(args, pathArgs...)
 	}
 
-	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
+	ctx := reloadCancelCtx
+	if opts.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(reloadCancelCtx, opts.Timeout)
+		defer cancel()
+	}
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = workingDir
 	t0 := time.Now()
 	out, err := cmd.Output()
@@ -108,6 +118,9 @@ func runRipgrepFiles(workingDir string, opts ripgrepFileOptions) ([]string, erro
 		benchRgFilesCalls.Add(1)
 	}
 	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, ctx.Err()
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return nil, nil
 		}

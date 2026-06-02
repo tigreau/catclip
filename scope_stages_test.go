@@ -365,8 +365,26 @@ func TestApplyScopeStagesKeepsDepthOrderingSemanticWithRecent(t *testing.T) {
 	}
 }
 
+// scopeIncludeTargetWorkingDir builds a temp workingDir containing every
+// listed scope-target *as a directory*, so the new bare-combine guard
+// (which only combines when the scope target stats as a dir) sees them.
+func scopeIncludeTargetWorkingDir(t *testing.T, dirs ...string) string {
+	t.Helper()
+	wd := t.TempDir()
+	for _, d := range dirs {
+		if d == "" || d == "." {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Join(wd, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatalf("mkdir %q: %v", d, err)
+		}
+	}
+	return wd
+}
+
 func TestScopeIncludeTargetWithRootScope(t *testing.T) {
-	got := scopeIncludeTarget([]string{"."}, "node_modules")
+	wd := scopeIncludeTargetWorkingDir(t)
+	got := scopeIncludeTarget(wd, []string{"."}, "node_modules")
 	want := []string{"node_modules"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("scopeIncludeTarget(., node_modules) = %v, want %v", got, want)
@@ -374,7 +392,8 @@ func TestScopeIncludeTargetWithRootScope(t *testing.T) {
 }
 
 func TestScopeIncludeTargetBareWithNonRootScope(t *testing.T) {
-	got := scopeIncludeTarget([]string{"src"}, "node_modules")
+	wd := scopeIncludeTargetWorkingDir(t, "src")
+	got := scopeIncludeTarget(wd, []string{"src"}, "node_modules")
 	want := []string{"src/node_modules"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("scopeIncludeTarget(src, node_modules) = %v, want %v", got, want)
@@ -382,7 +401,8 @@ func TestScopeIncludeTargetBareWithNonRootScope(t *testing.T) {
 }
 
 func TestScopeIncludeTargetBareWithMultipleScopes(t *testing.T) {
-	got := scopeIncludeTarget([]string{"src", "lib"}, "vendor")
+	wd := scopeIncludeTargetWorkingDir(t, "src", "lib")
+	got := scopeIncludeTarget(wd, []string{"src", "lib"}, "vendor")
 	want := []string{"src/vendor", "lib/vendor"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("scopeIncludeTarget([src,lib], vendor) = %v, want %v", got, want)
@@ -390,7 +410,8 @@ func TestScopeIncludeTargetBareWithMultipleScopes(t *testing.T) {
 }
 
 func TestScopeIncludeTargetAnchoredInScope(t *testing.T) {
-	got := scopeIncludeTarget([]string{"src"}, "src/vendor")
+	wd := scopeIncludeTargetWorkingDir(t, "src")
+	got := scopeIncludeTarget(wd, []string{"src"}, "src/vendor")
 	want := []string{"src/vendor"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("scopeIncludeTarget(src, src/vendor) = %v, want %v", got, want)
@@ -398,14 +419,16 @@ func TestScopeIncludeTargetAnchoredInScope(t *testing.T) {
 }
 
 func TestScopeIncludeTargetAnchoredOutOfScope(t *testing.T) {
-	got := scopeIncludeTarget([]string{"src"}, "lib/vendor")
+	wd := scopeIncludeTargetWorkingDir(t, "src")
+	got := scopeIncludeTarget(wd, []string{"src"}, "lib/vendor")
 	if len(got) != 0 {
 		t.Fatalf("scopeIncludeTarget(src, lib/vendor) = %v, want empty", got)
 	}
 }
 
 func TestScopeIncludeTargetAnchoredAncestorOfScope(t *testing.T) {
-	got := scopeIncludeTarget([]string{"ignored/deep/path"}, "ignored/deep")
+	wd := scopeIncludeTargetWorkingDir(t, "ignored/deep/path")
+	got := scopeIncludeTarget(wd, []string{"ignored/deep/path"}, "ignored/deep")
 	want := []string{"ignored/deep"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("scopeIncludeTarget(ignored/deep/path, ignored/deep) = %v, want %v", got, want)
@@ -414,11 +437,28 @@ func TestScopeIncludeTargetAnchoredAncestorOfScope(t *testing.T) {
 
 func TestScopeIncludeTargetWildcardSkipped(t *testing.T) {
 	// "*" is handled before scopeIncludeTarget is called, but verify it
-	// doesn't produce nonsensical output if it were passed
-	got := scopeIncludeTarget([]string{"src"}, "*")
+	// doesn't produce nonsensical output if it were passed.
+	wd := scopeIncludeTargetWorkingDir(t, "src")
+	got := scopeIncludeTarget(wd, []string{"src"}, "*")
 	want := []string{"src/*"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("scopeIncludeTarget(src, *) = %v, want %v", got, want)
+	}
+}
+
+// New: a file-shaped scope target must NOT combine with a bare include —
+// the combined `agent.md/foo` is nonsense; the include still applies
+// globally via buildIncludedTargetSet. This is the case the basename +
+// --include bug doc covers.
+func TestScopeIncludeTargetBareSkipsFileScopeTarget(t *testing.T) {
+	wd := t.TempDir()
+	// agent.md exists as a *file*, not a directory.
+	if err := os.WriteFile(filepath.Join(wd, "agent.md"), []byte("hi\n"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	got := scopeIncludeTarget(wd, []string{"agent.md"}, "claude_code_cli-main")
+	if len(got) != 0 {
+		t.Errorf("expected no scoped combinations for a file scope target, got %v", got)
 	}
 }
 

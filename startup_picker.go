@@ -366,15 +366,37 @@ func startupCommandCanRunDirectly(resolver *scopeResolver, args []string) (bool,
 	if startupHasUnresolvedScope(args) {
 		return false, nil
 	}
+	cfg, err := parseArgsAllowImplicitDot(args)
+	if err != nil {
+		return false, nil
+	}
+	// Reachability pre-check: if any scope target is blocked by an ignore
+	// rule without an --include covering it, skip the startup picker so the
+	// normal resolution flow surfaces the ignored-target error. Otherwise the
+	// filter-value picker for --only / --exclude / --include would open
+	// before the resolver gets a chance to error — see
+	// docs/versions/v0.5.7/reports/ACTIVE_BUG_filter_picker_fires_before_target_check.md.
+	for _, scopeSpec := range cfg.Command.Scopes() {
+		scopeResolver := *resolver
+		scopeTargets := scopeSpec.Targets()
+		if len(scopeSpec.IncludedTargets()) > 0 {
+			scopeResolver.includedTargets = buildIncludedTargetSet(scopeResolver.cfg.WorkingDir, scopeSpec.IncludedTargets())
+		}
+		for _, target := range scopeTargets {
+			reachable, err := scopeResolver.targetIsReachable(target)
+			if err != nil {
+				return false, err
+			}
+			if !reachable {
+				return true, nil
+			}
+		}
+	}
 	needsFileSetResolution, err := startupArgsNeedFileSetResolution(args)
 	if err != nil {
 		return false, err
 	}
 	if needsFileSetResolution {
-		return false, nil
-	}
-	cfg, err := parseArgsAllowImplicitDot(args)
-	if err != nil {
 		return false, nil
 	}
 	for _, scopeSpec := range cfg.Command.Scopes() {
@@ -389,7 +411,35 @@ func startupCommandCanRunDirectly(resolver *scopeResolver, args []string) (bool,
 				if err != nil {
 					return false, err
 				}
-				if len(unresolvedIncludeQueries) > 0 {
+				// Salvage unresolved queries that are concrete on-disk paths.
+				// `resolveExactIgnoredIncludeTargets`'s scope-target filter
+				// drops include values unrelated to the scope target — it
+				// assumes the include lives inside (or is an ancestor of)
+				// the scope. For the basename + `--include` case, the include
+				// names a *separate* ignored dir that *authorizes* finding
+				// the basename elsewhere — the filter rejects it as
+				// "unrelated" and the picker would open even though the
+				// include is concrete. A query that exists on disk as a
+				// regular file or directory is concrete enough to treat as
+				// an exact ignored target; queries that don't exist at the
+				// working-dir level (the truly ambiguous, picker-needs-help
+				// case) stay unresolved and continue to route through the
+				// picker.
+				stillUnresolved := unresolvedIncludeQueries[:0]
+				for _, q := range unresolvedIncludeQueries {
+					normalized := normalizeRelPath(q)
+					if normalized == "" {
+						stillUnresolved = append(stillUnresolved, q)
+						continue
+					}
+					abs := filepath.Join(scopeResolver.cfg.WorkingDir, filepath.FromSlash(normalized))
+					if info, err := os.Stat(abs); err == nil && (info.IsDir() || info.Mode().IsRegular()) {
+						exactIncludedTargets = append(exactIncludedTargets, normalized)
+						continue
+					}
+					stillUnresolved = append(stillUnresolved, q)
+				}
+				if len(stillUnresolved) > 0 {
 					return false, nil
 				}
 				scopeResolver.includedTargets = buildIncludedTargetSet(scopeResolver.cfg.WorkingDir, exactIncludedTargets)
@@ -400,7 +450,49 @@ func startupCommandCanRunDirectly(resolver *scopeResolver, args []string) (bool,
 			if err != nil {
 				return false, err
 			}
-			if !canResolve {
+			if canResolve {
+				continue
+			}
+			// canResolveTargetWithoutPrompt returned false. That conflates
+			// two cases:
+			//   - the target has many visible matches → genuine ambiguity, the
+			//     picker is the right response;
+			//   - the target has zero matches anywhere → the picker can't
+			//     help, the not-found warning is the right response.
+			// Gate the picker on which case this is, plus the --include
+			// subtree count for the v0.5.7 basename+include fix. See
+			// docs/versions/v0.5.7/reports/ACTIVE_PLAN_startup_picker_gated_on_ambiguity.md.
+			normalized := normalizeRelPath(target)
+			if normalized == "" || normalized == "." || hasGlobChars(normalized) || strings.Contains(normalized, "/") {
+				// Slash-paths use a different resolution branch — leave the
+				// existing behavior alone.
+				return false, nil
+			}
+			hasVisible, err := scopeResolver.hasAnyVisibleMatch(normalized)
+			if err != nil {
+				return false, err
+			}
+			if hasVisible {
+				// Multi-hit visible (e.g. `catclip main`) — keep the picker.
+				return false, nil
+			}
+			// Zero visible matches. Count --include'd subtree hits.
+			includeHits, err := scopeResolver.findBasenameInIncludedSubtrees(normalized)
+			if err != nil {
+				return false, err
+			}
+			switch len(includeHits) {
+			case 0:
+				// Truly absent — skip the picker; let the "No file or
+				// directory found" warning fire from normal resolution.
+				continue
+			case 1:
+				// Uniquely resolvable via --include — skip the picker; the
+				// v0.5.7 basename+include fix bundles it from normal flow.
+				continue
+			default:
+				// Genuine multi-hit inside the authorized subtrees — keep
+				// the picker so the user can disambiguate.
 				return false, nil
 			}
 		}
@@ -532,7 +624,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
-		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset",
+		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules",
 			"--internal-tree-payload", "--internal-prediscovered", "--internal-tree-target", "--internal-tree-kind", "--internal-tree-state",
 			"--internal-file-preview", "--internal-file-path",
 			"--internal-content-match-list",

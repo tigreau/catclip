@@ -62,7 +62,7 @@ func RenderSummarySection(w io.Writer, summary *DocumentSummary, opts RenderOpti
 	if fileWord == "" {
 		fileWord = fileWordForCount(summary.Count)
 	}
-	if _, err := fmt.Fprintf(w, "\n  %s%-8s%s %s%d %s%s\n", colors.Label, "Count:", colors.Reset, colors.Value, summary.Count, fileWord, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(w, "\n  %s%-8s%s %s%d %s%s\n", colors.Bold, "Count:", colors.Reset, colors.Value, summary.Count, fileWord, colors.Reset); err != nil {
 		return err
 	}
 
@@ -75,12 +75,12 @@ func RenderSummarySection(w io.Writer, summary *DocumentSummary, opts RenderOpti
 			sizeLabel = "0B"
 		}
 	}
-	if _, err := fmt.Fprintf(w, "  %s%-8s%s %s%s%s\n", colors.Label, "Size:", colors.Reset, colors.Value, sizeLabel, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(w, "  %s%-8s%s %s%s%s\n", colors.Bold, "Size:", colors.Reset, colors.Value, sizeLabel, colors.Reset); err != nil {
 		return err
 	}
 
 	if opts.ShowTokens {
-		if _, err := fmt.Fprintf(w, "  %s%-8s%s %s~%d%s\n", colors.Label, "Tokens:", colors.Reset, colors.Value, summary.Tokens, colors.Reset); err != nil {
+		if _, err := fmt.Fprintf(w, "  %s%-8s%s %s~%d%s\n", colors.Bold, "Tokens:", colors.Reset, colors.Value, summary.Tokens, colors.Reset); err != nil {
 			return err
 		}
 	}

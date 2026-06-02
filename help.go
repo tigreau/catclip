@@ -109,11 +109,11 @@ func shortHelpText(version string, colors colorPalette) string {
 	fmt.Fprintf(&b, "    Use %s when the next target should use different filters or output shape.\n", flag("--then"))
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Ignored Files:"))
-	fmt.Fprintf(&b, "  catclip skips .gitignored paths and paths matched by %s (the ignore config).\n", flag(".hiss"))
+	fmt.Fprintf(&b, "  catclip skips .gitignored paths and paths matched by %s (catclip's own ignore rules, on top of .gitignore).\n", flag(".hiss"))
 	fmt.Fprintf(&b, "\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: "catclip --include tests", Right: "Allow an ignored folder for this run"},
-		{Left: "catclip --hiss", Right: fmt.Sprintf("Edit ignore rules (%s)", flag(displayPath(globalHissPath())))},
+		{Left: "catclip --hiss", Right: fmt.Sprintf("Edit catclip's ignore rules (%s)", flag(displayPath(globalHissPath())))},
 	})
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s only adds ignored files found inside your targets.\n", flag("--include"))
@@ -141,7 +141,7 @@ func shortHelpText(version string, colors colorPalette) string {
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Options:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "--preview", Right: "See what would be copied without copying"},
+		{Left: "--preview", Right: "Size up files before reading them"},
 		{Left: "-p, --print", Right: "Print to terminal instead of clipboard"},
 		{Left: "-r, --raw", Right: "Bare file body — no wrappers, no line numbers"},
 		{Left: "-q, --quiet", Right: "No prompts, decorations, or tree preview"},
@@ -157,8 +157,9 @@ func shortHelpText(version string, colors colorPalette) string {
 		{Left: "-h, --help", Right: "Show this help"},
 		{Left: "--help-all", Right: "Agent reference manual (--headless contract, all flags)"},
 		{Left: "--version", Right: "Show version"},
-		{Left: "--hiss", Right: "Open the ignore config in your default editor ($VISUAL, $EDITOR, then nano/notepad)"},
-		{Left: "--hiss-reset", Right: "Restore ignore rules to defaults"},
+		{Left: "--hiss", Right: "Edit catclip's own ignore rules (applied on top of .gitignore)"},
+		{Left: "--hiss-reset", Right: "Reset catclip's ignore rules to defaults"},
+		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — your .gitignore(s) + .hiss, merged"},
 	})
 
 	fmt.Fprintf(&b, "\n%s\n", bold("For agents and full flag reference: catclip --help-all"))
@@ -196,7 +197,8 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  Read with lines:   catclip FILE --lines\n")
 	b.WriteString("  Read line range:   catclip FILE --lines 400 450\n")
 	b.WriteString("  Copy file content: catclip FILE -r > dest    (preserves exact bytes)\n")
-	b.WriteString("  Read git changes:  catclip TARGET --changed-diff\n\n")
+	b.WriteString("  Read git changes:  catclip TARGET --changed-diff\n")
+	b.WriteString("  Preview cost:      catclip TARGET --preview\n\n")
 	b.WriteString("  Start with --paths to orient before searching or reading:\n")
 	b.WriteString("    catclip . --paths                   # see what's in the project\n")
 	b.WriteString("    catclip . --depth 2 --paths         # top-level structure only\n")
@@ -205,6 +207,10 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  --snippet is like ripgrep with context (which blocks match?). By default it\n")
 	b.WriteString("  returns blank-line-bounded blocks; add N for fixed +/- N line context.\n")
 	b.WriteString("  Default output (no --paths/--snippet) returns full file contents.\n\n")
+	b.WriteString("  --preview sizes up files before you read them: a per-file table of size, tokens,\n")
+	b.WriteString("  git status, modified date, and shape — no contents, nothing copied. Use it to\n")
+	b.WriteString("  spend context deliberately — read small files whole, snippet the large ones, skip\n")
+	b.WriteString("  the rest — rather than reading blind. The # header labels the columns.\n\n")
 	b.WriteString("  catclip replaces find + grep + cat pipelines with a single command.\n")
 	b.WriteString("  One process handles discovery, filtering, content matching, and output —\n")
 	b.WriteString("  no per-file fork overhead. Faster than per-file cat loops on large codebases.\n")
@@ -366,7 +372,7 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("  catclip src --include '*' --paths    # all files under src/, nothing ignored\n\n")
 	b.WriteString("  Cross-scope includes use --then:\n")
 	b.WriteString("    catclip src --then node_modules --include node_modules --paths\n\n")
-	fmt.Fprintf(&b, "  Ignore config: %s (catclip --hiss to edit)\n\n", displayPath(globalHissPath()))
+	fmt.Fprintf(&b, "  catclip's own ignore rules: %s (--hiss to edit; applied on top of .gitignore)\n\n", displayPath(globalHissPath()))
 
 	// ── Composition ─────────────────────────────────────────────────────
 	b.WriteString("COMPOSITION (stdin piping)\n\n")
@@ -531,10 +537,11 @@ func fullHelpText(version string, colors colorPalette) string {
 	b.WriteString("    -t, --no-tree          Skip tree preview\n")
 	b.WriteString("    --no-bundle            Force text clipboard; skip bundle file for ≥4KB output\n")
 	b.WriteString("    -v, --verbose          Debug info and timings\n")
-	b.WriteString("    --preview              See what would be copied\n")
+	b.WriteString("    --preview              Size up files before reading them\n")
 	b.WriteString("    --with-binaries        Include binary files in discovery\n")
-	b.WriteString("    --hiss                 Edit ignore config\n")
-	b.WriteString("    --hiss-reset           Restore default ignore rules\n")
+	b.WriteString("    --hiss                 Edit catclip's own ignore rules (on top of .gitignore)\n")
+	b.WriteString("    --hiss-reset           Reset catclip's ignore rules to defaults\n")
+	b.WriteString("    --all-ignore-rules     List every ignore rule in effect — .gitignore(s) + .hiss, merged\n")
 
 	return b.String()
 }

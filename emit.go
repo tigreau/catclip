@@ -135,7 +135,7 @@ func bundleProjectName(workingDir string) string {
 }
 
 func bundleTempPath(dir, projectName string, now time.Time) string {
-	stamp := now.Format("150405")
+	stamp := formatBundleTimestamp(now)
 	return filepath.Join(dir, fmt.Sprintf("%s-%s.txt", projectName, stamp))
 }
 

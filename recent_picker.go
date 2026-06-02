@@ -151,37 +151,8 @@ func recentPickerCutoffLabel(entry fileEntry, now time.Time) string {
 	return "up to " + formatFinderModifiedLabel(now, entry.ModTime)
 }
 
-func formatFinderModifiedLabel(now, modTime time.Time) string {
-	if modTime.IsZero() {
-		return "unknown date"
-	}
-
-	loc := now.Location()
-	if loc == nil {
-		loc = time.Local
-	}
-	now = now.In(loc)
-	modTime = modTime.In(loc)
-
-	switch {
-	case sameCalendarDay(now, modTime):
-		return "Today at " + modTime.Format("3:04 PM")
-	case sameCalendarDay(now.AddDate(0, 0, -1), modTime):
-		return "Yesterday at " + modTime.Format("3:04 PM")
-	case now.Year() == modTime.Year() && now.Sub(modTime) < 7*24*time.Hour:
-		return modTime.Format("Monday at 3:04 PM")
-	case now.Year() == modTime.Year():
-		return modTime.Format("Jan 2 at 3:04 PM")
-	default:
-		return modTime.Format("Jan 2, 2006 at 3:04 PM")
-	}
-}
-
-func sameCalendarDay(a, b time.Time) bool {
-	ay, am, ad := a.Date()
-	by, bm, bd := b.Date()
-	return ay == by && am == bm && ad == bd
-}
+// formatFinderModifiedLabel, sameCalendarDay, and formatRecentAge moved to
+// date_format.go (the shared date/time formatting tool).
 
 func recentPickerPreviewCommand(dataPath string) string {
 	if strings.TrimSpace(dataPath) == "" {
@@ -356,33 +327,5 @@ func resolveRecentPreviewSelection(selection string, total int) (limit int, sort
 			return total, true, true
 		}
 		return limit, false, true
-	}
-}
-
-func formatRecentAge(now, modTime time.Time) string {
-	if modTime.IsZero() {
-		return "unknown"
-	}
-
-	if now.Before(modTime) {
-		return "just now"
-	}
-
-	d := now.Sub(modTime)
-	switch {
-	case d < time.Minute:
-		return "just now"
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d/time.Minute))
-	case d < 24*time.Hour:
-		return fmt.Sprintf("%dh ago", int(d/time.Hour))
-	case d < 7*24*time.Hour:
-		return fmt.Sprintf("%dd ago", int(d/(24*time.Hour)))
-	case d < 30*24*time.Hour:
-		return fmt.Sprintf("%dw ago", int(d/(7*24*time.Hour)))
-	case d < 365*24*time.Hour:
-		return fmt.Sprintf("%dmo ago", int(d/(30*24*time.Hour)))
-	default:
-		return fmt.Sprintf("%dy ago", int(d/(365*24*time.Hour)))
 	}
 }

@@ -96,7 +96,10 @@ func executeEmptyOutput(ctx outputExecutionContext, state outputExecutionState) 
 
 func executePreview(ctx outputExecutionContext, state outputExecutionState, report outputReport) error {
 	renderStarted := time.Now()
-	err := renderPreview(ctx.Render, ctx.Git, state.Plan, report, ctx.Stdout, ctx.Stderr, ctx.Colors)
+	// --preview renders the file table (not the tree). The tree's renderPreview
+	// stays for the sink picker; the confirmation flow keeps writeNormalDiagnostics.
+	err := renderPreviewTable(ctx.Render, ctx.Git, state.Plan, report, ctx.Stdout, ctx.Stderr,
+		ctx.Invocation.WorkingDir, time.Now(), ctx.Colors)
 	if err != nil {
 		return err
 	}

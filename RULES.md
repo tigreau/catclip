@@ -1,4 +1,4 @@
-remove# catclip — Architecture & Product Rules
+# catclip — Architecture & Product Rules
 
 catclip is a context gatherer for LLMs. This is the Go rewrite of the original Bash implementation.
 
@@ -55,7 +55,9 @@ Pipeline coordination:
 
 Rendering surfaces:
 
-- **preview**: tree summary, badges, size/token disclaimer
+- **preview**: confirmation-flow tree summary, badges, size/token disclaimer
+- **preview_table**: the `--preview` file table (path + size/tokens/git/modified/shape); replaces the tree on `--preview` only
+- **date_format**: shared timestamp / duration / Finder-style date formatting (`--recent`, `--preview`, `--verbose`, bundle names)
 - **file_preview**: per-file preview rendering for pickers
 - **resolved_scope_view**: human-readable resolved-scope summary
 - **text_snapshot**: load-once text snapshot used by snippet and lines rendering
@@ -86,7 +88,7 @@ Subpackages and platform shims:
 
 ## Product rules
 
-1. **Preview must be truthful** — the tree and summary must reflect exactly what will be copied, not a looser approximation.
+1. **Preview must be truthful** — the tree, the `--preview` table, and the summary must reflect exactly what will be copied, not a looser approximation.
 
 2. **Current paths win** — the UI should show the current filesystem view and current working-tree paths, even when Git metadata is simplified.
 
@@ -200,6 +202,7 @@ Subpackages and platform shims:
    - interactive file-set selections are normalized before argv emission: redundant literals covered by a selected pattern are dropped, and repeated exact selections collapse into a single wildcard when full current-scope coverage proves the shorter form equivalent (dynamic pattern inference). The rewritten argv must satisfy resolved-command parity (rule 22)
 
 9. Build preview metadata and render the tree/summary when needed:
+   - `--preview` renders a per-file table (path + size/tokens/git/modified/shape) instead of the tree; the confirmation flow, sink picker, and fzf pickers keep the tree. `--no-tree` governs only the confirmation tree, not `--preview`
    - normal `-q` runs skip tree rendering and confirmation entirely
    - `-q` therefore makes `-y` and `-t` redundant in normal non-preview runs
    - preview/tree-specific metadata such as git status is only collected when a tree will actually be rendered

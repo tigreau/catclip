@@ -112,6 +112,20 @@ func evaluateScope(cfg invocationConfig, gitCtx gitContext, scopeIndex int, s ex
 		result.Diagnostics = append(result.Diagnostics, targetDiagnostics...)
 		result.Notices = append(result.Notices, targetNotices...)
 		entries = append(entries, discovered...)
+		// Caller-level ancestor probe: covers the case where the inline probe
+		// at resolveAndDiscoverTarget's warning sites is gated out — e.g. a
+		// basename target like `agent.md` whose only on-disk hit was in
+		// resolveVisibleFilesByBasename's skipped-set, populating a notice but
+		// preventing the warning (and therefore the inline probe). See
+		// docs/versions/v0.5.7/reports/ACTIVE_PLAN_surface_ignored_ancestor.md.
+		if len(discovered) == 0 && len(targetDiagnostics) == 0 && !hasGlobChars(target) {
+			if cands := resolver.findIgnoredAncestors(target); len(cands) > 0 {
+				result.Diagnostics = append(result.Diagnostics, diagnostic{
+					message:          ignoredAncestorMessage(target, scopeIndex, cands, colors),
+					isTargetNotFound: true,
+				})
+			}
+		}
 		if len(discovered) > 0 && !hasGlobChars(target) {
 			// selectedPaths tracks resolved single-path targets so that later
 			// targets covered by the same selection can dedupe. Glob targets
@@ -501,6 +515,120 @@ func (r *scopeResolver) targetPathExists(relTarget string) (bool, error) {
 // canResolveTargetWithoutPrompt mirrors the non-interactive resolver's
 // deterministic branches. It returns true only when a target can be handled
 // without opening fzf or prompting for ambiguity resolution.
+// targetIsReachable reports whether a typed target can be discovered by
+// catclip — visibly, by basename/fuzzy match, or via an authorized
+// --include subtree. Used by the startup-picker entrypoint to suppress
+// filter-value pickers (--only / --exclude / --include) when the target is
+// gitignored without --include coverage; surfacing the ignored-target error
+// is the right response, not a picker that can't help.
+// See docs/versions/v0.5.7/reports/ACTIVE_BUG_filter_picker_fires_before_target_check.md.
+func (r *scopeResolver) targetIsReachable(target string) (bool, error) {
+	normalized := normalizeRelPath(target)
+	if normalized == "" || normalized == "." || hasGlobChars(normalized) {
+		return true, nil
+	}
+
+	abs := filepath.Join(r.cfg.WorkingDir, filepath.FromSlash(normalized))
+	info, statErr := os.Stat(abs)
+	if statErr == nil {
+		var block *blockInfo
+		var err error
+		if info.IsDir() {
+			block, err = r.dirBlockedBy(normalized)
+		} else {
+			block, err = r.fileBlockedBy(normalized)
+		}
+		if err != nil {
+			return false, err
+		}
+		if block == nil || block.Source == "" {
+			return true, nil
+		}
+		// Path exists but is blocked. Reachable only if --include covers it.
+		if r.includedTargets.wildcard || r.targetIncluded(normalized) {
+			return true, nil
+		}
+		return false, nil
+	}
+
+	// Path doesn't exist directly. Try basename + fuzzy hits in the visible
+	// set, then --include'd subtrees.
+	discovered, _, err := r.resolveVisibleFilesByBasename(".", normalized)
+	if err != nil {
+		return false, err
+	}
+	if len(discovered) > 0 {
+		return true, nil
+	}
+	files, err := r.fuzzySearchFiles(".", normalized)
+	if err != nil {
+		return false, err
+	}
+	if len(files) > 0 {
+		return true, nil
+	}
+	dirs, err := r.fuzzySearchDirs(".", normalized)
+	if err != nil {
+		return false, err
+	}
+	if len(dirs) > 0 {
+		return true, nil
+	}
+	if r.hasAnyIncludeActive() {
+		hits, err := r.findBasenameInIncludedSubtrees(normalized)
+		if err != nil {
+			return false, err
+		}
+		if len(hits) > 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// hasAnyVisibleMatch reports whether the target resolves to *any* visible
+// candidate — an existing path, an exact-basename file, or a fuzzy file/dir
+// hit. Used by the startup-picker gate to distinguish "multi-hit visible
+// (genuine ambiguity, picker is the right response)" from "zero matches
+// anywhere (let the not-found warning fire instead)". A glob target is
+// trivially treated as "has matches" so the gate doesn't fire there.
+// See docs/versions/v0.5.7/reports/ACTIVE_PLAN_startup_picker_gated_on_ambiguity.md.
+func (r *scopeResolver) hasAnyVisibleMatch(target string) (bool, error) {
+	if target == "" || hasGlobChars(target) {
+		return true, nil
+	}
+	normalized := normalizeRelPath(target)
+	if normalized == "" || normalized == "." {
+		return true, nil
+	}
+	exists, err := r.targetPathExists(normalized)
+	if err != nil {
+		return false, err
+	}
+	if exists {
+		return true, nil
+	}
+	discovered, _, err := r.resolveVisibleFilesByBasename(".", normalized)
+	if err != nil {
+		return false, err
+	}
+	if len(discovered) > 0 {
+		return true, nil
+	}
+	files, err := r.fuzzySearchFiles(".", normalized)
+	if err != nil {
+		return false, err
+	}
+	if len(files) > 0 {
+		return true, nil
+	}
+	dirs, err := r.fuzzySearchDirs(".", normalized)
+	if err != nil {
+		return false, err
+	}
+	return len(dirs) > 0, nil
+}
+
 func (r *scopeResolver) canResolveTargetWithoutPrompt(target string) (bool, error) {
 	if hasGlobChars(target) {
 		return true, nil
@@ -745,7 +873,7 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 			}
 			return discovered, diagnostics, notices, false, nil
 		}
-		diagnostics = append(diagnostics, diagnostic{message: targetNotFoundWarning(target, scopeIndex, colors), isTargetNotFound: true})
+		diagnostics = append(diagnostics, diagnostic{message: targetNotFoundOrIgnoredAncestorMessage(r, target, scopeIndex, colors), isTargetNotFound: true})
 		return nil, diagnostics, notices, false, nil
 	}
 
@@ -760,6 +888,54 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 		notices = append(notices, formatSkippedMatchesWarning(skipped)...)
 		if len(discovered) > 0 {
 			return discovered, diagnostics, notices, false, nil
+		}
+		// After visible miss, also search the authorized (--include'd)
+		// subtrees so basename + --include behaves like path + --include does.
+		// See docs/versions/v0.5.7/reports/ACTIVE_BUG_basename_target_ignores_include_subtree.md.
+		// Invariant: only runs after visible lookup returned zero.
+		includedHits, err := r.findBasenameInIncludedSubtrees(normalizedTarget)
+		if err != nil {
+			return nil, diagnostics, notices, false, err
+		}
+		switch len(includedHits) {
+		case 0:
+			// fall through to fuzzy + existing not-found / probe paths
+		case 1:
+			incMatches := []targetMatch{hitToTargetMatch(includedHits[0])}
+			incDiscovered, err := r.resolveTargetMatches(incMatches, colors)
+			if err != nil {
+				return nil, diagnostics, notices, false, err
+			}
+			return incDiscovered, diagnostics, notices, false, nil
+		default:
+			paths := make([]string, len(includedHits))
+			for i, h := range includedHits {
+				paths[i] = h.Path
+			}
+			selected, err := chooseFileMatch(r.cfg, normalizedTarget, ".", paths, stderr, colors)
+			if err != nil {
+				if errors.Is(err, errSelectionCancelled) {
+					return nil, diagnostics, notices, true, nil
+				}
+				return nil, diagnostics, notices, false, err
+			}
+			hitByPath := make(map[string]includedBasenameHit, len(includedHits))
+			for _, h := range includedHits {
+				hitByPath[h.Path] = h
+			}
+			selectedMatches := make([]targetMatch, 0, len(selected))
+			for _, p := range selected {
+				h, ok := hitByPath[normalizeRelPath(p)]
+				if !ok {
+					h = includedBasenameHit{Path: p}
+				}
+				selectedMatches = append(selectedMatches, hitToTargetMatch(h))
+			}
+			incDiscovered, err := r.resolveTargetMatches(selectedMatches, colors)
+			if err != nil {
+				return nil, diagnostics, notices, false, err
+			}
+			return incDiscovered, diagnostics, notices, false, nil
 		}
 		fuzzyFiles, err := r.fuzzySearchFiles(".", normalizedTarget)
 		if err != nil {
@@ -864,6 +1040,54 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 			if len(discovered) > 0 {
 				return discovered, diagnostics, notices, false, nil
 			}
+			// Same include-subtree probe as in the prefersDirectFileLookup
+			// branch: handles dir-shorthand targets (no extension, e.g. `docker`)
+			// when the user --include's the ancestor.
+			// ACTIVE_BUG_basename_target_ignores_include_subtree.md.
+			includedHits, err := r.findBasenameInIncludedSubtrees(normalizedTarget)
+			if err != nil {
+				return nil, diagnostics, notices, false, err
+			}
+			switch len(includedHits) {
+			case 0:
+				// fall through to fuzzy + not-found / probe
+			case 1:
+				incMatches := []targetMatch{hitToTargetMatch(includedHits[0])}
+				incDiscovered, err := r.resolveTargetMatches(incMatches, colors)
+				if err != nil {
+					return nil, diagnostics, notices, false, err
+				}
+				return incDiscovered, diagnostics, notices, false, nil
+			default:
+				paths := make([]string, len(includedHits))
+				for i, h := range includedHits {
+					paths[i] = h.Path
+				}
+				selected, err := chooseFileMatch(r.cfg, normalizedTarget, ".", paths, stderr, colors)
+				if err != nil {
+					if errors.Is(err, errSelectionCancelled) {
+						return nil, diagnostics, notices, true, nil
+					}
+					return nil, diagnostics, notices, false, err
+				}
+				hitByPath := make(map[string]includedBasenameHit, len(includedHits))
+				for _, h := range includedHits {
+					hitByPath[h.Path] = h
+				}
+				selectedMatches := make([]targetMatch, 0, len(selected))
+				for _, p := range selected {
+					h, ok := hitByPath[normalizeRelPath(p)]
+					if !ok {
+						h = includedBasenameHit{Path: p}
+					}
+					selectedMatches = append(selectedMatches, hitToTargetMatch(h))
+				}
+				incDiscovered, err := r.resolveTargetMatches(selectedMatches, colors)
+				if err != nil {
+					return nil, diagnostics, notices, false, err
+				}
+				return incDiscovered, diagnostics, notices, false, nil
+			}
 			fuzzyFiles, err := r.fuzzySearchFiles(".", normalizedTarget)
 			if err != nil {
 				return nil, diagnostics, notices, false, err
@@ -898,7 +1122,7 @@ func (r *scopeResolver) resolveAndDiscoverTarget(scopeIndex int, target string, 
 			}
 		}
 		if len(notices) == 0 {
-			diagnostics = append(diagnostics, diagnostic{message: targetNotFoundWarning(target, scopeIndex, colors), isTargetNotFound: true})
+			diagnostics = append(diagnostics, diagnostic{message: targetNotFoundOrIgnoredAncestorMessage(r, target, scopeIndex, colors), isTargetNotFound: true})
 		}
 		return nil, diagnostics, notices, false, nil
 	case 1:
@@ -2916,6 +3140,21 @@ func targetNotFoundWarning(target string, scopeIndex int, colors colorPalette) s
 		colors.Dim, colors.Reset)
 }
 
+// ignoreRemovalHint formats the "To remove permanently" line for an ignored
+// target. It branches on the source: --hiss only edits ~/.config/catclip/.hiss,
+// so for any other source (.gitignore, .git/info/exclude, global excludes)
+// pointing at --hiss is wrong advice — the user can't delete a .gitignore rule
+// via --hiss. For those, send them to --all-ignore-rules, which lists every
+// rule with its file:line so they can find and edit the right place.
+func ignoreRemovalHint(source string, colors colorPalette) string {
+	if source == ".hiss" {
+		return fmt.Sprintf("\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
+	}
+	return fmt.Sprintf("\n  %sTo remove permanently:%s   find the rule with %scatclip --all-ignore-rules%s, then edit that file",
+		colors.Dim, colors.Reset, colors.OK, colors.Reset)
+}
+
 func ignoredDirMessage(relTarget, source string, includesActive bool, includedDescendants []string, colors colorPalette) string {
 	// Most actionable case: the user passed `--include <path>` where the
 	// include path lives inside the target (so the include is a
@@ -2924,7 +3163,7 @@ func ignoredDirMessage(relTarget, source string, includesActive bool, includedDe
 	// cover this target" line.
 	if len(includedDescendants) > 0 {
 		descendant := includedDescendants[0]
-		return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %s--include %s points inside %s — it doesn't authorize %s itself.%s\n  %s--include must name the gitignored target, or an ancestor of it.%s\n\n  %sTo open %s and narrow to %s:%s\n    %scatclip %s --include %s --only %s%s\n  %sTo open %s directly:%s\n    %scatclip %s --include %s%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+		return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %s--include %s points inside %s — it doesn't authorize %s itself.%s\n  %s--include must name the gitignored target, or an ancestor of it.%s\n\n  %sTo open %s and narrow to %s:%s\n    %scatclip %s --include %s --only %s%s\n  %sTo open %s directly:%s\n    %scatclip %s --include %s%s",
 			colors.Bold, colors.Err, colors.Reset, colors.Err, singleQuoted(relTarget), source, colors.Reset,
 			colors.Dim, singleQuoted(descendant), singleQuoted(relTarget), singleQuoted(relTarget), colors.Reset,
 			colors.Dim, colors.Reset,
@@ -2932,21 +3171,21 @@ func ignoredDirMessage(relTarget, source string, includesActive bool, includedDe
 			colors.OK, relTarget, singleQuoted(relTarget), singleQuoted(descendant), colors.Reset,
 			colors.Dim, singleQuoted(descendant), colors.Reset,
 			colors.OK, descendant, singleQuoted(relTarget), colors.Reset,
-			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
+		) + ignoreRemovalHint(source, colors)
 	}
 	if includesActive {
-		return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+		return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s",
 			colors.Bold, colors.Err, colors.Reset, colors.Err, singleQuoted(relTarget), source, colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
-			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
+		) + ignoreRemovalHint(source, colors)
 	}
-	return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
+	return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s",
 		colors.Bold, colors.Err, colors.Reset, colors.Err, singleQuoted(relTarget), source, colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
 		colors.Dim, colors.Reset, colors.OK, singleQuoted(relTarget), colors.Reset,
-		colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
+	) + ignoreRemovalHint(source, colors)
 }
 
 func ignoredFileMessage(relTarget, source string, fromChained, includesActive bool, colors colorPalette) string {
@@ -2968,8 +3207,7 @@ func ignoredFileMessage(relTarget, source string, fromChained, includesActive bo
 	if fromChained {
 		return message
 	}
-	return message + fmt.Sprintf("\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
-		colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
+	return message + ignoreRemovalHint(source, colors)
 }
 
 func ignoredTargetNeedsIncludeMessage(resolvedPath, query string, colors colorPalette) string {
@@ -3159,9 +3397,12 @@ func writeNoFilesMatchedMessage(scopes []executionScope, stderr io.Writer, color
 			return err
 		}
 	}
-	if _, err := fmt.Fprintf(stderr, "\n  %sTry: catclip --hiss                        # view/edit ignore rules%s\n", colors.Dim, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(stderr, "\n  %sTry: catclip --all-ignore-rules            # see every ignore rule in effect (.hiss + .gitignore)%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(stderr, "  %s     catclip --include blocked-dir        # browse blocked dirs/files for this run%s\n", colors.Dim, colors.Reset)
+	if _, err := fmt.Fprintf(stderr, "  %s     catclip --include blocked-dir         # browse blocked dirs/files for this run%s\n", colors.Dim, colors.Reset); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(stderr, "  %s     catclip --hiss                        # edit catclip's own ignore rules%s\n", colors.Dim, colors.Reset)
 	return err
 }

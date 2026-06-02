@@ -58,6 +58,8 @@ func run(cfg parsedCommand, stdout, stderr io.Writer, preparedOpt ...*startupPre
 		return runEditHiss(hissConfigFromParsedCommand(cfg), stderr)
 	case actionResetHiss:
 		return runResetHiss(hissConfigFromParsedCommand(cfg), stderr)
+	case actionListIgnoreRules:
+		return runListIgnoreRules(listIgnoreRulesConfigFromParsedCommand(cfg), stdout, stderr)
 	case actionRun:
 		internalCfg := internalCommandConfigFromParsedCommand(cfg)
 		if err := validateImplementedFeatureSet(internalCfg); err != nil {
@@ -368,7 +370,6 @@ func ansiColorPalette() colorPalette {
 		Warn:   "\033[33m",
 		Dir:    "\033[1;34m",
 		Label:  "\033[90m",
-		Value:  "\033[1m",
 		Tree:   "\033[90m",
 		Prompt: "\033[36m",
 		Git:    "\033[35m",
@@ -597,13 +598,6 @@ func readPromptLine(input *os.File, output io.Writer, prompt string) (string, bo
 	return response, true
 }
 
-func formatDuration(d time.Duration) string {
-	if d < time.Millisecond {
-		return d.Round(time.Microsecond).String()
-	}
-	return d.Round(time.Millisecond).String()
-}
-
 func validateImplementedFeatureSet(cfg internalCommandConfig) error {
 	if cfg.PrediscoveredPath != "" && !cfg.TreePayload && !cfg.TreePreview && !cfg.ContentMatchList && !cfg.LinesPreview && !cfg.FilePreview {
 		return newUsageError("Error: --internal-prediscovered requires --internal-tree-payload, --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview.")
@@ -773,6 +767,8 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (parsedCommand
 			cfg.Action = actionEditHiss
 		case "--hiss-reset":
 			cfg.Action = actionResetHiss
+		case "--all-ignore-rules":
+			cfg.Action = actionListIgnoreRules
 		case "-v", "--verbose":
 			cfg.Verbose = true
 		case "-q", "--quiet":

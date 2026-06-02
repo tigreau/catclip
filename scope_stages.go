@@ -2,7 +2,9 @@ package catclip
 
 import (
 	"io"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
@@ -197,7 +199,7 @@ func applyIncludeStage(resolver *scopeResolver, s executionScope, entries []file
 		if target == "*" || includeTargetActsAsAuthorizationOnly(s, target) {
 			continue
 		}
-		scopedTargets := scopeIncludeTarget(s.Targets, target)
+		scopedTargets := scopeIncludeTarget(resolver.cfg.WorkingDir, s.Targets, target)
 		for _, scopedTarget := range scopedTargets {
 			if exactValues {
 				included, err := resolveExactIncludeStageTarget(resolver, scopedTarget)
@@ -221,7 +223,14 @@ func applyIncludeStage(resolver *scopeResolver, s executionScope, entries []file
 // Returns the list of concrete paths to resolve (one per scope target that
 // could contain the include target). When any scope target is "." (root), the
 // include target is returned as-is since the entire project is in scope.
-func scopeIncludeTarget(scopeTargets []string, includeTarget string) []string {
+//
+// For the bare-include-target branch (no slash), the result is `target/include`
+// only when `target` is actually a directory on disk. If the scope target is a
+// file (e.g. `agent.md`), combining yields a nonsense path; in that case the
+// include's authorization still applies globally (via buildIncludedTargetSet)
+// and the basename-include lookup picks it up — see
+// ACTIVE_BUG_basename_target_ignores_include_subtree.md.
+func scopeIncludeTarget(workingDir string, scopeTargets []string, includeTarget string) []string {
 	includeTarget = normalizeRelPath(includeTarget)
 	if includeTarget == "" || includeTarget == "." {
 		return nil
@@ -251,16 +260,28 @@ func scopeIncludeTarget(scopeTargets []string, includeTarget string) []string {
 		return nil
 	}
 
-	// Bare include target (no "/"): resolve relative to each scope target.
+	// Bare include target (no "/"): combine `target/include` only when `target`
+	// stats as a directory. For file-shaped scope targets the combined path
+	// would be invalid; the include's global authorization still applies via
+	// buildIncludedTargetSet and the basename-include probe finds the file
+	// inside the authorized subtree.
 	out := make([]string, 0, len(scopeTargets))
 	for _, target := range scopeTargets {
 		target = normalizeRelPath(target)
 		if target == "" {
 			continue
 		}
+		if !scopeTargetIsDir(workingDir, target) {
+			continue
+		}
 		out = append(out, target+"/"+includeTarget)
 	}
 	return out
+}
+
+func scopeTargetIsDir(workingDir, relTarget string) bool {
+	info, err := os.Stat(filepath.Join(workingDir, filepath.FromSlash(relTarget)))
+	return err == nil && info.IsDir()
 }
 
 func includeTargetActsAsAuthorizationOnly(s executionScope, includeTarget string) bool {
