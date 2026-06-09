@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -65,7 +66,15 @@ func TestExitCodeForDiscoveryUsageError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	cmd := exec.Command(exe, "/etc/hosts")
+	// Absolute path is platform-specific. On POSIX a leading slash is
+	// absolute; on Windows the parser uses filepath.IsAbs which requires
+	// a drive letter (or UNC). The path doesn't need to exist - the
+	// resolver rejects absolute paths before touching the filesystem.
+	absPath := "/etc/hosts"
+	if runtime.GOOS == "windows" {
+		absPath = `C:\Windows\System32\drivers\etc\hosts`
+	}
+	cmd := exec.Command(exe, absPath)
 	cmd.Env = append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
 	out, runErr := cmd.CombinedOutput()
 	exitErr, ok := runErr.(*exec.ExitError)

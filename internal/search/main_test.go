@@ -18,7 +18,11 @@ func TestMain(m *testing.M) {
 	if os.Getenv("CATCLIP_RG") == "" {
 		_, thisFile, _, _ := runtime.Caller(0)
 		repoRoot := filepath.Dir(filepath.Dir(filepath.Dir(thisFile)))
-		rg := filepath.Join(repoRoot, "bin", "rg")
+		rgName := "rg"
+		if runtime.GOOS == "windows" {
+			rgName = "rg.exe"
+		}
+		rg := filepath.Join(repoRoot, "bin", rgName)
 		if _, err := os.Stat(rg); err == nil {
 			os.Setenv("CATCLIP_RG", rg)
 		}
