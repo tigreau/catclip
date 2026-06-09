@@ -9,7 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tigreau/catclip/internal/tree"
+	"github.com/tigreau/catclip/internal/cli"
+	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/output"
+	"github.com/tigreau/catclip/internal/render"
+	"github.com/tigreau/catclip/internal/ui"
 )
 
 // Phase 0 of docs/versions/v0.5.5/reports/ACTIVE_PLAN_preview_refresh_cost.md:
@@ -22,16 +28,16 @@ import (
 // means applyScopeStages runs no stages (no rg) — we are timing the structural
 // decode/plan/encode/render cost that scales with entry count.
 
-func benchPreviewEntries(n int) []fileEntry {
-	es := make([]fileEntry, n)
+func benchPreviewEntries(n int) []discovery.Entry {
+	es := make([]discovery.Entry, n)
 	for i := range n {
-		es[i] = fileEntry{
+		es[i] = discovery.Entry{
 			RelPath:    fmt.Sprintf("src/pkg%02d/sub%02d/file%05d.go", i%50, (i/50)%20, i),
 			AbsPath:    fmt.Sprintf("/repo/src/pkg%02d/sub%02d/file%05d.go", i%50, (i/50)%20, i),
 			SizeBytes:  int64(800 + i),
 			SizeKnown:  true,
 			GitVisible: true,
-			Mode:       entryModeFull,
+			Mode:       command.EntryModeFull,
 		}
 	}
 	return es
@@ -39,8 +45,8 @@ func benchPreviewEntries(n int) []fileEntry {
 
 func benchPreviewCheckpointRaw(tb testing.TB, n int) []byte {
 	tb.Helper()
-	raw, err := marshalPrediscoveredCheckpoint(prediscoveredCheckpointData{
-		GitContext: gitContext{},
+	raw, err := discovery.MarshalCheckpoint(discovery.CheckpointData{
+		GitContext: git.Context{},
 		GitStatus:  map[string]string{},
 		Entries:    benchPreviewEntries(n),
 	})
@@ -50,26 +56,26 @@ func benchPreviewCheckpointRaw(tb testing.TB, n int) []byte {
 	return raw
 }
 
-func benchPreviewPlan(tb testing.TB, entries []fileEntry) outputPlan {
+func benchPreviewPlan(tb testing.TB, entries []discovery.Entry) output.Plan {
 	tb.Helper()
-	cfg := invocationConfig{WorkingDir: "/repo"}
-	var scope executionScope
-	tail, err := applyPrediscoveredScopeTail(cfg, gitContext{}, scope, entries)
+	cfg := command.Invocation{WorkingDir: "/repo"}
+	var scope command.ExecutionScope
+	tail, err := discovery.ApplyPrediscoveredScopeTail(cfg, git.Context{}, scope, entries)
 	if err != nil {
 		tb.Fatalf("scope tail: %v", err)
 	}
-	plan, err := buildOutputPlanForResolvedScopes(gitContext{}, []executionScope{scope},
-		[]evaluatedOutputScope{{Paths: scope.Paths, Entries: tail}}, tail)
+	plan, err := output.BuildPlanForResolvedScopes(git.Context{}, []command.ExecutionScope{scope},
+		[]output.EvaluatedScope{{Paths: scope.Paths, Entries: tail}}, tail)
 	if err != nil {
 		tb.Fatalf("plan build: %v", err)
 	}
 	return plan
 }
 
-func benchPreviewPayload(tb testing.TB, plan outputPlan) []byte {
+func benchPreviewPayload(tb testing.TB, plan output.Plan) []byte {
 	tb.Helper()
 	var buf bytes.Buffer
-	if err := encodeTreePayloadFromPlan(&buf, renderConfig{TreePayload: true}, gitContext{}, plan, nil); err != nil {
+	if err := ui.EncodeTreePayloadFromPlan(&buf, ui.TreeDocumentRenderConfig(ui.RenderConfig{}), git.Context{}, plan, nil); err != nil {
 		tb.Fatalf("encode payload: %v", err)
 	}
 	return buf.Bytes()
@@ -79,7 +85,7 @@ func benchPrediscoveredContentProject(tb testing.TB, n int) (string, string) {
 	tb.Helper()
 
 	project := tb.TempDir()
-	entries := make([]fileEntry, 0, n)
+	entries := make([]discovery.Entry, 0, n)
 	for i := range n {
 		rel := fmt.Sprintf("src/pkg%02d/file%05d.go", i%25, i)
 		content := fmt.Sprintf("package pkg%02d\n\nfunc File%d() {}\n\n// TODO benchmark marker %d\n", i%25, i, i)
@@ -90,19 +96,19 @@ func benchPrediscoveredContentProject(tb testing.TB, n int) (string, string) {
 		if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
 			tb.Fatalf("write %s: %v", rel, err)
 		}
-		entries = append(entries, fileEntry{
+		entries = append(entries, discovery.Entry{
 			AbsPath:    abs,
 			RelPath:    rel,
 			SizeBytes:  int64(len(content)),
 			SizeKnown:  true,
 			GitVisible: true,
-			Mode:       entryModeFull,
+			Mode:       command.EntryModeFull,
 		})
 	}
 
 	checkpointPath := filepath.Join(project, "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, project, prediscoveredCheckpointData{
-		GitContext: gitContext{},
+	if err := discovery.WriteCheckpoint(checkpointPath, project, discovery.CheckpointData{
+		GitContext: git.Context{},
 		GitStatus:  map[string]string{},
 		Entries:    entries,
 	}); err != nil {
@@ -111,11 +117,11 @@ func benchPrediscoveredContentProject(tb testing.TB, n int) (string, string) {
 	return project, checkpointPath
 }
 
-func benchParseCommand(tb testing.TB, project string, args []string) parsedCommand {
+func benchParseCommand(tb testing.TB, project string, args []string) command.Parsed {
 	tb.Helper()
-	cfg, err := parseArgs(args)
+	cfg, err := cli.ParseArgs(args)
 	if err != nil {
-		tb.Fatalf("parseArgs(%v): %v", args, err)
+		tb.Fatalf("cli.ParseArgs(%v): %v", args, err)
 	}
 	cfg.WorkingDir = project
 	return cfg
@@ -123,8 +129,8 @@ func benchParseCommand(tb testing.TB, project string, args []string) parsedComma
 
 // BenchmarkEnsureEntryAbsPaths quantifies the marginal cost the rel-only
 // checkpoint (dropped serialized AbsPath) adds to EVERY checkpoint reader —
-// tree and content/slice alike — since they all run ensureEntryAbsPaths in
-// applyPrediscoveredScopeTail. "rel_only" derives AbsPath (N filepath.Join);
+// tree and content/slice alike — since they all run discovery.EnsureEntryAbsPaths in
+// discovery.ApplyPrediscoveredScopeTail. "rel_only" derives AbsPath (N filepath.Join);
 // "abs_set" is the pre-drop case (skips). The delta is the only thing the
 // abs-drop changes for --contains/--snippet/--lines; their rg/read work is
 // unchanged. (Owed measurement from the preview-refresh-cost plan's
@@ -139,15 +145,15 @@ func BenchmarkEnsureEntryAbsPaths(b *testing.B) {
 	b.Run("rel_only_derives", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			es := append([]fileEntry(nil), relOnly...)
-			_ = ensureEntryAbsPaths(es, "/repo")
+			es := append([]discovery.Entry(nil), relOnly...)
+			_ = discovery.EnsureEntryAbsPaths(es, "/repo")
 		}
 	})
 	b.Run("abs_set_skips", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			es := append([]fileEntry(nil), absSet...)
-			_ = ensureEntryAbsPaths(es, "/repo")
+			es := append([]discovery.Entry(nil), absSet...)
+			_ = discovery.EnsureEntryAbsPaths(es, "/repo")
 		}
 	})
 }
@@ -164,22 +170,22 @@ func BenchmarkEnsureEntryAbsPaths(b *testing.B) {
 func BenchmarkPrediscoveredContentSliceHandlers(b *testing.B) {
 	project, checkpointPath := benchPrediscoveredContentProject(b, 1000)
 
-	containsCfg := prediscoveredCommandConfigFromParsedCommand(benchParseCommand(b, project, []string{
+	containsCfg := ui.PrediscoveredCommandConfigFromParsedCommand(benchParseCommand(b, project, []string{
 		"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, "--contains", "TODO",
 	}))
-	snippetCfg := prediscoveredCommandConfigFromParsedCommand(benchParseCommand(b, project, []string{
+	snippetCfg := ui.PrediscoveredCommandConfigFromParsedCommand(benchParseCommand(b, project, []string{
 		"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, "--snippet", "TODO",
 	}))
 	linesParsed := benchParseCommand(b, project, []string{
 		"--quiet", "--internal-lines-preview", "--internal-prediscovered", checkpointPath, "--lines", "1", "4",
 	})
-	linesCfg := prediscoveredCommandConfigFromParsedCommand(linesParsed)
+	linesCfg := ui.PrediscoveredCommandConfigFromParsedCommand(linesParsed)
 	linesEmitCfg := emitConfigFromParsedCommand(linesParsed)
 
 	b.Run("contains_match_list_1k", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			if err := runInternalPrediscoveredContentMatchList(containsCfg, io.Discard); err != nil {
+			if err := ui.RunInternalPrediscoveredContentMatchList(containsCfg, io.Discard); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -187,7 +193,7 @@ func BenchmarkPrediscoveredContentSliceHandlers(b *testing.B) {
 	b.Run("snippet_match_list_1k", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			if err := runInternalPrediscoveredContentMatchList(snippetCfg, io.Discard); err != nil {
+			if err := ui.RunInternalPrediscoveredContentMatchList(snippetCfg, io.Discard); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -195,7 +201,7 @@ func BenchmarkPrediscoveredContentSliceHandlers(b *testing.B) {
 	b.Run("lines_preview_1k", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			if err := runInternalLinesPreview(linesCfg, linesEmitCfg, io.Discard); err != nil {
+			if err := ui.RunInternalLinesPreview(linesCfg, linesEmitCfg, io.Discard); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -233,7 +239,7 @@ func BenchmarkPrediscoveredTreePreviewFirstByte(b *testing.B) {
 		parsed := benchParseCommand(b, "/repo", []string{
 			"--quiet", "--internal-tree-preview", "--internal-prediscovered", checkpointPath,
 		})
-		cfg := prediscoveredCommandConfigFromParsedCommand(parsed)
+		cfg := ui.PrediscoveredCommandConfigFromParsedCommand(parsed)
 
 		b.Run(fmt.Sprintf("n=%d/direct_tree_preview", n), func(b *testing.B) {
 			b.ReportAllocs()
@@ -242,7 +248,7 @@ func BenchmarkPrediscoveredTreePreviewFirstByte(b *testing.B) {
 			var outputBytes int64
 			for range b.N {
 				w := firstByteRecorder{start: time.Now()}
-				if err := runInternalPrediscoveredTreePreview(cfg, &w); err != nil {
+				if err := ui.RunInternalPrediscoveredTreePreview(cfg, &w); err != nil {
 					b.Fatal(err)
 				}
 				total := time.Since(w.start)
@@ -270,14 +276,14 @@ func BenchmarkPreviewRefreshStages(b *testing.B) {
 		entries := benchPreviewEntries(n)
 		plan := benchPreviewPlan(b, entries)
 		payload := benchPreviewPayload(b, plan)
-		opts := tree.DefaultRenderOptions()
-		pal := tree.Palette{}
+		opts := render.DefaultRenderOptions()
+		pal := render.Palette{}
 
 		b.Run(fmt.Sprintf("n=%d/stage1_checkpoint_decode", n), func(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(raw)))
 			for i := 0; i < b.N; i++ {
-				if _, err := unmarshalPrediscoveredCheckpoint(raw); err != nil {
+				if _, err := discovery.UnmarshalCheckpoint(raw); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -298,11 +304,11 @@ func BenchmarkPreviewRefreshStages(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(payload)))
 			for i := 0; i < b.N; i++ {
-				doc, err := tree.DecodePayload(bytes.NewReader(payload))
+				doc, err := render.DecodePayload(bytes.NewReader(payload))
 				if err != nil {
 					b.Fatal(err)
 				}
-				if err := tree.RenderDocument(io.Discard, doc, opts, pal); err != nil {
+				if err := render.RenderDocument(io.Discard, doc, opts, pal); err != nil {
 					b.Fatal(err)
 				}
 			}

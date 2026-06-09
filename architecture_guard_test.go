@@ -13,28 +13,45 @@ import (
 
 func TestRunPipelineArchitectureGuards(t *testing.T) {
 	files := parseProductionGoFiles(t)
+	renderFiles := parseRenderGoFiles(t)
+	platformFiles := parsePlatformGoFiles(t)
+	searchFiles := parseSearchGoFiles(t)
+	gitFiles := parseGitGoFiles(t)
+	commandFiles := parseCommandGoFiles(t)
+	cliFiles := parseCLIGoFiles(t)
+	discoveryFiles := parseDiscoveryGoFiles(t)
 
 	requireNoTypeDecl(t, files, "runConfig")
 	requireNoTypeDecl(t, files, "parsedInvocation")
-	requireTypeDecl(t, files, "DiscoveryResult")
+	requireTypeDecl(t, discoveryFiles, "Result")
 	requireTypeDecl(t, files, "DiagnosticSummary")
-	requireFuncDecl(t, files, "discoverInvocation")
+	requireFuncDecl(t, discoveryFiles, "DiscoverInvocation")
 
-	requireNoDirectCallInFile(t, files, "cli.go", "evaluateScope")
+	requireNoDirectCallInFile(t, files, "cli.go", "discovery.EvaluateScope")
 	requireParsedCommandOnlyAtRootBoundary(t, files)
 
-	// Bundled-rg lookup is the rg boundary: only ripgrep.go (which defines
-	// the function and wraps every rg invocation in it) and bundled_tools.go
-	// (the startup tool-availability check) may call ripgrepBinary directly.
-	// Any new caller is a rg leak — bypasses the wrappers, escapes future
-	// migration to internal/search/, and breaks the v0.5.3 package-extraction
-	// boundary before it lands. Add the file to the allowlist only if it
-	// genuinely needs the bare binary path (not the wrapped operations).
-	requireCallOnlyInAllowedFiles(t, files, "ripgrepBinary",
-		[]string{"ripgrep.go", "bundled_tools.go"})
-	requireInteractivePickersAvoidPersistentSideEffects(t, files)
-	requireInternalRenderHandlersAvoidDerivation(t, files)
-	requirePreviewPlaceholdersStayStandalone(t, files)
+	// Bundled-rg lookup is the rg boundary: after the v0.6.0 search
+	// extraction, search.RipgrepBinary is the single entry point.
+	// required_tools.go is the only root file that calls it directly
+	// (for the startup tool-availability check). New root callers are
+	// an rg leak — bypass the wrappers, escape the rg cache, and break
+	// the eventual search.Index encapsulation. SelectorExpr-aware match
+	// catches calls of the form search.RipgrepBinary().
+	requireCallOnlyInAllowedFiles(t, files, "search.RipgrepBinary",
+		[]string{"required_tools.go"})
+	uiFiles := parseUIGoFiles(t)
+	requireInteractivePickersAvoidPersistentSideEffects(t, append(files, uiFiles...))
+	requireInternalRenderHandlersAvoidDerivation(t, uiFiles)
+	requireRenderPackageAvoidDerivationDeps(t, renderFiles)
+	requireDiscoveryPackageAllowedImports(t, discoveryFiles)
+	requireOutputPackageAllowedImports(t, parseOutputGoFiles(t))
+	requireUIPackageAllowedImports(t, uiFiles)
+	requirePlatformPackageAvoidDomainDeps(t, platformFiles)
+	requireSearchPackageAvoidDomainDeps(t, searchFiles)
+	requireGitPackageAvoidDomainDeps(t, gitFiles)
+	requireCommandPackageAvoidDomainDeps(t, commandFiles)
+	requireCLIPackageAllowedImports(t, cliFiles)
+	requirePreviewPlaceholdersStayStandalone(t, append(files, uiFiles...))
 }
 
 // previewCommandBuilders are the functions that emit fzf preview/reload command
@@ -42,9 +59,9 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 // fzf placeholder ({2}, {+2}, {q}, …) in their output must be a standalone,
 // whitespace-delimited token — never concatenated into a compound string —
 // because cmd.exe and POSIX sh quote embedded substitutions differently.
-// Compound paths must be assembled in Go on the receiving side (e.g.
-// catclip-tree's --input-dir/--input-stem). This bug class has regressed and
-// been re-fixed four times; see
+// Compound paths must be assembled in Go on the receiving side (e.g. root
+// catclip's --input-dir/--input-stem). This bug class has regressed and been
+// re-fixed four times; see
 // docs/versions/v0.5.0/reports/RESOLVED_BUG_windows_preview_posix_shell.md and
 // RULES.md Rule 18.
 //
@@ -54,15 +71,15 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 // shell metacharacters — because that depends on runtime row data. A green
 // result means "placeholder not concatenated," not "safe to push any value
 // through fzf." Keep substituted values trivial and quote hazardous paths
-// (absolute temp paths, etc.) in Go via shellQuoteArg as fixed args. This is
+// (absolute temp paths, etc.) in Go via discovery.ShellQuoteArg as fixed args. This is
 // why `--input-file {N}` with a full-path column is unsafe even though it would
 // pass this guard.
 var previewCommandBuilders = map[string]struct{}{
-	"fzfFileSetPreviewCommand":                  {},
-	"fzfDiffFilePreviewCommand":                 {},
-	"fzfPreviewCommand":                         {},
-	"fzfContentPreviewCommand":                  {},
-	"fzfContentMatchListCommand":                {},
+	"FzfFileSetPreviewCommand":                  {},
+	"FzfDiffFilePreviewCommand":                 {},
+	"FzfPreviewCommand":                         {},
+	"FzfContentPreviewCommand":                  {},
+	"FzfContentMatchListCommand":                {},
 	"fzfCheckpointContentMatchListCommand":      {},
 	"startupFileSetPreviewCommand":              {},
 	"buildFileSetCheckpointPreview":             {},
@@ -84,9 +101,23 @@ var fzfPlaceholderExemptFuncs = map[string]struct{}{
 // previewBuilderFiles hold the fzf command builders. They contain no regex
 // literals, so the meta-check may scan them for *any* placeholder form
 // (including bare {N}) without confusing a regex quantifier for a placeholder.
+// Compared against filepath.Base(parsed.name) so the entries are bare
+// basenames regardless of which package the file lives in.
 var previewBuilderFiles = []string{
 	"resolver.go", "startup_picker.go", "depth_picker.go",
 	"recent_picker.go", "lines_picker.go", "startup_sink_picker.go",
+}
+
+// previewBuilderDiscoveryFunctions are the fzf preview builders that
+// live in internal/discovery after the v0.6.0 extraction. They moved
+// with the resolver and still need the placeholder-standalone audit.
+var previewBuilderDiscoveryFunctions = map[string]struct{}{
+	"FzfFileSetPreviewCommand":             {},
+	"FzfDiffFilePreviewCommand":            {},
+	"FzfPreviewCommand":                    {},
+	"FzfContentPreviewCommand":             {},
+	"FzfContentMatchListCommand":           {},
+	"fzfCheckpointContentMatchListCommand": {},
 }
 
 func requirePreviewPlaceholdersStayStandalone(t *testing.T, files []parsedGoFile) {
@@ -99,7 +130,7 @@ func requirePreviewPlaceholdersStayStandalone(t *testing.T, files []parsedGoFile
 
 	seen := make(map[string]bool, len(previewCommandBuilders))
 	for _, parsed := range files {
-		inBuilderFile := containsString(previewBuilderFiles, parsed.name)
+		inBuilderFile := containsString(previewBuilderFiles, filepath.Base(parsed.name))
 		for _, decl := range parsed.file.Decls {
 			fn, ok := decl.(*ast.FuncDecl)
 			if !ok || fn.Body == nil {
@@ -131,6 +162,11 @@ func requirePreviewPlaceholdersStayStandalone(t *testing.T, files []parsedGoFile
 				if !guarded {
 					return true
 				}
+				for _, frag := range []string{"catclip-tree", "CATCLIP_TREE", "--internal-tree-payload", "|"} {
+					if strings.Contains(val, frag) {
+						t.Errorf("%s: %s contains retired renderer subprocess fragment %q; fzf preview builders must call root catclip --internal-* render handlers directly.", parsed.name, name, frag)
+					}
+				}
 				for _, loc := range anyPlaceholder.FindAllStringIndex(val, -1) {
 					if !placeholderStandalone(val, loc) {
 						t.Errorf("%s: %s embeds fzf placeholder %q in literal %q; fzf placeholders must be standalone whitespace-delimited arguments — assemble compound paths in Go on the receiving side (Rule 18, Windows cmd.exe). See RESOLVED_BUG_windows_preview_posix_shell.md.", parsed.name, name, val[loc[0]:loc[1]], val)
@@ -138,7 +174,7 @@ func requirePreviewPlaceholdersStayStandalone(t *testing.T, files []parsedGoFile
 				}
 				for _, frag := range []string{"set --", "if [ ", "; then", `"$@"`} {
 					if strings.Contains(val, frag) {
-						t.Errorf("%s: %s contains POSIX shell fragment %q; preview commands must be straight program pipelines with no shell scripting — cmd.exe cannot run them (Rule 18). Push conditionals into Go-side --internal-* subcommands.", parsed.name, name, frag)
+						t.Errorf("%s: %s contains POSIX shell fragment %q; preview commands must be straight program invocations with no shell scripting — cmd.exe cannot run them (Rule 18). Push conditionals into Go-side --internal-* subcommands.", parsed.name, name, frag)
 					}
 				}
 				return true
@@ -155,6 +191,9 @@ func requirePreviewPlaceholdersStayStandalone(t *testing.T, files []parsedGoFile
 		}
 	}
 	for name := range previewCommandBuilders {
+		if _, inDiscovery := previewBuilderDiscoveryFunctions[name]; inDiscovery {
+			continue
+		}
 		if !seen[name] {
 			t.Errorf("guarded preview builder %s not found; update previewCommandBuilders (renamed or removed?)", name)
 		}
@@ -185,10 +224,10 @@ func placeholderStandalone(s string, loc []int) bool {
 // once). See docs/versions/v0.5.5/.../ACTIVE_PLAN_internal_picker_entrypoint_contract.md.
 //
 // This catches *direct* calls only. The handlers' remaining heavy coupling
-// (rg via applyPrediscoveredScopeTail → applyScopeStages; git via
-// encodeTreePayloadFromPlan → collectGitStatusMapForPlan) is *transitive*
+// (rg via discovery.ApplyPrediscoveredScopeTail → applyScopeStages; git via
+// ui.RenderTreePreviewFromPlan → output.BuildReportForPlan) is *transitive*
 // and cannot be guarded here while everything is one package — that
-// becomes a link-time guarantee at the v0.6.0 catclip-render package
+// becomes a link-time guarantee at the v0.6.0 internal/render package
 // boundary. Freezing the direct surface now stops a handler from gaining a
 // brand-new direct git/rg/discovery call before then.
 //
@@ -200,29 +239,83 @@ func requireInternalRenderHandlersAvoidDerivation(t *testing.T, files []parsedGo
 	t.Helper()
 	requireFuncsAvoidCalls(t, files,
 		[]string{
-			"runInternalPrediscoveredTreePayload",
-			"runInternalPrediscoveredTreePreview",
-			"runInternalLinesPreview",
-			"runInternalPrediscoveredContentMatchList",
-			"runInternalFilePreview",
-			"runInternalContentCheckpointTreePayload",
-			"runInternalRecentPreview",
-			"runInternalSinkPreview",
-			"runInternalSinkToggle",
+			"RunInternalPrediscoveredTreePreview",
+			"RunInternalLinesPreview",
+			"RunInternalPrediscoveredContentMatchList",
+			"RunInternalFilePreview",
+			"RunInternalRecentPreview",
+			"RunInternalSinkPreview",
+			"RunInternalSinkToggle",
+			"RunInternalSnippetBoundaryPreview",
+			"RunInternalTreePayloadFilePreview",
 		},
 		[]string{
-			// discovery / scope evaluation
-			"evaluateScope", "discoverInvocation", "discoverFilesUnder",
-			// git
-			"collectGitStatusMapForPlan", "collectGitStatusMapForPathspecs",
-			"collectGitStatusOutput", "runGit", "runGitCapture",
-			"runGitLines", "runGitNoOutput",
-			// ripgrep
-			"ripgrepBinary", "ripgrepListUnder", "runRipgrepFiles",
-			"runRipgrepMatchLines", "runRipgrepMatches",
-			"runRipgrepTextFiles", "runRipgrepVisibleFiles",
+			// discovery / scope evaluation (bare — still at root)
+			"discovery.EvaluateScope", "discovery.DiscoverInvocation", "discoverFilesUnder",
+			// git: pkg-qualified entries are leaf internal/git helpers.
+			// Qualified matching keeps generic method names (.Lines /
+			// .Capture / .NoOutput on unrelated types) from
+			// false-positiving the guard.
+			"git.Capture", "git.NoOutput", "git.Lines",
+			"git.DiffAgainstHeadOrIndex", "git.StatusMapForPathspecs",
+			// ripgrep: same pattern as git — qualified to internal/search so
+			// only the leaf entry points trip the guard.
+			"search.RipgrepBinary", "search.RunRipgrepFiles",
+			"search.RunRipgrepMatchLines", "search.RunRipgrepMatches",
+			"search.ResolveTextFileSet", "search.ResolveVisibleFileSet",
+			"search.FirstMatchLinePerFile", "search.HasScopedIgnoredTargetsStreaming",
 		},
 	)
+}
+
+// requireRenderPackageAvoidDerivationDeps enforces the renderer package
+// boundary: internal/render renders already-derived documents only. It must not
+// import filesystem discovery, git/rg wrappers, or tool-spawning dependencies.
+func requireRenderPackageAvoidDerivationDeps(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	forbiddenImports := map[string]string{
+		"os":            "filesystem access",
+		"os/exec":       "tool spawning",
+		"path/filepath": "filesystem path derivation",
+	}
+	forbiddenIdents := map[string]string{
+		// Bare-name forbidden idents: derivation helpers that still live at
+		// root. After v0.6.0 the rg/git wrappers moved into internal/search
+		// and internal/git, so the package-level import guard
+		// (requireRenderPackageAvoidDerivationDeps below) is the real
+		// enforcement — but the bare names that remain at root still need
+		// listing here so a new render-package file can't accidentally call
+		// them either.
+		"discovery.EvaluateScope":      "scope evaluation",
+		"discovery.DiscoverInvocation": "discovery",
+		"discoverFilesUnder":           "discovery",
+	}
+
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if reason, bad := forbiddenImports[importPath]; bad {
+				t.Errorf("%s imports %s (%s); internal/render must stay renderer-only", parsed.name, importPath, reason)
+			}
+			if strings.HasPrefix(importPath, "github.com/tigreau/catclip/") {
+				t.Errorf("%s imports %s; internal/render must not depend on catclip discovery/root packages", parsed.name, importPath)
+			}
+		}
+
+		ast.Inspect(parsed.file, func(node ast.Node) bool {
+			ident, ok := node.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if reason, bad := forbiddenIdents[ident.Name]; bad {
+				t.Errorf("%s references %s (%s); internal/render must render precomputed documents only", parsed.name, ident.Name, reason)
+			}
+			return true
+		})
+	}
 }
 
 type parsedGoFile struct {
@@ -247,6 +340,302 @@ func parseProductionGoFiles(t *testing.T) []parsedGoFile {
 			t.Fatalf("parse %s: %v", path, err)
 		}
 		files = append(files, parsedGoFile{name: path, file: file})
+	}
+	return files
+}
+
+// requirePlatformPackageAvoidDomainDeps enforces the platform package
+// boundary: internal/platform is a leaf-utility package that owns OS / TTY /
+// bundled-tool / editor / palette helpers. It may import only stdlib (and
+// platform's own types). It must not import any tigreau/catclip domain
+// package — discovery, output, render, picker, search, etc. Domain types
+// crossing into platform is the real trip wire for the bottom-of-stack
+// extraction; export count is not.
+func requirePlatformPackageAvoidDomainDeps(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if strings.HasPrefix(importPath, "github.com/tigreau/catclip/") {
+				t.Errorf("%s imports %s; internal/platform must stay a leaf — no catclip domain dependencies", parsed.name, importPath)
+			}
+		}
+	}
+}
+
+// requireCLIPackageAllowedImports enforces the cli package boundary:
+// internal/cli is the parser / help / flag / validation layer, sitting
+// just above the leaf model packages. Per the v0.6.0 DAG it may import
+// stdlib + internal/command + internal/platform only. No git, search,
+// discovery, output, preview, render, picker — and obviously no root
+// catclip imports.
+func requireCLIPackageAllowedImports(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	allowed := map[string]struct{}{
+		"github.com/tigreau/catclip/internal/command":  {},
+		"github.com/tigreau/catclip/internal/platform": {},
+	}
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if !strings.HasPrefix(importPath, "github.com/tigreau/catclip/") {
+				continue
+			}
+			if _, ok := allowed[importPath]; !ok {
+				t.Errorf("%s imports %s; internal/cli may import only stdlib + internal/command + internal/platform", parsed.name, importPath)
+			}
+		}
+	}
+}
+
+// requireDiscoveryPackageAllowedImports enforces the discovery package
+// boundary: internal/discovery owns the resolver, scope stages, ignore
+// handling, and the checkpoint format. Per the v0.6.0 DAG it may import
+// stdlib + internal/command + internal/git + internal/picker +
+// internal/platform + internal/search only. No cli (parser is upstream;
+// dup HasGlobChars locally instead — see discovery.go), no render
+// (runtime-removable boundary; dup constants instead — see helpers.go),
+// no output/preview, no root catclip.
+func requireDiscoveryPackageAllowedImports(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	allowed := map[string]struct{}{
+		"github.com/tigreau/catclip/internal/command":  {},
+		"github.com/tigreau/catclip/internal/git":      {},
+		"github.com/tigreau/catclip/internal/picker":   {},
+		"github.com/tigreau/catclip/internal/platform": {},
+		"github.com/tigreau/catclip/internal/search":   {},
+	}
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if !strings.HasPrefix(importPath, "github.com/tigreau/catclip/") {
+				continue
+			}
+			if _, ok := allowed[importPath]; !ok {
+				t.Errorf("%s imports %s; internal/discovery may import only stdlib + internal/command + internal/git + internal/picker + internal/platform + internal/search", parsed.name, importPath)
+			}
+		}
+	}
+}
+
+// requireOutputPackageAllowedImports enforces the output package
+// boundary: internal/output owns plans, prepared units, snippet
+// resolution, byte emission, clipboard delivery, and report aggregation.
+// Per the v0.6.0 DAG it may import stdlib + internal/command +
+// internal/discovery + internal/git + internal/platform +
+// internal/search + the sibling fileclip package only. No cli, no
+// render, no preview, no root catclip — render in particular is the
+// runtime-removable boundary the output extraction is meant to keep
+// inverted (render consumes output's Plan/Report, not the other way
+// around).
+func requireOutputPackageAllowedImports(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	allowed := map[string]struct{}{
+		"github.com/tigreau/catclip/internal/command":   {},
+		"github.com/tigreau/catclip/internal/discovery": {},
+		"github.com/tigreau/catclip/internal/git":       {},
+		"github.com/tigreau/catclip/internal/platform":  {},
+		"github.com/tigreau/catclip/internal/search":    {},
+		"github.com/tigreau/catclip/fileclip":           {},
+	}
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if !strings.HasPrefix(importPath, "github.com/tigreau/catclip") {
+				continue
+			}
+			if _, ok := allowed[importPath]; !ok {
+				t.Errorf("%s imports %s; internal/output may import only stdlib + internal/command + internal/discovery + internal/git + internal/platform + internal/search + sibling fileclip", parsed.name, importPath)
+			}
+		}
+	}
+}
+
+// requireUIPackageAllowedImports enforces the UI package boundary:
+// internal/ui owns pickers, render-driving bridges, snippet preview
+// helpers, and the internal subcommand runners. Per the v0.6.0 DAG it
+// may import stdlib + internal/cli + internal/command + internal/discovery +
+// internal/git + internal/output + internal/picker + internal/platform +
+// internal/render + internal/search. It must NOT import fileclip
+// (clipboard writes live in output.EmitOutputPlan / EmitBundle) and
+// must NOT import the root catclip package.
+func requireUIPackageAllowedImports(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	allowed := map[string]struct{}{
+		"github.com/tigreau/catclip/internal/cli":       {},
+		"github.com/tigreau/catclip/internal/command":   {},
+		"github.com/tigreau/catclip/internal/discovery": {},
+		"github.com/tigreau/catclip/internal/git":       {},
+		"github.com/tigreau/catclip/internal/output":    {},
+		"github.com/tigreau/catclip/internal/picker":    {},
+		"github.com/tigreau/catclip/internal/platform":  {},
+		"github.com/tigreau/catclip/internal/render":    {},
+		"github.com/tigreau/catclip/internal/search":    {},
+	}
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if !strings.HasPrefix(importPath, "github.com/tigreau/catclip") {
+				continue
+			}
+			if _, ok := allowed[importPath]; !ok {
+				t.Errorf("%s imports %s; internal/ui may import only stdlib + internal/{cli,command,discovery,git,output,picker,platform,render,search} (no fileclip, no root catclip)", parsed.name, importPath)
+			}
+		}
+	}
+}
+
+// requireCommandPackageAvoidDomainDeps enforces the strictest leaf
+// boundary in the codebase: internal/command holds the typed command
+// model and must import only stdlib. No git / platform / search / picker /
+// render — let alone any catclip domain package. Sharing a POD model
+// across the rest of the pipeline depends on this boundary staying clean,
+// or the model becomes coupled to runtime concerns it has no business
+// knowing about.
+func requireCommandPackageAvoidDomainDeps(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if strings.HasPrefix(importPath, "github.com/tigreau/catclip/") {
+				t.Errorf("%s imports %s; internal/command must stay a leaf — stdlib only, no catclip imports", parsed.name, importPath)
+			}
+		}
+	}
+}
+
+// requireGitPackageAvoidDomainDeps enforces the git package boundary:
+// internal/git is a leaf wrapper around the git subprocess and must not
+// import any github.com/tigreau/catclip/* package. The Context POD is its
+// own boundary type — domain types (command.ExecutionScope / discovery.Entry / output.Plan)
+// stay outside git in discovery.FilterChangedEntries / discovery.CollectChangedRepoPaths
+// and in output.BuildReportForPlan.
+func requireGitPackageAvoidDomainDeps(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if strings.HasPrefix(importPath, "github.com/tigreau/catclip/") {
+				t.Errorf("%s imports %s; internal/git must stay a leaf — no catclip domain dependencies", parsed.name, importPath)
+			}
+		}
+	}
+}
+
+// requireSearchPackageAvoidDomainDeps enforces the search package boundary:
+// internal/search wraps rg / fzf-process plumbing and may import only stdlib
+// plus internal/platform. Any github.com/tigreau/catclip/* import other than
+// internal/platform (root, internal/render, internal/picker, future
+// command/discovery/output/preview/git/app) is a leak — pull derived data
+// across the boundary and the cache state becomes coupled to those packages,
+// breaking the leaf-utility role and the eventual search.Index wrap.
+func requireSearchPackageAvoidDomainDeps(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	allowed := map[string]struct{}{
+		"github.com/tigreau/catclip/internal/platform": {},
+	}
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if !strings.HasPrefix(importPath, "github.com/tigreau/catclip/") {
+				continue
+			}
+			if _, ok := allowed[importPath]; !ok {
+				t.Errorf("%s imports %s; internal/search may import only stdlib + internal/platform", parsed.name, importPath)
+			}
+		}
+	}
+}
+
+func parseRenderGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "render"), "internal/render")
+}
+
+func parsePlatformGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "platform"), "internal/platform")
+}
+
+func parseSearchGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "search"), "internal/search")
+}
+
+func parseGitGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "git"), "internal/git")
+}
+
+func parseCommandGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "command"), "internal/command")
+}
+
+func parseCLIGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "cli"), "internal/cli")
+}
+
+func parseDiscoveryGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "discovery"), "internal/discovery")
+}
+
+func parseUIGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "ui"), "internal/ui")
+}
+
+func parseOutputGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "output"), "internal/output")
+}
+
+func parsePackageGoFiles(t *testing.T, dir, label string) []parsedGoFile {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	files := make([]parsedGoFile, 0, len(paths))
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		files = append(files, parsedGoFile{name: path, file: file})
+	}
+	if len(files) == 0 {
+		t.Fatalf("no %s production files parsed", label)
 	}
 	return files
 }
@@ -344,12 +733,28 @@ func requireCallOnlyInAllowedFiles(t *testing.T, files []parsedGoFile, callee st
 			if !ok {
 				return true
 			}
-			ident, ok := call.Fun.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			if ident.Name == callee {
-				t.Errorf("%s calls %s; expected calls only from %v", parsed.name, callee, allowed)
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				// Bare ident form matches only bare callee entries.
+				if !strings.Contains(callee, ".") && fun.Name == callee {
+					t.Errorf("%s calls %s; expected calls only from %v", parsed.name, callee, allowed)
+				}
+			case *ast.SelectorExpr:
+				if fun.Sel == nil {
+					return true
+				}
+				// pkg.Name callee entries: match strictly on pkgIdent.Name + "." + Sel.Name.
+				// Bare callee entries fall back to Sel.Name only, but this is rare
+				// (most leaf moves now go through the qualified form).
+				if pkgIdent, ok := fun.X.(*ast.Ident); ok {
+					qualified := pkgIdent.Name + "." + fun.Sel.Name
+					if qualified == callee {
+						t.Errorf("%s calls %s; expected calls only from %v", parsed.name, callee, allowed)
+					}
+				}
+				if !strings.Contains(callee, ".") && fun.Sel.Name == callee {
+					t.Errorf("%s calls %s; expected calls only from %v", parsed.name, callee, allowed)
+				}
 			}
 			return true
 		})
@@ -370,17 +775,17 @@ func requireInteractivePickersAvoidPersistentSideEffects(t *testing.T, files []p
 	// and emit-shaped previews are allowed, but final sinks, editor launch,
 	// user-file mutation, and git mutation do not belong in picker files.
 	for _, callee := range []string{
-		"emitOutputPlan",
+		"output.EmitOutputPlan",
 		"streamToTextClipboard",
 		"emitBufferedToTextClipboard",
 		"emitBundle",
 		"fileclipCopy",
-		"writeClipboardSuccess",
+		"ui.WriteClipboardSuccess",
 		"runEditHiss",
 		"runResetHiss",
-		"resolveEditorCommand",
-		"ensureGlobalHiss",
-		"runGitNoOutput",
+		"ResolveEditorCommand",
+		"discovery.EnsureGlobalHiss",
+		"git.NoOutput",
 	} {
 		requireNoDirectCallsInFiles(t, files, pickerFiles, callee)
 	}
@@ -393,7 +798,9 @@ func requireNoDirectCallsInFiles(t *testing.T, files []parsedGoFile, filenames [
 		fileSet[name] = struct{}{}
 	}
 	for _, parsed := range files {
-		if _, ok := fileSet[parsed.name]; !ok {
+		// Match by basename so the filenames list can stay bare
+		// regardless of which package the file moved into.
+		if _, ok := fileSet[filepath.Base(parsed.name)]; !ok {
 			continue
 		}
 		ast.Inspect(parsed.file, func(node ast.Node) bool {
@@ -401,9 +808,29 @@ func requireNoDirectCallsInFiles(t *testing.T, files []parsedGoFile, filenames [
 			if !ok {
 				return true
 			}
-			ident, ok := call.Fun.(*ast.Ident)
-			if ok && ident.Name == callee {
-				t.Errorf("%s calls %s; interactive picker frames must stay replayable and side-effect free", parsed.name, callee)
+			switch fun := call.Fun.(type) {
+			case *ast.Ident:
+				// Bare ident form matches only bare callee entries.
+				if !strings.Contains(callee, ".") && fun.Name == callee {
+					t.Errorf("%s calls %s; interactive picker frames must stay replayable and side-effect free", parsed.name, callee)
+				}
+			case *ast.SelectorExpr:
+				if fun.Sel == nil {
+					return true
+				}
+				// pkg.Name callee entries: strict pkgIdent.Name + "." + Sel.Name match.
+				// Prevents generic method names (.NoOutput, .Capture on unrelated
+				// types) from false-positiving when the intent is "no calls into
+				// the leaf git package."
+				if pkgIdent, ok := fun.X.(*ast.Ident); ok {
+					qualified := pkgIdent.Name + "." + fun.Sel.Name
+					if qualified == callee {
+						t.Errorf("%s calls %s; interactive picker frames must stay replayable and side-effect free", parsed.name, callee)
+					}
+				}
+				if !strings.Contains(callee, ".") && fun.Sel.Name == callee {
+					t.Errorf("%s calls %s; interactive picker frames must stay replayable and side-effect free", parsed.name, callee)
+				}
 			}
 			return true
 		})
@@ -442,12 +869,26 @@ func requireFuncsAvoidCalls(t *testing.T, files []parsedGoFile, funcNames, calle
 				if !ok {
 					return true
 				}
-				ident, ok := call.Fun.(*ast.Ident)
-				if !ok {
-					return true
-				}
-				if _, bad := calleeSet[ident.Name]; bad {
-					t.Errorf("%s in %s calls %s; internal preview/render handlers must render precomputed payloads, not derive them (Rule 19)", fn.Name.Name, parsed.name, ident.Name)
+				switch fun := call.Fun.(type) {
+				case *ast.Ident:
+					// Bare ident match (e.g. discovery.EvaluateScope, collectGitStatusMapForPlan)
+					if _, bad := calleeSet[fun.Name]; bad {
+						t.Errorf("%s in %s calls %s; internal preview/render handlers must render precomputed payloads, not derive them (Rule 19)", fn.Name.Name, parsed.name, fun.Name)
+					}
+				case *ast.SelectorExpr:
+					if fun.Sel == nil {
+						return true
+					}
+					// Package-qualified match (e.g. git.Capture, search.RunRipgrepFiles).
+					// Only fires when the callee entry has the "pkg.Name" form, so a
+					// reused method name like .Lines() on an unrelated type does NOT
+					// false-positive.
+					if pkgIdent, ok := fun.X.(*ast.Ident); ok {
+						qualified := pkgIdent.Name + "." + fun.Sel.Name
+						if _, bad := calleeSet[qualified]; bad {
+							t.Errorf("%s in %s calls %s; internal preview/render handlers must render precomputed payloads, not derive them (Rule 19)", fn.Name.Name, parsed.name, qualified)
+						}
+					}
 				}
 				return true
 			})
@@ -472,8 +913,8 @@ func requireParsedCommandOnlyAtRootBoundary(t *testing.T, files []parsedGoFile) 
 				continue
 			}
 			for _, field := range fn.Type.Params.List {
-				if exprUsesIdent(field.Type, "parsedCommand") {
-					t.Fatalf("%s in %s takes parsedCommand outside the root adapter boundary", fn.Name.Name, parsed.name)
+				if exprUsesSelector(field.Type, "command", "Parsed") {
+					t.Fatalf("%s in %s takes command.Parsed outside the root adapter boundary", fn.Name.Name, parsed.name)
 				}
 			}
 		}
@@ -484,14 +925,45 @@ func parsedCommandParamAllowed(funcName string) bool {
 	return funcName == "run" || strings.HasSuffix(funcName, "FromParsedCommand")
 }
 
-func exprUsesIdent(expr ast.Expr, name string) bool {
+// exprUsesSelector reports whether expr references the qualified selector
+// pkgName.selName anywhere inside it (param type, return type, etc.). A
+// SelectorExpr like command.Parsed is two distinct *ast.Ident nodes —
+// "command" and "Parsed" — never a single ident named "command.Parsed",
+// so bare-name matching misses it. This walker matches the SelectorExpr
+// shape directly.
+//
+// Limitation: import aliasing (import foo "...command"; foo.Parsed) is
+// not handled — the guard would miss aliased forms. catclip doesn't
+// alias the command import today; if that changes, resolve the alias
+// from parsed.file.Imports first.
+func exprUsesSelector(expr ast.Expr, pkgName, selName string) bool {
 	found := false
 	ast.Inspect(expr, func(node ast.Node) bool {
-		if ident, ok := node.(*ast.Ident); ok && ident.Name == name {
+		sel, ok := node.(*ast.SelectorExpr)
+		if !ok || sel.Sel == nil {
+			return true
+		}
+		pkgIdent, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if pkgIdent.Name == pkgName && sel.Sel.Name == selName {
 			found = true
 			return false
 		}
 		return true
 	})
 	return found
+}
+
+// containsString reports whether the slice contains the target value.
+// Lifted alongside the previewPlaceholdersStayStandalone guard after
+// the v0.6.0 internal/ui move took the original copy with it.
+func containsString(values []string, target string) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
 }

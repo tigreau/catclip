@@ -1,13 +1,17 @@
 package catclip
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/tigreau/catclip/internal/discovery"
+)
 
 func TestSummarizeDiagnostics(t *testing.T) {
-	summary := summarizeDiagnostics([]diagnostic{
-		{message: "warning"},
-		{message: "error", isError: true},
-		{message: "missing", isTargetNotFound: true},
-		{message: "unsatisfiable", isScopeUnsatisfiable: true},
+	summary := summarizeDiagnostics([]discovery.Diagnostic{
+		{Message: "warning"},
+		{Message: "error", IsError: true},
+		{Message: "missing", IsTargetNotFound: true},
+		{Message: "unsatisfiable", IsScopeUnsatisfiable: true},
 	}, true)
 
 	if !summary.HasError {

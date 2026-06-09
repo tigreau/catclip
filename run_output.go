@@ -5,68 +5,58 @@ import (
 	"fmt"
 	"io"
 	"time"
+
+	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/output"
+	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/ui"
 )
 
 type outputExecutionContext struct {
-	Invocation invocationConfig
-	Render     renderConfig
-	Emit       emitConfig
-	Git        gitContext
+	Invocation command.Invocation
+	Render     ui.RenderConfig
+	Emit       output.EmitConfig
+	Git        git.Context
 	Stdout     io.Writer
 	Stderr     io.Writer
-	Colors     colorPalette
+	Colors     platform.Palette
 	Started    time.Time
 }
 
 type outputExecutionState struct {
-	Scopes      []executionScope
-	Plan        outputPlan
-	Diagnostics []diagnostic
+	Scopes      []command.ExecutionScope
+	Plan        output.Plan
+	Diagnostics []discovery.Diagnostic
 	Summary     DiagnosticSummary
 	Notices     []string
 }
 
-func executeTreePayload(ctx outputExecutionContext, state outputExecutionState) error {
-	writeTreePayloadDiagnostics(state.Diagnostics, ctx.Stderr)
+func executeTreePreview(ctx outputExecutionContext, state outputExecutionState) error {
 	if state.Summary.HasError {
 		return newExitError(1, "")
 	}
-	reportStarted := time.Now()
-	err := encodeTreePayloadFromPlan(ctx.Stdout, ctx.Render, ctx.Git, state.Plan, state.Notices)
+	err := ui.RenderTreePreviewFromPlan(ctx.Stdout, ctx.Render, ctx.Git, state.Plan, state.Notices, ui.FzfFilterTreeRenderOptions())
 	if err != nil {
-		if errors.Is(err, errTreePayloadEmptyNoTarget) {
-			if err := writeNoFilesMatchedMessage(state.Scopes, ctx.Stderr, ctx.Colors, state.Summary.HadSelectionCancel); err != nil {
-				return err
-			}
-			if state.Summary.HasScopeUnsatisfiable {
-				return newExitError(2, "")
-			}
-			return newExitError(1, "")
+		if errors.Is(err, ui.ErrTreePayloadEmptyNoTarget) {
+			return nil
 		}
 		return err
-	}
-	if ctx.Invocation.Verbose {
-		fmt.Fprintf(ctx.Stderr, "[verbose] report: %s\n", formatDuration(time.Since(reportStarted)))
-	}
-	if state.Summary.HasScopeUnsatisfiable {
-		if len(state.Plan.items) == 0 {
-			return newExitError(2, "")
-		}
-		return newExitError(1, "")
-	}
-	if state.Summary.HasTargetNotFound {
-		return newExitError(1, "")
 	}
 	return nil
 }
 
 func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) error {
 	writeDiscoveryDiagnostics(state.Diagnostics, ctx.Invocation.Quiet, ctx.Stderr)
-	if len(state.Plan.items) == 0 {
+	if state.Plan.IsEmpty() {
 		return executeEmptyOutput(ctx, state)
 	}
 	reportStarted := time.Now()
-	report, err := buildOutputReportForPlan(ctx.Render, ctx.Git, state.Plan, dedupePreserveOrder(state.Notices))
+	report, err := output.BuildReportForPlan(ctx.Git, state.Plan, output.ReportOptions{
+		IncludeTreeMetadata: ui.NeedsTreeRender(ctx.Render),
+		Notices:             discovery.DedupePreserveOrder(state.Notices),
+	})
 	if err != nil {
 		return err
 	}
@@ -81,11 +71,11 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 
 func executeEmptyOutput(ctx outputExecutionContext, state outputExecutionState) error {
 	if !ctx.Invocation.Quiet {
-		for _, notice := range dedupePreserveOrder(state.Notices) {
+		for _, notice := range discovery.DedupePreserveOrder(state.Notices) {
 			fmt.Fprintln(ctx.Stderr, notice)
 		}
 	}
-	if err := writeNoFilesMatchedMessage(state.Scopes, ctx.Stderr, ctx.Colors, state.Summary.HadSelectionCancel); err != nil {
+	if err := discovery.WriteNoFilesMatchedMessage(state.Scopes, ctx.Stderr, ctx.Colors, state.Summary.HadSelectionCancel); err != nil {
 		return err
 	}
 	if state.Summary.HasScopeUnsatisfiable {
@@ -94,11 +84,11 @@ func executeEmptyOutput(ctx outputExecutionContext, state outputExecutionState) 
 	return newExitError(1, "")
 }
 
-func executePreview(ctx outputExecutionContext, state outputExecutionState, report outputReport) error {
+func executePreview(ctx outputExecutionContext, state outputExecutionState, report output.Report) error {
 	renderStarted := time.Now()
-	// --preview renders the file table (not the tree). The tree's renderPreview
-	// stays for the sink picker; the confirmation flow keeps writeNormalDiagnostics.
-	err := renderPreviewTable(ctx.Render, ctx.Git, state.Plan, report, ctx.Stdout, ctx.Stderr,
+	// --preview renders the file table (not the tree). The tree's ui.RenderPreview
+	// stays for the sink picker; the confirmation flow keeps ui.WriteNormalDiagnostics.
+	err := ui.RenderPreviewTable(ctx.Render, ctx.Git, state.Plan, report, ctx.Stdout, ctx.Stderr,
 		ctx.Invocation.WorkingDir, time.Now(), ctx.Colors)
 	if err != nil {
 		return err
@@ -116,12 +106,12 @@ func executePreview(ctx outputExecutionContext, state outputExecutionState, repo
 	return nil
 }
 
-func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState, report outputReport) error {
-	if err := validateRawOutputPlan(ctx.Emit, state.Plan); err != nil {
+func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState, report output.Report) error {
+	if err := output.ValidateRawPlan(ctx.Emit, state.Plan); err != nil {
 		return err
 	}
 	diagStarted := time.Now()
-	proceed, err := writeNormalDiagnostics(ctx.Render, ctx.Git, state.Plan, report, ctx.Stderr, ctx.Colors)
+	proceed, err := ui.WriteNormalDiagnostics(ctx.Render, ctx.Git, state.Plan, report, ctx.Stderr, ctx.Colors)
 	if err != nil {
 		return err
 	}
@@ -136,14 +126,14 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 		return err
 	}
 	outputSpinnerStop := func() {}
-	if !ctx.Invocation.Quiet && ctx.Emit.OutputMode == outputModeClipboard {
-		outputSpinnerStop = startLoadingSpinner(spinnerOutputFile(ctx.Stderr), outputSpinnerMessage(ctx.Emit))
+	if !ctx.Invocation.Quiet && ctx.Emit.OutputMode == command.OutputModeClipboard {
+		outputSpinnerStop = platform.StartLoadingSpinner(platform.SpinnerOutputFile(ctx.Stderr), "Copying files...")
 	}
 	if shouldSeparateStdoutPayload(ctx.Emit, ctx.Invocation, ctx.Stdout, ctx.Stderr) {
 		fmt.Fprintln(ctx.Stderr)
 	}
 	outputStarted := time.Now()
-	emitStats, err := emitOutputPlan(ctx.Emit, emitEnvironmentFromInvocationConfig(ctx.Invocation), state.Plan, ctx.Stdout, ctx.Colors)
+	emitStats, err := output.EmitOutputPlan(ctx.Emit, emitEnvironmentFromInvocationConfig(ctx.Invocation), state.Plan, ctx.Stdout, ctx.Colors)
 	if err != nil {
 		outputSpinnerStop()
 		return err
@@ -153,10 +143,10 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 	if ctx.Invocation.Verbose {
 		outputDuration := time.Since(outputStarted)
 		fmt.Fprintf(ctx.Stderr, "[verbose] output: %s\n", formatDuration(outputDuration))
-		writeVerboseOutputMetrics(ctx.Stderr, outputMetrics, emitStats, len(state.Plan.items), outputDuration)
+		writeVerboseOutputMetrics(ctx.Stderr, outputMetrics, emitStats, state.Plan.Len(), outputDuration)
 	}
-	if ctx.Emit.OutputMode == outputModeClipboard && !ctx.Invocation.Quiet {
-		if err := writeClipboardSuccess(ctx.Stderr, state.Plan, emitStats, ctx.Colors); err != nil {
+	if ctx.Emit.OutputMode == command.OutputModeClipboard && !ctx.Invocation.Quiet {
+		if err := ui.WriteClipboardSuccess(ctx.Stderr, state.Plan, emitStats, ctx.Colors); err != nil {
 			return err
 		}
 	}

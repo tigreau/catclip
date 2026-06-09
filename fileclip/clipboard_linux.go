@@ -12,21 +12,16 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/tigreau/catclip/internal/platform"
 )
 
-// isWSL detects Windows Subsystem for Linux.
-// In WSL, runtime.GOOS is "linux" but we need Windows clipboard tools.
-func isWSL() bool {
-	data, err := os.ReadFile("/proc/version")
-	if err != nil {
-		return false
-	}
-	lower := strings.ToLower(string(data))
-	return strings.Contains(lower, "microsoft") || strings.Contains(lower, "wsl")
-}
-
-func isWayland() bool {
-	return strings.EqualFold(os.Getenv("XDG_SESSION_TYPE"), "wayland") || os.Getenv("WAYLAND_DISPLAY") != ""
+// linuxSessionKind is a tiny wrapper around platform.DetectLinuxSession that
+// keeps the three Linux dispatchers (copy/paste/has) reading naturally without
+// every call site repeating the package qualifier. The platform classifier is
+// the single source of truth for Linux session detection.
+func linuxSessionKind() platform.LinuxSessionKind {
+	return platform.DetectLinuxSession()
 }
 
 func isGNOMEDesktop() bool {
@@ -115,18 +110,21 @@ func linuxClipboardPayloadForWayland(paths []string) linuxClipboardPayload {
 // ---------------------------------------------------------------------------
 
 func copyPlatform(paths []string) error {
-	if isWSL() {
+	switch linuxSessionKind() {
+	case platform.LinuxSessionWSL:
 		return copyWSL(paths)
-	}
-
-	if isWayland() {
+	case platform.LinuxSessionWayland:
 		if legacyGNOMEWaylandUnsupported() {
 			return ErrLegacyGNOMEUnsupported
 		}
 		payload := linuxClipboardPayloadForWayland(paths)
 		return copyWayland(payload.Body, payload.MIMEType)
+	default:
+		// X11 is blocked at startup by main.linuxSessionGateError, so library
+		// callers reach this branch only for unknown/displayless Linux
+		// (SSH/Docker/TTY/CI without a compositor).
+		return ErrLinuxClipboardSessionUnsupported
 	}
-	return ErrX11Unsupported
 }
 
 func copyWayland(payload, mimeType string) error {
@@ -224,13 +222,14 @@ func pastePlatform() ([]string, error) {
 		return nil, ErrNoFileRefs
 	}
 
-	if isWSL() {
+	switch linuxSessionKind() {
+	case platform.LinuxSessionWSL:
 		return pasteWSL()
-	}
-	if isWayland() {
+	case platform.LinuxSessionWayland:
 		return pasteWayland()
+	default:
+		return nil, ErrLinuxClipboardSessionUnsupported
 	}
-	return nil, ErrX11Unsupported
 }
 
 func pasteWayland() ([]string, error) {
@@ -310,13 +309,14 @@ func parseURIList(raw string) ([]string, error) {
 // ---------------------------------------------------------------------------
 
 func hasPlatform() (bool, error) {
-	if isWSL() {
+	switch linuxSessionKind() {
+	case platform.LinuxSessionWSL:
 		return hasWSL()
-	}
-	if isWayland() {
+	case platform.LinuxSessionWayland:
 		return hasWayland()
+	default:
+		return false, ErrLinuxClipboardSessionUnsupported
 	}
-	return false, ErrX11Unsupported
 }
 
 func hasWayland() (bool, error) {

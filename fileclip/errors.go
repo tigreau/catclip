@@ -21,11 +21,13 @@ var (
 	// yet have a clipboard implementation.
 	ErrUnsupportedPlatform = errors.New("fileclip: unsupported platform")
 
-	// ErrX11Unsupported is returned when catclip refuses to write a
-	// file-reference clipboard offer to the X11 selection. Browser upload paste
-	// is unreliable end-to-end on X11 even for native Nautilus clipboard states,
-	// so fileclip leaves the clipboard untouched on X11 sessions.
-	ErrX11Unsupported = errors.New("fileclip: X11 file-reference clipboard is not supported")
+	// ErrLinuxClipboardSessionUnsupported is returned on Linux when no
+	// supported clipboard session is available. catclip's Main() gate blocks
+	// detected X11 desktop sessions at startup, so library callers reach this
+	// error only in unknown/displayless states (SSH, Docker, TTY, CI without
+	// a compositor) that asked for clipboard delivery anyway. WSL has its
+	// own branch and is unaffected.
+	ErrLinuxClipboardSessionUnsupported = errors.New("fileclip: no supported Linux clipboard session is available")
 
 	// ErrLegacyGNOMEUnsupported is returned on GNOME Wayland versions older
 	// than the tested file-reference clipboard baseline. Below the baseline,

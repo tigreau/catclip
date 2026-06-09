@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 func TestLinuxClipboardPayloadWaylandUsesURIListForBrowserPaste(t *testing.T) {
@@ -48,7 +50,7 @@ func TestGNOMEMajorVersionParsesOverride(t *testing.T) {
 }
 
 func TestCopyReturnsLegacyGNOMEUnsupportedOnOldGNOMEWayland(t *testing.T) {
-	if isWSL() {
+	if linuxSessionKind() == platform.LinuxSessionWSL {
 		t.Skip("WSL uses the Windows clipboard path")
 	}
 	t.Setenv("XDG_SESSION_TYPE", "wayland")
@@ -67,20 +69,26 @@ func TestCopyReturnsLegacyGNOMEUnsupportedOnOldGNOMEWayland(t *testing.T) {
 	}
 }
 
-func TestCopyReturnsX11UnsupportedOnX11(t *testing.T) {
-	if isWSL() {
+// TestCopyReturnsClipboardSessionUnsupportedOnUnknownLinux pins the behavior
+// for library callers that bypass Main()'s X11 gate and reach Copy from an
+// unknown/displayless Linux session. (Detected X11 desktops are blocked at
+// startup by main.linuxSessionGateError, so they don't reach this branch in
+// practice.) Replaces the v0.5.3 X11-sentinel test deleted in v0.6.0.
+func TestCopyReturnsClipboardSessionUnsupportedOnUnknownLinux(t *testing.T) {
+	if linuxSessionKind() == platform.LinuxSessionWSL {
 		t.Skip("WSL uses the Windows clipboard path")
 	}
-	t.Setenv("XDG_SESSION_TYPE", "x11")
+	t.Setenv("XDG_SESSION_TYPE", "")
 	t.Setenv("WAYLAND_DISPLAY", "")
+	t.Setenv("DISPLAY", "")
 
-	path := filepath.Join(t.TempDir(), "x11.txt")
-	if err := os.WriteFile(path, []byte("x11 unsupported\n"), 0o644); err != nil {
+	path := filepath.Join(t.TempDir(), "unknown.txt")
+	if err := os.WriteFile(path, []byte("unknown session unsupported\n"), 0o644); err != nil {
 		t.Fatalf("write temp file: %v", err)
 	}
 
 	err := Copy(path)
-	if !errors.Is(err, ErrX11Unsupported) {
-		t.Fatalf("Copy error = %v, want ErrX11Unsupported", err)
+	if !errors.Is(err, ErrLinuxClipboardSessionUnsupported) {
+		t.Fatalf("Copy error = %v, want ErrLinuxClipboardSessionUnsupported", err)
 	}
 }

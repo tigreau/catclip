@@ -46,11 +46,9 @@ mkdir -p "$DIST_DIR"
 rm -rf "$stage" "$work"
 mkdir -p "$stage/bin" "$work"
 
-printf '[%s/%s] building catclip + catclip-tree\n' "$goos" "$goarch"
+printf '[%s/%s] building catclip\n' "$goos" "$goarch"
 GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
   go build -trimpath -ldflags '-s -w' -o "${stage}/catclip${bin_ext}" ./cmd/catclip
-GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-  go build -trimpath -ldflags '-s -w' -o "${stage}/catclip-tree${bin_ext}" ./cmd/catclip-tree
 
 printf '[%s/%s] downloading rg %s\n' "$goos" "$goarch" "$RIPGREP_VERSION"
 rg_dir="ripgrep-${RIPGREP_VERSION}-${rg_triple}"

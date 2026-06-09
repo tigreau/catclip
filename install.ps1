@@ -309,8 +309,7 @@ function Ensure-SourceRgCompatible {
 function Build-FromSourceCheckout {
     param(
         [string]$SourceDir,
-        [string]$BinaryFile,
-        [string]$TreeBinaryFile
+        [string]$BinaryFile
     )
 
     Push-Location $SourceDir
@@ -318,12 +317,6 @@ function Build-FromSourceCheckout {
         & go build -trimpath -o $BinaryFile ./cmd/catclip
         if ($LASTEXITCODE -ne 0) {
             Fail 'failed to build catclip from the local source checkout'
-        }
-        if (Test-Path -LiteralPath (Join-Path $SourceDir 'cmd\catclip-tree\main.go')) {
-            & go build -trimpath -o $TreeBinaryFile ./cmd/catclip-tree
-            if ($LASTEXITCODE -ne 0) {
-                Fail 'failed to build catclip-tree from the local source checkout'
-            }
         }
     } finally {
         Pop-Location
@@ -443,6 +436,14 @@ function Install-File {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+function Remove-FileIfExists {
+    param([string]$Path)
+
+    if (Test-Path -LiteralPath $Path) {
+        Remove-Item -LiteralPath $Path -Force
+    }
+}
+
 # When the script is invoked via `irm ... | iex`, $MyInvocation.MyCommand is
 # an InternalCommand with no Path property — under Set-StrictMode -Version
 # Latest, dotting into it throws PropertyNotFoundStrict. Guard the lookup so
@@ -481,7 +482,6 @@ try {
 
         $versionFile = Join-Path $sourceDir 'VERSION'
         $binaryFile = Join-Path $tmpRoot "$ProgramName.exe"
-        $treeBinaryFile = Join-Path $tmpRoot "$TreeProgramName.exe"
         $rgFile = Join-Path $tmpRoot 'rg.exe'
         $fzfFile = Join-Path $tmpRoot 'fzf.exe'
 
@@ -499,7 +499,7 @@ try {
         Copy-Item -LiteralPath $fzfSource -Destination $fzfFile -Force
 
         Write-Host "Building $ProgramName from source"
-        Build-FromSourceCheckout $sourceDir $binaryFile $treeBinaryFile
+        Build-FromSourceCheckout $sourceDir $binaryFile
     } else {
         $archivePath = Join-Path $tmpRoot $assetName
         $checksumsPath = Join-Path $tmpRoot $ChecksumsName
@@ -509,7 +509,6 @@ try {
             Note 'Installing from a local Windows release bundle directory.'
             $versionFile = Join-Path $releaseDir 'VERSION'
             $binaryFile = Join-Path $releaseDir "$ProgramName.exe"
-            $treeBinaryFile = Join-Path $releaseDir "$TreeProgramName.exe"
             $rgFile = Join-Path $releaseDir 'bin\rg.exe'
             $fzfFile = Join-Path $releaseDir 'bin\fzf.exe'
             $versionText = (Get-Content -LiteralPath $versionFile | Select-Object -First 1).Trim()
@@ -534,7 +533,6 @@ try {
 
             $versionFile = Join-Path $tmpRoot 'VERSION'
             $binaryFile = Join-Path $tmpRoot "$ProgramName.exe"
-            $treeBinaryFile = Join-Path $tmpRoot "$TreeProgramName.exe"
             $rgFile = Join-Path $tmpRoot 'bin\rg.exe'
             $fzfFile = Join-Path $tmpRoot 'bin\fzf.exe'
 
@@ -552,18 +550,13 @@ try {
     }
 
     Install-File $binaryFile (Join-Path $BinDir "$ProgramName.exe")
-    if (Test-Path -LiteralPath $treeBinaryFile) {
-        Install-File $treeBinaryFile (Join-Path $BinDir "$TreeProgramName.exe")
-    }
+    Remove-FileIfExists (Join-Path $BinDir "$TreeProgramName.exe")
     Install-File $versionFile (Join-Path $ShareDir 'VERSION')
     Install-File $rgFile (Join-Path $ToolsDir 'rg.exe')
     Install-File $fzfFile (Join-Path $ToolsDir 'fzf.exe')
 
     Write-Host 'Done.'
     Write-Host "  Binary:  $(Join-Path $BinDir "$ProgramName.exe")"
-    if (Test-Path -LiteralPath $treeBinaryFile) {
-        Write-Host "  Tree:    $(Join-Path $BinDir "$TreeProgramName.exe")"
-    }
     Write-Host "  Version: $versionText"
     Write-Host "  rg:      $(Join-Path $ToolsDir 'rg.exe')"
     Write-Host "  fzf:     $(Join-Path $ToolsDir 'fzf.exe')"

@@ -61,22 +61,22 @@ Rendering surfaces:
 - **file_preview**: per-file preview rendering for pickers
 - **resolved_scope_view**: human-readable resolved-scope summary
 - **text_snapshot**: load-once text snapshot used by snippet and lines rendering
-- **tree_bridge / tree_payload_emit**: bridge to the `catclip-tree` subprocess that renders picker tree previews
+- **tree_bridge / tree_payload_emit**: tree/file preview document bridge, payload encoding, and in-process picker tree rendering
 - **command_render**: canonical "Resolved command:" rendering (rule 22)
 - **fzf_theme**: fzf color theme parsing
 
 Output and diagnostics:
 
 - **emit**: clipboard/stdout writers, bounded-concurrency read path
-- **fileclip/** (subpackage): file-reference clipboard module (bundles above 4 KB; Linux Wayland uses live `text/uri-list`, X11 returns `ErrX11Unsupported`)
+- **fileclip/** (subpackage): file-reference clipboard module (bundles above 4 KB; Linux Wayland uses live `text/uri-list`; unknown/displayless Linux returns `ErrLinuxClipboardSessionUnsupported`; detected X11 is blocked at startup)
 - **diagnostic_policy**: classify which diagnostics print under `-q` vs default
 - **validation_error**: structured validation failures with actionable messages
 - **spinner**: short-lived TTY loading indicators
 
 Subpackages and platform shims:
 
-- **internal/picker, internal/tree**: package extractions broken out from the root package
-- **cmd/catclip, cmd/catclip-tree**: thin binary entrypoints
+- **internal/picker, internal/render**: package extractions broken out from the root package
+- **cmd/catclip**: thin binary entrypoint
 - **editor_command / editor_command_nonwindows / editor_command_windows**: `--hiss` / `--hiss-reset` editor invocation
 - **terminal_unix / terminal_windows**: platform TTY/terminal capability shims
 
@@ -129,7 +129,7 @@ Subpackages and platform shims:
     A corollary that has regressed and been re-fixed four times (see `docs/versions/v0.5.0/reports/RESOLVED_BUG_windows_preview_posix_shell.md`). It has **two** parts, and both are load-bearing:
 
     1. **Standalone token.** Every fzf placeholder (`{2}`, `{+2}`, `{q}`, …) must be a whitespace-delimited token, never concatenated into a compound string (`dir/{2}.json`, `'{2}'.json`, `name={2}`).
-    2. **Trivial value.** The value fzf substitutes per refresh must itself be trivial — a bare number/key with no spaces, backslashes, or shell metacharacters. The hazardous part (an absolute temp path: `%TEMP%` on Windows can contain spaces) is passed as a *fixed* argument that catclip quotes via `shellQuoteArg` at build time; only the trivial value goes through fzf's `cmd /s /c` substitution. This is why `catclip-tree` uses `--input-dir <fixed-quoted-dir> --input-stem {2}` and joins in Go — **not** `--input-file {N}` with a full-path column, which would push a spaced/backslashed path through fzf's cmd.exe quoting. Keep `--input-dir`/`--input-stem`; see `docs/versions/v0.6.0/reports/ACTIVE_PLAN_unify_preview_rendering.md` for why the `--input-file {N}` and combined-file alternatives were rejected.
+    2. **Trivial value.** The value fzf substitutes per refresh must itself be trivial — a bare number/key with no spaces, backslashes, or shell metacharacters. The hazardous part (an absolute temp path: `%TEMP%` on Windows can contain spaces) is passed as a *fixed* argument that catclip quotes via `shellQuoteArg` at build time; only the trivial value goes through fzf's `cmd /s /c` substitution. This is why root `catclip --internal-tree-preview` uses `--input-dir <fixed-quoted-dir> --input-stem {2}` and joins in Go — **not** `--input-file {N}` with a full-path column, which would push a spaced/backslashed path through fzf's cmd.exe quoting. Keep `--input-dir`/`--input-stem`; see `docs/versions/v0.6.0/reports/ACTIVE_PLAN_unify_preview_rendering.md` for why the `--input-file {N}` and combined-file alternatives were rejected.
 
     **Enforced (part 1 only):** `TestRunPipelineArchitectureGuards` (`requirePreviewPlaceholdersStayStandalone`) scans every command builder in `previewCommandBuilders` for embedded placeholders and POSIX shell fragments, and a meta-check fails the build if a new placeholder-using function in a builder file isn't classified as either a shell-command builder or an fzf-native exemption (`fzfPlaceholderExemptFuncs`, e.g. `--preview-window` offsets). An agent that reintroduces `dir/{2}.json` fails the test. **Part 2 (trivial value) is not statically enforceable** — whether a substituted value is trivial depends on runtime row data — so passing the guard means "not concatenated," *not* "safe to push any value through fzf." Keep substituted values trivial by design.
 
@@ -139,7 +139,7 @@ Subpackages and platform shims:
 
     `--recent` is the reference: parent serializes entries via `writeRecentPreviewData`, preview reads the TSV and formats. Pre-rendered tree payloads per bucket (one file per picker row) are the same pattern applied to richer rendering.
 
-    **Enforced:** `TestRunPipelineArchitectureGuards` (`requireInternalRenderHandlersAvoidDerivation`) asserts the per-refresh render handlers — `runInternalPrediscoveredTreePayload`, `runInternalLinesPreview`, `runInternalPrediscoveredContentMatchList`, `runInternalFilePreview`, `runInternalContentCheckpointTreePayload`, `runInternalRecentPreview`, `runInternalSinkPreview`, `runInternalSinkToggle` — never call `evaluateScope` or `discoverInvocation`. Picker *drivers* (run once at picker open) and the content-match `change:reload:` search path legitimately discover and are deliberately exempt. This is the entry-point contract: render precomputed payloads, never derive. See `docs/versions/v0.5.5/reports/ACTIVE_PLAN_internal_picker_entrypoint_contract.md`.
+    **Enforced:** `TestRunPipelineArchitectureGuards` (`requireInternalRenderHandlersAvoidDerivation`) asserts the per-refresh render handlers — `runInternalPrediscoveredTreePreview`, `runInternalLinesPreview`, `runInternalPrediscoveredContentMatchList`, `runInternalFilePreview`, `runInternalContentCheckpointTreePreview`, `runInternalRecentPreview`, `runInternalSinkPreview`, `runInternalSinkToggle` — never call `evaluateScope` or `discoverInvocation`. Picker *drivers* (run once at picker open) and the content-match `change:reload:` search path legitimately discover and are deliberately exempt. This is the entry-point contract: render precomputed payloads, never derive. See `docs/versions/v0.5.5/reports/ACTIVE_PLAN_internal_picker_entrypoint_contract.md`.
 
 20. **State lives in the args string** — modifier chaining is string concatenation; file sets are derived on demand via a functional `evaluateScope`. The chain a user has built up is fully represented by `currentArgs []string` carried across picker iterations — nothing mutable lives between them. Undo (Esc steps back through the picker chain) is shipped; redo, what-if branching, session replay, and serialization remain trivially implementable but unshipped.
 

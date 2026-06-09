@@ -8,6 +8,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 // fixture: .hiss, root .gitignore, nested web/.gitignore, .git/info/exclude,
@@ -55,8 +58,8 @@ node_modules/
 		t.Fatalf("write web/.gitignore: %v", err)
 	}
 
-	// Fake .git/info/exclude (no real git init needed — detectGitContext
-	// won't find a repo without `git rev-parse`, so info/exclude only lands in
+	// Fake .git/info/exclude (no real git init needed — git.Detect won't
+	// find a repo without `git rev-parse`, so info/exclude only lands in
 	// the union when in a real repo. Tested separately in the in-repo case.)
 
 	return repo
@@ -191,7 +194,7 @@ func TestListIgnoreRulesNoGitignoreOnlyHiss(t *testing.T) {
 
 func TestListIgnoreRulesHeadlessStripsColor(t *testing.T) {
 	repo := setupIgnoreRulesFixture(t)
-	// Use a non-TTY writer (bytes.Buffer) so activeColorPaletteForWriter
+	// Use a non-TTY writer (bytes.Buffer) so platform.ActivePaletteForWriter
 	// returns the empty palette — same as agents see under --headless.
 	var buf bytes.Buffer
 	cfg := listIgnoreRulesConfig{WorkingDir: repo, Targets: []string{"."}}
@@ -252,7 +255,7 @@ func tailLines(s string, n int) string {
 	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
-// ignoreRemovalHint branches: --hiss only edits .hiss, so for any other source
+// discovery.IgnoreRemovalHint branches: --hiss only edits .hiss, so for any other source
 // the hint must point at --all-ignore-rules instead of --hiss.
 func TestIgnoreRemovalHintIsSourceAware(t *testing.T) {
 	cases := []struct {
@@ -266,7 +269,7 @@ func TestIgnoreRemovalHintIsSourceAware(t *testing.T) {
 		{"(global)", "catclip --all-ignore-rules", "catclip --hiss"},
 	}
 	for _, tc := range cases {
-		got := stripANSI(ignoreRemovalHint(tc.source, colorPalette{}))
+		got := stripANSI(discovery.IgnoreRemovalHint(tc.source, platform.Palette{}))
 		if !strings.Contains(got, tc.wantContain) {
 			t.Errorf("source=%q: missing %q in %q", tc.source, tc.wantContain, got)
 		}

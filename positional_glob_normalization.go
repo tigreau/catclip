@@ -4,6 +4,9 @@ import (
 	"os"
 	"reflect"
 	"strings"
+
+	"github.com/tigreau/catclip/internal/cli"
+	"github.com/tigreau/catclip/internal/discovery"
 )
 
 type positionalGlobNormalizationResult struct {
@@ -60,9 +63,9 @@ func normalizePositionalGlobArgs(args []string, quiet bool) (positionalGlobNorma
 			oneCommand := joinPositionalGlobCommand(normalizedScopes, [][]string{norm.ambiguityOne}, suffix)
 			return positionalGlobNormalizationResult{}, newUsageError(
 				"Error: %s is a pattern, not a target.\n  Patterns and targets can't be interleaved in one scope.\n\n  If you want different filters per target, use --then:\n    %s\n\n  If you want one filter across both targets:\n    %s",
-				singleQuoted(norm.ambiguityRaw),
-				formatResolvedStartupCommand(thenCommand),
-				formatResolvedStartupCommand(oneCommand),
+				discovery.SingleQuoted(norm.ambiguityRaw),
+				cli.FormatResolvedStartupCommand(thenCommand),
+				cli.FormatResolvedStartupCommand(oneCommand),
 			)
 		}
 
@@ -84,19 +87,19 @@ func normalizePositionalGlobArgs(args []string, quiet bool) (positionalGlobNorma
 			if reflect.DeepEqual(onlyCommand, targetsCommand) {
 				return positionalGlobNormalizationResult{}, newUsageError(
 					"Error: %s is a %s, not a target.\n  Use it as a glob target:\n    %s",
-					singleQuoted(norm.fixItRaw),
+					discovery.SingleQuoted(norm.fixItRaw),
 					noun,
-					formatResolvedStartupCommand(targetsCommand),
+					cli.FormatResolvedStartupCommand(targetsCommand),
 				)
 			}
 			return positionalGlobNormalizationResult{}, newUsageError(
 				"Error: %s is a %s, not a target.\n  To filter the existing targets to %s:\n    %s\n  To also include %s files anywhere in the project:\n    %s",
-				singleQuoted(norm.fixItRaw),
+				discovery.SingleQuoted(norm.fixItRaw),
 				noun,
 				norm.fixItRaw,
-				formatResolvedStartupCommand(onlyCommand),
+				cli.FormatResolvedStartupCommand(onlyCommand),
 				norm.fixItRaw,
-				formatResolvedStartupCommand(targetsCommand),
+				cli.FormatResolvedStartupCommand(targetsCommand),
 			)
 		}
 
@@ -132,7 +135,7 @@ func splitPositionalGlobScopes(args []string) []positionalGlobScope {
 			continue
 		}
 		current = append(current, arg)
-		if isValueTakingFlag(arg) {
+		if cli.IsValueTakingFlag(arg) {
 			consumeNext = true
 		}
 	}
@@ -256,7 +259,7 @@ func wrapperStarHints(tokens []positionalGlobToken, quiet bool) []string {
 		if core == "" {
 			continue
 		}
-		hints = append(hints, "Hint: target "+singleQuoted(core)+" is fuzzy by default - no wildcards needed.\n  Searching for "+singleQuoted(core)+"...")
+		hints = append(hints, "Hint: target "+discovery.SingleQuoted(core)+" is fuzzy by default - no wildcards needed.\n  Searching for "+discovery.SingleQuoted(core)+"...")
 	}
 	return hints
 }
@@ -418,7 +421,7 @@ func classifyPositionalGlobToken(token string) positionalGlobTokenKind {
 	if isBareExtensionToken(token) {
 		return positionalGlobBareExt
 	}
-	if hasGlobChars(token) {
+	if cli.HasGlobChars(token) {
 		return positionalGlobPattern
 	}
 	return positionalGlobPlain
@@ -432,7 +435,7 @@ func isWrapperStarGlob(token string) bool {
 	if core == "" {
 		return false
 	}
-	return !hasGlobChars(core) && !strings.Contains(core, "]")
+	return !cli.HasGlobChars(core) && !strings.Contains(core, "]")
 }
 
 func trimWrapperStars(token string) string {
@@ -443,7 +446,7 @@ func isBareExtensionToken(token string) bool {
 	if !strings.HasPrefix(token, ".") || len(token) < 2 {
 		return false
 	}
-	if strings.Contains(token, "/") || strings.Contains(token, "\\") || hasGlobChars(token) {
+	if strings.Contains(token, "/") || strings.Contains(token, "\\") || cli.HasGlobChars(token) {
 		return false
 	}
 	// `.foo` is ambiguous: a hidden filename (`.env`, `.htaccess`) or a

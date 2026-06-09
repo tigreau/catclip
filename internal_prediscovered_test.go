@@ -11,6 +11,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tigreau/catclip/internal/cli"
+	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/render"
 )
 
 func TestWritePrediscoveredCheckpointCapturesEntrySizes(t *testing.T) {
@@ -24,20 +31,20 @@ func TestWritePrediscoveredCheckpointCapturesEntrySizes(t *testing.T) {
 	write("b.txt", "hi\n")    // 3 bytes
 
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, dir, prediscoveredCheckpointData{
+	if err := discovery.WriteCheckpoint(checkpointPath, dir, discovery.CheckpointData{
 		GitStatus: map[string]string{},
-		Entries: []fileEntry{
+		Entries: []discovery.Entry{
 			{RelPath: "a.txt"}, // AbsPath empty -> resolve via workingDir
 			{RelPath: "b.txt", AbsPath: filepath.Join(dir, "b.txt")}, // AbsPath already set
 			{RelPath: "kept.txt", SizeBytes: 99, SizeKnown: true},    // already known -> preserved, not re-stat'd
 			{RelPath: "missing.txt"},                                 // no file -> graceful, stays unknown
 		},
 	}); err != nil {
-		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
+		t.Fatalf("discovery.WriteCheckpoint returned error: %v", err)
 	}
-	decoded, err := readPrediscoveredCheckpoint(checkpointPath)
+	decoded, err := discovery.ReadCheckpoint(checkpointPath)
 	if err != nil {
-		t.Fatalf("readPrediscoveredCheckpoint returned error: %v", err)
+		t.Fatalf("discovery.ReadCheckpoint returned error: %v", err)
 	}
 	entries := decoded.Entries
 
@@ -57,8 +64,8 @@ func TestWritePrediscoveredCheckpointCapturesEntrySizes(t *testing.T) {
 
 func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 	modTime := time.Date(2026, 5, 17, 10, 11, 12, 345678901, time.UTC)
-	data := prediscoveredCheckpointData{
-		GitContext: gitContext{
+	data := discovery.CheckpointData{
+		GitContext: git.Context{
 			Enabled:    true,
 			Root:       "/repo",
 			WorkPrefix: "src",
@@ -70,7 +77,7 @@ func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 			"src/staged.go":  "S",
 			"src/mixed.go":   "SM",
 		},
-		Entries: []fileEntry{
+		Entries: []discovery.Entry{
 			{
 				AbsPath:          "/repo/src/changed.go",
 				RelPath:          "src/changed.go",
@@ -79,7 +86,7 @@ func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 				SizeKnown:        true,
 				TargetRoot:       "src",
 				GitVisible:       true,
-				Mode:             entryModeSnippet,
+				Mode:             command.EntryModeSnippet,
 				SnippetPattern:   "func",
 				Lines:            true,
 				LinesStart:       3,
@@ -95,7 +102,7 @@ func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 				ModTime:    modTime.Add(time.Hour),
 				TargetRoot: "src",
 				GitVisible: true,
-				Mode:       entryModeFull,
+				Mode:       command.EntryModeFull,
 			},
 			{
 				AbsPath:    "/repo/src/empty.go",
@@ -105,7 +112,7 @@ func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 				SizeKnown:  true,
 				TargetRoot: "src",
 				GitVisible: true,
-				Mode:       entryModeLines,
+				Mode:       command.EntryModeLines,
 				Lines:      true,
 			},
 			{
@@ -116,23 +123,23 @@ func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 				SizeKnown:        true,
 				TargetRoot:       "src",
 				GitVisible:       true,
-				Mode:             entryModeDiff,
+				Mode:             command.EntryModeDiff,
 				DiffWantUnstaged: true,
 			},
 		},
 	}
 
-	raw, err := marshalPrediscoveredCheckpoint(data)
+	raw, err := discovery.MarshalCheckpoint(data)
 	if err != nil {
-		t.Fatalf("marshalPrediscoveredCheckpoint returned error: %v", err)
+		t.Fatalf("discovery.MarshalCheckpoint returned error: %v", err)
 	}
-	decoded, err := unmarshalPrediscoveredCheckpoint(raw)
+	decoded, err := discovery.UnmarshalCheckpoint(raw)
 	if err != nil {
-		t.Fatalf("unmarshalPrediscoveredCheckpoint returned error: %v", err)
+		t.Fatalf("discovery.UnmarshalCheckpoint returned error: %v", err)
 	}
 
 	// AbsPath is intentionally not serialized — it is re-derived at read by
-	// ensureEntryAbsPaths (workingDir + RelPath). Reset it on the expected
+	// discovery.EnsureEntryAbsPaths (workingDir + RelPath). Reset it on the expected
 	// entries so the round-trip comparison reflects that contract.
 	for i := range data.Entries {
 		data.Entries[i].AbsPath = ""
@@ -169,37 +176,37 @@ func TestPrediscoveredCheckpointFileEntrySchemaCoversAllFields(t *testing.T) {
 		"BlockSource",
 	}
 	// AbsPath is a runtime-derived filesystem handle, intentionally not
-	// serialized — re-derived at read by ensureEntryAbsPaths.
+	// serialized — re-derived at read by discovery.EnsureEntryAbsPaths.
 	wantResetOnRoundtrip := []string{"AbsPath"}
 
-	// fileEntry must be fully accounted for: every exported field is either
+	// discovery.Entry must be fully accounted for: every exported field is either
 	// serialized or intentionally reset on round-trip. Compare as sets —
 	// declaration order is irrelevant to coverage (AbsPath is declared first
 	// but reset, so order would otherwise mismatch).
 	covered := append([]string(nil), wantSerialized...)
 	covered = append(covered, wantResetOnRoundtrip...)
-	got := exportedFieldNames(reflect.TypeOf(fileEntry{}))
+	got := exportedFieldNames(reflect.TypeOf(discovery.Entry{}))
 	slices.Sort(got)
 	slices.Sort(covered)
 	if !reflect.DeepEqual(got, covered) {
-		t.Fatalf("fileEntry schema decision list is stale\n got: %v\nwant serialized + reset-on-roundtrip: %v", got, covered)
+		t.Fatalf("discovery.Entry schema decision list is stale\n got: %v\nwant serialized + reset-on-roundtrip: %v", got, covered)
 	}
 
-	if got := exportedFieldNames(reflect.TypeOf(prediscoveredCheckpointEntry{})); !reflect.DeepEqual(got, wantSerialized) {
-		t.Fatalf("prediscoveredCheckpointEntry fields do not match serialized fileEntry fields\n got: %v\nwant: %v", got, wantSerialized)
+	if got := exportedFieldNames(reflect.TypeOf(discovery.CheckpointEntry{})); !reflect.DeepEqual(got, wantSerialized) {
+		t.Fatalf("discovery.CheckpointEntry fields do not match serialized discovery.Entry fields\n got: %v\nwant: %v", got, wantSerialized)
 	}
 }
 
 func TestPrediscoveredCheckpointJSONFieldNames(t *testing.T) {
-	data := prediscoveredCheckpointData{
-		GitContext: gitContext{
+	data := discovery.CheckpointData{
+		GitContext: git.Context{
 			Enabled:    true,
 			Root:       "/repo",
 			WorkPrefix: "src",
 			HasHead:    true,
 		},
 		GitStatus: map[string]string{"src/changed.go": "M"},
-		Entries: []fileEntry{{
+		Entries: []discovery.Entry{{
 			AbsPath:          "/repo/src/changed.go",
 			RelPath:          "src/changed.go",
 			ModTime:          time.Date(2026, 5, 17, 10, 11, 12, 0, time.UTC),
@@ -207,7 +214,7 @@ func TestPrediscoveredCheckpointJSONFieldNames(t *testing.T) {
 			SizeKnown:        true,
 			TargetRoot:       "src",
 			GitVisible:       true,
-			Mode:             entryModeDiff,
+			Mode:             command.EntryModeDiff,
 			SnippetPattern:   "pattern",
 			Lines:            true,
 			LinesStart:       1,
@@ -219,9 +226,9 @@ func TestPrediscoveredCheckpointJSONFieldNames(t *testing.T) {
 		}},
 	}
 
-	raw, err := marshalPrediscoveredCheckpoint(data)
+	raw, err := discovery.MarshalCheckpoint(data)
 	if err != nil {
-		t.Fatalf("marshalPrediscoveredCheckpoint returned error: %v", err)
+		t.Fatalf("discovery.MarshalCheckpoint returned error: %v", err)
 	}
 	var doc map[string]any
 	if err := json.Unmarshal(raw, &doc); err != nil {
@@ -270,7 +277,7 @@ func TestPrediscoveredCheckpointJSONFieldNames(t *testing.T) {
 
 func TestPrediscoveredCheckpointRejectsUnsupportedVersion(t *testing.T) {
 	raw := []byte(`{"version":2,"git_context":{},"git_status":{},"entries":[]}`)
-	_, err := unmarshalPrediscoveredCheckpoint(raw)
+	_, err := discovery.UnmarshalCheckpoint(raw)
 	if err == nil {
 		t.Fatal("expected unsupported checkpoint version to fail")
 	}
@@ -281,7 +288,7 @@ func TestPrediscoveredCheckpointRejectsUnsupportedVersion(t *testing.T) {
 
 func TestPrediscoveredCheckpointRejectsUnknownJSONFields(t *testing.T) {
 	raw := []byte(`{"version":1,"git_context":{},"git_status":{},"entries":[],"extra":true}`)
-	_, err := unmarshalPrediscoveredCheckpoint(raw)
+	_, err := discovery.UnmarshalCheckpoint(raw)
 	if err == nil {
 		t.Fatal("expected unknown checkpoint field to fail")
 	}
@@ -292,7 +299,7 @@ func TestPrediscoveredCheckpointRejectsUnknownJSONFields(t *testing.T) {
 
 func TestPrediscoveredCheckpointRejectsTrailingJSONData(t *testing.T) {
 	raw := []byte(`{"version":1,"git_context":{},"git_status":{},"entries":[]} {"version":1}`)
-	_, err := unmarshalPrediscoveredCheckpoint(raw)
+	_, err := discovery.UnmarshalCheckpoint(raw)
 	if err == nil {
 		t.Fatal("expected trailing checkpoint data to fail")
 	}
@@ -301,48 +308,48 @@ func TestPrediscoveredCheckpointRejectsTrailingJSONData(t *testing.T) {
 	}
 }
 
-func TestRunInternalPrediscoveredTreePayloadMatchesFreshEvaluation(t *testing.T) {
+func TestRunInternalPrediscoveredTreePreviewMatchesFreshEvaluation(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/a.go":  "package main\n",
 		"src/b.txt": "notes\n",
 		"docs/c.md": "docs\n",
 	})
 	parentCfg := parseInProject(t, project, []string{"src"})
-	gitCtx := detectGitContext(parentCfg.WorkingDir)
-	discovered, err := evaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, colorPalette{})
+	gitCtx := git.Detect(parentCfg.WorkingDir)
+	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
-		t.Fatalf("evaluateScope returned error: %v", err)
+		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
 
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, parentCfg.WorkingDir, prediscoveredCheckpointData{
+	if err := discovery.WriteCheckpoint(checkpointPath, parentCfg.WorkingDir, discovery.CheckpointData{
 		GitContext: gitCtx,
 		GitStatus:  map[string]string{},
 		Entries:    discovered.Entries,
 	}); err != nil {
-		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
+		t.Fatalf("discovery.WriteCheckpoint returned error: %v", err)
 	}
 
-	freshCfg, err := parseArgs([]string{
+	freshCfg, err := cli.ParseArgs([]string{
 		"--quiet",
-		"--internal-tree-payload",
+		"--internal-tree-preview",
 		"src",
 		"--only", "*.go",
 		"--internal-tree-target", "src",
-		"--internal-tree-kind", treeTargetKindDir,
-		"--internal-tree-state", treeTargetStateOK,
+		"--internal-tree-kind", render.TargetKindDir,
+		"--internal-tree-state", render.TargetStateOK,
 	})
 	if err != nil {
 		t.Fatalf("parseArgs fresh returned error: %v", err)
 	}
-	checkpointCfg, err := parseArgs([]string{
+	checkpointCfg, err := cli.ParseArgs([]string{
 		"--quiet",
-		"--internal-tree-payload",
+		"--internal-tree-preview",
 		"--internal-prediscovered", checkpointPath,
 		"--only", "*.go",
 		"--internal-tree-target", "src",
-		"--internal-tree-kind", treeTargetKindDir,
-		"--internal-tree-state", treeTargetStateOK,
+		"--internal-tree-kind", render.TargetKindDir,
+		"--internal-tree-state", render.TargetStateOK,
 	})
 	if err != nil {
 		t.Fatalf("parseArgs checkpoint returned error: %v", err)
@@ -360,95 +367,33 @@ func TestRunInternalPrediscoveredTreePayloadMatchesFreshEvaluation(t *testing.T)
 	}
 }
 
-func TestRunInternalPrediscoveredTreePreviewMatchesPayloadRenderer(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"src/a.go":  "package main\n",
-		"src/b.go":  "package b\n",
-		"src/c.txt": "notes\n",
-	})
-	parentCfg := parseInProject(t, project, []string{"src"})
-	gitCtx := detectGitContext(parentCfg.WorkingDir)
-	discovered, err := evaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, colorPalette{})
-	if err != nil {
-		t.Fatalf("evaluateScope returned error: %v", err)
-	}
-
-	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, parentCfg.WorkingDir, prediscoveredCheckpointData{
-		GitContext: gitCtx,
-		GitStatus: map[string]string{
-			"src/a.go": "M",
-		},
-		Entries: discovered.Entries,
-	}); err != nil {
-		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
-	}
-
-	commonArgs := []string{
-		"--internal-prediscovered", checkpointPath,
-		"--only", "*.go",
-		"--internal-tree-target", "src",
-		"--internal-tree-kind", treeTargetKindDir,
-		"--internal-tree-state", treeTargetStateOK,
-	}
-	payloadCfg, err := parseArgs(append([]string{"--quiet", "--internal-tree-payload"}, commonArgs...))
-	if err != nil {
-		t.Fatalf("parseArgs payload returned error: %v", err)
-	}
-	previewCfg, err := parseArgs(append([]string{"--quiet", "--internal-tree-preview"}, commonArgs...))
-	if err != nil {
-		t.Fatalf("parseArgs preview returned error: %v", err)
-	}
-
-	var payloadStdout bytes.Buffer
-	if err := run(payloadCfg, &payloadStdout, io.Discard); err != nil {
-		t.Fatalf("payload run returned error: %v", err)
-	}
-	doc, err := decodeTreePayload(bytes.NewReader(payloadStdout.Bytes()))
-	if err != nil {
-		t.Fatalf("decodeTreePayload returned error: %v", err)
-	}
-	var renderedPayload bytes.Buffer
-	if err := renderTreeDocument(&renderedPayload, doc, fzfFilterTreeRenderOptions(), ansiColorPalette()); err != nil {
-		t.Fatalf("renderTreeDocument returned error: %v", err)
-	}
-
-	var previewStdout bytes.Buffer
-	if err := run(previewCfg, &previewStdout, io.Discard); err != nil {
-		t.Fatalf("preview run returned error: %v", err)
-	}
-	if !bytes.Equal(previewStdout.Bytes(), renderedPayload.Bytes()) {
-		t.Fatalf("direct tree preview differs from payload renderer\npayload-rendered:\n%s\npreview:\n%s", renderedPayload.String(), previewStdout.String())
-	}
-}
-
-func TestRunInternalPrediscoveredTreePayloadUsesCheckpointGitStatus(t *testing.T) {
+func TestRunInternalPrediscoveredTreePreviewUsesCheckpointGitStatus(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"a.txt": "hello\n",
 	})
 	_ = parseInProject(t, project, []string{"."})
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, project, prediscoveredCheckpointData{
-		GitContext: gitContext{
+	if err := discovery.WriteCheckpoint(checkpointPath, project, discovery.CheckpointData{
+		GitContext: git.Context{
 			Enabled: true,
 			Root:    "/definitely/missing",
 		},
 		GitStatus: map[string]string{
 			"a.txt": "M",
 		},
-		Entries: []fileEntry{{
+		Entries: []discovery.Entry{{
 			AbsPath:    filepath.Join(project, "a.txt"),
 			RelPath:    "a.txt",
 			SizeBytes:  int64(len("hello\n")),
 			SizeKnown:  true,
 			GitVisible: true,
-			Mode:       entryModeFull,
+			Mode:       command.EntryModeFull,
 		}},
 	}); err != nil {
-		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
+		t.Fatalf("discovery.WriteCheckpoint returned error: %v", err)
 	}
 
-	cfg, err := parseArgs([]string{"--quiet", "--internal-tree-payload", "--internal-prediscovered", checkpointPath})
+	cfg, err := cli.ParseArgs([]string{"--quiet", "--internal-tree-preview", "--internal-prediscovered", checkpointPath})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
@@ -456,15 +401,11 @@ func TestRunInternalPrediscoveredTreePayloadUsesCheckpointGitStatus(t *testing.T
 	if err := run(cfg, &stdout, io.Discard); err != nil {
 		t.Fatalf("run returned error; git status was probably recomputed instead of using checkpoint map: %v", err)
 	}
-	doc, err := decodeTreePayload(bytes.NewReader(stdout.Bytes()))
-	if err != nil {
-		t.Fatalf("decodeTreePayload returned error: %v", err)
-	}
-	if got, want := len(doc.Entries), 1; got != want {
-		t.Fatalf("doc.Entries length = %d, want %d", got, want)
-	}
-	if got := doc.Entries[0].GitStatus; got != "M" {
-		t.Fatalf("doc.Entries[0].GitStatus = %q, want M", got)
+	out := stdout.String()
+	for _, want := range []string{"a.txt", "[M]"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("preview output missing %q:\n%s", want, out)
+		}
 	}
 }
 
@@ -475,25 +416,25 @@ func TestRunInternalPrediscoveredContentMatchListMatchesFreshEvaluation(t *testi
 		"src/c.md": "TODO docs\n",
 	})
 	parentCfg := parseInProject(t, project, []string{"src", "--only", "*.go"})
-	gitCtx := detectGitContext(parentCfg.WorkingDir)
-	discovered, err := evaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, colorPalette{})
+	gitCtx := git.Detect(parentCfg.WorkingDir)
+	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
-		t.Fatalf("evaluateScope returned error: %v", err)
+		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, parentCfg.WorkingDir, prediscoveredCheckpointData{
+	if err := discovery.WriteCheckpoint(checkpointPath, parentCfg.WorkingDir, discovery.CheckpointData{
 		GitContext: gitCtx,
 		GitStatus:  map[string]string{},
 		Entries:    discovered.Entries,
 	}); err != nil {
-		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
+		t.Fatalf("discovery.WriteCheckpoint returned error: %v", err)
 	}
 
-	freshCfg, err := parseArgs([]string{"--quiet", "--internal-content-match-list", "src", "--only", "*.go", "--contains", "TODO"})
+	freshCfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "src", "--only", "*.go", "--contains", "TODO"})
 	if err != nil {
 		t.Fatalf("parseArgs fresh returned error: %v", err)
 	}
-	checkpointCfg, err := parseArgs([]string{"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, "--contains", "TODO"})
+	checkpointCfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, "--contains", "TODO"})
 	if err != nil {
 		t.Fatalf("parseArgs checkpoint returned error: %v", err)
 	}
@@ -523,23 +464,23 @@ func TestRunInternalPrediscoveredContentMatchListShortCircuitsEmptyPattern(t *te
 		"src/b.go": "package main\n",
 	})
 	parentCfg := parseInProject(t, project, []string{"src", "--only", "*.go"})
-	gitCtx := detectGitContext(parentCfg.WorkingDir)
-	discovered, err := evaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, colorPalette{})
+	gitCtx := git.Detect(parentCfg.WorkingDir)
+	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
-		t.Fatalf("evaluateScope returned error: %v", err)
+		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
-	if err := writePrediscoveredCheckpoint(checkpointPath, parentCfg.WorkingDir, prediscoveredCheckpointData{
+	if err := discovery.WriteCheckpoint(checkpointPath, parentCfg.WorkingDir, discovery.CheckpointData{
 		GitContext: gitCtx,
 		GitStatus:  map[string]string{},
 		Entries:    discovered.Entries,
 	}); err != nil {
-		t.Fatalf("writePrediscoveredCheckpoint returned error: %v", err)
+		t.Fatalf("discovery.WriteCheckpoint returned error: %v", err)
 	}
 
 	for _, flag := range []string{"--contains", "--snippet"} {
 		t.Run(strings.TrimPrefix(flag, "--"), func(t *testing.T) {
-			cfg, err := parseArgs([]string{"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, flag, ""})
+			cfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, flag, ""})
 			if err != nil {
 				t.Fatalf("parseArgs returned error: %v", err)
 			}
@@ -555,7 +496,7 @@ func TestRunInternalPrediscoveredContentMatchListShortCircuitsEmptyPattern(t *te
 }
 
 func TestParseArgsInternalPrediscoveredRequiresPath(t *testing.T) {
-	_, err := parseArgs([]string{"--internal-tree-payload", "--internal-prediscovered"})
+	_, err := cli.ParseArgs([]string{"--internal-tree-preview", "--internal-prediscovered"})
 	if err == nil {
 		t.Fatal("expected missing --internal-prediscovered path to fail")
 	}
@@ -564,16 +505,16 @@ func TestParseArgsInternalPrediscoveredRequiresPath(t *testing.T) {
 	}
 }
 
-func TestRunInternalPrediscoveredRequiresTreePayload(t *testing.T) {
-	cfg, err := parseArgs([]string{"--internal-prediscovered", "scope.json"})
+func TestRunInternalPrediscoveredRequiresPreviewMode(t *testing.T) {
+	cfg, err := cli.ParseArgs([]string{"--internal-prediscovered", "scope.json"})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 	err = run(cfg, io.Discard, io.Discard)
 	if err == nil {
-		t.Fatal("expected --internal-prediscovered without --internal-tree-payload to fail")
+		t.Fatal("expected --internal-prediscovered without a preview/reload mode to fail")
 	}
-	if !strings.Contains(err.Error(), "--internal-prediscovered requires --internal-tree-payload, --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview") {
+	if !strings.Contains(err.Error(), "--internal-prediscovered requires --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

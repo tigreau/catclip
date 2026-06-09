@@ -38,9 +38,9 @@ func captureRun(t *testing.T, project string, args []string) (string, string, er
 func TestBasenameTargetWithIncludeParentResolves(t *testing.T) {
 	setupBasenameIncludeXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":               "blocked/\n",
-		"blocked/target.md":        "hello blocked\n",
-		"visible/keepit.go":        "ok\n",
+		".gitignore":        "blocked/\n",
+		"blocked/target.md": "hello blocked\n",
+		"visible/keepit.go": "ok\n",
 	})
 
 	stdout, _, err := captureRun(t, project, []string{"--print", "target.md", "--include", "blocked"})
@@ -59,9 +59,9 @@ func TestBasenameTargetWithIncludeParentResolves(t *testing.T) {
 func TestBasenameTargetWithIncludeGrandparentResolves(t *testing.T) {
 	setupBasenameIncludeXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":                "blocked/\n",
-		"blocked/sub/needle.json":   `{"k":"v"}` + "\n",
-		"visible/keepit.go":         "ok\n",
+		".gitignore":              "blocked/\n",
+		"blocked/sub/needle.json": `{"k":"v"}` + "\n",
+		"visible/keepit.go":       "ok\n",
 	})
 
 	stdout, _, err := captureRun(t, project, []string{"--print", "needle.json", "--include", "blocked"})
@@ -77,10 +77,10 @@ func TestBasenameTargetWithIncludeGrandparentResolves(t *testing.T) {
 func TestDirShorthandTargetWithIncludeParentResolves(t *testing.T) {
 	setupBasenameIncludeXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":              "blocked/\n",
-		"blocked/somedir/a.go":    "package somedir\n",
-		"blocked/somedir/b.go":    "package somedir\n",
-		"visible/keepit.go":       "ok\n",
+		".gitignore":           "blocked/\n",
+		"blocked/somedir/a.go": "package somedir\n",
+		"blocked/somedir/b.go": "package somedir\n",
+		"visible/keepit.go":    "ok\n",
 	})
 
 	stdout, _, err := captureRun(t, project, []string{"--print", "somedir", "--include", "blocked"})
@@ -100,8 +100,8 @@ func TestDirShorthandTargetWithIncludeParentResolves(t *testing.T) {
 func TestPathTargetWithIncludeParentStillResolves(t *testing.T) {
 	setupBasenameIncludeXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":           "blocked/\n",
-		"blocked/target.md":    "still works\n",
+		".gitignore":        "blocked/\n",
+		"blocked/target.md": "still works\n",
 	})
 
 	stdout, _, err := captureRun(t, project, []string{"--print", "blocked/target.md", "--include", "blocked"})
@@ -118,9 +118,9 @@ func TestPathTargetWithIncludeParentStillResolves(t *testing.T) {
 func TestBasenameTargetWithoutIncludeStillProbes(t *testing.T) {
 	setupBasenameIncludeXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":         "blocked/\n",
-		"blocked/target.md":  "hi\n",
-		"visible/keepit.go":  "ok\n",
+		".gitignore":        "blocked/\n",
+		"blocked/target.md": "hi\n",
+		"visible/keepit.go": "ok\n",
 	})
 
 	_, stderr, err := captureRun(t, project, []string{"--headless", "target.md"})
@@ -136,9 +136,9 @@ func TestBasenameTargetWithoutIncludeStillProbes(t *testing.T) {
 func TestFilterZeroMatchWithIncludeDoesNotResolveBasename(t *testing.T) {
 	setupBasenameIncludeXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":           "blocked/\n",
-		"blocked/target.md":    "hi\n",
-		"visible/keepit.go":    "ok\n",
+		".gitignore":        "blocked/\n",
+		"blocked/target.md": "hi\n",
+		"visible/keepit.go": "ok\n",
 	})
 
 	// Target is `visible/` (resolves fine), --only narrows to zero. Even
@@ -161,8 +161,8 @@ func TestFilterZeroMatchWithIncludeDoesNotResolveBasename(t *testing.T) {
 func TestBasenameTargetWithIncludeExactFilePathResolves(t *testing.T) {
 	setupBasenameIncludeXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":          "blocked/\n",
-		"blocked/target.md":   "exact path include\n",
+		".gitignore":        "blocked/\n",
+		"blocked/target.md": "exact path include\n",
 	})
 
 	stdout, _, err := captureRun(t, project, []string{"--print", "target.md", "--include", "blocked/target.md"})

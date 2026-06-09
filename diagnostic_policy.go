@@ -3,6 +3,8 @@ package catclip
 import (
 	"fmt"
 	"io"
+
+	"github.com/tigreau/catclip/internal/discovery"
 )
 
 type DiagnosticSummary struct {
@@ -12,34 +14,26 @@ type DiagnosticSummary struct {
 	HadSelectionCancel    bool
 }
 
-func summarizeDiagnostics(diags []diagnostic, hadSelectionCancel bool) DiagnosticSummary {
+func summarizeDiagnostics(diags []discovery.Diagnostic, hadSelectionCancel bool) DiagnosticSummary {
 	summary := DiagnosticSummary{HadSelectionCancel: hadSelectionCancel}
 	for _, diag := range diags {
-		if diag.isError {
+		if diag.IsError {
 			summary.HasError = true
 		}
-		if diag.isTargetNotFound {
+		if diag.IsTargetNotFound {
 			summary.HasTargetNotFound = true
 		}
-		if diag.isScopeUnsatisfiable {
+		if diag.IsScopeUnsatisfiable {
 			summary.HasScopeUnsatisfiable = true
 		}
 	}
 	return summary
 }
 
-func writeTreePayloadDiagnostics(diags []diagnostic, stderr io.Writer) {
+func writeDiscoveryDiagnostics(diags []discovery.Diagnostic, quiet bool, stderr io.Writer) {
 	for _, diag := range diags {
-		if diag.isScopeUnsatisfiable || diag.isTargetNotFound || diag.isError {
-			fmt.Fprintln(stderr, diag.message)
-		}
-	}
-}
-
-func writeDiscoveryDiagnostics(diags []diagnostic, quiet bool, stderr io.Writer) {
-	for _, diag := range diags {
-		if diag.isError || diag.isTargetNotFound || diag.isScopeUnsatisfiable || !quiet {
-			fmt.Fprintln(stderr, diag.message)
+		if diag.IsError || diag.IsTargetNotFound || diag.IsScopeUnsatisfiable || !quiet {
+			fmt.Fprintln(stderr, diag.Message)
 		}
 	}
 }

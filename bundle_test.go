@@ -11,22 +11,26 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/output"
+	"github.com/tigreau/catclip/internal/platform"
 )
 
-// withBundleStub replaces fileclipCopy with a stub that records the path it was
+// withBundleStub replaces output.FileclipCopy with a stub that records the path it was
 // asked to copy. Returns a pointer that will be populated when emit runs, and a
 // cleanup function.
 func withBundleStub(t *testing.T) (*string, func()) {
 	t.Helper()
 	var captured string
-	prev := fileclipCopy
-	fileclipCopy = func(paths ...string) error {
+	prev := output.FileclipCopy
+	output.FileclipCopy = func(paths ...string) error {
 		if len(paths) > 0 {
 			captured = paths[0]
 		}
 		return nil
 	}
-	return &captured, func() { fileclipCopy = prev }
+	return &captured, func() { output.FileclipCopy = prev }
 }
 
 // withCatclipBundleDir points CATCLIP_BUNDLE_DIR to a fresh directory for the
@@ -59,10 +63,10 @@ func TestBundleDirDefaultsToDocumentsForSnapReadableFiles(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", config)
 
-	got := bundleDirForEnv(emitEnvironment{Platform: "linux"})
+	got := output.BundleDirForEnv(output.EmitEnvironment{Platform: "linux"})
 	want := filepath.Join(home, "My Documents", "catclip")
 	if got != want {
-		t.Fatalf("bundleDirForEnv = %q, want %q", got, want)
+		t.Fatalf("output.BundleDirForEnv = %q, want %q", got, want)
 	}
 }
 
@@ -73,10 +77,10 @@ func TestBundleDirDefaultsToDocumentsForNonLinuxPlatforms(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	got := bundleDirForEnv(emitEnvironment{Platform: "macos"})
+	got := output.BundleDirForEnv(output.EmitEnvironment{Platform: "macos"})
 	want := filepath.Join(home, "Documents", "catclip")
 	if got != want {
-		t.Fatalf("bundleDirForEnv = %q, want %q", got, want)
+		t.Fatalf("output.BundleDirForEnv = %q, want %q", got, want)
 	}
 }
 
@@ -96,10 +100,10 @@ func TestBundleDirFallsBackToDefaultDocuments(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", config)
 
-	got := bundleDirForEnv(emitEnvironment{Platform: "linux"})
+	got := output.BundleDirForEnv(output.EmitEnvironment{Platform: "linux"})
 	want := filepath.Join(home, "Documents", "catclip")
 	if got != want {
-		t.Fatalf("bundleDirForEnv = %q, want %q", got, want)
+		t.Fatalf("output.BundleDirForEnv = %q, want %q", got, want)
 	}
 }
 
@@ -107,8 +111,8 @@ func TestBundleDirOverrideWins(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "custom-bundles")
 	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
 
-	if got := bundleDirForEnv(emitEnvironment{Platform: "linux"}); got != dir {
-		t.Fatalf("bundleDirForEnv override = %q, want %q", got, dir)
+	if got := output.BundleDirForEnv(output.EmitEnvironment{Platform: "linux"}); got != dir {
+		t.Fatalf("output.BundleDirForEnv override = %q, want %q", got, dir)
 	}
 }
 
@@ -125,8 +129,8 @@ func TestBundleProjectNameNormalizesPath(t *testing.T) {
 		{"/Users/chris/Desktop/" + strings.Repeat("x", 64), strings.Repeat("x", 32)},
 	}
 	for _, tc := range cases {
-		if got := bundleProjectName(tc.in); got != tc.want {
-			t.Errorf("bundleProjectName(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := output.BundleProjectName(tc.in); got != tc.want {
+			t.Errorf("output.BundleProjectName(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }
@@ -134,10 +138,10 @@ func TestBundleProjectNameNormalizesPath(t *testing.T) {
 func TestBundleTempPathShape(t *testing.T) {
 	dir := "/tmp/catclip"
 	stamp := time.Date(2026, 5, 12, 14, 30, 22, 0, time.UTC)
-	got := bundleTempPath(dir, "myapp", stamp)
+	got := output.BundleTempPath(dir, "myapp", stamp)
 	want := filepath.Join(dir, "myapp-143022.txt")
 	if got != want {
-		t.Fatalf("bundleTempPath = %q, want %q", got, want)
+		t.Fatalf("output.BundleTempPath = %q, want %q", got, want)
 	}
 }
 
@@ -156,7 +160,7 @@ func TestBundleBelowThresholdSkipsBundleBranch(t *testing.T) {
 		t.Fatalf("run returned error: %v", err)
 	}
 	if *captured != "" {
-		t.Fatalf("expected no bundle for small payload, fileclipCopy was called with %q", *captured)
+		t.Fatalf("expected no bundle for small payload, output.FileclipCopy was called with %q", *captured)
 	}
 }
 
@@ -167,19 +171,19 @@ func TestBundleAtOrAboveThresholdCreatesFile(t *testing.T) {
 
 	// 5KB of 'a' — comfortably over the 4096-byte threshold once wrapped.
 	big := strings.Repeat("a", 5000) + "\n"
-	cfg := emitConfig{
-		OutputMode: outputModeClipboard,
+	cfg := output.EmitConfig{
+		OutputMode: command.OutputModeClipboard,
 	}
-	env := emitEnvironment{
+	env := output.EmitEnvironment{
 		WorkingDir: t.TempDir(),
 	}
 
-	stats, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
+	stats, err := output.WithPayloadWriter(cfg, env, io.Discard, platform.Palette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, big)
 		return werr
 	})
 	if err != nil {
-		t.Fatalf("withPayloadWriter returned error: %v", err)
+		t.Fatalf("output.WithPayloadWriter returned error: %v", err)
 	}
 	if stats.SinkName != "bundle" {
 		t.Fatalf("expected SinkName=bundle, got %q", stats.SinkName)
@@ -188,7 +192,7 @@ func TestBundleAtOrAboveThresholdCreatesFile(t *testing.T) {
 		t.Fatalf("expected BundlePath to be set, got empty")
 	}
 	if *captured != stats.BundlePath {
-		t.Fatalf("fileclipCopy was called with %q, stats.BundlePath = %q", *captured, stats.BundlePath)
+		t.Fatalf("output.FileclipCopy was called with %q, stats.BundlePath = %q", *captured, stats.BundlePath)
 	}
 
 	body, err := os.ReadFile(stats.BundlePath)
@@ -209,20 +213,20 @@ func TestBundleWarnsForOldPortalOnWayland(t *testing.T) {
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.18.4")
 
-	cfg := emitConfig{
-		OutputMode: outputModeClipboard,
+	cfg := output.EmitConfig{
+		OutputMode: command.OutputModeClipboard,
 	}
-	env := emitEnvironment{
+	env := output.EmitEnvironment{
 		Platform:   "linux",
 		WorkingDir: t.TempDir(),
 	}
 
-	stats, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
+	stats, err := output.WithPayloadWriter(cfg, env, io.Discard, platform.Palette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, strings.Repeat("a", 5000))
 		return werr
 	})
 	if err != nil {
-		t.Fatalf("withPayloadWriter returned error: %v", err)
+		t.Fatalf("output.WithPayloadWriter returned error: %v", err)
 	}
 	if len(stats.Warnings) != 1 {
 		t.Fatalf("expected one portal warning, got %#v", stats.Warnings)
@@ -242,7 +246,7 @@ func TestBundleWarnsWhenPortalVersionCannotBeDetectedOnWayland(t *testing.T) {
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_BIN", filepath.Join(t.TempDir(), "missing-portal"))
 
-	warnings := bundleWarnings(emitEnvironment{Platform: "linux"})
+	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
 	if len(warnings) != 1 {
 		t.Fatalf("expected one portal warning, got %#v", warnings)
 	}
@@ -261,14 +265,14 @@ func TestBundleDoesNotWarnForNewPortalOnWayland(t *testing.T) {
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.21.0")
 
-	warnings := bundleWarnings(emitEnvironment{Platform: "linux"})
+	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
 	if len(warnings) != 0 {
 		t.Fatalf("expected no portal warnings, got %#v", warnings)
 	}
 }
 
 func TestParseMajorMinorVersion(t *testing.T) {
-	major, minor, ok := parseMajorMinorVersion("xdg-desktop-portal 1.21.0")
+	major, minor, ok := output.ParseMajorMinorVersion("xdg-desktop-portal 1.21.0")
 	if !ok {
 		t.Fatal("expected version to parse")
 	}
@@ -288,7 +292,7 @@ func TestXDGDesktopPortalVersionUsesConfiguredBinary(t *testing.T) {
 	}
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_BIN", bin)
 
-	major, minor, ok := xdgDesktopPortalVersion()
+	major, minor, ok := output.XdgDesktopPortalVersion()
 	if !ok {
 		t.Fatal("expected configured portal binary version to parse")
 	}
@@ -298,7 +302,7 @@ func TestXDGDesktopPortalVersionUsesConfiguredBinary(t *testing.T) {
 }
 
 func TestXDGDesktopPortalVersionCandidatePathsIncludeDistroLibexecLocations(t *testing.T) {
-	candidates := xdgDesktopPortalVersionCandidatePaths()
+	candidates := output.XdgDesktopPortalVersionCandidatePaths()
 	for _, want := range []string{
 		"xdg-desktop-portal",
 		"/usr/libexec/xdg-desktop-portal",
@@ -319,19 +323,19 @@ func TestBundleFilePermissionsAre0600(t *testing.T) {
 	_, restore := withBundleStub(t)
 	defer restore()
 
-	cfg := emitConfig{
-		OutputMode: outputModeClipboard,
+	cfg := output.EmitConfig{
+		OutputMode: command.OutputModeClipboard,
 	}
-	env := emitEnvironment{
+	env := output.EmitEnvironment{
 		WorkingDir: t.TempDir(),
 	}
 	big := strings.Repeat("z", 5000)
-	stats, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
+	stats, err := output.WithPayloadWriter(cfg, env, io.Discard, platform.Palette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, big)
 		return werr
 	})
 	if err != nil {
-		t.Fatalf("withPayloadWriter returned error: %v", err)
+		t.Fatalf("output.WithPayloadWriter returned error: %v", err)
 	}
 	info, err := os.Stat(stats.BundlePath)
 	if err != nil {
@@ -352,18 +356,18 @@ func TestBundleFilenameMatchesProjectAndTimestamp(t *testing.T) {
 	if err := os.MkdirAll(wd, 0o755); err != nil {
 		t.Fatalf("setup wd: %v", err)
 	}
-	cfg := emitConfig{
-		OutputMode: outputModeClipboard,
+	cfg := output.EmitConfig{
+		OutputMode: command.OutputModeClipboard,
 	}
-	env := emitEnvironment{
+	env := output.EmitEnvironment{
 		WorkingDir: wd,
 	}
-	_, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
+	_, err := output.WithPayloadWriter(cfg, env, io.Discard, platform.Palette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, strings.Repeat("x", 5000))
 		return werr
 	})
 	if err != nil {
-		t.Fatalf("withPayloadWriter returned error: %v", err)
+		t.Fatalf("output.WithPayloadWriter returned error: %v", err)
 	}
 
 	pattern := regexp.MustCompile(`^myapp-\d{6}\.txt$`)
@@ -382,10 +386,10 @@ func TestBundleClearsPriorBundles(t *testing.T) {
 	_, restore := withBundleStub(t)
 	defer restore()
 
-	env := emitEnvironment{
+	env := output.EmitEnvironment{
 		WorkingDir: t.TempDir(),
 	}
-	dir := bundleDirForEnv(env)
+	dir := output.BundleDirForEnv(env)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -398,15 +402,15 @@ func TestBundleClearsPriorBundles(t *testing.T) {
 		t.Fatalf("write keep file: %v", err)
 	}
 
-	cfg := emitConfig{
-		OutputMode: outputModeClipboard,
+	cfg := output.EmitConfig{
+		OutputMode: command.OutputModeClipboard,
 	}
-	_, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
+	_, err := output.WithPayloadWriter(cfg, env, io.Discard, platform.Palette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, strings.Repeat("y", 5000))
 		return werr
 	})
 	if err != nil {
-		t.Fatalf("withPayloadWriter returned error: %v", err)
+		t.Fatalf("output.WithPayloadWriter returned error: %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("expected stale bundle %q removed, stat err = %v", stale, err)
@@ -417,7 +421,7 @@ func TestBundleClearsPriorBundles(t *testing.T) {
 }
 
 func TestBundleNoBundleFlagIsCanonicalGlobalArg(t *testing.T) {
-	flags := canonicalGlobalArgsFromConfig(invocationConfig{}, emitConfig{NoBundle: true}, false, false, false)
+	flags := command.CanonicalGlobalArgs(command.Invocation{}, command.RenderFlags{NoBundle: true})
 	found := false
 	for _, f := range flags {
 		if f == "--no-bundle" {
@@ -447,31 +451,31 @@ func TestBundleNoBundleSkipsBundleBranchAtLargePayload(t *testing.T) {
 	// Force a fake clipboard subprocess that just drains stdin.
 	fakeClipboardOnPath(t)
 
-	cfg := emitConfig{
-		OutputMode: outputModeClipboard,
+	cfg := output.EmitConfig{
+		OutputMode: command.OutputModeClipboard,
 		NoBundle:   true,
 	}
-	env := emitEnvironment{
-		Platform:   detectPlatform(),
+	env := output.EmitEnvironment{
+		Platform:   platform.Detect(),
 		WorkingDir: t.TempDir(),
 	}
-	stats, err := withPayloadWriter(cfg, env, io.Discard, colorPalette{}, func(w io.Writer) error {
+	stats, err := output.WithPayloadWriter(cfg, env, io.Discard, platform.Palette{}, func(w io.Writer) error {
 		_, werr := io.WriteString(w, strings.Repeat("q", 8000))
 		return werr
 	})
 	if err != nil {
-		t.Fatalf("withPayloadWriter returned error: %v", err)
+		t.Fatalf("output.WithPayloadWriter returned error: %v", err)
 	}
 	if stats.SinkName == "bundle" {
 		t.Fatalf("expected text-clipboard sink with --no-bundle, got bundle")
 	}
 	if *captured != "" {
-		t.Fatalf("fileclipCopy should not have been called, was called with %q", *captured)
+		t.Fatalf("output.FileclipCopy should not have been called, was called with %q", *captured)
 	}
 }
 
 // fakeClipboardOnPath installs a no-op script named after the platform's
-// clipboard command into PATH so withPayloadWriter's text path succeeds without
+// clipboard command into PATH so output.WithPayloadWriter's text path succeeds without
 // touching the real clipboard. Skips the test on platforms where the trick
 // can't run (no /bin/sh).
 func fakeClipboardOnPath(t *testing.T) {
@@ -479,17 +483,17 @@ func fakeClipboardOnPath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fakeClipboardOnPath uses /bin/sh; Windows path tested separately")
 	}
-	t.Setenv("WAYLAND_DISPLAY", "")
-	t.Setenv("XDG_SESSION_TYPE", "")
 	dir := t.TempDir()
 	var name string
-	switch detectPlatform() {
+	switch platform.Detect() {
 	case "macos":
 		name = "pbcopy"
 	case "linux":
-		name = "xclip"
+		t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+		t.Setenv("XDG_SESSION_TYPE", "wayland")
+		name = "wl-copy"
 	default:
-		t.Skipf("no fake clipboard wired for %s", detectPlatform())
+		t.Skipf("no fake clipboard wired for %s", platform.Detect())
 	}
 	script := "#!/bin/sh\ncat >/dev/null\n"
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {

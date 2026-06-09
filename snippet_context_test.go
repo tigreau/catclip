@@ -4,6 +4,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/cli"
+	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/output"
 )
 
 func TestBuildContextSnippetRanges(t *testing.T) {
@@ -12,33 +17,33 @@ func TestBuildContextSnippetRanges(t *testing.T) {
 		name    string
 		matched []int
 		context int
-		want    []snippetRange
+		want    []output.SnippetRange
 	}{
-		{"zero context is match line only", []int{4}, 0, []snippetRange{{Start: 4, End: 4}}},
-		{"clamps at file start", []int{1}, 2, []snippetRange{{Start: 1, End: 3}}},
-		{"clamps at file end", []int{7}, 2, []snippetRange{{Start: 5, End: 7}}},
-		{"overlapping windows merge", []int{4, 6}, 2, []snippetRange{{Start: 2, End: 7}}},
-		{"adjacent windows merge", []int{2, 5}, 1, []snippetRange{{Start: 1, End: 6}}},
-		{"far apart stay separate", []int{1, 7}, 1, []snippetRange{{Start: 1, End: 2}, {Start: 6, End: 7}}},
-		{"out-of-range matches skipped", []int{0, 4, 99}, 1, []snippetRange{{Start: 3, End: 5}}},
+		{"zero context is match line only", []int{4}, 0, []output.SnippetRange{{Start: 4, End: 4}}},
+		{"clamps at file start", []int{1}, 2, []output.SnippetRange{{Start: 1, End: 3}}},
+		{"clamps at file end", []int{7}, 2, []output.SnippetRange{{Start: 5, End: 7}}},
+		{"overlapping windows merge", []int{4, 6}, 2, []output.SnippetRange{{Start: 2, End: 7}}},
+		{"adjacent windows merge", []int{2, 5}, 1, []output.SnippetRange{{Start: 1, End: 6}}},
+		{"far apart stay separate", []int{1, 7}, 1, []output.SnippetRange{{Start: 1, End: 2}, {Start: 6, End: 7}}},
+		{"out-of-range matches skipped", []int{0, 4, 99}, 1, []output.SnippetRange{{Start: 3, End: 5}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := buildContextSnippetRanges(lines, tt.matched, tt.context)
+			got := output.BuildContextSnippetRanges(lines, tt.matched, tt.context)
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Fatalf("buildContextSnippetRanges(%v, ctx=%d) = %v, want %v", tt.matched, tt.context, got, tt.want)
+				t.Fatalf("output.BuildContextSnippetRanges(%v, ctx=%d) = %v, want %v", tt.matched, tt.context, got, tt.want)
 			}
 		})
 	}
 }
 
-func snippetScopeFromArgs(t *testing.T, args []string) executionScope {
+func snippetScopeFromArgs(t *testing.T, args []string) command.ExecutionScope {
 	t.Helper()
-	cmd, err := parseArgs(args)
+	cmd, err := cli.ParseArgs(args)
 	if err != nil {
-		t.Fatalf("parseArgs(%v) returned error: %v", args, err)
+		t.Fatalf("cli.ParseArgs(%v) returned error: %v", args, err)
 	}
-	scopes := executionScopesFromCommandSpec(cmd.Command)
+	scopes := command.ExecutionScopesFromSpec(cmd.Command)
 	if len(scopes) != 1 {
 		t.Fatalf("expected 1 scope, got %d", len(scopes))
 	}
@@ -75,7 +80,7 @@ func TestParseArgsSnippetContext(t *testing.T) {
 		{"src", "--snippet", "TODO", "-1"},
 	} {
 		t.Run("out-of-range "+strings.Join(bad[2:], " "), func(t *testing.T) {
-			_, err := parseArgs(bad)
+			_, err := cli.ParseArgs(bad)
 			if err == nil || !strings.Contains(err.Error(), "context must be between 0 and 200") {
 				t.Fatalf("expected context-range error, got %v", err)
 			}
@@ -87,7 +92,7 @@ func TestParseArgsRegexModifierExtraValueHint(t *testing.T) {
 	// A bare token after a regex modifier (likely an unquoted spaced regex the
 	// shell split) gets the quote hint — for both --snippet and --contains.
 	for _, flag := range []string{"--snippet", "--contains"} {
-		_, err := parseArgs([]string{"main.go", flag, "func", "a"})
+		_, err := cli.ParseArgs([]string{"main.go", flag, "func", "a"})
 		if err == nil {
 			t.Fatalf("%s: expected error for a bare token after the regex", flag)
 		}
@@ -97,48 +102,48 @@ func TestParseArgsRegexModifierExtraValueHint(t *testing.T) {
 	}
 	// The hint is scoped to regex modifiers: a non-regex modifier keeps the
 	// generic positional-after-modifier error.
-	if _, err := parseArgs([]string{"src", "--depth", "2", "extra"}); err == nil || !strings.Contains(err.Error(), "positional targets must come before modifiers") {
+	if _, err := cli.ParseArgs([]string{"src", "--depth", "2", "extra"}); err == nil || !strings.Contains(err.Error(), "positional targets must come before modifiers") {
 		t.Fatalf("non-regex modifier should keep the generic positional error, got: %v", err)
 	}
 	// A following flag is fine — only bare tokens trigger the hint.
-	if _, err := parseArgs([]string{"main.go", "--snippet", "func", "3", "--print"}); err != nil {
+	if _, err := cli.ParseArgs([]string{"main.go", "--snippet", "func", "3", "--print"}); err != nil {
 		t.Fatalf("--snippet regex N --print should parse, got: %v", err)
 	}
 }
 
 func TestCanonicalScopeArgsSnippetContext(t *testing.T) {
 	// Block mode renders the regex with enforced single quotes and no number.
-	if got := strings.Join(canonicalScopeArgs(snippetScopeFromArgs(t, []string{"src", "--snippet", "TODO"})), " "); got != "src --snippet 'TODO'" {
+	if got := strings.Join(command.CanonicalScopeArgs(snippetScopeFromArgs(t, []string{"src", "--snippet", "TODO"})), " "); got != "src --snippet 'TODO'" {
 		t.Fatalf("block render = %q, want \"src --snippet 'TODO'\"", got)
 	}
 	// Context mode appends the number after the quoted regex.
-	if got := strings.Join(canonicalScopeArgs(snippetScopeFromArgs(t, []string{"src", "--snippet", "TODO", "3"})), " "); got != "src --snippet 'TODO' 3" {
+	if got := strings.Join(command.CanonicalScopeArgs(snippetScopeFromArgs(t, []string{"src", "--snippet", "TODO", "3"})), " "); got != "src --snippet 'TODO' 3" {
 		t.Fatalf("context render = %q, want \"src --snippet 'TODO' 3\"", got)
 	}
 	// 0 is rendered explicitly so the resolved command reproduces it.
-	if got := strings.Join(canonicalScopeArgs(snippetScopeFromArgs(t, []string{"src", "--snippet", "TODO", "0"})), " "); got != "src --snippet 'TODO' 0" {
+	if got := strings.Join(command.CanonicalScopeArgs(snippetScopeFromArgs(t, []string{"src", "--snippet", "TODO", "0"})), " "); got != "src --snippet 'TODO' 0" {
 		t.Fatalf("zero-context render = %q, want \"src --snippet 'TODO' 0\"", got)
 	}
 }
 
 func TestSnippetContextCheckpointRoundtrip(t *testing.T) {
-	data := prediscoveredCheckpointData{
-		Entries: []fileEntry{{
+	data := discovery.CheckpointData{
+		Entries: []discovery.Entry{{
 			RelPath:             "a.go",
-			Mode:                entryModeSnippet,
+			Mode:                command.EntryModeSnippet,
 			SnippetPattern:      "TODO",
 			SnippetContextSet:   true,
 			SnippetContextLines: 3,
 		}},
 	}
-	raw, err := marshalPrediscoveredCheckpoint(data)
+	raw, err := discovery.MarshalCheckpoint(data)
 	if err != nil {
 		t.Fatalf("marshal returned error: %v", err)
 	}
 	if !strings.Contains(string(raw), "snippet_context_set") || !strings.Contains(string(raw), "snippet_context_lines") {
 		t.Fatalf("checkpoint json missing snippet-context keys: %s", raw)
 	}
-	got, err := unmarshalPrediscoveredCheckpoint(raw)
+	got, err := discovery.UnmarshalCheckpoint(raw)
 	if err != nil {
 		t.Fatalf("unmarshal returned error: %v", err)
 	}

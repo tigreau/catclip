@@ -6,265 +6,24 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"regexp"
-	"time"
+
+	"github.com/tigreau/catclip/internal/cli"
+	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/ui"
 )
 
 // =============================================================================
 // Constants and types
 // =============================================================================
 
-type action string
-
-const (
-	actionRun             action = "run"
-	actionHelp            action = "help"
-	actionHelpAll         action = "help-all"
-	actionVersion         action = "version"
-	actionEditHiss        action = "hiss"
-	actionResetHiss       action = "hiss-reset"
-	actionListIgnoreRules action = "list-ignore-rules"
-)
-
-type outputMode string
-
-const (
-	outputModeClipboard outputMode = "clipboard"
-	outputModeStdout    outputMode = "stdout"
-)
-
-type parsedCommand struct {
-	Action     action
-	Version    string
-	Platform   string
-	WorkingDir string
-	OutputMode outputMode
-
-	Verbose                bool
-	Quiet                  bool
-	Headless               bool
-	WithBinaries           bool
-	Yes                    bool
-	Raw                    bool
-	Preview                bool
-	NoTree                 bool
-	NoBundle               bool
-	TreePayload            bool
-	TreePreview            bool
-	PrediscoveredPath      string
-	TreeTarget             string
-	TreeKind               string
-	TreeState              string
-	FilePreview            bool
-	FilePath               string
-	ContentMatchList       bool
-	RecentPreview          bool
-	RecentData             string
-	RecentSelect           string
-	LinesPreview           bool
-	SnippetBoundaryPreview bool
-	BoundarySourcePath     string
-	BoundaryKey            string
-	SinkTogglePath         string
-	SinkPreviewModePath    string
-	SinkPreviewOutputPath  string
-	SinkPreviewTreePath    string
-
-	Command commandSpec
-
-	Warnings []string
-}
-
-type invocationConfig struct {
-	Version      string
-	Platform     string
-	WorkingDir   string
-	Verbose      bool
-	Quiet        bool
-	Headless     bool
-	WithBinaries bool
-	Internal     bool
-}
-
-func (cfg invocationConfig) canPromptForChoice() bool {
-	return !cfg.Headless && !cfg.Internal && canPromptInteractively()
-}
-
-type resolvedInvocation struct {
-	Config invocationConfig
-	Scopes []executionScope
-}
-
-type discoveredInvocation struct {
-	Config invocationConfig
-	Scopes []discoveredScope
-}
-
-type executionScope struct {
-	Targets         []string
-	IncludedTargets []string
-	Only            []string
-	Exclude         []string
-	Contains        string
-	SnippetPattern  string
-	// SnippetContextSet=false is blank-line block mode (the default).
-	// SnippetContextSet=true is fixed-context mode: SnippetContextLines (0..200)
-	// lines before and after each match; 0 emits matching lines only.
-	SnippetContextSet   bool
-	SnippetContextLines int
-	Lines               bool
-	LinesStart          int
-	LinesEnd            int
-	Stages              []scopeStage
-	Paths               bool
-	Snippet             bool
-	Changed             bool
-	Staged              bool
-	Unstaged            bool
-	Untracked           bool
-	Diff                bool
-}
-
-func executionScopeOutputMode(s executionScope) entryMode {
-	if s.Diff {
-		return entryModeDiff
-	}
-	if s.Snippet {
-		return entryModeSnippet
-	}
-	if s.Lines {
-		return entryModeLines
-	}
-	return entryModeFull
-}
-
-func executionScopeHasGitSelection(s executionScope) bool {
-	return s.Changed || s.Staged || s.Unstaged || s.Untracked
-}
-
-func gitSelectionRequiresGitRepoMessage() string {
-	return "Error: --changed/--staged/--unstaged/--untracked (and -diff variants) require a git repository.\n  cwd is not a git repo or git is not installed."
-}
-
-type executionScopeBuilder struct {
-	executionScope
-	explicitTargets int
-}
-
-type compiledGlob struct {
-	raw string
-	re  *regexp.Regexp
-}
-
-type scopeStageKind string
-
-const (
-	scopeStageInclude      scopeStageKind = "include"
-	scopeStageOnly         scopeStageKind = "only"
-	scopeStageExclude      scopeStageKind = "exclude"
-	scopeStageRecent       scopeStageKind = "recent"
-	scopeStageDepth        scopeStageKind = "depth"
-	scopeStageContains     scopeStageKind = "contains"
-	scopeStageChanged      scopeStageKind = "changed"
-	scopeStageStaged       scopeStageKind = "staged"
-	scopeStageUnstaged     scopeStageKind = "unstaged"
-	scopeStageUntracked    scopeStageKind = "untracked"
-	scopeStagePaths        scopeStageKind = "paths"
-	scopeStageDiff         scopeStageKind = "diff"
-	scopeStageSnippet      scopeStageKind = "snippet"
-	scopeStageChangedDiff  scopeStageKind = "changed-diff"
-	scopeStageStagedDiff   scopeStageKind = "staged-diff"
-	scopeStageUnstagedDiff scopeStageKind = "unstaged-diff"
-	scopeStageLines        scopeStageKind = "lines"
-)
-
-type scopeStage struct {
-	Kind        scopeStageKind
-	Values      []string
-	Limit       *int
-	ExactValues bool
-}
-
-type fileEntry struct {
-	AbsPath             string
-	RelPath             string
-	ModTime             time.Time
-	SizeBytes           int64
-	SizeKnown           bool
-	TargetRoot          string
-	GitVisible          bool
-	Mode                entryMode
-	SnippetPattern      string
-	SnippetContextSet   bool
-	SnippetContextLines int
-	Lines               bool
-	LinesStart          int
-	LinesEnd            int
-	DiffWantStaged      bool
-	DiffWantUnstaged    bool
-	AllowedByInclude    bool
-	BlockSource         string
-}
-
-type gitContext struct {
-	Enabled    bool
-	Root       string
-	WorkPrefix string
-	HasHead    bool
-}
-
-type colorPalette struct {
-	Reset  string
-	Bold   string
-	Dim    string
-	OK     string
-	Err    string
-	Warn   string
-	Dir    string
-	Label  string
-	Value  string
-	Tree   string
-	Prompt string
-	Git    string
-}
-
-type outputReport struct {
-	sizes     map[string]int64
-	statuses  map[string]string
-	modeTags  map[string]string
-	humanSize string
-	tokens    int64
-	countWord string
-	notices   []string
-}
-
-type visibleDirIndex struct {
-	dirs        []string
-	set         map[string]struct{}
-	symlinkDirs []string
-}
-
-type visibleFileIndex struct {
-	byBase        map[string][]fileEntry
-	skippedByBase map[string][]skippedMatch
-}
-
-type blockInfo struct {
-	Rule   string
-	Source string
-}
-
-type skippedMatch struct {
-	RelPath     string
-	BlockSource string
-}
-
-type targetMatch struct {
-	Path         string
-	Kind         string
-	State        string
-	Ignored      bool
-	IgnoreSource string
+// canPromptForChoice was a method on command.Invocation at root. After the
+// command extraction it stays root-side as a free function so internal/command
+// can remain stdlib-only — the platform.CanPromptInteractively dependency is
+// runtime concern, not part of the command model.
+func canPromptForChoice(cfg command.Invocation) bool {
+	return !cfg.Headless && !cfg.Internal && platform.CanPromptInteractively()
 }
 
 type usageError struct {
@@ -275,25 +34,6 @@ type exitError struct {
 	message string
 	code    int
 }
-
-// Diagnostics are collected in encounter order so stderr matches the shell's
-// target-by-target flow. Some of them are real "Error:" blocks that should
-// still print under --quiet even when soft warnings are suppressed.
-type diagnostic struct {
-	message              string
-	isError              bool
-	isTargetNotFound     bool
-	isScopeUnsatisfiable bool
-}
-
-type entryMode string
-
-const (
-	entryModeFull    entryMode = "full"
-	entryModeLines   entryMode = "lines"
-	entryModeSnippet entryMode = "snippet"
-	entryModeDiff    entryMode = "diff"
-)
 
 const tokenWarnThreshold = 100000
 
@@ -323,6 +63,26 @@ func newExitError(code int, message string) error {
 
 // Main parses the CLI and runs the selected action.
 func Main() {
+	// Wire the version resolver into the cli parser. cli/ can't import root,
+	// so the version-file lookup logic (which uses platform.ExecutableCandidateDirs
+	// + project-root VERSION lookup) is provided here at process start.
+	cli.SetVersionLoader(loadVersion)
+	// Wire the args -> view callback into the discovery resolver. Used
+	// by the content-match picker's checkpoint preview path (see
+	// resolver.fzfCheckpointContentMatchListCommand). discovery can't
+	// import internal/cli or root, so this stitching happens here.
+	discovery.SetScopeViewResolver(ui.ScopeViewForDiscoveryArgs)
+	// Refuse to run in detected X11 desktop sessions before any other
+	// startup work (tool check, argv normalization, picker, parser).
+	// The plan's "no X11 testing surface" rationale requires that even
+	// --help and --version fail here, so this must come before
+	// ensureRequiredTools (a missing rg/fzf must not mask the policy
+	// message) and before cli.ParseArgs. See
+	// docs/versions/v0.6.0/reports/ACTIVE_PLAN_x11_full_removal.md.
+	if err := linuxSessionGateError(); err != nil {
+		exitWithError(err, os.Stderr)
+		return
+	}
 	if err := ensureRequiredTools(os.Stderr); err != nil {
 		os.Exit(1)
 		return
@@ -334,9 +94,9 @@ func Main() {
 		return
 	}
 	args = normResult.Args
-	startupResult := startupPickerResult{Args: args}
+	startupResult := ui.StartupPickerResult{Args: args}
 	handled := false
-	startupResult, handled, err = maybeResolveStartupPickerAndSinkArgs(args)
+	startupResult, handled, err = ui.MaybeResolveStartupPickerAndSinkArgs(args)
 	if err != nil {
 		exitWithError(err, os.Stderr)
 		return
@@ -347,7 +107,7 @@ func Main() {
 		args = startupResult.Args
 	}
 
-	cfg, err := parseArgs(args)
+	cfg, err := cli.ParseArgs(args)
 	if err != nil {
 		exitWithError(err, os.Stderr)
 		return
@@ -390,7 +150,7 @@ func rawArgsRequestQuiet(args []string) bool {
 	return false
 }
 
-func shouldWriteResolvedStartupCommand(result startupPickerResult, quiet bool) bool {
+func shouldWriteResolvedStartupCommand(result ui.StartupPickerResult, quiet bool) bool {
 	if !result.UsedFzf {
 		return false
 	}
@@ -404,7 +164,7 @@ func rawArgsUseStdinPathValues(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--include", "--only", "--exclude":
-			values, next := consumeModifierValues(args, i+1)
+			values, next := cli.ConsumeModifierValues(args, i+1)
 			if len(values) == 1 && values[0] == "-" {
 				return true
 			}
@@ -418,6 +178,31 @@ func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
-	_, err := fmt.Fprintf(stderr, "Resolved command:\n  %s\n\n", formatResolvedStartupCommand(args))
+	_, err := fmt.Fprintf(stderr, "Resolved command:\n  %s\n\n", cli.FormatResolvedStartupCommand(args))
 	return err
+}
+
+// linuxSessionGateError returns the reliability-focused usage error when
+// catclip is invoked inside a detected Linux X11 desktop session. nil for
+// every other classification (Wayland, WSL, unknown/displayless, non-Linux),
+// so SSH/Docker/TTY/CI runs continue to stdout sinks while desktop X11 is
+// blocked at startup. See
+// docs/versions/v0.6.0/reports/ACTIVE_PLAN_x11_full_removal.md.
+func linuxSessionGateError() error {
+	return linuxSessionGateErrorFor(platform.DetectLinuxSession())
+}
+
+// linuxSessionGateErrorFor is the testable core of linuxSessionGateError.
+// Takes the session kind as input so unit tests don't have to inject env
+// state or re-exec a child process.
+func linuxSessionGateErrorFor(kind platform.LinuxSessionKind) error {
+	if kind != platform.LinuxSessionX11 {
+		return nil
+	}
+	return newUsageError(
+		"Error: catclip requires a reliable Linux desktop session.\n\n" +
+			"X11 clipboard delivery is not reliable enough for catclip's paste workflow, so\n" +
+			"Linux desktop sessions must use Wayland.\n\n" +
+			"Log into a Wayland session and rerun catclip.",
+	)
 }

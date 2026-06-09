@@ -6,6 +6,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/cli"
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/output"
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 func benchSinkProject(tb testing.TB, n int) func() {
@@ -30,12 +36,12 @@ func benchSinkProject(tb testing.TB, n int) func() {
 }
 
 // BenchmarkSinkPlanBuildByFlag compares the sink-picker plan build
-// (buildOutputPlanForDiscoveredInvocation) across output modes. --contains is
+// (output.BuildPlanForDiscoveredInvocation) across output modes. --contains is
 // full-file (stat only); --lines and --snippet N read each file at prep.
 func BenchmarkSinkPlanBuildByFlag(b *testing.B) {
 	restore := benchSinkProject(b, 2000)
 	defer restore()
-	gitCtx := detectGitContext(mustGetwd(b))
+	gitCtx := git.Detect(mustGetwd(b))
 
 	cases := map[string][]string{
 		"contains":  {".", "--contains", "TODO"},
@@ -43,18 +49,18 @@ func BenchmarkSinkPlanBuildByFlag(b *testing.B) {
 		"snippet_N": {".", "--snippet", "TODO", "3"},
 	}
 	for name, args := range cases {
-		cfg, err := parseArgs(args)
+		cfg, err := cli.ParseArgs(args)
 		if err != nil {
 			b.Fatalf("%s parse: %v", name, err)
 		}
 		cfg.WorkingDir = mustGetwd(b)
-		disc, err := discoverInvocation(resolvedInvocationFromParsedCommand(cfg), gitCtx, io.Discard, colorPalette{})
+		disc, err := discovery.DiscoverInvocation(resolvedInvocationFromParsedCommand(cfg), gitCtx, io.Discard, platform.Palette{})
 		if err != nil {
 			b.Fatalf("%s discover: %v", name, err)
 		}
 		b.Run(name, func(b *testing.B) {
 			for range b.N {
-				if _, err := buildOutputPlanForDiscoveredInvocation(gitCtx, disc.Invocation); err != nil {
+				if _, err := output.BuildPlanForDiscoveredInvocation(gitCtx, disc.Invocation); err != nil {
 					b.Fatal(err)
 				}
 			}

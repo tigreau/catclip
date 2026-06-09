@@ -31,10 +31,10 @@ func setupAncestorXDG(t *testing.T) {
 func TestRunSurfacesIgnoredAncestorForBasenameTarget(t *testing.T) {
 	setupAncestorXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":           "myblocked/\n",
-		"myblocked/target.md":  "hi\n",
-		"myblocked/sub/x.txt":  "hi\n",
-		"visible/keepit.go":    "hi\n",
+		".gitignore":          "myblocked/\n",
+		"myblocked/target.md": "hi\n",
+		"myblocked/sub/x.txt": "hi\n",
+		"visible/keepit.go":   "hi\n",
 	})
 
 	cfg := parseInProject(t, project, []string{"--headless", "target.md"})
@@ -87,11 +87,11 @@ func TestRunSurfacesIgnoredAncestorForDirTarget(t *testing.T) {
 func TestRunSurfacesIgnoredAncestorMultiHit(t *testing.T) {
 	setupAncestorXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":                  "alpha/\nbeta/\n",
-		"alpha/somefile.md":           "hi\n",
-		"alpha/sub/somefile.md":       "hi\n",
-		"beta/somefile.md":            "hi\n",
-		"visible/keepit.go":           "hi\n",
+		".gitignore":            "alpha/\nbeta/\n",
+		"alpha/somefile.md":     "hi\n",
+		"alpha/sub/somefile.md": "hi\n",
+		"beta/somefile.md":      "hi\n",
+		"visible/keepit.go":     "hi\n",
 	})
 
 	cfg := parseInProject(t, project, []string{"--headless", "somefile.md"})
@@ -122,9 +122,9 @@ func TestRunSurfacesIgnoredAncestorMultiHit(t *testing.T) {
 func TestRunDoesNotProbeForFilterZeroMatch(t *testing.T) {
 	setupAncestorXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":            "myblocked/\n",
-		"myblocked/target.md":   "hi\n",
-		"visible/keepit.go":     "hi\n",
+		".gitignore":          "myblocked/\n",
+		"myblocked/target.md": "hi\n",
+		"visible/keepit.go":   "hi\n",
 	})
 
 	// `target.md` exists inside myblocked/; --only narrows the visible set to
@@ -177,9 +177,9 @@ func TestRunUnchangedForTrulyMissingTarget(t *testing.T) {
 func TestRunSkipsAncestorProbeUnderIncludeWildcard(t *testing.T) {
 	setupAncestorXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":            "myblocked/\n",
-		"myblocked/target.md":   "hi\n",
-		"visible/keepit.go":     "hi\n",
+		".gitignore":          "myblocked/\n",
+		"myblocked/target.md": "hi\n",
+		"visible/keepit.go":   "hi\n",
 	})
 
 	// --include '*' disables ignore entirely; target.md becomes visible. No
@@ -197,9 +197,9 @@ func TestRunSkipsAncestorProbeUnderIncludeWildcard(t *testing.T) {
 func TestAncestorProbeRespectsGlobShapedTarget(t *testing.T) {
 	setupAncestorXDG(t)
 	project := setupTestProject(t, map[string]string{
-		".gitignore":           "myblocked/\n",
-		"myblocked/target.md":  "hi\n",
-		"visible/keepit.go":    "hi\n",
+		".gitignore":          "myblocked/\n",
+		"myblocked/target.md": "hi\n",
+		"visible/keepit.go":   "hi\n",
 	})
 
 	// Glob targets ("*.md") are routed to resolveGlobTarget, not the basename

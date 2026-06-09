@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 func TestCopyEmptySlice(t *testing.T) {
@@ -244,25 +246,7 @@ func TestHasAfterTextCopy(t *testing.T) {
 	}
 
 	// Put plain text on the clipboard — Has() should return false.
-	tool := "pbcopy"
-	if _, err := exec.LookPath("pbcopy"); err != nil {
-		if _, err := exec.LookPath("xclip"); err == nil {
-			tool = "xclip"
-		} else if _, err := exec.LookPath("wl-copy"); err == nil {
-			tool = "wl-copy"
-		} else {
-			t.Skip("no plain text clipboard tool found")
-		}
-	}
-
-	var cmd *exec.Cmd
-	if tool == "xclip" {
-		cmd = exec.Command("xclip", "-selection", "clipboard")
-	} else if tool == "wl-copy" {
-		cmd = exec.Command("wl-copy")
-	} else {
-		cmd = exec.Command("pbcopy")
-	}
+	cmd := plainTextClipboardCommand(t)
 	cmd.Stdin = strings.NewReader("just plain text")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("text copy failed: %v", err)
@@ -283,25 +267,7 @@ func TestPasteWithoutFileRefs(t *testing.T) {
 	}
 
 	// Put plain text on the clipboard.
-	tool := "pbcopy"
-	if _, err := exec.LookPath("pbcopy"); err != nil {
-		if _, err := exec.LookPath("xclip"); err == nil {
-			tool = "xclip"
-		} else if _, err := exec.LookPath("wl-copy"); err == nil {
-			tool = "wl-copy"
-		} else {
-			t.Skip("no plain text clipboard tool found")
-		}
-	}
-
-	var cmd *exec.Cmd
-	if tool == "xclip" {
-		cmd = exec.Command("xclip", "-selection", "clipboard")
-	} else if tool == "wl-copy" {
-		cmd = exec.Command("wl-copy")
-	} else {
-		cmd = exec.Command("pbcopy")
-	}
+	cmd := plainTextClipboardCommand(t)
 	cmd.Stdin = strings.NewReader("not a file reference")
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("text copy failed: %v", err)
@@ -313,5 +279,35 @@ func TestPasteWithoutFileRefs(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNoFileRefs) {
 		t.Fatalf("expected ErrNoFileRefs, got: %v", err)
+	}
+}
+
+func plainTextClipboardCommand(t *testing.T) *exec.Cmd {
+	t.Helper()
+	switch runtime.GOOS {
+	case "darwin":
+		path, err := exec.LookPath("pbcopy")
+		if err != nil {
+			t.Skip("pbcopy not found")
+		}
+		return exec.Command(path)
+	case "linux":
+		if platform.DetectLinuxSession() != platform.LinuxSessionWayland {
+			t.Skip("Linux fileclip integration tests require a Wayland session")
+		}
+		path, err := exec.LookPath("wl-copy")
+		if err != nil {
+			t.Skip("wl-copy not found")
+		}
+		return exec.Command(path)
+	case "windows":
+		path, err := exec.LookPath("clip.exe")
+		if err != nil {
+			t.Skip("clip.exe not found")
+		}
+		return exec.Command(path)
+	default:
+		t.Skipf("no plain text clipboard helper for %s", runtime.GOOS)
+		return nil
 	}
 }

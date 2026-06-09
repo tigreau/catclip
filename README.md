@@ -73,8 +73,6 @@ For the full reference: `catclip --help` or `catclip --help-all`.
 
 Large copies (over 4 KB) are saved to `~/Documents/catclip/` and placed on your clipboard as a *file* — paste it into a chat as an attachment instead of a giant blob. Smaller copies stay plain text.
 
-One-step paste works on macOS, Windows, and Wayland. On X11 the file clipboard is unsupported: drag the saved file in, or use `--no-bundle` for text.
-
 ---
 
 ## Installation
@@ -94,7 +92,7 @@ curl -fsSL https://raw.githubusercontent.com/tigreau/catclip/main/install.sh | b
 irm https://raw.githubusercontent.com/tigreau/catclip/main/install.ps1 | iex
 ```
 
-Clipboard tool required: `pbcopy` (macOS, built-in), `xclip` (X11) or `wl-clipboard` (Wayland) on Linux, `clip.exe` (Windows, built-in).
+Clipboard tool required: `pbcopy` (macOS, built-in), `clip.exe` (Windows, built-in), `wl-clipboard` (Linux — Wayland-only; install via `apt install wl-clipboard`, `pacman -S wl-clipboard`, or `dnf install wl-clipboard`).
 
 catclip bundles its own `fzf` and `ripgrep` — no external dependencies needed.
 
@@ -113,7 +111,7 @@ $ToolsDir = Join-Path $ShareDir "bin"
 New-Item -ItemType Directory -Force -Path $BinDir, $ToolsDir | Out-Null
 Expand-Archive -LiteralPath .\catclip_windows_amd64.zip -DestinationPath .
 Copy-Item .\catclip.exe (Join-Path $BinDir "catclip.exe") -Force
-Copy-Item .\catclip-tree.exe (Join-Path $BinDir "catclip-tree.exe") -Force
+Remove-Item (Join-Path $BinDir "catclip-tree.exe") -Force -ErrorAction SilentlyContinue
 Copy-Item .\VERSION (Join-Path $ShareDir "VERSION") -Force
 Copy-Item .\bin\rg.exe (Join-Path $ToolsDir "rg.exe") -Force
 Copy-Item .\bin\fzf.exe (Join-Path $ToolsDir "fzf.exe") -Force
@@ -129,7 +127,8 @@ Download `catclip_linux_amd64.tar.gz` or `catclip_linux_arm64.tar.gz` from relea
 PREFIX="${PREFIX:-$HOME/.local}"
 mkdir -p "$PREFIX/bin" "$PREFIX/share/catclip/bin"
 tar -xzf catclip_linux_amd64.tar.gz
-install -m 755 catclip catclip-tree "$PREFIX/bin/"
+install -m 755 catclip "$PREFIX/bin/"
+rm -f "$PREFIX/bin/catclip-tree"
 install -m 644 VERSION "$PREFIX/share/catclip/"
 install -m 755 bin/rg bin/fzf "$PREFIX/share/catclip/bin/"
 ```

@@ -3,6 +3,10 @@ package catclip
 import (
 	"bytes"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 func TestDiscoverInvocationAggregatesScopes(t *testing.T) {
@@ -12,14 +16,14 @@ func TestDiscoverInvocationAggregatesScopes(t *testing.T) {
 	})
 	cfg := parseInProject(t, project, []string{"--print", "src", "--then", "docs"})
 
-	result, err := discoverInvocation(
+	result, err := discovery.DiscoverInvocation(
 		resolvedInvocationFromParsedCommand(cfg),
-		detectGitContext(cfg.WorkingDir),
+		git.Detect(cfg.WorkingDir),
 		&bytes.Buffer{},
-		colorPalette{},
+		platform.Palette{},
 	)
 	if err != nil {
-		t.Fatalf("discoverInvocation returned error: %v", err)
+		t.Fatalf("discovery.DiscoverInvocation returned error: %v", err)
 	}
 	if got, want := len(result.Invocation.Scopes), 2; got != want {
 		t.Fatalf("scope count mismatch: got %d want %d", got, want)
@@ -34,7 +38,7 @@ func TestDiscoverInvocationAggregatesScopes(t *testing.T) {
 		t.Fatalf("second scope count mismatch: got %d want %d", got, want)
 	}
 	if len(result.Diagnostics) != 0 {
-		t.Fatalf("expected no diagnostics, got %+v", result.Diagnostics)
+		t.Fatalf("expected no Diagnostics, got %+v", result.Diagnostics)
 	}
 	if result.HadSelectionCancel {
 		t.Fatal("expected no selection cancel")

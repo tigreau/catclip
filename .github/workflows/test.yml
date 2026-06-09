@@ -65,11 +65,178 @@ jobs:
       - name: Install Linux clipboard deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq xclip xvfb
+          # v0.6.0 dropped X11 clipboard support entirely.
+          # The bundle smoke test injects a stub wl-copy + Wayland env vars so
+          # we never need a real Wayland compositor on the CI runner.
+          # No clipboard packages required at install time.
+          echo "Linux clipboard deps: none required (Wayland-only at runtime)."
 
       - name: go test
         run: go test ./...
+
+      - name: Linux session gate smoke tests
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Build the binary the same way the bundle smoke test does so we
+          # exercise the real Main() entry, not just unit-level helpers.
+          go build -o catclip-gate-bin ./cmd/catclip
+          export CATCLIP_RG="$(pwd)/bin/rg"
+          export CATCLIP_FZF="$(pwd)/bin/fzf"
+
+          fixture=$(mktemp -d)
+          printf 'hello\n' > "$fixture/file.txt"
+
+          run() {
+            # run <label> <expected_exit> <env_assignments...> -- <args...>
+            local label="$1"; shift
+            local want_exit="$1"; shift
+            local args=()
+            local env_pairs=()
+            local saw_dash_dash=false
+            for arg in "$@"; do
+              if [[ "$arg" == "--" && "$saw_dash_dash" == false ]]; then
+                saw_dash_dash=true
+                continue
+              fi
+              if [[ "$saw_dash_dash" == false ]]; then
+                env_pairs+=("$arg")
+              else
+                args+=("$arg")
+              fi
+            done
+            local stderr_file; stderr_file=$(mktemp)
+            local stdout_file; stdout_file=$(mktemp)
+            set +e
+            (
+              cd "$fixture"
+              # Each invocation gets a clean Linux-session env baseline; the
+              # caller overrides via env_pairs to inject X11/Wayland/etc.
+              unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE
+              for pair in "${env_pairs[@]}"; do
+                export "$pair"
+              done
+              "$OLDPWD/catclip-gate-bin" "${args[@]}" >"$stdout_file" 2>"$stderr_file"
+            )
+            local got_exit=$?
+            set -e
+            if [[ "$got_exit" -ne "$want_exit" ]]; then
+              echo "FAIL [$label]: exit=$got_exit, want=$want_exit" >&2
+              echo "--- stdout ---" >&2; cat "$stdout_file" >&2
+              echo "--- stderr ---" >&2; cat "$stderr_file" >&2
+              exit 1
+            fi
+            echo "OK [$label]: exit=$got_exit"
+            export GATE_STDOUT_FILE="$stdout_file"
+            export GATE_STDERR_FILE="$stderr_file"
+          }
+
+          assert_stderr_contains() {
+            local label="$1"; shift
+            local needle="$1"; shift
+            if ! grep -F -q "$needle" "$GATE_STDERR_FILE"; then
+              echo "FAIL [$label]: stderr missing $needle" >&2
+              echo "--- stderr ---" >&2; cat "$GATE_STDERR_FILE" >&2
+              exit 1
+            fi
+          }
+
+          # ──────────────────────────────────────────────────────────────────
+          # 1. Detected X11 desktop session: every entry point fails at startup.
+          # ──────────────────────────────────────────────────────────────────
+          for args in "--help" "--version" "--print ." "."; do
+            # shellcheck disable=SC2086
+            run "X11 + $args" 2 \
+              "DISPLAY=:0" "XDG_SESSION_TYPE=x11" \
+              -- $args
+            assert_stderr_contains "X11 + $args (msg)" \
+              "X11 clipboard delivery is not reliable"
+            assert_stderr_contains "X11 + $args (remedy)" \
+              "Log into a Wayland session"
+          done
+
+          # XDG_SESSION_TYPE unset + DISPLAY set is also detected-X11. Stale
+          # SSH-from-desktop env inherits this shape; the gate must fire.
+          run "X11 via bare DISPLAY" 2 "DISPLAY=:0" -- --help
+          assert_stderr_contains "X11 via bare DISPLAY" \
+            "X11 clipboard delivery is not reliable"
+
+          # ──────────────────────────────────────────────────────────────────
+          # 2. Unknown/displayless Linux (the CI/SSH/Docker shape):
+          #    stdout-bound invocations run normally; clipboard sinks fail
+          #    with the Wayland-required message, not the gate message.
+          # ──────────────────────────────────────────────────────────────────
+          run "displayless --print ." 0 -- --print .
+          if ! grep -F -q '<file path="file.txt">' "$GATE_STDOUT_FILE"; then
+            echo "FAIL [displayless --print .]: stdout missing emitted file" >&2
+            echo "--- stdout ---" >&2; cat "$GATE_STDOUT_FILE" >&2
+            echo "--- stderr ---" >&2; cat "$GATE_STDERR_FILE" >&2
+            exit 1
+          fi
+          if grep -F -q "X11 clipboard delivery" "$GATE_STDERR_FILE" || \
+             grep -F -q "Clipboard output requires Wayland" "$GATE_STDERR_FILE"; then
+            echo "FAIL [displayless --print .]: stderr shows a session/clipboard gate" >&2
+            echo "--- stderr ---" >&2; cat "$GATE_STDERR_FILE" >&2
+            exit 1
+          fi
+
+          # Default clipboard sink without any display vars: should hit the
+          # 'Clipboard output requires Wayland' branch (exit 1), NOT the X11
+          # gate (exit 2).
+          set +e
+          (
+            cd "$fixture"
+            unset DISPLAY WAYLAND_DISPLAY XDG_SESSION_TYPE
+            "$OLDPWD/catclip-gate-bin" -y . >/dev/null 2>/tmp/displayless_clip_stderr
+          )
+          got_exit=$?
+          set -e
+          if [[ "$got_exit" -ne 1 ]]; then
+            echo "FAIL [displayless default sink]: exit=$got_exit, want=1" >&2
+            cat /tmp/displayless_clip_stderr >&2
+            exit 1
+          fi
+          if ! grep -F -q "Clipboard output requires Wayland" /tmp/displayless_clip_stderr; then
+            echo "FAIL [displayless default sink]: stderr missing 'Clipboard output requires Wayland'" >&2
+            cat /tmp/displayless_clip_stderr >&2
+            exit 1
+          fi
+          echo "OK [displayless default sink]: Wayland-required message surfaced"
+
+          # ──────────────────────────────────────────────────────────────────
+          # 3. Wayland session without wl-copy on PATH: gate does not fire,
+          #    but the clipboard path returns the missing-tool message.
+          # ──────────────────────────────────────────────────────────────────
+          empty_path_dir=$(mktemp -d)
+          set +e
+          (
+            cd "$fixture"
+            # Strip wl-copy deterministically. The binary gets rg/fzf from
+            # absolute CATCLIP_* paths, so this child PATH can be empty except
+            # for the scratch directory.
+            PATH="$empty_path_dir" \
+              XDG_SESSION_TYPE=wayland \
+              WAYLAND_DISPLAY=wayland-0 \
+              "$OLDPWD/catclip-gate-bin" -y . >/dev/null 2>/tmp/wayland_no_wlcopy_stderr
+          )
+          got_exit=$?
+          set -e
+          if [[ "$got_exit" -eq 0 ]]; then
+            echo "FAIL [Wayland without wl-copy]: expected non-zero exit, got 0" >&2
+            cat /tmp/wayland_no_wlcopy_stderr >&2
+            exit 1
+          fi
+          if ! grep -F -q "wl-copy" /tmp/wayland_no_wlcopy_stderr; then
+            echo "FAIL [Wayland without wl-copy]: stderr missing 'wl-copy'" >&2
+            cat /tmp/wayland_no_wlcopy_stderr >&2
+            exit 1
+          fi
+          echo "OK [Wayland without wl-copy]: missing-tool message surfaced"
+
+          echo
+          echo "All Linux session gate smoke tests passed."
 
       - name: Bundle smoke test
         shell: bash
@@ -151,10 +318,24 @@ jobs:
           echo "Bundle content verified ($bytes bytes)"
 
           # --no-bundle should not error and should not write a new bundle file.
+          shopt -s nullglob
+          before_no_bundle=("$bundle_dir"/*.txt)
+          before_no_bundle_count=${#before_no_bundle[@]}
+          shopt -u nullglob
           (
             cd "$fixture"
             "$OLDPWD/catclip-bin${bin_ext}" -y --no-bundle . >/dev/null
           )
+          shopt -s nullglob
+          after_no_bundle=("$bundle_dir"/*.txt)
+          after_no_bundle_count=${#after_no_bundle[@]}
+          shopt -u nullglob
+          if [[ "$after_no_bundle_count" -ne "$before_no_bundle_count" ]]; then
+            echo "ERROR: --no-bundle wrote a new bundle file ($before_no_bundle_count -> $after_no_bundle_count)" >&2
+            ls -la "$bundle_dir" >&2 || true
+            exit 1
+          fi
+          echo "--no-bundle left bundle count unchanged"
 
       - name: --contains smoke test
         shell: bash
@@ -246,7 +427,7 @@ jobs:
           fi
           echo "Small payload bypassed bundling"
 
-      - name: catclip-tree --input-dir / --input-stem smoke test
+      - name: catclip --internal-tree-preview --input-dir / --input-stem smoke test
         shell: bash
         run: |
           set -euo pipefail
@@ -254,7 +435,6 @@ jobs:
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             bin_ext=".exe"
           fi
-          go build -o "catclip-tree-bin${bin_ext}" ./cmd/catclip-tree
 
           payload_dir=$(mktemp -d)
           # Minimal valid tree payload; matches the schema in
@@ -265,14 +445,14 @@ jobs:
             printf '{"type":"summary","count":1,"bytes":6,"human_size":"6B","tokens":1,"file_word":"file"}\n'
           } > "$payload_dir/picked.json"
 
-          out=$("./catclip-tree-bin${bin_ext}" --color never --input-dir "$payload_dir" --input-stem picked)
+          out=$("./catclip-bin${bin_ext}" --quiet --internal-tree-preview --input-dir "$payload_dir" --input-stem picked)
           if ! echo "$out" | grep -q 'hello.txt'; then
-            echo "ERROR: catclip-tree --input-dir/--input-stem did not render fixture entry" >&2
+            echo "ERROR: catclip --internal-tree-preview --input-dir/--input-stem did not render fixture entry" >&2
             echo "stdout was:" >&2
             echo "$out" >&2
             exit 1
           fi
-          echo "catclip-tree --input-dir/--input-stem verified"
+          echo "catclip --internal-tree-preview --input-dir/--input-stem verified"
 
       - name: fileclip integration tests
         shell: bash
@@ -298,15 +478,6 @@ jobs:
           mime_file="$stub_dir/mime"
           /bin/cat >"$payload_file"
           printf '%s\n' "$mime" >"$mime_file"
-          EOF
-            cat >"$stub_dir/xclip" <<'EOF'
-          #!/usr/bin/env bash
-          set -euo pipefail
-          stub_dir="$(dirname "$0")"
-          payload_file="$stub_dir/payload"
-          mime_file="$stub_dir/mime"
-          /bin/cat >"$payload_file"
-          printf '%s\n' "text/plain" >"$mime_file"
           EOF
             cat >"$stub_dir/wl-paste" <<'EOF'
           #!/usr/bin/env bash
@@ -336,7 +507,7 @@ jobs:
               ;;
           esac
           EOF
-            chmod +x "$stub_dir/wl-copy" "$stub_dir/wl-paste" "$stub_dir/xclip"
+            chmod +x "$stub_dir/wl-copy" "$stub_dir/wl-paste"
             export PATH="$stub_dir:$PATH"
             export XDG_SESSION_TYPE=wayland
             export WAYLAND_DISPLAY=wayland-0

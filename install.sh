@@ -8,7 +8,7 @@ set -Eeuo pipefail
 # Native Windows installs use install.ps1 instead of stretching this Bash
 # entrypoint across shells.
 # Published Linux release bundles are expected to target an Ubuntu LTS baseline
-# so catclip, catclip-tree, rg, and fzf keep broad glibc compatibility.
+# so catclip, rg, and fzf keep broad glibc compatibility.
 
 PROGRAM_NAME="catclip"
 TREE_PROGRAM_NAME="catclip-tree"
@@ -147,14 +147,10 @@ go_version_gte() {
 build_from_source_checkout() {
   local source_dir="$1"
   local binary_file="$2"
-  local tree_binary_file="$3"
 
   (
     cd "$source_dir"
     go build -trimpath -o "$binary_file" ./cmd/catclip
-    if [[ -f "./cmd/catclip-tree/main.go" ]]; then
-      go build -trimpath -o "$tree_binary_file" ./cmd/catclip-tree
-    fi
   )
 }
 
@@ -303,6 +299,28 @@ install_file() {
   sudo install -m "$mode" "$src" "$dest"
 }
 
+remove_file_if_exists() {
+  local path="$1"
+  local parent_dir
+
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
+    return
+  fi
+  if rm -f "$path" 2>/dev/null; then
+    return
+  fi
+
+  parent_dir="$(dirname "$path")"
+  if [[ -w "$parent_dir" ]]; then
+    rm -f "$path"
+    return
+  fi
+  if ! command -v sudo >/dev/null 2>&1; then
+    die "cannot remove stale $path; re-run with PREFIX=\"$HOME/.local\" or install sudo"
+  fi
+  sudo rm -f "$path"
+}
+
 download_file() {
   local url="$1"
   local dest="$2"
@@ -443,7 +461,6 @@ if SOURCE_DIR="$(find_local_source_dir)"; then
 
   VERSION_FILE="$SOURCE_DIR/VERSION"
   BINARY_FILE="$TMP_ROOT/$PROGRAM_NAME"
-  TREE_BINARY_FILE="$TMP_ROOT/$TREE_PROGRAM_NAME"
   RG_FILE="$TMP_ROOT/rg"
   FZF_FILE="$TMP_ROOT/fzf"
   VERSION="$(tr -d '\r' < "$VERSION_FILE" | head -n 1)"
@@ -458,7 +475,7 @@ if SOURCE_DIR="$(find_local_source_dir)"; then
   install -m 755 "$FZF_SOURCE" "$FZF_FILE"
 
   printf 'Building %s%s%s from source\n' "$CYAN" "$PROGRAM_NAME" "$RESET"
-  if ! run_expected_failure_ok build_from_source_checkout "$SOURCE_DIR" "$BINARY_FILE" "$TREE_BINARY_FILE"; then
+  if ! run_expected_failure_ok build_from_source_checkout "$SOURCE_DIR" "$BINARY_FILE"; then
     die "failed to build catclip from the local source checkout.
   Ensure Go $(required_go_version_from_source "$SOURCE_DIR") or newer is installed, then try again."
   fi
@@ -483,7 +500,6 @@ else
 
   VERSION_FILE="$TMP_ROOT/VERSION"
   BINARY_FILE="$TMP_ROOT/$PROGRAM_NAME"
-  TREE_BINARY_FILE="$TMP_ROOT/$TREE_PROGRAM_NAME"
   RG_FILE="$TMP_ROOT/bin/rg"
   FZF_FILE="$TMP_ROOT/bin/fzf"
   [[ -f "$VERSION_FILE" ]] || die "release archive is missing VERSION"
@@ -496,18 +512,13 @@ else
 fi
 
 install_file 755 "$BINARY_FILE" "$BIN_DIR/$PROGRAM_NAME"
-if [[ -f "$TREE_BINARY_FILE" ]]; then
-  install_file 755 "$TREE_BINARY_FILE" "$BIN_DIR/$TREE_PROGRAM_NAME"
-fi
+remove_file_if_exists "$BIN_DIR/$TREE_PROGRAM_NAME"
 install_file 644 "$VERSION_FILE" "$SHARE_DIR/VERSION"
 install_file 755 "$RG_FILE" "$TOOLS_DIR/rg"
 install_file 755 "$FZF_FILE" "$TOOLS_DIR/fzf"
 
 printf '%sDone.%s\n' "$GREEN" "$RESET"
 printf '  Binary:  %s%s%s\n' "$CYAN" "$BIN_DIR/$PROGRAM_NAME" "$RESET"
-if [[ -f "$TREE_BINARY_FILE" ]]; then
-  printf '  Tree:    %s%s%s\n' "$CYAN" "$BIN_DIR/$TREE_PROGRAM_NAME" "$RESET"
-fi
 printf '  Version: %s%s%s\n' "$CYAN" "$VERSION" "$RESET"
 printf '  rg:      %s%s%s\n' "$CYAN" "$TOOLS_DIR/rg" "$RESET"
 printf '  fzf:     %s%s%s\n' "$CYAN" "$TOOLS_DIR/fzf" "$RESET"

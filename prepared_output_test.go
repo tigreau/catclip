@@ -9,7 +9,12 @@ import (
 	"strings"
 	"testing"
 
-	treepkg "github.com/tigreau/catclip/internal/tree"
+	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/output"
+	"github.com/tigreau/catclip/internal/platform"
+	renderpkg "github.com/tigreau/catclip/internal/render"
 )
 
 func TestPrepareFileUnitsUsesSnippetBodyBytes(t *testing.T) {
@@ -17,16 +22,16 @@ func TestPrepareFileUnitsUsesSnippetBodyBytes(t *testing.T) {
 		"src/app.ts": "alpha\nTODO hit\nomega\n\npadding padding padding\n",
 	})
 
-	entry := fileEntry{
+	entry := discovery.Entry{
 		AbsPath:        filepath.Join(project, "src/app.ts"),
 		RelPath:        "src/app.ts",
-		Mode:           entryModeSnippet,
+		Mode:           command.EntryModeSnippet,
 		SnippetPattern: "TODO",
 	}
 
-	units, err := prepareFileUnits(gitContext{}, []fileEntry{entry})
+	units, err := output.PrepareFileUnits(git.Context{}, []discovery.Entry{entry})
 	if err != nil {
-		t.Fatalf("prepareFileUnits returned error: %v", err)
+		t.Fatalf("output.PrepareFileUnits returned error: %v", err)
 	}
 	if got, want := len(units), 1; got != want {
 		t.Fatalf("expected %d prepared unit, got %d", want, got)
@@ -39,23 +44,23 @@ func TestPrepareFileUnitsUsesSnippetBodyBytes(t *testing.T) {
 	if !strings.Contains(string(units[0].Payload), `<file path="src/app.ts" lines="1-3">`) {
 		t.Fatalf("expected prepared snippet payload, got:\n%s", string(units[0].Payload))
 	}
-	if want := []snippetRange{{Start: 1, End: 3}}; !reflect.DeepEqual(units[0].SnippetRanges, want) {
+	if want := []output.SnippetRange{{Start: 1, End: 3}}; !reflect.DeepEqual(units[0].SnippetRanges, want) {
 		t.Fatalf("SnippetRanges = %v, want %v", units[0].SnippetRanges, want)
 	}
 
-	report, err := buildOutputReportForPlan(renderConfig{NoTree: true}, gitContext{}, buildOutputPlan(units), nil)
+	report, err := output.BuildReportForPlan(git.Context{}, output.BuildPlan(units), output.ReportOptions{})
 	if err != nil {
-		t.Fatalf("buildOutputReportForPlan returned error: %v", err)
+		t.Fatalf("output.BuildReportForPlan returned error: %v", err)
 	}
-	if got := report.sizes["src/app.ts"]; got != wantBody {
+	if got := report.Sizes["src/app.ts"]; got != wantBody {
 		t.Fatalf("expected report size %d, got %d", wantBody, got)
 	}
 
-	wantHuman, wantTokens := treepkg.FormatSizeAndTokens(wantBody, len(units))
-	if got := report.humanSize; got != wantHuman {
+	wantHuman, wantTokens := renderpkg.FormatSizeAndTokens(wantBody, len(units))
+	if got := report.HumanSize; got != wantHuman {
 		t.Fatalf("expected human size %q, got %q", wantHuman, got)
 	}
-	if got := report.tokens; got != wantTokens {
+	if got := report.Tokens; got != wantTokens {
 		t.Fatalf("expected tokens %d, got %d", wantTokens, got)
 	}
 }
@@ -72,18 +77,18 @@ func TestPrepareFileUnitsNumericSnippetUsesRangesWithoutPayload(t *testing.T) {
 		}, "\n"),
 	})
 
-	entry := fileEntry{
+	entry := discovery.Entry{
 		AbsPath:             filepath.Join(project, "src/app.ts"),
 		RelPath:             "src/app.ts",
-		Mode:                entryModeSnippet,
+		Mode:                command.EntryModeSnippet,
 		SnippetPattern:      "TODO",
 		SnippetContextSet:   true,
 		SnippetContextLines: 0,
 	}
 
-	units, err := prepareFileUnits(gitContext{}, []fileEntry{entry})
+	units, err := output.PrepareFileUnits(git.Context{}, []discovery.Entry{entry})
 	if err != nil {
-		t.Fatalf("prepareFileUnits returned error: %v", err)
+		t.Fatalf("output.PrepareFileUnits returned error: %v", err)
 	}
 	if got, want := len(units), 1; got != want {
 		t.Fatalf("expected %d prepared unit, got %d", want, got)
@@ -91,7 +96,7 @@ func TestPrepareFileUnitsNumericSnippetUsesRangesWithoutPayload(t *testing.T) {
 	if len(units[0].Payload) != 0 {
 		t.Fatalf("numeric snippet should not prebuild payload, got:\n%s", string(units[0].Payload))
 	}
-	wantRanges := []snippetRange{{Start: 2, End: 2}, {Start: 5, End: 5}}
+	wantRanges := []output.SnippetRange{{Start: 2, End: 2}, {Start: 5, End: 5}}
 	if !reflect.DeepEqual(units[0].SnippetRanges, wantRanges) {
 		t.Fatalf("SnippetRanges = %v, want %v", units[0].SnippetRanges, wantRanges)
 	}
@@ -100,8 +105,8 @@ func TestPrepareFileUnitsNumericSnippetUsesRangesWithoutPayload(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	if err := writeOutputPlanPayloadWithoutPrefetch(&stdout, emitConfig{}, buildOutputPlan(units)); err != nil {
-		t.Fatalf("writeOutputPlanPayloadWithoutPrefetch returned error: %v", err)
+	if err := output.WriteOutputPlanPayloadWithoutPrefetch(&stdout, output.EmitConfig{}, output.BuildPlan(units)); err != nil {
+		t.Fatalf("output.WriteOutputPlanPayloadWithoutPrefetch returned error: %v", err)
 	}
 	want := "<file path=\"src/app.ts\" lines=\"2-2\">\nTODO one\n</file>\n\n" +
 		"<file path=\"src/app.ts\" lines=\"5-5\">\nTODO two\n</file>\n\n"
@@ -127,26 +132,26 @@ func TestPrepareNumericSnippetRangesMatchesContextResolution(t *testing.T) {
 	relPath := "src/app.ts"
 	absPath := filepath.Join(project, filepath.FromSlash(relPath))
 	matchedLines := []int{2, 7}
-	entry := fileEntry{
+	entry := discovery.Entry{
 		AbsPath:             absPath,
 		RelPath:             relPath,
-		Mode:                entryModeSnippet,
+		Mode:                command.EntryModeSnippet,
 		SnippetPattern:      "TODO",
 		SnippetContextSet:   true,
 		SnippetContextLines: 1,
 	}
 
-	ranges, bodyBytes, err := prepareNumericSnippetRanges(entry, matchedLines)
+	ranges, bodyBytes, err := output.PrepareNumericSnippetRanges(entry, matchedLines)
 	if err != nil {
-		t.Fatalf("prepareNumericSnippetRanges returned error: %v", err)
+		t.Fatalf("output.PrepareNumericSnippetRanges returned error: %v", err)
 	}
-	snapshot, err := loadTextSnapshot(absPath, relPath)
+	snapshot, err := output.LoadTextSnapshot(absPath, relPath)
 	if err != nil {
-		t.Fatalf("loadTextSnapshot returned error: %v", err)
+		t.Fatalf("output.LoadTextSnapshot returned error: %v", err)
 	}
-	snippet, err := resolveSnippetFromSnapshot(snapshot, matchedLines, snippetOptions{Mode: snippetBoundaryContext, Context: 1})
+	snippet, err := output.ResolveSnippetFromSnapshot(snapshot, matchedLines, output.SnippetOptions{Mode: output.SnippetBoundaryContext, Context: 1})
 	if err != nil {
-		t.Fatalf("resolveSnippetFromSnapshot returned error: %v", err)
+		t.Fatalf("output.ResolveSnippetFromSnapshot returned error: %v", err)
 	}
 	if !reflect.DeepEqual(ranges, snippet.Ranges) {
 		t.Fatalf("ranges = %v, want %v", ranges, snippet.Ranges)
@@ -176,31 +181,31 @@ func TestPrepareFileUnitsUsesDiffBodyBytes(t *testing.T) {
 	initGitRepo(t, project)
 	writeProjectFile(t, project, "tracked.txt", "two\n")
 
-	gitCtx := detectGitContext(project)
-	entry := fileEntry{
+	gitCtx := git.Detect(project)
+	entry := discovery.Entry{
 		AbsPath:          filepath.Join(project, "tracked.txt"),
 		RelPath:          "tracked.txt",
-		Mode:             entryModeDiff,
+		Mode:             command.EntryModeDiff,
 		DiffWantUnstaged: true,
 	}
 
-	diffOutput, diffType, tracked, err := diffEntryOutput(gitCtx, entry)
+	diffOutput, diffType, tracked, err := output.DiffEntryOutput(gitCtx, entry)
 	if err != nil {
-		t.Fatalf("diffEntryOutput returned error: %v", err)
+		t.Fatalf("output.DiffEntryOutput returned error: %v", err)
 	}
 	if !tracked {
 		t.Fatal("expected tracked diff")
 	}
 
-	units, err := prepareFileUnits(gitCtx, []fileEntry{entry})
+	units, err := output.PrepareFileUnits(gitCtx, []discovery.Entry{entry})
 	if err != nil {
-		t.Fatalf("prepareFileUnits returned error: %v", err)
+		t.Fatalf("output.PrepareFileUnits returned error: %v", err)
 	}
 	if got, want := len(units), 1; got != want {
 		t.Fatalf("expected %d prepared unit, got %d", want, got)
 	}
 
-	wantPayload, wantBody := buildWrappedPayload("tracked.txt", diffType, []byte(diffOutput))
+	wantPayload, wantBody := output.BuildWrappedPayload("tracked.txt", diffType, []byte(diffOutput))
 	if got := units[0].BodyBytes; got != wantBody {
 		t.Fatalf("expected diff body bytes %d, got %d", wantBody, got)
 	}
@@ -210,16 +215,16 @@ func TestPrepareFileUnitsUsesDiffBodyBytes(t *testing.T) {
 }
 
 func TestPrepareFileUnitsUsesKnownFullFileSizeWithoutStat(t *testing.T) {
-	entry := fileEntry{
+	entry := discovery.Entry{
 		AbsPath:   filepath.Join(t.TempDir(), "missing.txt"),
 		RelPath:   "missing.txt",
 		SizeBytes: 1234,
 		SizeKnown: true,
 	}
 
-	units, err := prepareFileUnits(gitContext{}, []fileEntry{entry})
+	units, err := output.PrepareFileUnits(git.Context{}, []discovery.Entry{entry})
 	if err != nil {
-		t.Fatalf("prepareFileUnits returned error: %v", err)
+		t.Fatalf("output.PrepareFileUnits returned error: %v", err)
 	}
 	if got, want := len(units), 1; got != want {
 		t.Fatalf("expected %d prepared unit, got %d", want, got)
@@ -230,16 +235,16 @@ func TestPrepareFileUnitsUsesKnownFullFileSizeWithoutStat(t *testing.T) {
 }
 
 func TestPrepareFileUnitsPreservesKnownEmptyFileSize(t *testing.T) {
-	entry := fileEntry{
+	entry := discovery.Entry{
 		AbsPath:   filepath.Join(t.TempDir(), "missing-empty.txt"),
 		RelPath:   "missing-empty.txt",
 		SizeBytes: 0,
 		SizeKnown: true,
 	}
 
-	units, err := prepareFileUnits(gitContext{}, []fileEntry{entry})
+	units, err := output.PrepareFileUnits(git.Context{}, []discovery.Entry{entry})
 	if err != nil {
-		t.Fatalf("prepareFileUnits returned error: %v", err)
+		t.Fatalf("output.PrepareFileUnits returned error: %v", err)
 	}
 	if got, want := len(units), 1; got != want {
 		t.Fatalf("expected %d prepared unit, got %d", want, got)
@@ -254,12 +259,12 @@ func TestPrepareFileUnitsStatsWhenSizeUnknown(t *testing.T) {
 		"known-later.txt": "abc\n",
 	})
 
-	units, err := prepareFileUnits(gitContext{}, []fileEntry{{
+	units, err := output.PrepareFileUnits(git.Context{}, []discovery.Entry{{
 		AbsPath: filepath.Join(project, "known-later.txt"),
 		RelPath: "known-later.txt",
 	}})
 	if err != nil {
-		t.Fatalf("prepareFileUnits returned error: %v", err)
+		t.Fatalf("output.PrepareFileUnits returned error: %v", err)
 	}
 	if got, want := len(units), 1; got != want {
 		t.Fatalf("expected %d prepared unit, got %d", want, got)
@@ -285,20 +290,20 @@ func TestBuildPreparedDiffPayloadPreservesUntrackedRawBytes(t *testing.T) {
 		t.Fatalf("WriteFile returned error: %v", err)
 	}
 
-	payload, bodyBytes, keep, err := buildPreparedDiffPayload(detectGitContext(project), fileEntry{
+	payload, bodyBytes, keep, err := output.BuildPreparedDiffPayload(git.Detect(project), discovery.Entry{
 		AbsPath:          absPath,
 		RelPath:          "new.txt",
-		Mode:             entryModeDiff,
+		Mode:             command.EntryModeDiff,
 		DiffWantUnstaged: true,
 	})
 	if err != nil {
-		t.Fatalf("buildPreparedDiffPayload returned error: %v", err)
+		t.Fatalf("output.BuildPreparedDiffPayload returned error: %v", err)
 	}
 	if !keep {
 		t.Fatal("expected untracked diff fallback payload")
 	}
 
-	wantPayload, wantBody := buildWrappedPayload("new.txt", "untracked", raw)
+	wantPayload, wantBody := output.BuildWrappedPayload("new.txt", "untracked", raw)
 	if got := bodyBytes; got != wantBody {
 		t.Fatalf("BodyBytes = %d, want %d", got, wantBody)
 	}
@@ -317,17 +322,17 @@ func TestPrepareFileUnitsDropsEmptyTrackedDiff(t *testing.T) {
 	})
 	initGitRepo(t, project)
 
-	gitCtx := detectGitContext(project)
-	entry := fileEntry{
+	gitCtx := git.Detect(project)
+	entry := discovery.Entry{
 		AbsPath:          filepath.Join(project, "tracked.txt"),
 		RelPath:          "tracked.txt",
-		Mode:             entryModeDiff,
+		Mode:             command.EntryModeDiff,
 		DiffWantUnstaged: true,
 	}
 
-	units, err := prepareFileUnits(gitCtx, []fileEntry{entry})
+	units, err := output.PrepareFileUnits(gitCtx, []discovery.Entry{entry})
 	if err != nil {
-		t.Fatalf("prepareFileUnits returned error: %v", err)
+		t.Fatalf("output.PrepareFileUnits returned error: %v", err)
 	}
 	if len(units) != 0 {
 		t.Fatalf("expected empty diff to be dropped, got %d unit(s)", len(units))
@@ -335,20 +340,20 @@ func TestPrepareFileUnitsDropsEmptyTrackedDiff(t *testing.T) {
 }
 
 func TestEmitFullOutputUsesPreparedPayloadWithoutRebuilding(t *testing.T) {
-	unit := preparedFileUnit{
-		Entry: fileEntry{
+	unit := output.PreparedFileUnit{
+		Entry: discovery.Entry{
 			AbsPath: "/does/not/matter",
 			RelPath: "tracked.txt",
-			Mode:    entryModeDiff,
+			Mode:    command.EntryModeDiff,
 		},
 		Payload:   []byte("<file path=\"tracked.txt\" type=\"diff\">\nbody\n</file>\n\n"),
 		BodyBytes: int64(len("body\n")),
 	}
 
 	var stdout bytes.Buffer
-	_, err := emitFullOutput(emitConfig{OutputMode: outputModeStdout}, emitEnvironment{}, []preparedFileUnit{unit}, &stdout, colorPalette{})
+	_, err := output.EmitFullOutput(output.EmitConfig{OutputMode: command.OutputModeStdout}, output.EmitEnvironment{}, []output.PreparedFileUnit{unit}, &stdout, platform.Palette{})
 	if err != nil {
-		t.Fatalf("emitFullOutput returned error: %v", err)
+		t.Fatalf("output.EmitFullOutput returned error: %v", err)
 	}
 	if got, want := stdout.String(), string(unit.Payload); got != want {
 		t.Fatalf("expected prepared payload to be emitted as-is\nwant:\n%s\ngot:\n%s", want, got)
@@ -360,12 +365,12 @@ func TestEmitFullOutputReadsFullFilesFromDiskAfterPrepare(t *testing.T) {
 		"a.txt": "one\n",
 	})
 
-	units, err := prepareFileUnits(gitContext{}, []fileEntry{{
+	units, err := output.PrepareFileUnits(git.Context{}, []discovery.Entry{{
 		AbsPath: filepath.Join(project, "a.txt"),
 		RelPath: "a.txt",
 	}})
 	if err != nil {
-		t.Fatalf("prepareFileUnits returned error: %v", err)
+		t.Fatalf("output.PrepareFileUnits returned error: %v", err)
 	}
 	if got, want := len(units), 1; got != want {
 		t.Fatalf("expected %d prepared unit, got %d", want, got)
@@ -378,12 +383,12 @@ func TestEmitFullOutputReadsFullFilesFromDiskAfterPrepare(t *testing.T) {
 	t.Setenv("CATCLIP_READ_WORKERS", "1")
 
 	var stdout bytes.Buffer
-	_, err = emitFullOutput(emitConfig{OutputMode: outputModeStdout}, emitEnvironment{}, units, &stdout, colorPalette{})
+	_, err = output.EmitFullOutput(output.EmitConfig{OutputMode: command.OutputModeStdout}, output.EmitEnvironment{}, units, &stdout, platform.Palette{})
 	if err != nil {
-		t.Fatalf("emitFullOutput returned error: %v", err)
+		t.Fatalf("output.EmitFullOutput returned error: %v", err)
 	}
 
 	if got := stdout.String(); !strings.Contains(got, "two\n") || strings.Contains(got, "one\n") {
-		t.Fatalf("expected emitFullOutput to read from disk after prepare, got:\n%s", got)
+		t.Fatalf("expected output.EmitFullOutput to read from disk after prepare, got:\n%s", got)
 	}
 }

@@ -1,4 +1,4 @@
-.PHONY: dev test run clean release-local release-clean catclip catclip-tree
+.PHONY: dev test run clean release-local release-clean catclip
 
 BIN_DIR := bin
 DIST_DIR := dist
@@ -33,7 +33,7 @@ endif
 # make dev — setup local toolchain and build catclip for development.
 # If the system tools are missing or too old, print a copy-pasteable manual
 # install command for the pinned local version.
-dev: $(BIN_DIR)/rg $(BIN_DIR)/fzf catclip catclip-tree
+dev: $(BIN_DIR)/rg $(BIN_DIR)/fzf catclip
 	@printf '\nDev toolchain ready in ./%s/\n' "$(BIN_DIR)"
 	@printf 'catclip uses these scoped binaries to ensure feature compatibility.\n\n'
 	@printf 'Run locally:\n'
@@ -41,9 +41,6 @@ dev: $(BIN_DIR)/rg $(BIN_DIR)/fzf catclip catclip-tree
 
 catclip:
 	@go build -o catclip ./cmd/catclip
-
-catclip-tree:
-	@go build -o catclip-tree ./cmd/catclip-tree
 
 $(BIN_DIR)/rg:
 	@mkdir -p $(BIN_DIR)
@@ -108,7 +105,7 @@ run: dev
 clean:
 	rm -rf $(BIN_DIR)
 
-# make release-local — cross-build catclip + catclip-tree for every platform
+# make release-local — cross-build catclip for every platform
 # the CI workflow ships, bundle rg/fzf, and pack tar.gz/zip into dist/.
 # Mirrors .github/workflows/release.yml so artifacts match the release.
 release-local:

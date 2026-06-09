@@ -3,11 +3,14 @@ package catclip
 import (
 	"strings"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/cli"
+	"github.com/tigreau/catclip/internal/command"
 )
 
 func TestCommandSpecFromScopesCopiesAndDerivesFields(t *testing.T) {
 	limit := 5
-	scopes := []executionScope{
+	scopes := []command.ExecutionScope{
 		{
 			Targets:         []string{"src"},
 			IncludedTargets: []string{"vendor"},
@@ -18,15 +21,15 @@ func TestCommandSpecFromScopesCopiesAndDerivesFields(t *testing.T) {
 			Snippet:         true,
 			Changed:         true,
 			Staged:          true,
-			Stages: []scopeStage{
-				{Kind: scopeStageContains, Values: []string{"TODO"}},
-				{Kind: scopeStageSnippet, Values: []string{"func"}},
-				{Kind: scopeStageRecent, Limit: &limit},
+			Stages: []command.Stage{
+				{Kind: command.StageContains, Values: []string{"TODO"}},
+				{Kind: command.StageSnippet, Values: []string{"func"}},
+				{Kind: command.StageRecent, Limit: &limit},
 			},
 		},
 	}
 
-	spec := finalizedCommandSpecFromExecutionScopes(scopes)
+	spec := command.FinalizedSpecFromExecutionScopes(scopes)
 	if !spec.Complete() {
 		t.Fatal("expected finalized command spec to be complete")
 	}
@@ -36,7 +39,7 @@ func TestCommandSpecFromScopesCopiesAndDerivesFields(t *testing.T) {
 		t.Fatalf("expected %d command scope, got %d", want, got)
 	}
 	scopeSpec := scopeSpecs[0]
-	if got, want := scopeSpec.OutputMode(), entryModeSnippet; got != want {
+	if got, want := scopeSpec.OutputMode(), command.EntryModeSnippet; got != want {
 		t.Fatalf("OutputMode() = %q, want %q", got, want)
 	}
 	if !scopeSpec.HasContainsFilter() || scopeSpec.ContainsPattern() != "TODO" {
@@ -69,7 +72,7 @@ func TestCommandSpecFromScopesCopiesAndDerivesFields(t *testing.T) {
 }
 
 func TestParseArgsBuildsCommandSpecForContentQueryScope(t *testing.T) {
-	cfg, err := parseArgs([]string{".", "--contains", "keep", "--only", "README.md", "--snippet", "show"})
+	cfg, err := cli.ParseArgs([]string{".", "--contains", "keep", "--only", "README.md", "--snippet", "show"})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
@@ -79,7 +82,7 @@ func TestParseArgsBuildsCommandSpecForContentQueryScope(t *testing.T) {
 		t.Fatalf("expected %d command scope, got %d", want, got)
 	}
 	scopeSpec := scopeSpecs[0]
-	if got, want := scopeSpec.OutputMode(), entryModeSnippet; got != want {
+	if got, want := scopeSpec.OutputMode(), command.EntryModeSnippet; got != want {
 		t.Fatalf("OutputMode() = %q, want %q", got, want)
 	}
 	if !scopeSpec.HasContainsFilter() || scopeSpec.ContainsPattern() != "keep" {
@@ -94,7 +97,7 @@ func TestParseArgsBuildsCommandSpecForContentQueryScope(t *testing.T) {
 }
 
 func TestParseArgsBuildsCommandSpecForMultiScopeGitDiff(t *testing.T) {
-	cfg, err := parseArgs([]string{"src", "--contains", "TODO", "--then", "docs", "--staged-diff"})
+	cfg, err := cli.ParseArgs([]string{"src", "--contains", "TODO", "--then", "docs", "--staged-diff"})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
@@ -104,7 +107,7 @@ func TestParseArgsBuildsCommandSpecForMultiScopeGitDiff(t *testing.T) {
 		t.Fatalf("expected %d command scopes, got %d", want, got)
 	}
 	first := scopeSpecs[0]
-	if got, want := first.OutputMode(), entryModeFull; got != want {
+	if got, want := first.OutputMode(), command.EntryModeFull; got != want {
 		t.Fatalf("first OutputMode() = %q, want %q", got, want)
 	}
 	if !first.HasContainsFilter() || first.ContainsPattern() != "TODO" {
@@ -115,7 +118,7 @@ func TestParseArgsBuildsCommandSpecForMultiScopeGitDiff(t *testing.T) {
 	}
 
 	second := scopeSpecs[1]
-	if got, want := second.OutputMode(), entryModeDiff; got != want {
+	if got, want := second.OutputMode(), command.EntryModeDiff; got != want {
 		t.Fatalf("second OutputMode() = %q, want %q", got, want)
 	}
 	if !second.HasGitSelection() || !second.Changed() || !second.Staged() {
@@ -127,7 +130,7 @@ func TestParseArgsBuildsCommandSpecForMultiScopeGitDiff(t *testing.T) {
 }
 
 func TestParseArgsBuildsCommandSpecForPathsScope(t *testing.T) {
-	cfg, err := parseArgs([]string{"src", "--only", "*.ts", "--paths"})
+	cfg, err := cli.ParseArgs([]string{"src", "--only", "*.ts", "--paths"})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
@@ -140,7 +143,7 @@ func TestParseArgsBuildsCommandSpecForPathsScope(t *testing.T) {
 	if !scopeSpec.HasPathsOutput() {
 		t.Fatal("expected paths output mode")
 	}
-	if got, want := scopeSpec.OutputMode(), entryModeFull; got != want {
+	if got, want := scopeSpec.OutputMode(), command.EntryModeFull; got != want {
 		t.Fatalf("OutputMode() = %q, want %q", got, want)
 	}
 	if got, want := strings.Join(scopeSpec.OnlyPatterns(), "\n"), "*.ts"; got != want {
@@ -150,17 +153,17 @@ func TestParseArgsBuildsCommandSpecForPathsScope(t *testing.T) {
 
 func BenchmarkFinalizedCommandSpecFromScopesInteractiveSized(b *testing.B) {
 	limit := 10
-	scopes := []executionScope{
+	scopes := []command.ExecutionScope{
 		{
 			Targets:         []string{"src", "docs"},
 			IncludedTargets: []string{"node_modules"},
 			Only:            []string{"*.go", "*.md"},
 			Exclude:         []string{"vendor", "*.snap"},
 			Contains:        "TODO",
-			Stages: []scopeStage{
-				{Kind: scopeStageOnly, Values: []string{"*.go", "*.md"}},
-				{Kind: scopeStageExclude, Values: []string{"vendor", "*.snap"}},
-				{Kind: scopeStageContains, Values: []string{"TODO"}},
+			Stages: []command.Stage{
+				{Kind: command.StageOnly, Values: []string{"*.go", "*.md"}},
+				{Kind: command.StageExclude, Values: []string{"vendor", "*.snap"}},
+				{Kind: command.StageContains, Values: []string{"TODO"}},
 			},
 		},
 		{
@@ -169,10 +172,10 @@ func BenchmarkFinalizedCommandSpecFromScopesInteractiveSized(b *testing.B) {
 			SnippetPattern: "FIXME",
 			Changed:        true,
 			Unstaged:       true,
-			Stages: []scopeStage{
-				{Kind: scopeStageUnstaged},
-				{Kind: scopeStageSnippet, Values: []string{"FIXME"}},
-				{Kind: scopeStageRecent, Limit: &limit},
+			Stages: []command.Stage{
+				{Kind: command.StageUnstaged},
+				{Kind: command.StageSnippet, Values: []string{"FIXME"}},
+				{Kind: command.StageRecent, Limit: &limit},
 			},
 		},
 		{
@@ -180,15 +183,15 @@ func BenchmarkFinalizedCommandSpecFromScopesInteractiveSized(b *testing.B) {
 			Changed: true,
 			Staged:  true,
 			Diff:    true,
-			Stages: []scopeStage{
-				{Kind: scopeStageStagedDiff},
+			Stages: []command.Stage{
+				{Kind: command.StageStagedDiff},
 			},
 		},
 	}
 
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		spec := finalizedCommandSpecFromExecutionScopes(scopes)
+		spec := command.FinalizedSpecFromExecutionScopes(scopes)
 		if len(spec.Scopes()) != len(scopes) {
 			b.Fatalf("expected %d scopes", len(scopes))
 		}

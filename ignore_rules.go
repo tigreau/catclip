@@ -8,6 +8,12 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/search"
 )
 
 // --all-ignore-rules: read the rule files that decide what catclip hides,
@@ -21,7 +27,7 @@ type listIgnoreRulesConfig struct {
 	Targets    []string
 }
 
-func listIgnoreRulesConfigFromParsedCommand(cfg parsedCommand) listIgnoreRulesConfig {
+func listIgnoreRulesConfigFromParsedCommand(cfg command.Parsed) listIgnoreRulesConfig {
 	var targets []string
 	for _, scope := range cfg.Command.Scopes() {
 		for _, t := range scope.Targets() {
@@ -83,7 +89,7 @@ func runListIgnoreRules(cfg listIgnoreRulesConfig, stdout, stderr io.Writer) err
 	if err != nil {
 		return err
 	}
-	return renderIgnoreRulesUnion(stdout, union, activeColorPaletteForWriter(stdout))
+	return renderIgnoreRulesUnion(stdout, union, platform.ActivePaletteForWriter(stdout))
 }
 
 // locateIgnoreSources finds the files whose rules rg actually consults under
@@ -98,7 +104,7 @@ func locateIgnoreSources(cfg listIgnoreRulesConfig) ([]*ignoreSource, error) {
 	// so we don't pick up e.g. node_modules/.gitignore inside ignored dirs (rg
 	// wouldn't apply those to visible content either).
 	for _, target := range cfg.Targets {
-		rels, err := runRipgrepFiles(cfg.WorkingDir, ripgrepFileOptions{
+		rels, err := search.RunRipgrepFiles(cfg.WorkingDir, search.RipgrepFileOptions{
 			Basenames: []string{".gitignore"},
 			Paths:     []string{target},
 		})
@@ -132,7 +138,7 @@ func locateIgnoreSources(cfg listIgnoreRulesConfig) ([]*ignoreSource, error) {
 	// the root .gitignore even though rg applies it to files under cmd/.
 	// (Parent .gitignores between target and repo root are not enumerated —
 	// the documented "cheap first cut" limitation.)
-	gitCtx := detectGitContext(cfg.WorkingDir)
+	gitCtx := git.Detect(cfg.WorkingDir)
 	if gitCtx.Enabled {
 		rootGitignore := filepath.Clean(filepath.Join(gitCtx.Root, ".gitignore"))
 		if fileReadable(rootGitignore) && !seen[rootGitignore] {
@@ -164,7 +170,7 @@ func locateIgnoreSources(cfg listIgnoreRulesConfig) ([]*ignoreSource, error) {
 	}
 
 	// .hiss — read-only check; do not auto-create (listing has no side effects).
-	hissPath := globalHissPath()
+	hissPath := discovery.GlobalHissPath()
 	if fileReadable(hissPath) && !seen[hissPath] {
 		seen[hissPath] = true
 		sources = append(sources, &ignoreSource{
@@ -193,7 +199,7 @@ func locateIgnoreSources(cfg listIgnoreRulesConfig) ([]*ignoreSource, error) {
 }
 
 func resolveGlobalExcludesFile(workingDir string) string {
-	out, err := runGitCapture(workingDir, "config", "--get", "core.excludesFile")
+	out, err := git.Capture(workingDir, "config", "--get", "core.excludesFile")
 	if err != nil {
 		return ""
 	}
@@ -327,7 +333,7 @@ func parseIgnoreFile(path string) ([]parsedIgnoreRule, error) {
 // renderIgnoreRulesUnion prints the legend + deduped rows + summary. Inspection
 // view: stdout, no clipboard. Headless / NO_COLOR strips color via the palette
 // the caller chose for stdout.
-func renderIgnoreRulesUnion(out io.Writer, union ignoreRulesUnion, colors colorPalette) error {
+func renderIgnoreRulesUnion(out io.Writer, union ignoreRulesUnion, colors platform.Palette) error {
 	if len(union.Patterns) == 0 {
 		_, err := fmt.Fprintln(out, "No ignore rules in effect.")
 		return err
@@ -378,7 +384,7 @@ func renderIgnoreRulesUnion(out io.Writer, union ignoreRulesUnion, colors colorP
 // writeIgnoreRulesLegend groups contributing sources by kind so e.g. several
 // nested .gitignores share one row, then ends with the precedence one-liner
 // users specifically asked for.
-func writeIgnoreRulesLegend(out io.Writer, contributing []*ignoreSource, colors colorPalette) error {
+func writeIgnoreRulesLegend(out io.Writer, contributing []*ignoreSource, colors platform.Palette) error {
 	type legendRow struct {
 		label     string
 		scopeDesc string
