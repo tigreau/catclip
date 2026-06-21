@@ -71,8 +71,15 @@ func RipgrepBinary() (string, bool) {
 }
 
 func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) ([]string, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.files",
+		"paths", platform.InternalBenchInt(len(opts.Paths)),
+		"basenames", platform.InternalBenchInt(len(opts.Basenames)),
+		"no_ignore", strconv.FormatBool(opts.NoIgnore),
+		"timeout", strconv.FormatBool(opts.Timeout > 0),
+	)
 	bin, ok := RipgrepBinary()
 	if !ok {
+		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
 
@@ -121,11 +128,14 @@ func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) ([]string, erro
 	}
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
+			finishBench("err", "true", "deadline", "true")
 			return nil, ctx.Err()
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			finishBench("err", "false", "results", "0")
 			return nil, nil
 		}
+		finishBench("err", "true")
 		return nil, err
 	}
 
@@ -134,7 +144,9 @@ func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) ([]string, erro
 		paths[i] = normalizeRelPath(rel)
 	}
 	sort.Strings(paths)
-	return dedupeSortedStrings(paths), nil
+	paths = dedupeSortedStrings(paths)
+	finishBench("err", "false", "results", platform.InternalBenchInt(len(paths)))
+	return paths, nil
 }
 
 // textFileSetCache memoizes runRipgrepTextFiles by canonicalized working
@@ -240,8 +252,12 @@ func ResolveTextFileSet(workingDir string, targets []string) (map[string]struct{
 // positional arguments — files outside the targets are never enumerated.
 // Pass nil/empty for the project-wide scan.
 func runRipgrepTextFiles(workingDir string, targets []string) (map[string]struct{}, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.text_files",
+		"targets", platform.InternalBenchInt(len(targets)),
+	)
 	bin, ok := RipgrepBinary()
 	if !ok {
+		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
 
@@ -269,8 +285,10 @@ func runRipgrepTextFiles(workingDir string, targets []string) (map[string]struct
 	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			finishBench("err", "false", "results", "0")
 			return map[string]struct{}{}, nil
 		}
+		finishBench("err", "true")
 		return nil, err
 	}
 
@@ -283,6 +301,7 @@ func runRipgrepTextFiles(workingDir string, targets []string) (map[string]struct
 		}
 		set[rel] = struct{}{}
 	}
+	finishBench("err", "false", "results", platform.InternalBenchInt(len(set)))
 	return set, nil
 }
 
@@ -349,8 +368,12 @@ func ResolveVisibleFileSet(workingDir, hissPath string) (map[string]struct{}, er
 // When hissPath is non-empty, rg also applies it as a gitignore-syntax
 // overlay.
 func runRipgrepVisibleFiles(workingDir, hissPath string) (map[string]struct{}, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.visible_files",
+		"has_hiss", strconv.FormatBool(strings.TrimSpace(hissPath) != ""),
+	)
 	bin, ok := RipgrepBinary()
 	if !ok {
+		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
 
@@ -375,8 +398,10 @@ func runRipgrepVisibleFiles(workingDir, hissPath string) (map[string]struct{}, e
 	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			finishBench("err", "false", "results", "0")
 			return map[string]struct{}{}, nil
 		}
+		finishBench("err", "true")
 		return nil, err
 	}
 
@@ -389,6 +414,7 @@ func runRipgrepVisibleFiles(workingDir, hissPath string) (map[string]struct{}, e
 		}
 		set[rel] = struct{}{}
 	}
+	finishBench("err", "false", "results", platform.InternalBenchInt(len(set)))
 	return set, nil
 }
 
@@ -424,16 +450,23 @@ func DirsContainingFiles(files map[string]struct{}) map[string]struct{} {
 // Returns a map keyed by the absolute path rg emitted, with line numbers
 // in the order rg produced them. Empty input → empty map.
 func RunRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.match_lines",
+		"paths", platform.InternalBenchInt(len(absPaths)),
+	)
 	bin, ok := RipgrepBinary()
 	if !ok {
+		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
 	if len(absPaths) == 0 {
+		finishBench("err", "false", "chunks", "0", "matches", "0")
 		return map[string][]int{}, nil
 	}
 
 	matches := make(map[string][]int, len(absPaths))
+	chunks := 0
 	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+		chunks++
 		args := []string{
 			"--color=never",
 			"--no-messages",
@@ -465,10 +498,21 @@ func RunRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 					continue
 				case 2:
 					if isRipgrepBadPatternStderr(stderr.Bytes()) {
+						finishBench(
+							"err", "true",
+							"bad_pattern", "true",
+							"chunks", platform.InternalBenchInt(chunks),
+							"matches", platform.InternalBenchInt(len(matches)),
+						)
 						return nil, ErrRipgrepBadPattern
 					}
 				}
 			}
+			finishBench(
+				"err", "true",
+				"chunks", platform.InternalBenchInt(chunks),
+				"matches", platform.InternalBenchInt(len(matches)),
+			)
 			return nil, err
 		}
 
@@ -493,6 +537,11 @@ func RunRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 			matches[path] = append(matches[path], line)
 		}
 	}
+	finishBench(
+		"err", "false",
+		"chunks", platform.InternalBenchInt(chunks),
+		"matches", platform.InternalBenchInt(len(matches)),
+	)
 	return matches, nil
 }
 
@@ -511,15 +560,22 @@ func RunRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 // (`{path}\0{lineno}:{matched}\n`) — robust against Windows drive-letter
 // colons in paths and digit-prefixed match content.
 func FirstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.first_match_line_per_file",
+		"paths", platform.InternalBenchInt(len(absPaths)),
+	)
 	if len(absPaths) == 0 {
+		finishBench("err", "false", "chunks", "0", "matches", "0")
 		return map[string]int{}, nil
 	}
 	bin, ok := RipgrepBinary()
 	if !ok {
+		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
 	out := make(map[string]int, len(absPaths))
+	chunks := 0
 	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+		chunks++
 		args := []string{
 			"--color=never",
 			"--no-messages",
@@ -549,10 +605,21 @@ func FirstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 					continue
 				case 2:
 					if isRipgrepBadPatternStderr(stderr.Bytes()) {
+						finishBench(
+							"err", "true",
+							"bad_pattern", "true",
+							"chunks", platform.InternalBenchInt(chunks),
+							"matches", platform.InternalBenchInt(len(out)),
+						)
 						return nil, ErrRipgrepBadPattern
 					}
 				}
 			}
+			finishBench(
+				"err", "true",
+				"chunks", platform.InternalBenchInt(chunks),
+				"matches", platform.InternalBenchInt(len(out)),
+			)
 			return nil, err
 		}
 		for _, rec := range bytes.Split(result, []byte{'\n'}) {
@@ -579,20 +646,32 @@ func FirstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 			out[path] = line
 		}
 	}
+	finishBench(
+		"err", "false",
+		"chunks", platform.InternalBenchInt(chunks),
+		"matches", platform.InternalBenchInt(len(out)),
+	)
 	return out, nil
 }
 
 func RunRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.matches",
+		"paths", platform.InternalBenchInt(len(absPaths)),
+	)
 	bin, ok := RipgrepBinary()
 	if !ok {
+		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
 	if len(absPaths) == 0 {
+		finishBench("err", "false", "chunks", "0", "matches", "0")
 		return map[string]struct{}{}, nil
 	}
 
 	matches := make(map[string]struct{}, len(absPaths))
+	chunks := 0
 	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+		chunks++
 		args := []string{
 			"--color=never",
 			"--no-messages",
@@ -623,10 +702,21 @@ func RunRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, 
 					continue
 				case 2:
 					if isRipgrepBadPatternStderr(stderr.Bytes()) {
+						finishBench(
+							"err", "true",
+							"bad_pattern", "true",
+							"chunks", platform.InternalBenchInt(chunks),
+							"matches", platform.InternalBenchInt(len(matches)),
+						)
 						return nil, ErrRipgrepBadPattern
 					}
 				}
 			}
+			finishBench(
+				"err", "true",
+				"chunks", platform.InternalBenchInt(chunks),
+				"matches", platform.InternalBenchInt(len(matches)),
+			)
 			return nil, err
 		}
 
@@ -637,6 +727,11 @@ func RunRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, 
 			}
 		}
 	}
+	finishBench(
+		"err", "false",
+		"chunks", platform.InternalBenchInt(chunks),
+		"matches", platform.InternalBenchInt(len(matches)),
+	)
 	return matches, nil
 }
 
@@ -823,23 +918,40 @@ func HasScopedIgnoredTargetsStreaming(ctx context.Context, workingDir string, sc
 // Callers must pass absolute paths; the function does not resolve relative
 // paths against a working directory.
 func MaxLinesForFiles(absPaths []string) (int, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.max_lines",
+		"paths", platform.InternalBenchInt(len(absPaths)),
+	)
 	if len(absPaths) == 0 {
+		finishBench("err", "false", "chunks", "0", "max_lines", "0")
 		return 0, nil
 	}
 	bin, ok := RipgrepBinary()
 	if !ok {
+		finishBench("err", "true")
 		return 0, errRipgrepUnavailable
 	}
 	maxLines := 0
+	chunks := 0
 	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+		chunks++
 		chunkMax, err := maxLinesForFileChunk(bin, chunk)
 		if err != nil {
+			finishBench(
+				"err", "true",
+				"chunks", platform.InternalBenchInt(chunks),
+				"max_lines", platform.InternalBenchInt(maxLines),
+			)
 			return 0, err
 		}
 		if chunkMax > maxLines {
 			maxLines = chunkMax
 		}
 	}
+	finishBench(
+		"err", "false",
+		"chunks", platform.InternalBenchInt(chunks),
+		"max_lines", platform.InternalBenchInt(maxLines),
+	)
 	return maxLines, nil
 }
 
@@ -858,7 +970,11 @@ type SizedFile struct {
 // can't possibly exceed the running max. Falls back to the unsized loop
 // when any input lacks a known size.
 func MaxLinesForSizedFiles(files []SizedFile) (int, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.max_lines_sized",
+		"files", platform.InternalBenchInt(len(files)),
+	)
 	if len(files) == 0 {
+		finishBench("err", "false", "chunks", "0", "max_lines", "0")
 		return 0, nil
 	}
 
@@ -878,14 +994,22 @@ func MaxLinesForSizedFiles(files []SizedFile) (int, error) {
 		})
 	}
 	if len(absPaths) == 0 {
+		finishBench("err", "false", "chunks", "0", "max_lines", "0")
 		return 0, nil
 	}
 	if len(candidates) != len(absPaths) {
-		return MaxLinesForFiles(absPaths)
+		maxLines, err := MaxLinesForFiles(absPaths)
+		finishBench(
+			"err", platform.InternalBenchError(err),
+			"fallback", "true",
+			"max_lines", platform.InternalBenchInt(maxLines),
+		)
+		return maxLines, err
 	}
 
 	bin, ok := RipgrepBinary()
 	if !ok {
+		finishBench("err", "true")
 		return 0, errRipgrepUnavailable
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
@@ -893,13 +1017,26 @@ func MaxLinesForSizedFiles(files []SizedFile) (int, error) {
 	})
 
 	maxLines := 0
+	chunks := 0
 	for start := 0; start < len(candidates); {
 		if candidates[start].sizeBytes <= int64(maxLines) {
+			finishBench(
+				"err", "false",
+				"chunks", platform.InternalBenchInt(chunks),
+				"max_lines", platform.InternalBenchInt(maxLines),
+				"short_circuit", "true",
+			)
 			return maxLines, nil
 		}
 		chunk, next := sizedLineCountCandidateChunk(candidates, start, 256, 60*1024)
+		chunks++
 		chunkMax, err := maxLinesForFileChunk(bin, chunk)
 		if err != nil {
+			finishBench(
+				"err", "true",
+				"chunks", platform.InternalBenchInt(chunks),
+				"max_lines", platform.InternalBenchInt(maxLines),
+			)
 			return 0, err
 		}
 		if chunkMax > maxLines {
@@ -907,6 +1044,12 @@ func MaxLinesForSizedFiles(files []SizedFile) (int, error) {
 		}
 		start = next
 	}
+	finishBench(
+		"err", "false",
+		"chunks", platform.InternalBenchInt(chunks),
+		"max_lines", platform.InternalBenchInt(maxLines),
+		"short_circuit", "false",
+	)
 	return maxLines, nil
 }
 

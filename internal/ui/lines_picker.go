@@ -74,32 +74,74 @@ func resolveStartupLinesArgsWithEscHint(currentArgs []string, escHint string) ([
 }
 
 func prepareStartupLinesPickerSession(currentArgs []string) (startupLinesPickerSession, []string, error) {
+	// --lines can feel slow before fzf even paints: scope resolution, size
+	// backfill, max-line counting, and checkpoint write all happen at picker
+	// open. These spans separate parent-side setup from fzf/preview costs.
+	finishBench := platform.InternalBenchSpan("ui.lines_picker.prepare",
+		"argc", platform.InternalBenchInt(len(currentArgs)),
+	)
+	finishViewBench := platform.InternalBenchSpan("ui.lines_picker.prepare.resolve_scope")
 	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
+	finishViewBench(
+		"err", platform.InternalBenchError(err),
+		"entries", platform.InternalBenchInt(len(view.Entries)),
+	)
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return startupLinesPickerSession{}, nil, err
 	}
+	finishAbsBench := platform.InternalBenchSpan("ui.lines_picker.prepare.ensure_abs_paths",
+		"entries", platform.InternalBenchInt(len(view.Entries)),
+	)
 	entries := discovery.EnsureEntryAbsPaths(view.Entries, view.Invocation.WorkingDir)
+	finishAbsBench("entries", platform.InternalBenchInt(len(entries)))
 	if len(entries) == 0 {
+		finishBench("err", "false", "cancelled", "true", "reason", "empty")
 		return startupLinesPickerSession{}, nil, discovery.ErrSelectionCancelled
 	}
+	finishSizeBench := platform.InternalBenchSpan("ui.lines_picker.prepare.fill_sizes",
+		"entries", platform.InternalBenchInt(len(entries)),
+	)
 	entries = discovery.FillEntrySizes(view.Invocation.WorkingDir, entries)
+	finishSizeBench("entries", platform.InternalBenchInt(len(entries)))
+	finishMaxBench := platform.InternalBenchSpan("ui.lines_picker.prepare.max_lines",
+		"entries", platform.InternalBenchInt(len(entries)),
+	)
 	maxLines, err := maxLinesForSizedEntries(entries)
+	finishMaxBench(
+		"err", platform.InternalBenchError(err),
+		"max_lines", platform.InternalBenchInt(maxLines),
+	)
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return startupLinesPickerSession{}, nil, err
 	}
 	if maxLines <= 0 {
+		finishBench("err", "false", "cancelled", "true", "reason", "no_lines")
 		return startupLinesPickerSession{}, nil, discovery.ErrSelectionCancelled
 	}
 	if maxLines == 1 {
 		// Single-line files in scope. A one-row picker is friction without
 		// value; emit --lines 1 directly.
+		finishBench("err", "false", "direct", "true", "max_lines", "1")
 		return startupLinesPickerSession{}, append(append([]string(nil), currentArgs...), "--lines", "1"), nil
 	}
 
+	finishCheckpointBench := platform.InternalBenchSpan("ui.lines_picker.prepare.write_checkpoint",
+		"entries", platform.InternalBenchInt(len(entries)),
+	)
 	checkpointPath, cleanup, err := writeLinesPickerCheckpoint(view, entries)
+	finishCheckpointBench("err", platform.InternalBenchError(err))
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return startupLinesPickerSession{}, nil, err
 	}
+	finishBench(
+		"err", "false",
+		"direct", "false",
+		"max_lines", platform.InternalBenchInt(maxLines),
+		"entries", platform.InternalBenchInt(len(entries)),
+	)
 	return startupLinesPickerSession{CheckpointPath: checkpointPath, Cleanup: cleanup, MaxLines: maxLines}, nil, nil
 }
 

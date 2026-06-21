@@ -321,6 +321,90 @@ func TestApplyDepthStageKeepsOnlyPathsAtOrAboveRequestedDepth(t *testing.T) {
 	}
 }
 
+func TestApplySizeStageSortsLargestFirst(t *testing.T) {
+	entries := []Entry{
+		{RelPath: "small.txt", SizeBytes: 512, SizeKnown: true},
+		{RelPath: "large.txt", SizeBytes: 4 * 1024, SizeKnown: true},
+		{RelPath: "same-a.txt", SizeBytes: 2 * 1024, SizeKnown: true},
+		{RelPath: "same-b.txt", SizeBytes: 2 * 1024, SizeKnown: true},
+	}
+
+	filtered, err := ApplySizeStage(entries, "", nil)
+	if err != nil {
+		t.Fatalf("ApplySizeStage returned error: %v", err)
+	}
+
+	if got, want := testStageRelPaths(filtered), []string{
+		"large.txt",
+		"same-a.txt",
+		"same-b.txt",
+		"small.txt",
+	}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected size order %v, got %v", want, got)
+	}
+}
+
+func TestApplySizeStageFiltersMinimumAndRange(t *testing.T) {
+	entries := []Entry{
+		{RelPath: "zero.txt", SizeBytes: 0, SizeKnown: true},
+		{RelPath: "half.txt", SizeBytes: 512, SizeKnown: true},
+		{RelPath: "one.txt", SizeBytes: 1024, SizeKnown: true},
+		{RelPath: "two.txt", SizeBytes: 2048, SizeKnown: true},
+		{RelPath: "three.txt", SizeBytes: 3072, SizeKnown: true},
+	}
+
+	minOnly, err := ApplySizeStage(entries, "", []int{1})
+	if err != nil {
+		t.Fatalf("ApplySizeStage min returned error: %v", err)
+	}
+	if got, want := testStageRelPaths(minOnly), []string{"three.txt", "two.txt", "one.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected min filter %v, got %v", want, got)
+	}
+
+	inRange, err := ApplySizeStage(entries, "", []int{0, 1})
+	if err != nil {
+		t.Fatalf("ApplySizeStage range returned error: %v", err)
+	}
+	if got, want := testStageRelPaths(inRange), []string{"one.txt", "half.txt", "zero.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected range filter %v, got %v", want, got)
+	}
+}
+
+func TestApplySizeStageStatsMissingSizes(t *testing.T) {
+	project := t.TempDir()
+	contents := map[string]string{
+		"a.txt": "a",
+		"b.txt": strings.Repeat("b", 2048),
+	}
+	for relPath, content := range contents {
+		absPath := filepath.Join(project, relPath)
+		if err := os.WriteFile(absPath, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s failed: %v", relPath, err)
+		}
+	}
+
+	resolver := &Resolver{Cfg: command.Invocation{WorkingDir: project}}
+	entries := []Entry{{RelPath: "a.txt"}, {RelPath: "b.txt"}}
+	scope := command.ExecutionScope{Stages: []command.Stage{{Kind: command.StageSize}}}
+
+	filtered, err := applyScopeStages(resolver, git.Context{}, scope, entries)
+	if err != nil {
+		t.Fatalf("applyScopeStages returned error: %v", err)
+	}
+
+	if got, want := testStageRelPaths(filtered), []string{"b.txt", "a.txt"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected disk-backed size order %v, got %v", want, got)
+	}
+	for _, entry := range filtered {
+		if !entry.SizeKnown {
+			t.Fatalf("expected --size stat to populate SizeKnown for %s", entry.RelPath)
+		}
+		if got, want := entry.SizeBytes, int64(len(contents[entry.RelPath])); got != want {
+			t.Fatalf("%s SizeBytes = %d, want %d", entry.RelPath, got, want)
+		}
+	}
+}
+
 func TestApplyDepthStageRejectsValuesGreaterThanCurrentScopeMaxDepth(t *testing.T) {
 	entries := testStageEntries(
 		"README.md",
@@ -483,6 +567,7 @@ func TestStageApplierTableCoversEveryStageKind(t *testing.T) {
 		command.StageOnly,
 		command.StageExclude,
 		command.StageRecent,
+		command.StageSize,
 		command.StageDepth,
 		command.StageContains,
 		command.StageSnippet,

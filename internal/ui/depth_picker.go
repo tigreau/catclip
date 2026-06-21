@@ -8,9 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
-	"github.com/tigreau/catclip/internal/output"
+	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 )
@@ -52,7 +51,11 @@ func chooseStartupDepthWithEscHint(currentArgs []string, query string, escHint s
 	if err != nil {
 		return 0, false, err
 	}
+	bucketFinish := platform.InternalBenchSpan("ui.depth_picker.compute_buckets",
+		"entries", platform.InternalBenchInt(len(view.Entries)),
+	)
 	buckets := discovery.ComputeDepthBuckets(uniqueSortedRelPaths(view.Entries))
+	bucketFinish("buckets", platform.InternalBenchInt(len(buckets)))
 	if len(buckets) == 0 {
 		return 0, false, discovery.ErrSelectionCancelled
 	}
@@ -111,7 +114,13 @@ func startupDepthPickerLines(buckets []discovery.DepthBucket) []string {
 	for _, b := range buckets {
 		value := strconv.Itoa(b.Depth)
 		label := "keep files at depth <= " + value + " (" + strconv.Itoa(b.CumulativeCount) + " files)"
-		lines = append(lines, strings.Join([]string{value, value, label}, "\t"))
+		// Column 4 is the depth value fzf substitutes into `{4}` in the
+		// per-focus preview command (see buildDepthPickerPreview). It must be
+		// a single shell token because fzf single-quotes the substituted
+		// value; the `--depth` flag itself lives as literal text in the
+		// preview command. Hidden from display via --with-nth "1,3" in
+		// chooseDepthWithFzf.
+		lines = append(lines, strings.Join([]string{value, value, label, value}, "\t"))
 	}
 	return lines
 }
@@ -179,12 +188,26 @@ func depthPickerHeaderWithEscHint(escHint string) string {
 	)
 }
 
-// buildDepthPickerPreview pre-renders one tree payload per bucket into a
-// tmpdir and returns the fzf preview command that reads the per-bucket file.
-// Returns ("", "") on any failure (missing executable, mkdir failure, render
-// failure for any bucket) — the picker still works, just without a preview.
-// The caller owns the tmpdir lifetime via os.RemoveAll.
+// buildDepthPickerPreview writes a single shared checkpoint and returns a
+// preview command that fzf invokes per focus. The per-row `--depth N` arg
+// is encoded in a hidden 4th tab-separated column (see startupDepthPickerLines);
+// fzf substitutes `{4}` into the command on each focus and the child applies
+// the depth filter against the checkpoint in-memory.
+//
+// Item 5 redesign: replaces the previous loop that pre-wrote one JSON payload
+// per depth bucket. Bucket counts are typically small (5–15), so the Windows
+// gain is modest, but the design parity with size_picker keeps the per-bucket
+// anti-pattern from re-emerging in either picker.
 func buildDepthPickerPreview(view resolvedScopeView, buckets []discovery.DepthBucket) (cmd string, tmpdir string) {
+	buildFinish := platform.InternalBenchSpan("ui.depth_picker.build_preview",
+		"buckets", platform.InternalBenchInt(len(buckets)),
+		"shape", "lazy_checkpoint",
+	)
+	var err error
+	defer func() {
+		buildFinish("err", platform.InternalBenchError(err))
+	}()
+
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
 		return "", ""
@@ -193,44 +216,36 @@ func buildDepthPickerPreview(view resolvedScopeView, buckets []discovery.DepthBu
 	if err != nil {
 		return "", ""
 	}
-	scopes := []output.EvaluatedScope{{Paths: view.Scope.Paths}}
-	for _, b := range buckets {
-		filtered, err := discovery.ApplyDepthStage(view.Entries, b.Depth)
+	checkpointPath := filepath.Join(tmpdir, "scope.json")
+	statuses := map[string]string{}
+	if view.GitContext.Enabled {
+		statuses, err = git.StatusMapForPathspecs(view.GitContext, discovery.GitStatusPathspecsForEntries(view.GitContext, view.Entries))
 		if err != nil {
 			_ = os.RemoveAll(tmpdir)
 			return "", ""
 		}
-		scopes[0].Entries = filtered
-		path := filepath.Join(tmpdir, strconv.Itoa(b.Depth)+".json")
-		if err := writeDepthPayloadFile(path, view, scopes, filtered); err != nil {
-			_ = os.RemoveAll(tmpdir)
-			return "", ""
-		}
+	}
+	if err = discovery.WriteCheckpoint(checkpointPath, view.Invocation.WorkingDir, discovery.CheckpointData{
+		GitContext: view.GitContext,
+		GitStatus:  statuses,
+		Entries:    view.Entries,
+	}); err != nil {
+		_ = os.RemoveAll(tmpdir)
+		return "", ""
 	}
 
-	parts := []string{discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview"}
-	// Pass --input-dir and --input-stem as separate args so the {2}
-	// substitution lives as a standalone token. POSIX sh and Windows cmd.exe
-	// quote differently for placeholder substitutions; keeping {2} away
-	// from any adjacent characters means catclip assembles the final path
-	// in Go (platform-neutral), not the shell.
-	parts = append(parts, "--input-dir", discovery.ShellQuoteArg(tmpdir), "--input-stem", "{2}")
+	parts := []string{
+		discovery.ShellQuoteArg(self),
+		"--quiet",
+		"--internal-tree-preview",
+		"--internal-prediscovered",
+		discovery.ShellQuoteArg(checkpointPath),
+		// `--depth` is literal text; `{4}` is the per-row depth integer (see
+		// startupDepthPickerLines). fzf single-quotes substituted column
+		// values, so the flag must NOT be inside the substituted column —
+		// otherwise the shell would see `--depth 5` as one argument.
+		"--depth",
+		"{4}",
+	}
 	return strings.Join(parts, " "), tmpdir
-}
-
-func writeDepthPayloadFile(path string, view resolvedScopeView, scopes []output.EvaluatedScope, entries []discovery.Entry) error {
-	f, err := os.Create(path)
-	if err != nil {
-		return err
-	}
-	plan, err := output.BuildPlanForResolvedScopes(view.GitContext, []command.ExecutionScope{view.Scope}, scopes, entries)
-	if err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := EncodeTreePayloadFromPlan(f, TreeDocumentRenderConfig(view.Render), view.GitContext, plan, nil); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
 }

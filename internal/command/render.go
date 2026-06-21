@@ -115,6 +115,11 @@ func CanonicalScopeArgs(s ExecutionScope) []string {
 			if stage.Limit != nil {
 				parts = append(parts, shellQuoteArg(strconv.Itoa(*stage.Limit)))
 			}
+		case StageSize:
+			parts = append(parts, "--size")
+			for _, n := range stage.Nums {
+				parts = append(parts, shellQuoteArg(strconv.Itoa(n)))
+			}
 		case StageDepth:
 			parts = append(parts, "--depth")
 			if stage.Limit != nil {

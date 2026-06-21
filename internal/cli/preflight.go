@@ -68,7 +68,7 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		switch arg {
 		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules":
 			continue
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 			continue
 		case "--then":
 			if err := appendCurrentScope(); err != nil {
@@ -163,6 +163,18 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 			}
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageRecent, Limit: &limit})
 			i++
+			continue
+		case "--size":
+			inModifierMode = true
+			if err := stageState.apply(command.StageSize); err != nil {
+				return command.Spec{}, err
+			}
+			nums, next, err := consumeOptionalSizeBounds(args, i+1)
+			if err != nil {
+				return command.Spec{}, err
+			}
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageSize, Nums: nums})
+			i = next - 1
 			continue
 		case "--depth":
 			inModifierMode = true
@@ -356,6 +368,8 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 			return command.Spec{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
 		case strings.HasPrefix(arg, "--recent="):
 			return command.Spec{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
+		case strings.HasPrefix(arg, "--size="):
+			return command.Spec{}, SizeEqualsFormError()
 		case strings.HasPrefix(arg, "--depth="):
 			return command.Spec{}, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 		case strings.HasPrefix(arg, "--"):

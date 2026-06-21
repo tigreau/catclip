@@ -120,6 +120,12 @@ var startupSinkChoicesSmall = []startupSinkChoice{
 		Args:        []string{"-p"},
 	},
 	{
+		Key:         "preview",
+		Label:       "Stdout - metadata only",
+		Description: "Print paths, sizes, tokens, git, dates.",
+		Args:        []string{"--preview"},
+	},
+	{
 		Key:         "headless",
 		Label:       "Headless - agent / script contract",
 		Description: "Print to stdout with quiet stderr and no prompts.",
@@ -144,6 +150,12 @@ var startupSinkChoicesLarge = []startupSinkChoice{
 		Label:       "Stdout - for piping",
 		Description: "Print to stdout for piping into another tool or saving to a file.",
 		Args:        []string{"-p"},
+	},
+	{
+		Key:         "preview",
+		Label:       "Stdout - metadata only",
+		Description: "Print paths, sizes, tokens, git, dates.",
+		Args:        []string{"--preview"},
 	},
 	{
 		Key:         "headless",

@@ -59,6 +59,7 @@ func cloneStages(in []Stage) []Stage {
 		cloned := Stage{
 			Kind:        stage.Kind,
 			Values:      cloneStringSlice(stage.Values),
+			Nums:        cloneIntSlice(stage.Nums),
 			ExactValues: stage.ExactValues,
 		}
 		if stage.Limit != nil {
@@ -68,6 +69,13 @@ func cloneStages(in []Stage) []Stage {
 		out = append(out, cloned)
 	}
 	return out
+}
+
+func cloneIntSlice(in []int) []int {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]int(nil), in...)
 }
 
 // shellQuoteArg wraps arg only when it contains shell-metacharacters or

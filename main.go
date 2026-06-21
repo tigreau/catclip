@@ -63,6 +63,18 @@ func newExitError(code int, message string) error {
 
 // Main parses the CLI and runs the selected action.
 func Main() {
+	args := os.Args[1:]
+	commandKind := internalBenchCommandKind(args)
+	// Opt-in diagnostic timeline for interactive Windows slowness. fzf spawns
+	// catclip --internal-* helpers repeatedly for --snippet/--lines; normal
+	// process profiles miss those child processes. This span is inert unless
+	// CATCLIP_INTERNAL_BENCH_LOG is set.
+	finishMainBench := platform.InternalBenchSpan("main.total",
+		"kind", commandKind,
+		"argc", platform.InternalBenchInt(len(args)),
+	)
+	defer finishMainBench()
+
 	// Wire the version resolver into the cli parser. cli/ can't import root,
 	// so the version-file lookup logic (which uses platform.ExecutableCandidateDirs
 	// + project-root VERSION lookup) is provided here at process start.
@@ -79,16 +91,25 @@ func Main() {
 	// ensureRequiredTools (a missing rg/fzf must not mask the policy
 	// message) and before cli.ParseArgs. See
 	// docs/versions/v0.6.0/reports/ACTIVE_PLAN_x11_full_removal.md.
+	finishGateBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "linux_session_gate")
 	if err := linuxSessionGateError(); err != nil {
+		finishGateBench("err", platform.InternalBenchError(err))
 		exitWithError(err, os.Stderr)
 		return
 	}
+	finishGateBench("err", "false")
+
+	finishToolsBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "ensure_required_tools")
 	if err := ensureRequiredTools(os.Stderr); err != nil {
+		finishToolsBench("err", platform.InternalBenchError(err))
 		os.Exit(1)
 		return
 	}
-	args := os.Args[1:]
+	finishToolsBench("err", "false")
+
+	finishNormalizeBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "normalize_positional_globs")
 	normResult, err := normalizePositionalGlobArgs(args, positionalGlobArgsQuiet(args))
+	finishNormalizeBench("err", platform.InternalBenchError(err))
 	if err != nil {
 		exitWithError(err, os.Stderr)
 		return
@@ -96,7 +117,12 @@ func Main() {
 	args = normResult.Args
 	startupResult := ui.StartupPickerResult{Args: args}
 	handled := false
+	finishStartupBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "startup_picker")
 	startupResult, handled, err = ui.MaybeResolveStartupPickerAndSinkArgs(args)
+	finishStartupBench(
+		"err", platform.InternalBenchError(err),
+		"handled", fmt.Sprint(handled),
+	)
 	if err != nil {
 		exitWithError(err, os.Stderr)
 		return
@@ -107,7 +133,9 @@ func Main() {
 		args = startupResult.Args
 	}
 
+	finishParseBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "parse")
 	cfg, err := cli.ParseArgs(args)
+	finishParseBench("err", platform.InternalBenchError(err))
 	if err != nil {
 		exitWithError(err, os.Stderr)
 		return
@@ -127,9 +155,43 @@ func Main() {
 		}
 	}
 
+	finishRunBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "run")
 	if err := run(cfg, os.Stdout, os.Stderr, startupResult.PreparedOutput); err != nil {
+		finishRunBench("err", platform.InternalBenchError(err))
 		exitWithError(err, os.Stderr)
+		return
 	}
+	finishRunBench("err", "false")
+}
+
+func internalBenchCommandKind(args []string) string {
+	for _, arg := range args {
+		switch arg {
+		case "--internal-content-match-list":
+			return "internal-content-match-list"
+		case "--internal-lines-preview":
+			return "internal-lines-preview"
+		case "--internal-file-preview":
+			return "internal-file-preview"
+		case "--internal-snippet-boundary-preview":
+			return "internal-snippet-boundary-preview"
+		case "--internal-recent-preview":
+			return "internal-recent-preview"
+		case "--internal-tree-preview":
+			return "internal-tree-preview"
+		case "--internal-sink-preview":
+			return "internal-sink-preview"
+		case "--internal-sink-toggle":
+			return "internal-sink-toggle"
+		case "--help", "-h":
+			return "help"
+		case "--help-all":
+			return "help-all"
+		case "--version", "-V":
+			return "version"
+		}
+	}
+	return "run"
 }
 
 func rawArgsHasHeadless(args []string) bool {

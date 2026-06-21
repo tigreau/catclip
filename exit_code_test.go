@@ -68,7 +68,7 @@ func TestExitCodeForDiscoveryUsageError(t *testing.T) {
 	}
 	// Absolute path is platform-specific. On POSIX a leading slash is
 	// absolute; on Windows the parser uses filepath.IsAbs which requires
-	// a drive letter (or UNC). The path doesn't need to exist - the
+	// a drive letter (or UNC). The path doesn't need to exist — the
 	// resolver rejects absolute paths before touching the filesystem.
 	absPath := "/etc/hosts"
 	if runtime.GOOS == "windows" {

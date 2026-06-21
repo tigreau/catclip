@@ -7,7 +7,7 @@ import (
 )
 
 // TestStageFieldsSurviveSpecRoundTrip pins every Stage field — Kind, Values,
-// Limit, ExactValues — through ExecutionScope → Spec → ExecutionScope. The
+// Limit, Nums, ExactValues — through ExecutionScope → Spec → ExecutionScope. The
 // motivating case is ExactValues, which the previous cloneScopeStages at
 // root silently dropped (caught 2026-06-04 by review of the v0.6.0 command
 // extraction); the others are listed so a future field addition that misses
@@ -21,6 +21,7 @@ func TestStageFieldsSurviveSpecRoundTrip(t *testing.T) {
 				Kind:        StageOnly,
 				Values:      []string{"*.go", "*.ts"},
 				Limit:       &limit,
+				Nums:        []int{10, 20},
 				ExactValues: true,
 			},
 			{
@@ -53,6 +54,9 @@ func TestStageFieldsSurviveSpecRoundTrip(t *testing.T) {
 		}
 		if got.Stages[i].ExactValues != want.ExactValues {
 			t.Errorf("stage[%d].ExactValues: got %v, want %v (regression: cloneScopeStages used to drop this field silently)", i, got.Stages[i].ExactValues, want.ExactValues)
+		}
+		if !reflect.DeepEqual(got.Stages[i].Nums, want.Nums) {
+			t.Errorf("stage[%d].Nums: got %v, want %v", i, got.Stages[i].Nums, want.Nums)
 		}
 		switch {
 		case got.Stages[i].Limit == nil && want.Limit != nil:

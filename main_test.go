@@ -240,6 +240,76 @@ func TestParseArgsRejectsRecentEqualsForm(t *testing.T) {
 	}
 }
 
+func TestParseArgsAcceptsSizeStageForms(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want []int
+	}{
+		{name: "bare sort", args: []string{"src", "--size"}, want: nil},
+		{name: "minimum only", args: []string{"src", "--size", "10"}, want: []int{10}},
+		{name: "zero minimum", args: []string{"src", "--size", "0"}, want: []int{0}},
+		{name: "range", args: []string{"src", "--size", "0", "100"}, want: []int{0, 100}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := cli.ParseArgs(tc.args)
+			if err != nil {
+				t.Fatalf("ParseArgs returned error: %v", err)
+			}
+			scope := parsedExecutionScope(t, cfg)
+			if got, want := len(scope.Stages), 1; got != want {
+				t.Fatalf("expected %d stage, got %d", want, got)
+			}
+			stage := scope.Stages[0]
+			if stage.Kind != command.StageSize {
+				t.Fatalf("expected size stage, got %q", stage.Kind)
+			}
+			if !reflect.DeepEqual(stage.Nums, tc.want) {
+				t.Fatalf("size nums = %v, want %v", stage.Nums, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseArgsRejectsInvalidSizeValues(t *testing.T) {
+	cases := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "non integer", args: []string{"src", "--size", "large"}, wantErr: "--size expects integer KiB values"},
+		{name: "negative", args: []string{"src", "--size", "-1"}, wantErr: "--size expects integer KiB values"},
+		{name: "zero max", args: []string{"src", "--size", "0", "0"}, wantErr: "--size max must be >= 1 KiB"},
+		{name: "max before min", args: []string{"src", "--size", "100", "10"}, wantErr: "--size max (10) must be >= min (100)"},
+		{name: "too many", args: []string{"src", "--size", "1", "2", "3"}, wantErr: "--size takes at most two values"},
+		{name: "equals form", args: []string{"src", "--size=10"}, wantErr: "--size requires a space before the value"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := cli.ParseArgs(tc.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseArgsSizeTreatsUnknownFlagAsBoundary(t *testing.T) {
+	_, err := cli.ParseArgs([]string{"src", "--size", "--foo"})
+	if err == nil {
+		t.Fatal("expected unknown option error")
+	}
+	if !strings.Contains(err.Error(), "Unknown option '--foo'") {
+		t.Fatalf("expected unknown option error, got: %v", err)
+	}
+}
+
 func TestParseArgsAcceptsDepthStage(t *testing.T) {
 	cfg, err := cli.ParseArgs([]string{"src", "--depth", "2"})
 	if err != nil {
@@ -910,6 +980,54 @@ func TestRunRecentReordersOutputByNewestFirst(t *testing.T) {
 	}
 	if !(positions[0] < positions[1] && positions[1] < positions[2]) {
 		t.Fatalf("expected newest-first output order beta, gamma, alpha; got:\n%s", out)
+	}
+}
+
+func TestRunSizeFiltersAndOrdersByLargestFirst(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"small.txt": "small\n",
+		"one.txt":   strings.Repeat("a", 1024),
+		"two.txt":   strings.Repeat("b", 1536),
+		"big.txt":   strings.Repeat("c", 4096),
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", ".", "--only", "*.txt", "--size", "1", "2", "--paths"})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	if got, want := strings.TrimSpace(stdout.String()), "two.txt\none.txt"; got != want {
+		t.Fatalf("size-filtered paths = %q, want %q", got, want)
+	}
+}
+
+func TestRunPreviewSizePreservesLargestFirstOrder(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"aaa-small.txt":  "small\n",
+		"mmm-medium.txt": strings.Repeat("m", 1024),
+		"zzz-big.txt":    strings.Repeat("b", 2048),
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--preview", ".", "--only", "*.txt", "--size"})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	out := stdout.String()
+	big := strings.Index(out, "zzz-big.txt")
+	medium := strings.Index(out, "mmm-medium.txt")
+	small := strings.Index(out, "aaa-small.txt")
+	if big < 0 || medium < 0 || small < 0 {
+		t.Fatalf("preview missing expected files:\n%s", out)
+	}
+	if !(big < medium && medium < small) {
+		t.Fatalf("--preview --size should preserve largest-first order, got:\n%s", out)
 	}
 }
 
@@ -5121,6 +5239,8 @@ func TestCanonicalScopeArgsCoversAllStageKinds(t *testing.T) {
 			case command.StageRecent, command.StageDepth:
 				limit := 5
 				s.Stages[0].Limit = &limit
+			case command.StageSize:
+				s.Stages[0].Nums = []int{1, 5}
 			case command.StageInclude, command.StageOnly, command.StageExclude, command.StageContains, command.StageSnippet:
 				s.Stages[0].Values = []string{"x"}
 			case command.StageLines:

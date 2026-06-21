@@ -64,6 +64,7 @@ var stageApplierTable = map[command.StageKind]stageApplier{
 	command.StageOnly:         applyOnlyStageCase,
 	command.StageExclude:      applyExcludeStageCase,
 	command.StageRecent:       ApplyRecentStageCase,
+	command.StageSize:         ApplySizeStageCase,
 	command.StageDepth:        ApplyDepthStageCase,
 	command.StageContains:     applyContentStageCase,
 	command.StageSnippet:      applyContentStageCase,
@@ -124,6 +125,10 @@ func applyExcludeStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
 
 func ApplyRecentStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
 	return ApplyRecentStage(entries, ctx.Resolver.Cfg.WorkingDir, ctx.Stage.Limit)
+}
+
+func ApplySizeStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
+	return ApplySizeStage(entries, ctx.Resolver.Cfg.WorkingDir, ctx.Stage.Nums)
 }
 
 func ApplyDepthStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {

@@ -58,20 +58,20 @@ if [ "$prompt" = "depth> " ]; then
 		echo "preview command must not invoke catclip-tree" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- "--input-dir" >/dev/null || {
-		echo "preview command missing --input-dir" >&2
+	printf '%s\n' "$preview" | grep -F -- "--internal-prediscovered" >/dev/null || {
+		echo "preview command missing --internal-prediscovered checkpoint flag" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- "--input-stem {2}" >/dev/null || {
-		echo "preview command missing per-bucket stem placeholder" >&2
+	printf '%s\n' "$preview" | grep -F -- "{4}" >/dev/null || {
+		echo "preview command missing {4} per-row depth-tail placeholder" >&2
+		exit 91
+	}
+	printf '%s\n' "$preview" | grep -F -- "--input-dir" >/dev/null && {
+		echo "lazy preview must not use the old --input-dir/--input-stem per-bucket file shape" >&2
 		exit 91
 	}
 	printf '%s\n' "$preview" | grep -F -- "--internal-tree-payload" >/dev/null && {
 		echo "preview command should no longer invoke catclip --internal-tree-payload" >&2
-		exit 91
-	}
-	printf '%s\n' "$preview" | grep -F -- "--depth {2}" >/dev/null && {
-		echo "preview command should no longer pipe --depth {2} into catclip" >&2
 		exit 91
 	}
 	case "$preview" in
@@ -84,11 +84,11 @@ if [ "$prompt" = "depth> " ]; then
 			exit 91
 			;;
 	esac
-	# {2} must live OUTSIDE any double-quoted region. If fzf substitutes
-	# the placeholder while it's wrapped in quotes, the shell-escaped
-	# replacement ('2') is preserved literally in the resulting path.
-	if printf '%s\n' "$preview" | grep -E '"[^"]*\{2\}[^"]*"' >/dev/null; then
-		echo "preview command quotes {2} inside double quotes: $preview" >&2
+	# {4} must live OUTSIDE any double-quoted region — fzf substitution
+	# preserves shell-escaped chars literally when inside double quotes,
+	# which would break the multi-token --depth tail substitution.
+	if printf '%s\n' "$preview" | grep -E '"[^"]*\{4\}[^"]*"' >/dev/null; then
+		echo "preview command quotes {4} inside double quotes: $preview" >&2
 		exit 91
 	fi
 	printf '%s\n' "$input" | grep -F '1	1	keep files at depth <= 1' >/dev/null && {
@@ -123,7 +123,12 @@ exit 91
 	}
 }
 
-func TestStartupDepthPickerPrerendersAllBuckets(t *testing.T) {
+// TestStartupDepthPickerWritesSingleCheckpoint pins the Item 5 lazy redesign:
+// the depth picker writes one shared checkpoint, not N per-bucket payload
+// files. fzf substitutes a `--depth N` tail from each line's hidden column 4
+// into the per-focus preview command, and the child applies the depth filter
+// against the checkpoint in-memory.
+func TestStartupDepthPickerWritesSingleCheckpoint(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"a.ts":          "a\n",
 		"src/b.ts":      "b\n",
@@ -154,18 +159,21 @@ if [ "$prompt" != "depth> " ]; then
 	exit 91
 fi
 
-# Pull the tmpdir out of the preview command. Pattern looks like:
-#   "<catclip>" --quiet --internal-tree-preview --input-dir "<tmpdir>" --input-stem {2}
-tmpdir_token="$(printf '%s\n' "$preview" | sed -n 's/.*--input-dir "\{0,1\}\([^" ]*\)"\{0,1\} --input-stem.*/\1/p')"
-if [ -z "$tmpdir_token" ]; then
-	echo "could not extract tmpdir from preview command: $preview" >&2
+# Pull the checkpoint path out of the preview command. Pattern looks like:
+#   "<catclip>" --quiet --internal-tree-preview --internal-prediscovered "<ckpt>" {4}
+ckpt_token="$(printf '%s\n' "$preview" | sed -n 's/.*--internal-prediscovered "\{0,1\}\([^" ]*\)"\{0,1\}.*/\1/p')"
+if [ -z "$ckpt_token" ]; then
+	echo "could not extract checkpoint path from preview command: $preview" >&2
 	exit 91
 fi
 
-# Snapshot the tmpdir's contents so the Go test can verify pre-rendered files
-# existed while the picker was open.
+tmpdir_token="$(dirname "$ckpt_token")"
+
+# Snapshot the tmpdir's contents while the picker is open, so the Go test can
+# verify exactly one checkpoint file exists (not N per-bucket files).
 ls "$tmpdir_token" >"$CATCLIP_DEPTH_TEST_PROBE/files.txt" 2>/dev/null || true
 printf '%s\n' "$tmpdir_token" >"$CATCLIP_DEPTH_TEST_PROBE/tmpdir.txt"
+printf '%s\n' "$ckpt_token" >"$CATCLIP_DEPTH_TEST_PROBE/ckpt.txt"
 
 # Select the deepest bucket so the picker exits cleanly.
 printf '%s\n' "$input" | tail -n 1
@@ -189,30 +197,25 @@ exit 0
 		t.Fatalf("expected tmpdir name to carry catclip-depth- prefix, got %q", tmpdir)
 	}
 
+	ckptBytes, err := os.ReadFile(filepath.Join(probeDir, "ckpt.txt"))
+	if err != nil {
+		t.Fatalf("read probe ckpt.txt: %v", err)
+	}
+	ckpt := strings.TrimSpace(string(ckptBytes))
+	if filepath.Base(ckpt) != "scope.json" {
+		t.Fatalf("expected checkpoint named scope.json, got %q", filepath.Base(ckpt))
+	}
+
 	filesBytes, err := os.ReadFile(filepath.Join(probeDir, "files.txt"))
 	if err != nil {
 		t.Fatalf("read probe files.txt: %v", err)
 	}
 	files := strings.Fields(string(filesBytes))
-	// Project max depth is 4 (x/y/z/leaf.ts); every depth 1..4 has at least one
-	// file, so we expect 1.json through 4.json. Buckets only exist where
-	// counts[d] > 0, which matches every depth in this fixture.
-	wantFiles := []string{"1.json", "2.json", "3.json", "4.json"}
-	got := map[string]bool{}
-	for _, f := range files {
-		got[f] = true
-	}
-	for _, w := range wantFiles {
-		if !got[w] {
-			t.Fatalf("expected pre-rendered bucket file %q to exist in tmpdir; got %v", w, files)
-		}
-		raw, err := os.ReadFile(filepath.Join(tmpdir, w))
-		if err == nil {
-			// Files are deleted via defer after the picker returns; capture earlier.
-			if len(raw) == 0 {
-				t.Fatalf("bucket file %q is empty during picker run", w)
-			}
-		}
+	// Item 5 lazy redesign: exactly ONE file in the tmpdir — the shared
+	// checkpoint — regardless of bucket count. Previously this would have
+	// been 4 files (1.json through 4.json for depths 1-4).
+	if len(files) != 1 || files[0] != "scope.json" {
+		t.Fatalf("expected tmpdir to contain exactly one shared checkpoint named scope.json; got %v", files)
 	}
 
 	// Tmpdir is cleaned up after the picker returns.

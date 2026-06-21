@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 // ErrSelectionCancelled reports an fzf exit that should be treated as a
@@ -70,6 +72,18 @@ func Filter(bin, query string, lines []string) ([]string, error) {
 
 // Run executes an interactive fzf picker and returns the parsed selection.
 func Run(bin string, req Request) (Result, error) {
+	// Opt-in interactive diagnostic. This is the parent-side fzf duration:
+	// picker input has already been prepared, and preview child processes log
+	// separately via CATCLIP_INTERNAL_BENCH_LOG. Do not log query text,
+	// preview commands, or row contents here.
+	finishBench := platform.InternalBenchSpan("picker.fzf.run",
+		"lines", platform.InternalBenchInt(len(req.Lines)),
+		"preview", platform.InternalBenchBool(req.PreviewCommand != "" || req.PreviewWindow != ""),
+		"bindings", platform.InternalBenchInt(len(req.Bindings)),
+		"disabled", platform.InternalBenchBool(req.Disabled),
+		"multi", platform.InternalBenchBool(req.Multi),
+		"print_query", platform.InternalBenchBool(req.PrintQuery),
+	)
 	args := buildArgs(req)
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin = strings.NewReader(strings.Join(req.Lines, "\n") + "\n")
@@ -77,28 +91,44 @@ func Run(bin string, req Request) (Result, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 130) {
+			finishBench("err", "false", "cancelled", "true")
 			return Result{}, ErrSelectionCancelled
 		}
+		finishBench("err", "true")
 		return Result{}, err
 	}
 
 	text := strings.TrimSpace(string(out))
 	if text == "" {
+		finishBench("err", "false", "cancelled", "true")
 		return Result{}, ErrSelectionCancelled
 	}
 
 	if req.PrintQuery {
 		result := parseChooseResult(string(out), req.ExpectKeys)
 		if result.Key == "" && len(result.Matches) == 0 {
+			finishBench("err", "false", "cancelled", "true")
 			return Result{}, ErrSelectionCancelled
 		}
+		finishBench(
+			"err", "false",
+			"cancelled", "false",
+			"matches", platform.InternalBenchInt(len(result.Matches)),
+			"key", platform.InternalBenchBool(result.Key != ""),
+		)
 		return result, nil
 	}
 
 	result := Result{Matches: parseMatches(text)}
 	if len(result.Matches) == 0 {
+		finishBench("err", "false", "cancelled", "true")
 		return Result{}, ErrSelectionCancelled
 	}
+	finishBench(
+		"err", "false",
+		"cancelled", "false",
+		"matches", platform.InternalBenchInt(len(result.Matches)),
+	)
 	return result, nil
 }
 

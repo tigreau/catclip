@@ -16,7 +16,7 @@ import (
 
 // BuildPlanForResolvedScopes constructs the output plan for an
 // already-evaluated invocation: per-scope entries plus the original
-// command-side scopes (needed to inspect --paths and --recent stage
+// command-side scopes (needed to inspect --paths and ordered stage
 // presence).
 func BuildPlanForResolvedScopes(
 	gitCtx git.Context,
@@ -25,10 +25,10 @@ func BuildPlanForResolvedScopes(
 	allEntries []discovery.Entry,
 ) (Plan, error) {
 	if ExecutionScopesUsePathsStage(scopes) {
-		return prepareSectionedOutputPlan(gitCtx, evaluatedScopes, ExecutionScopesUseRecentStage(scopes))
+		return prepareSectionedOutputPlan(gitCtx, evaluatedScopes, ExecutionScopesPreserveEvaluatedOrder(scopes))
 	}
 	entries := allEntries
-	if ExecutionScopesUseRecentStage(scopes) {
+	if ExecutionScopesPreserveEvaluatedOrder(scopes) {
 		entries = discovery.DedupeEntriesByPathPreserveOrder(entries)
 	} else {
 		entries = discovery.DedupeEntriesByPath(entries)
@@ -42,7 +42,7 @@ func BuildPlanForResolvedScopes(
 // slice from each file body, not the full plan-state mode tags.
 func BuildLinesPreviewPlanForResolvedScopes(scopes []command.ExecutionScope, allEntries []discovery.Entry) Plan {
 	entries := allEntries
-	if ExecutionScopesUseRecentStage(scopes) {
+	if ExecutionScopesPreserveEvaluatedOrder(scopes) {
 		entries = discovery.DedupeEntriesByPathPreserveOrder(entries)
 	} else {
 		entries = discovery.DedupeEntriesByPath(entries)
@@ -70,11 +70,25 @@ func BuildPlanForDiscoveredInvocation(gitCtx git.Context, inv discovery.Discover
 	return BuildPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, allEntries)
 }
 
-// ExecutionScopesUseRecentStage reports whether any scope in the slice
-// has a --recent stage. Discovery-side predicates can't help here
-// because --recent shapes plan dedup behavior (preserve-order vs.
-// merge-by-priority). Exposed for root callers that need the same
-// gate for picker-side preview planning.
+// ExecutionScopesPreserveEvaluatedOrder reports whether any scope contains a
+// stage whose evaluated entry order is user-visible. Discovery-side predicates
+// can't help here because these stages shape plan dedup behavior
+// (preserve-order vs. merge-by-priority). Exposed for UI callers that need the
+// same gate for picker-side preview planning.
+func ExecutionScopesPreserveEvaluatedOrder(scopes []command.ExecutionScope) bool {
+	for _, s := range scopes {
+		for _, stage := range s.Stages {
+			switch stage.Kind {
+			case command.StageRecent, command.StageSize:
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// ExecutionScopesUseRecentStage is kept as the narrow predicate for callers that
+// specifically care about --recent, not generic evaluated-order preservation.
 func ExecutionScopesUseRecentStage(scopes []command.ExecutionScope) bool {
 	for _, s := range scopes {
 		if s.HasStage(command.StageRecent) {

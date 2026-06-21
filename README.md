@@ -38,6 +38,7 @@ catclip src "*.go"                   # union: src/ + all .go files
 catclip src --only "*.ts"            # keep only .ts files
 catclip src --exclude "*.css"        # skip CSS files
 catclip src --recent 5               # 5 most recently modified
+catclip src --size 0 100             # files up to 100 KiB, largest first
 catclip src --depth 2                # shallow files only
 catclip src --contains TODO          # files mentioning TODO
 catclip src --snippet TODO           # blank-line-bounded blocks around matches
@@ -92,7 +93,7 @@ curl -fsSL https://raw.githubusercontent.com/tigreau/catclip/main/install.sh | b
 irm https://raw.githubusercontent.com/tigreau/catclip/main/install.ps1 | iex
 ```
 
-Clipboard tool required: `pbcopy` (macOS, built-in), `clip.exe` (Windows, built-in), `wl-clipboard` (Linux — Wayland-only; install via `apt install wl-clipboard`, `pacman -S wl-clipboard`, or `dnf install wl-clipboard`).
+Clipboard tool required: `pbcopy` (macOS, built-in), `clip.exe` (Windows, built-in), `wl-clipboard` (Linux — Wayland-only, install needed).
 
 catclip bundles its own `fzf` and `ripgrep` — no external dependencies needed.
 

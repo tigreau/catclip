@@ -224,6 +224,14 @@ func currentScopeStagesFromArgsLegacy(args []string) []command.Stage {
 					i++
 				}
 			}
+		case "--size":
+			stages = append(stages, command.Stage{Kind: command.StageSize})
+			for consumed := 0; consumed < 2 && i+1 < len(args) && !IsModifierBoundaryToken(args[i+1]); consumed++ {
+				if _, err := ParseSizeBoundToken(args[i+1]); err != nil {
+					break
+				}
+				i++
+			}
 		case "--contains", "--snippet", "--depth":
 			kind, _ := ScopeStageKindForFlag(args[i])
 			stages = append(stages, command.Stage{Kind: kind})

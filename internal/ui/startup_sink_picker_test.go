@@ -211,6 +211,58 @@ printf '%s\n' "$input" | grep -F $'\theadless\t' | head -n 1
 	}
 }
 
+func TestMaybeResolveStartupSinkPickerArgsSelectsPreview(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake-fzf cannot run on Windows")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.go": "package main\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			[ "$2" = "output> " ] || {
+				echo "unexpected prompt: $2" >&2
+				exit 91
+			}
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+printf '%s\n' "$input" | grep -F "Stdout - metadata only" >/dev/null || {
+	echo "missing metadata-only stdout label" >&2
+	exit 91
+}
+printf '%s\n' "$input" | grep -F "Print paths, sizes, tokens, git, dates." >/dev/null || {
+	echo "missing metadata-only stdout description" >&2
+	exit 91
+}
+printf '%s\n' "$input" | grep -F $'\tpreview\t' | head -n 1
+`)
+
+	result, err := maybeResolveStartupSinkPickerArgs(nil, StartupPickerResult{
+		Args:    []string{"src"},
+		UsedFzf: true,
+	})
+	if err != nil {
+		t.Fatalf("maybeResolveStartupSinkPickerArgs returned error: %v", err)
+	}
+	if got, want := strings.Join(result.Args, "\n"), "src\n--preview"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+	if result.PreparedOutput == nil {
+		t.Fatal("expected prepared output state to be carried into final run")
+	}
+}
+
 func TestMaybeResolveStartupSinkPickerArgsSkipsWhenRawArgsAlreadyChooseSink(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake-fzf cannot run on Windows")

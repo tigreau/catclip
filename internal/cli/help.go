@@ -62,6 +62,7 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 		{Left: `catclip src --only "*.ts"`, Right: "Only TypeScript files"},
 		{Left: `catclip src --exclude "*.css"`, Right: "Skip CSS files"},
 		{Left: "catclip src --recent 3", Right: "Keep the 3 most recently modified files"},
+		{Left: "catclip src --size 0 100", Right: "Keep files up to 100 KiB, largest first"},
 		{Left: "catclip src --depth 2", Right: "Keep files up to path depth 2"},
 		{Left: "catclip . --depth 1", Right: "Copy only the files in the project root"},
 		{Left: "catclip src --paths", Right: "Emit bare relative paths, not file bodies"},
@@ -270,6 +271,9 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("  --untracked           New files not yet tracked\n")
 	b.WriteString("  --recent N            Keep N most recently modified files\n")
 	b.WriteString("  --recent              Sort all files newest-first (no limit)\n")
+	b.WriteString("  --size                Sort all files largest-first\n")
+	b.WriteString("  --size MIN            Keep files at least MIN KiB, largest-first\n")
+	b.WriteString("  --size MIN MAX        Keep files between MIN and MAX KiB inclusive\n")
 	b.WriteString("  --depth N             Keep files at path depth N or shallower (from cwd)\n")
 	b.WriteString("                        (README.md = 1, src/main.ts = 2, src/lib/util.ts = 3)\n\n")
 
@@ -313,6 +317,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("    → --only PATTERN      keeps files matching PATTERN; discards rest\n")
 	b.WriteString("    → --exclude PATTERN   removes files matching PATTERN; keeps rest\n")
 	b.WriteString("    → --recent N          sorts by mtime, keeps top N\n")
+	b.WriteString("    → --size MIN MAX      filters by KiB size, sorts largest-first\n")
 	b.WriteString("    → --depth N           removes files deeper than N segments\n")
 	b.WriteString("    → --contains REGEX    removes files whose contents don't match\n")
 	b.WriteString("    → --changed           removes files not changed in git\n")
@@ -513,6 +518,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("    --only VALUE...        Filename filter — keep matches (shell globs)\n")
 	b.WriteString("    --exclude VALUE...     Filename filter — remove matches (shell globs)\n")
 	b.WriteString("    --recent [N]           Sort by mtime; optional top-N\n")
+	b.WriteString("    --size [MIN [MAX]]     Sort/filter by file size in KiB\n")
 	b.WriteString("    --depth N              Max path depth\n")
 	b.WriteString("    --contains REGEX       Content filter\n")
 	b.WriteString("    --snippet REGEX [N]    Extract matching blocks, or +/- N line context\n")

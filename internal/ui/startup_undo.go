@@ -191,7 +191,7 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 		}
 
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 			args = append(args, arg)
 			pending = pending[1:]
 			continue
@@ -205,7 +205,7 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 				StartArgs:   cloneStringSlice(args),
 				PendingArgs: cloneStringSlice(pending[1:]),
 			}, nil, false, nil
-		case "--include", "--only", "--exclude", "--contains", "--snippet", "--recent", "--depth", "--paths", "--lines",
+		case "--include", "--only", "--exclude", "--contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines",
 			"--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff":
 			return startupInteractiveFrame{
 				Kind:                       startupInteractiveFrameStage,
@@ -220,6 +220,8 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 				return startupInteractiveFrame{}, nil, false, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
 			case strings.HasPrefix(arg, "--recent="):
 				return startupInteractiveFrame{}, nil, false, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
+			case strings.HasPrefix(arg, "--size="):
+				return startupInteractiveFrame{}, nil, false, cli.SizeEqualsFormError()
 			case strings.HasPrefix(arg, "--depth="):
 				return startupInteractiveFrame{}, nil, false, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 			case strings.HasPrefix(arg, "--"):
@@ -363,6 +365,12 @@ func runStartupModifierFrame(frame startupInteractiveFrame) (startupInteractiveF
 
 	finalArgs := trimTrailingModifierPlaceholders(cloneStringSlice(frame.StartArgs))
 	switch choice.Mode {
+	case startupModifierModeFinish:
+		return startupInteractiveFrameResult{
+			Args:    finalArgs,
+			Pending: nil,
+			UsedFzf: true,
+		}, nil
 	case startupModifierModeThen:
 		return startupInteractiveFrameResult{
 			Args:    append(finalArgs, "--then"),
@@ -473,7 +481,7 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 			selected = selected[:0]
 			explicit = explicit[:0]
 			inModifierMode = false
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 			continue
 		case "--include":
 			inModifierMode = true
@@ -495,6 +503,14 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 				if _, err := discovery.ParseRecentLimitToken(args[i+1]); err == nil {
 					i++
 				}
+			}
+		case "--size":
+			inModifierMode = true
+			for consumed := 0; consumed < 2 && i+1 < len(args) && !cli.IsModifierBoundaryToken(args[i+1]); consumed++ {
+				if _, err := cli.ParseSizeBoundToken(args[i+1]); err != nil {
+					break
+				}
+				i++
 			}
 		case "--lines":
 			inModifierMode = true
@@ -527,7 +543,7 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 		switch arg {
 		case "--then":
 			inModifierMode = false
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 			continue
 		case "--include", "--only", "--exclude":
 			inModifierMode = true
@@ -544,6 +560,14 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 				if _, err := discovery.ParseRecentLimitToken(args[i+1]); err == nil {
 					i++
 				}
+			}
+		case "--size":
+			inModifierMode = true
+			for consumed := 0; consumed < 2 && i+1 < len(args) && !cli.IsModifierBoundaryToken(args[i+1]); consumed++ {
+				if _, err := cli.ParseSizeBoundToken(args[i+1]); err != nil {
+					break
+				}
+				i++
 			}
 		case "--lines":
 			inModifierMode = true
@@ -565,7 +589,7 @@ func startupFrameTargetPrompt(args []string) string {
 		switch args[i] {
 		case "--then":
 			return "then> "
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 			continue
 		default:
 			return "select> "

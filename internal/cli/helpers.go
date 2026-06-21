@@ -79,6 +79,53 @@ func parseDepthToken(token string) (int, error) {
 	return depth, nil
 }
 
+// ParseSizeBoundToken parses one --size bound in KiB. MIN may be zero;
+// MAX validation happens after the parser knows whether this token is
+// positional bound 0 or 1.
+func ParseSizeBoundToken(token string) (int, error) {
+	size, err := strconv.Atoi(token)
+	if err != nil || size < 0 {
+		return 0, SizeInvalidValueError(token)
+	}
+	return size, nil
+}
+
+func SizeInvalidValueError(token string) error {
+	return newUsageError("Error: --size expects integer KiB values: --size [MIN [MAX]]\n  MIN may be 0; MAX must be >= 1 (got %q).", token)
+}
+
+func SizeTooManyValuesError(extra string) error {
+	return newUsageError("Error: --size takes at most two values.\n  Use: catclip src --size\n  Or:  catclip src --size MIN\n  Or:  catclip src --size MIN MAX\n  Extra value: %q", extra)
+}
+
+func SizeMaxZeroError() error {
+	return newUsageError("Error: --size max must be >= 1 KiB (got 0).\n  Use bare --size or --size 0 for size sorting without an upper bound.")
+}
+
+func SizeMaxBeforeMinError(min, max int) error {
+	return newUsageError("Error: --size max (%d) must be >= min (%d).\n  Use: --size MIN MAX where MAX >= MIN.", max, min)
+}
+
+func SizeEqualsFormError() error {
+	return newUsageError("Error: --size requires a space before the value.\n  Use: catclip src --size 100\n  Or:  catclip src --size 0 100")
+}
+
+func ValidateSizeBounds(nums []int) error {
+	if len(nums) > 2 {
+		return SizeTooManyValuesError(strconv.Itoa(nums[2]))
+	}
+	if len(nums) == 2 {
+		min, max := nums[0], nums[1]
+		if max == 0 {
+			return SizeMaxZeroError()
+		}
+		if max < min {
+			return SizeMaxBeforeMinError(min, max)
+		}
+	}
+	return nil
+}
+
 // shellQuoteArg / shellEnforceSingleQuote dup the resolver.go helpers
 // used by canonical render and parser error messages. See
 // internal/command/helpers.go for the same pattern.
@@ -142,6 +189,30 @@ func consumeOptionalRecentLimit(args []string, start int) (*int, int, error) {
 		return nil, start, err
 	}
 	return intPtr(limit), start + 1, nil
+}
+
+func consumeOptionalSizeBounds(args []string, start int) ([]int, int, error) {
+	nums := make([]int, 0, 2)
+	i := start
+	for i < len(args) {
+		next := args[i]
+		if IsModifierBoundaryToken(next) {
+			break
+		}
+		if len(nums) == 2 {
+			return nil, i, SizeTooManyValuesError(next)
+		}
+		n, err := ParseSizeBoundToken(next)
+		if err != nil {
+			return nil, i, err
+		}
+		nums = append(nums, n)
+		i++
+	}
+	if err := ValidateSizeBounds(nums); err != nil {
+		return nil, i, err
+	}
+	return nums, i, nil
 }
 
 func cloneSliceStrings(in []string) []string {

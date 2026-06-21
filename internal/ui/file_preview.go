@@ -149,10 +149,19 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 // shell branching in the command string. See fzfContentPreviewCommand for
 // the command builder.
 func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
+	finishBench := platform.InternalBenchSpan("ui.internal.file_preview",
+		"checkpoint", fmt.Sprint(cfg.CheckpointPath != ""),
+		"file_path_empty", fmt.Sprint(strings.TrimSpace(cfg.FilePath) == ""),
+		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
+	)
 	s := internalPreviewScope(cfg)
 
 	if internalPreviewPatternIsEmpty(s) {
-		return renderTreeDocument(stdout, buildInternalContentHintDocument(s), FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+		finishHintBench := platform.InternalBenchSpan("ui.internal.file_preview.hint")
+		err := renderTreeDocument(stdout, buildInternalContentHintDocument(s), FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+		finishHintBench("err", platform.InternalBenchError(err))
+		finishBench("err", platform.InternalBenchError(err), "mode", "hint")
+		return err
 	}
 
 	// The content picker's [all current matches] row passes an empty
@@ -163,20 +172,32 @@ func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
 	// When a checkpoint is wired in, emit the scope tree; otherwise stay
 	// silent (matches pre-v0.5.2 behavior).
 	if strings.TrimSpace(cfg.FilePath) == "" && cfg.CheckpointPath != "" {
-		return runInternalContentCheckpointTreePreview(cfg, stdout)
+		finishTreeBench := platform.InternalBenchSpan("ui.internal.file_preview.checkpoint_tree")
+		err := runInternalContentCheckpointTreePreview(cfg, stdout)
+		finishTreeBench("err", platform.InternalBenchError(err))
+		finishBench("err", platform.InternalBenchError(err), "mode", "checkpoint_tree")
+		return err
 	}
 
 	relPath := internalPreviewRelPath(cfg)
 	if relPath == "" || relPath == "." {
+		finishBench("err", "false", "mode", "empty_path")
 		return nil
 	}
 
 	gitCtx := git.Detect(cfg.WorkingDir)
+	finishBuildBench := platform.InternalBenchSpan("ui.internal.file_preview.build_document")
 	doc, ok := buildInternalPreviewDocument(cfg, gitCtx, relPath)
+	finishBuildBench("ok", fmt.Sprint(ok))
 	if !ok {
+		finishBench("err", "false", "mode", "document_empty")
 		return nil
 	}
-	return renderTreeDocument(stdout, doc, FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+	finishRenderBench := platform.InternalBenchSpan("ui.internal.file_preview.render_document")
+	err := renderTreeDocument(stdout, doc, FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+	finishRenderBench("err", platform.InternalBenchError(err))
+	finishBench("err", platform.InternalBenchError(err), "mode", string(s.OutputMode()))
+	return err
 }
 
 // runInternalContentCheckpointTreePreview re-uses the prediscovered
@@ -229,32 +250,56 @@ func internalPreviewScope(cfg filePreviewConfig) command.ExecutionScope {
 }
 
 func buildInternalFullFilePreviewDocument(relPath, absPath, matchPattern string) (treeDocument, bool) {
+	finishBench := platform.InternalBenchSpan("ui.internal.file_preview.full_document")
 	snapshot, err := output.LoadTextSnapshot(absPath, relPath)
 	if err != nil || !snapshot.IsText {
+		finishBench("err", platform.InternalBenchError(err), "is_text", fmt.Sprint(snapshot.IsText))
 		return treeDocument{}, false
 	}
+	finishBench("err", "false", "is_text", "true")
 	return buildTreeFilePreviewDocument(relPath, "", snapshot.PreviewText(), matchPattern, false, nil), true
 }
 
 func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string, opts output.SnippetOptions) (treeDocument, bool) {
+	// Opt-in diagnostics for the --snippet preview hot path. On Windows this
+	// path can be dominated by repeated child-process startup from fzf previews,
+	// so keep separate timings for snapshot load, rg matching, and snippet math.
+	finishBench := platform.InternalBenchSpan("ui.internal.file_preview.snippet_document")
 	if strings.TrimSpace(pattern) == "" {
+		finishBench("err", "false", "mode", "hint")
 		return buildInternalSnippetHintDocument(), true
 	}
 
+	finishLoadBench := platform.InternalBenchSpan("ui.internal.file_preview.snippet_load_snapshot")
 	snapshot, err := output.LoadTextSnapshot(absPath, relPath)
+	finishLoadBench("err", platform.InternalBenchError(err), "is_text", fmt.Sprint(snapshot.IsText))
 	if err != nil || !snapshot.IsText {
+		finishBench("err", platform.InternalBenchError(err), "is_text", fmt.Sprint(snapshot.IsText))
 		return treeDocument{}, false
 	}
+	finishMatchBench := platform.InternalBenchSpan("ui.internal.file_preview.snippet_rg_match_lines")
 	matches, err := search.RunRipgrepMatchLines(pattern, []string{absPath})
+	finishMatchBench(
+		"err", platform.InternalBenchError(err),
+		"matched_files", platform.InternalBenchInt(len(matches)),
+	)
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return treeDocument{}, false
 	}
+	finishResolveBench := platform.InternalBenchSpan("ui.internal.file_preview.snippet_resolve")
 	snippet, err := output.ResolveSnippetFromSnapshot(snapshot, matches[absPath], opts)
+	finishResolveBench(
+		"err", platform.InternalBenchError(err),
+		"ranges", platform.InternalBenchInt(len(snippet.Ranges)),
+	)
 	if err != nil || len(snippet.Ranges) == 0 {
+		finishBench("err", platform.InternalBenchError(err), "ranges", platform.InternalBenchInt(len(snippet.Ranges)))
 		return treeDocument{}, false
 	}
 
 	content, focusLines := buildInternalSnippetPreviewContent(snippet.Ranges, snippet.Lines)
+	finishBench("err", "false", "ranges", platform.InternalBenchInt(len(snippet.Ranges)))
 	return buildTreeFilePreviewDocument(relPath, "", content, pattern, false, focusLines), true
 }
 

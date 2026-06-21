@@ -30,6 +30,7 @@ func TestPickerHeadersUseFourLinesMax60Chars(t *testing.T) {
 		"snippet":      discovery.ContentMatchPickerHeader("--snippet"),
 		"snippet-mode": snippetBoundaryPickerHeader(),
 		"modifier":     startupModifierPickerHeader(),
+		"extras":       startupExtrasPickerHeader(),
 		"only":         startupFileSetPickerHeader("--only"),
 		"exclude":      startupFileSetPickerHeader("--exclude"),
 	}
@@ -52,6 +53,7 @@ func TestPickerHeadersCanShowEscExitAndUndo(t *testing.T) {
 		"contains":       discovery.ContentMatchPickerHeaderWithEscHint("--contains", "undo"),
 		"snippet-mode":   snippetBoundaryPickerHeaderWithEscHint("undo"),
 		"modifier":       startupModifierPickerHeaderWithEscHint("undo"),
+		"extras":         startupExtrasPickerHeaderWithEscHint("undo"),
 		"only":           startupFileSetPickerHeaderWithEscHint("--only", "undo"),
 		"depth":          depthPickerHeaderWithEscHint("undo"),
 		"recent":         recentPickerHeaderWithEscHint("undo"),
@@ -363,9 +365,28 @@ exit 91
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
-func TestStartupModifierCurrentScopePreviewCommandUsesCurrentScopeTree(t *testing.T) {
+func TestStartupModifierCurrentScopePreviewCommandUsesCheckpointHandoff(t *testing.T) {
 	limit := 5
-	command := startupModifierCurrentScopePreviewCommand(startupCurrentScopeState{
+	tmpRoot := t.TempDir()
+	// Use a real entry pointing at a real file so WriteCheckpoint's size stat
+	// can complete; the modifier-menu preview command needs Entries to write
+	// a usable checkpoint, otherwise it returns ("","").
+	entryPath := filepath.Join(tmpRoot, "src", "main.ts")
+	if err := os.MkdirAll(filepath.Dir(entryPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(entryPath, []byte("export {};\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	view := resolvedScopeView{
+		Invocation: command.Invocation{WorkingDir: tmpRoot},
+		Entries: []discovery.Entry{{
+			AbsPath:    entryPath,
+			RelPath:    "src/main.ts",
+			TargetRoot: "src",
+		}},
+	}
+	state := startupCurrentScopeState{
 		Known: true,
 		Scopes: []command.ExecutionScope{
 			{
@@ -377,21 +398,60 @@ func TestStartupModifierCurrentScopePreviewCommandUsesCurrentScopeTree(t *testin
 				Stages:  []command.Stage{{Kind: command.StageRecent, Limit: &limit}},
 			},
 		},
-	})
+	}
+	cmd, tmpdir := startupModifierCurrentScopePreviewCommand(state, view)
+	if tmpdir != "" {
+		defer os.RemoveAll(tmpdir)
+	}
 
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+" --quiet --internal-tree-preview docs --recent 5") {
-		t.Fatalf("expected modifier preview to render the current scope tree, got %q", command)
+	// The preview command MUST contain --internal-prediscovered so the child
+	// reads the precomputed checkpoint instead of repeating discovery (the
+	// v0.6.0 Windows-latency Finding 1 regression — see
+	// docs/versions/v0.6.1/reports/ACTIVE_NOTE_windows_interactive_latency_findings.md).
+	if !strings.HasPrefix(cmd, discovery.ShellQuoteArg(self)+" --quiet --internal-tree-preview --internal-prediscovered ") {
+		t.Fatalf("expected modifier preview to use --internal-prediscovered checkpoint hand-off, got %q", cmd)
 	}
-	if strings.Contains(command, " src --only '*.ts'") {
-		t.Fatalf("expected modifier preview to exclude earlier scopes, got %q", command)
+	// The current-scope tail still appears so the child renders the right
+	// scope from the checkpoint.
+	if !strings.Contains(cmd, " docs --recent 5") {
+		t.Fatalf("expected modifier preview to carry the current scope tail (docs --recent 5), got %q", cmd)
 	}
-	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
-		t.Fatalf("expected modifier preview command to avoid catclip-tree pipe, got %q", command)
+	// Earlier scopes must not bleed into the preview (the menu is for the
+	// current scope only).
+	if strings.Contains(cmd, " src --only '*.ts'") {
+		t.Fatalf("expected modifier preview to exclude earlier scopes, got %q", cmd)
+	}
+	if strings.Contains(cmd, "catclip-tree") || strings.Contains(cmd, "|") {
+		t.Fatalf("expected modifier preview command to avoid catclip-tree pipe, got %q", cmd)
+	}
+	// The checkpoint file must actually exist on disk (callers rely on this
+	// to clean up).
+	if tmpdir == "" {
+		t.Fatalf("expected non-empty tmpdir for cleanup, got %q", tmpdir)
+	}
+	if _, err := os.Stat(filepath.Join(tmpdir, "scope.json")); err != nil {
+		t.Fatalf("expected scope.json checkpoint to exist in tmpdir, stat error: %v", err)
+	}
+}
+
+func TestStartupModifierCurrentScopePreviewCommandSkipsWhenViewIsEmpty(t *testing.T) {
+	// If the resolved view has no entries (either the scope is empty or the
+	// view resolution race-stale'd), the modifier-menu preview should
+	// return ("", "") instead of writing a checkpoint with no entries.
+	state := startupCurrentScopeState{
+		Known: true,
+		Scopes: []command.ExecutionScope{
+			{Targets: []string{"src"}},
+		},
+	}
+	cmd, tmpdir := startupModifierCurrentScopePreviewCommand(state, resolvedScopeView{})
+	if cmd != "" || tmpdir != "" {
+		t.Fatalf("expected empty preview when view has no entries, got cmd=%q tmpdir=%q", cmd, tmpdir)
 	}
 }
 func TestAllIgnoredTargetsIncludesIgnoredEntries(t *testing.T) {
@@ -1179,6 +1239,157 @@ exit 91
 		t.Fatalf("resolveBareStartupModifierArgs returned error: %v", err)
 	}
 	if got, want := strings.Join(args, "\n"), "--changed"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+func TestResolveInteractiveStartupArgsFinishEarlyClearsPendingModifiers(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('ok')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "filter> " ]; then
+	printf '%s\n' "$input" | grep -F $'\tfinish' | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{"src", "--", "--"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected fzf to be used")
+	}
+	if got, want := strings.Join(args, "\n"), "src"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+func TestResolveInteractiveStartupArgsExtrasCanSelectMultipleFlags(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('ok')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	stateFile := filepath.Join(t.TempDir(), "fzf-count")
+	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
+prompt=""
+multi=0
+bindings=""
+no_sort=0
+nth=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--multi)
+			multi=1
+			shift
+			;;
+		--bind)
+			bindings="$bindings
+$2"
+			shift 2
+			;;
+		--no-sort)
+			no_sort=1
+			shift
+			;;
+		--nth)
+			nth="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+
+if [ "$prompt" = "filter> " ]; then
+	count="$(cat %[1]q 2>/dev/null || printf '0')"
+	count=$((count + 1))
+	printf '%%s\n' "$count" > %[1]q
+	if [ "$count" -eq 1 ]; then
+		printf '%%s\n' "$input" | grep -F $'\textras' | head -n 1
+		exit 0
+	fi
+	printf '%%s\n' "$input" | grep -F $'\tfinish' | head -n 1
+	exit 0
+fi
+
+if [ "$prompt" = "extras> " ]; then
+	[ "$multi" -eq 1 ] || {
+		echo "expected extras picker to enable multi-select" >&2
+		exit 91
+	}
+	[ "$no_sort" -eq 1 ] || {
+		echo "expected extras picker to disable sorting" >&2
+		exit 91
+	}
+	[ "$nth" = "1" ] || {
+		echo "expected extras picker to search only the label column, got nth=$nth" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F %[2]q >/dev/null || {
+		echo "expected extras picker to bind multi-select toggle-all" >&2
+		exit 91
+	}
+	printf '%%s\n' "$input" | grep -F -- "--no-bundle" >/dev/null && {
+		echo "extras picker should not offer --no-bundle; output picker owns it" >&2
+		exit 91
+	}
+	printf '%%s\n' "$input" | grep -F -- "--preview" >/dev/null && {
+		echo "extras picker should not offer --preview; output picker owns it" >&2
+		exit 91
+	}
+	printf '%%s\n' "$input" | grep -F $'\traw' | head -n 1
+	printf '%%s\n' "$input" | grep -F $'\tquiet' | head -n 1
+	exit 0
+fi
+
+echo "unexpected prompt: $prompt" >&2
+exit 91
+`, stateFile, platform.MultiSelectToggleAllBinding()))
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{"src", "--", "--"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected fzf to be used")
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--raw\n--quiet"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -4112,29 +4323,51 @@ if [ "$prompt" = "filter> " ]; then
 	}
 	first="$(printf '%s\n' "$input" | head -n 1)"
 	last="$(printf '%s\n' "$input" | tail -n 1)"
+	second_last="$(printf '%s\n' "$input" | tail -n 2 | head -n 1)"
+	third_last="$(printf '%s\n' "$input" | tail -n 3 | head -n 1)"
 	first_label="$(printf '%s\n' "$first" | cut -f1)"
 	first_key="$(printf '%s\n' "$first" | cut -f2)"
 	last_key="$(printf '%s\n' "$last" | cut -f2)"
 	last_label="$(printf '%s\n' "$last" | cut -f1)"
 	last_desc="$(printf '%s\n' "$last" | cut -f3)"
+	second_last_key="$(printf '%s\n' "$second_last" | cut -f2)"
+	second_last_label="$(printf '%s\n' "$second_last" | cut -f1)"
+	third_last_key="$(printf '%s\n' "$third_last" | cut -f2)"
+	third_last_label="$(printf '%s\n' "$third_last" | cut -f1)"
 	[ "$first_key" = "only" ] || {
 		echo "unexpected first modifier row: $first" >&2
 		exit 91
 	}
-	[ "$last_key" = "then" ] || {
+	[ "$last_key" = "finish" ] || {
 		echo "unexpected last modifier row: $last" >&2
 		exit 91
 	}
-	printf '%s\n' "$last_label" | grep -F -- "--then" >/dev/null || {
-		echo "missing --then label in last row: $last_label" >&2
+	printf '%s\n' "$last_label" | grep -F -- "[finish early]" >/dev/null || {
+		echo "missing finish label in last row: $last_label" >&2
 		exit 91
 	}
-	printf '%s\n' "$last_label" | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null && {
+	[ "$second_last_key" = "extras" ] || {
+		echo "unexpected second-last modifier row: $second_last" >&2
+		exit 91
+	}
+	printf '%s\n' "$second_last_label" | grep -F -- "[extras]" >/dev/null || {
+		echo "missing extras label in second-last row: $second_last_label" >&2
+		exit 91
+	}
+	[ "$third_last_key" = "then" ] || {
+		echo "unexpected third-last modifier row: $third_last" >&2
+		exit 91
+	}
+	printf '%s\n' "$third_last_label" | grep -F -- "--then" >/dev/null || {
+		echo "missing --then label in third-last row: $third_last_label" >&2
+		exit 91
+	}
+	printf '%s\n' "$third_last_label" | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null && {
 		echo "label column should not contain description text: $last_label" >&2
 		exit 91
 	}
-	printf '%s\n' "$last_desc" | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null || {
-		echo "missing --then description in description column: $last_desc" >&2
+	printf '%s\n' "$third_last" | cut -f3 | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null || {
+		echo "missing --then description in description column: $third_last" >&2
 		exit 91
 	}
 	printf '%s\n' "$input" | grep -F $'\tsnippet' >/dev/null || {

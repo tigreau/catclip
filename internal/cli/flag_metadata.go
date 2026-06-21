@@ -13,6 +13,7 @@ const (
 	flagArityOne         flagArity = "one"
 	flagArityMany        flagArity = "many"
 	flagArityOptionalOne flagArity = "optional_one"
+	flagArityOptionalTwo flagArity = "optional_two"
 )
 
 type flagSemanticFamily string
@@ -70,6 +71,14 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Flag:           "--recent",
 		StageKind:      command.StageRecent,
 		Arity:          flagArityOptionalOne,
+		Family:         flagFamilyFileSetRefinement,
+		BoundaryPolicy: scopeStageBoundaryNone,
+		Recoverability: flagRecoverabilityOptionalValue,
+	},
+	{
+		Flag:           "--size",
+		StageKind:      command.StageSize,
+		Arity:          flagArityOptionalTwo,
 		Family:         flagFamilyFileSetRefinement,
 		BoundaryPolicy: scopeStageBoundaryNone,
 		Recoverability: flagRecoverabilityOptionalValue,
@@ -245,7 +254,7 @@ func IsModifierBoundaryToken(arg string) bool {
 	switch arg {
 	case "--changed", "--staged", "--unstaged", "--untracked",
 		"--changed-diff", "--staged-diff", "--unstaged-diff",
-		"--recent", "--lines",
+		"--recent", "--size", "--lines",
 		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
 		"--no-bundle", "--preview", "--with-binaries",
 		"-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules":

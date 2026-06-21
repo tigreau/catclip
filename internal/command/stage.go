@@ -11,6 +11,7 @@ const (
 	StageOnly         StageKind = "only"
 	StageExclude      StageKind = "exclude"
 	StageRecent       StageKind = "recent"
+	StageSize         StageKind = "size"
 	StageDepth        StageKind = "depth"
 	StageContains     StageKind = "contains"
 	StageChanged      StageKind = "changed"
@@ -27,11 +28,13 @@ const (
 )
 
 // Stage is a single applied transform on an executionScope's file set.
-// Values, Limit, and ExactValues carry the per-stage payload the applier
-// table needs to dispatch.
+// Values carry string payloads such as paths, globs, and regexes. Limit is
+// the single-scalar numeric payload slot. Nums is the tuple/range numeric
+// payload slot. A stage should use at most one numeric slot.
 type Stage struct {
 	Kind        StageKind
 	Values      []string
 	Limit       *int
+	Nums        []int
 	ExactValues bool
 }

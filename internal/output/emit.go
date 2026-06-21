@@ -234,10 +234,33 @@ func writeOutputPlanPayloadWithPrefetch(w io.Writer, cfg EmitConfig, plan Plan, 
 	if cfg.Raw {
 		return WriteRawOutputPlanPayload(w, plan)
 	}
+	finish := platform.InternalBenchSpan("output.write_payload.iterate_entries",
+		"items", platform.InternalBenchInt(plan.Len()),
+		"prefetch", platform.InternalBenchBool(prefetch),
+	)
+	bc := &emitByteCounter{w: w}
+	var err error
 	if plan.HasPaths() {
-		return writeSectionedOutputPlanPayload(w, plan, prefetch)
+		err = writeSectionedOutputPlanPayload(bc, plan, prefetch)
+	} else {
+		err = writeFileOutputPlanPayload(bc, plan, prefetch)
 	}
-	return writeFileOutputPlanPayload(w, plan, prefetch)
+	finish(
+		"bytes", strconv.FormatInt(bc.n, 10),
+		"err", platform.InternalBenchError(err),
+	)
+	return err
+}
+
+type emitByteCounter struct {
+	w io.Writer
+	n int64
+}
+
+func (bc *emitByteCounter) Write(p []byte) (int, error) {
+	n, err := bc.w.Write(p)
+	bc.n += int64(n)
+	return n, err
 }
 
 func WriteRawOutputPlanPayload(w io.Writer, plan Plan) error {
@@ -317,7 +340,9 @@ func emitNumberedFileBodyFromDisk(w io.Writer, absPath string) error {
 // this behavior automatically because it routes through the same emit
 // pipeline.
 func emitLinesFile(w io.Writer, entry discovery.Entry) error {
+	openFinish := platform.InternalBenchSpan("output.write_payload.lines.open_file")
 	f, err := os.Open(entry.AbsPath)
+	openFinish("err", platform.InternalBenchError(err))
 	if err != nil {
 		return err
 	}
@@ -356,6 +381,13 @@ func emitLinesFile(w io.Writer, entry discovery.Entry) error {
 	lineNum := 0
 	var lastByte byte
 	wroteAny := false
+	emitted := 0
+	scanFinish := platform.InternalBenchSpan("output.write_payload.lines.scan_body",
+		"sliced", platform.InternalBenchBool(sliced),
+	)
+	defer func() {
+		scanFinish("emitted", platform.InternalBenchInt(emitted))
+	}()
 
 	for scanner.Scan() {
 		lineNum++
@@ -380,6 +412,7 @@ func emitLinesFile(w io.Writer, entry discovery.Entry) error {
 		}
 		wroteAny = true
 		lastByte = '\n'
+		emitted++
 	}
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("failed while streaming %s: %w", entry.AbsPath, err)
@@ -539,6 +572,15 @@ func outputSectionSeparator(prev, next SectionKind) string {
 }
 
 func emitEntry(w io.Writer, unit PreparedFileUnit, index int, prefetcher *emitPrefetcher) error {
+	finish := platform.InternalBenchSpan("output.write_payload.emit_entry",
+		"mode", emitEntryMode(unit),
+	)
+	err := emitEntryInner(w, unit, index, prefetcher)
+	finish("err", platform.InternalBenchError(err))
+	return err
+}
+
+func emitEntryInner(w io.Writer, unit PreparedFileUnit, index int, prefetcher *emitPrefetcher) error {
 	if len(unit.Payload) > 0 {
 		_, err := w.Write(unit.Payload)
 		return err
@@ -547,6 +589,19 @@ func emitEntry(w io.Writer, unit PreparedFileUnit, index int, prefetcher *emitPr
 		return emitSnippetRangesFile(w, unit.Entry, unit.SnippetRanges)
 	}
 	return emitFile(w, unit, index, prefetcher)
+}
+
+func emitEntryMode(unit PreparedFileUnit) string {
+	if len(unit.Payload) > 0 {
+		return "prepared"
+	}
+	if len(unit.SnippetRanges) > 0 {
+		return "snippet"
+	}
+	if unit.Entry.Lines {
+		return "lines"
+	}
+	return "file"
 }
 
 func emitSnippetRangesFile(w io.Writer, entry discovery.Entry, ranges []SnippetRange) error {

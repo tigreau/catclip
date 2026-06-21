@@ -84,6 +84,20 @@ func TestScopeModifierFlagSpecsClassifyContentFamily(t *testing.T) {
 	if paths.BoundaryPolicy != scopeStageBoundaryTerminal {
 		t.Fatalf("expected --paths terminal boundary policy, got %q", paths.BoundaryPolicy)
 	}
+
+	size, ok := scopeModifierFlagSpecForFlag("--size")
+	if !ok {
+		t.Fatal("missing --size spec")
+	}
+	if size.Arity != flagArityOptionalTwo {
+		t.Fatalf("expected --size to take zero, one, or two values, got %q", size.Arity)
+	}
+	if size.Family != flagFamilyFileSetRefinement {
+		t.Fatalf("expected --size to be a file-set refinement, got %q", size.Family)
+	}
+	if size.BoundaryPolicy != scopeStageBoundaryNone {
+		t.Fatalf("expected --size to have no boundary policy, got %q", size.BoundaryPolicy)
+	}
 }
 
 func TestIsValueTakingFlag(t *testing.T) {
@@ -120,6 +134,9 @@ func TestIsModifierBoundaryTokenUsesSharedValueTakingFlags(t *testing.T) {
 	}
 	if !IsModifierBoundaryToken("--recent") {
 		t.Fatal("expected --recent to be a modifier boundary")
+	}
+	if !IsModifierBoundaryToken("--size") {
+		t.Fatal("expected --size to be a modifier boundary")
 	}
 	if IsModifierBoundaryToken("Button.tsx") {
 		t.Fatal("did not expect plain target to be a modifier boundary")

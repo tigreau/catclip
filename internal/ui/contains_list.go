@@ -49,11 +49,24 @@ func ContentMatchListConfigFromParsedCommand(cfg command.Parsed) contentMatchLis
 }
 
 func RunInternalContentMatchList(cfg contentMatchListConfig, stdout io.Writer) error {
+	finishBench := platform.InternalBenchSpan("ui.internal.content_match_list.fallback",
+		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
+	)
 	rows, err := contentMatchRowsForScope(cfg)
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
-	return writeContentMatchRows(stdout, rows)
+	finishWriteBench := platform.InternalBenchSpan("ui.internal.content_match_list.fallback.write_rows",
+		"rows", platform.InternalBenchInt(len(rows)),
+	)
+	err = writeContentMatchRows(stdout, rows)
+	finishWriteBench("err", platform.InternalBenchError(err))
+	finishBench(
+		"err", platform.InternalBenchError(err),
+		"rows", platform.InternalBenchInt(len(rows)),
+	)
+	return err
 }
 
 func writeContentMatchRows(stdout io.Writer, rows []contentMatchRow) error {
@@ -120,7 +133,11 @@ func contentMatchScopePattern(s command.ExecutionScope) string {
 }
 
 func contentMatchRowsForScope(cfg contentMatchListConfig) ([]contentMatchRow, error) {
+	finishBench := platform.InternalBenchSpan("ui.content_match.rows_for_scope",
+		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
+	)
 	if len(cfg.Scopes) == 0 {
+		finishBench("err", "false", "rows", "0", "reason", "no_scope")
 		return nil, nil
 	}
 
@@ -128,18 +145,34 @@ func contentMatchRowsForScope(cfg contentMatchListConfig) ([]contentMatchRow, er
 	currentScope := cfg.Scopes[scopeIndex]
 	pattern := contentMatchScopePattern(currentScope)
 	if strings.TrimSpace(pattern) == "" {
+		finishBench("err", "false", "rows", "0", "reason", "empty_pattern")
 		return nil, nil
 	}
 	if err := discovery.ValidateContainsPattern(pattern); err != nil {
+		finishBench("err", "false", "rows", "0", "bad_pattern", "true")
 		return nil, nil
 	}
 
 	gitCtx := git.Detect(cfg.Invocation.WorkingDir)
 	candidateScope, ok := scopeWithoutTerminalLiveContentMatchStage(currentScope)
 	if !ok {
-		return contentMatchRowsForScopeDoublePass(cfg, gitCtx, scopeIndex, currentScope, pattern)
+		rows, err := contentMatchRowsForScopeDoublePass(cfg, gitCtx, scopeIndex, currentScope, pattern)
+		finishBench(
+			"err", platform.InternalBenchError(err),
+			"rows", platform.InternalBenchInt(len(rows)),
+			"double_pass", "true",
+		)
+		return rows, err
 	}
+	finishEvalBench := platform.InternalBenchSpan("ui.content_match.evaluate_scope",
+		"scope_index", platform.InternalBenchInt(scopeIndex),
+	)
 	discovered, err := discovery.EvaluateScope(cfg.Invocation, gitCtx, scopeIndex, candidateScope, io.Discard, platform.Palette{})
+	finishEvalBench(
+		"err", platform.InternalBenchError(err),
+		"entries", platform.InternalBenchInt(len(discovered.Entries)),
+		"bad_pattern", platform.InternalBenchCancelled(err, search.ErrRipgrepBadPattern),
+	)
 	if err != nil {
 		// While the user types in the interactive picker the pattern can be
 		// incomplete (e.g., `[` mid-character-class). rg surfaces this as a
@@ -147,22 +180,48 @@ func contentMatchRowsForScope(cfg contentMatchListConfig) ([]contentMatchRow, er
 		// nothing rather than erroring out per-keystroke. Other errors
 		// still propagate.
 		if errors.Is(err, search.ErrRipgrepBadPattern) {
+			finishBench("err", "false", "rows", "0", "bad_pattern", "true")
 			return nil, nil
 		}
+		finishBench("err", platform.InternalBenchError(err))
 		return nil, err
 	}
+	finishRowsBench := platform.InternalBenchSpan("ui.content_match.first_match_rows",
+		"entries", platform.InternalBenchInt(len(discovered.Entries)),
+	)
 	rows, err := contentMatchRowsWithFirstMatchLines(discovered.Entries, pattern)
+	finishRowsBench(
+		"err", platform.InternalBenchError(err),
+		"rows", platform.InternalBenchInt(len(rows)),
+		"bad_pattern", platform.InternalBenchCancelled(err, search.ErrRipgrepBadPattern),
+	)
 	if err != nil {
 		if errors.Is(err, search.ErrRipgrepBadPattern) {
+			finishBench("err", "false", "rows", "0", "bad_pattern", "true")
 			return nil, nil
 		}
+		finishBench("err", platform.InternalBenchError(err))
 		return nil, err
 	}
+	finishBench(
+		"err", "false",
+		"rows", platform.InternalBenchInt(len(rows)),
+		"double_pass", "false",
+	)
 	return rows, nil
 }
 
 func contentMatchRowsForScopeDoublePass(cfg contentMatchListConfig, gitCtx git.Context, scopeIndex int, scope command.ExecutionScope, pattern string) ([]contentMatchRow, error) {
+	finishBench := platform.InternalBenchSpan("ui.content_match.double_pass",
+		"scope_index", platform.InternalBenchInt(scopeIndex),
+	)
 	discovered, err := discovery.EvaluateScope(cfg.Invocation, gitCtx, scopeIndex, scope, io.Discard, platform.Palette{})
+	finishBench(
+		"phase", "evaluate_scope",
+		"err", platform.InternalBenchError(err),
+		"entries", platform.InternalBenchInt(len(discovered.Entries)),
+		"bad_pattern", platform.InternalBenchCancelled(err, search.ErrRipgrepBadPattern),
+	)
 	if err != nil {
 		if errors.Is(err, search.ErrRipgrepBadPattern) {
 			return nil, nil
@@ -170,7 +229,13 @@ func contentMatchRowsForScopeDoublePass(cfg contentMatchListConfig, gitCtx git.C
 		return nil, err
 	}
 	rows := contentMatchRowsFromEntries(discovered.Entries)
-	return attachFirstMatchLines(rows, discovered.Entries, pattern), nil
+	finishAttachBench := platform.InternalBenchSpan("ui.content_match.double_pass.attach_first_lines",
+		"rows", platform.InternalBenchInt(len(rows)),
+		"entries", platform.InternalBenchInt(len(discovered.Entries)),
+	)
+	rows = attachFirstMatchLines(rows, discovered.Entries, pattern)
+	finishAttachBench("rows", platform.InternalBenchInt(len(rows)))
+	return rows, nil
 }
 
 func contentMatchRowsFromEntries(entries []discovery.Entry) []contentMatchRow {
@@ -225,7 +290,15 @@ func contentMatchRowsWithFirstMatchLines(entries []discovery.Entry, pattern stri
 	if len(entries) == 0 || strings.TrimSpace(pattern) == "" {
 		return nil, nil
 	}
+	finishBench := platform.InternalBenchSpan("ui.content_match.first_match_lines",
+		"entries", platform.InternalBenchInt(len(entries)),
+	)
 	firstLines, err := search.FirstMatchLinePerFile(pattern, discovery.EntryAbsPaths(entries))
+	finishBench(
+		"err", platform.InternalBenchError(err),
+		"matches", platform.InternalBenchInt(len(firstLines)),
+		"bad_pattern", platform.InternalBenchCancelled(err, search.ErrRipgrepBadPattern),
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -282,7 +355,16 @@ func attachFirstMatchLines(rows []contentMatchRow, entries []discovery.Entry, pa
 	if len(absPaths) == 0 {
 		return rows
 	}
+	finishBench := platform.InternalBenchSpan("ui.content_match.attach_first_lines",
+		"rows", platform.InternalBenchInt(len(rows)),
+		"paths", platform.InternalBenchInt(len(absPaths)),
+	)
 	firstLines, err := search.FirstMatchLinePerFile(pattern, absPaths)
+	finishBench(
+		"err", platform.InternalBenchError(err),
+		"matches", platform.InternalBenchInt(len(firstLines)),
+		"bad_pattern", platform.InternalBenchCancelled(err, search.ErrRipgrepBadPattern),
+	)
 	if err != nil || len(firstLines) == 0 {
 		return rows
 	}

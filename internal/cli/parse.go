@@ -423,6 +423,15 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageRecent, Limit: limit})
 			i = next - 1
 			lastNoValueModifier = ""
+		case "--size":
+			inModifierMode = true
+			nums, next, err := consumeOptionalSizeBounds(args, i+1)
+			if err != nil {
+				return command.Parsed{}, err
+			}
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageSize, Nums: nums})
+			i = next - 1
+			lastNoValueModifier = ""
 		case "--depth":
 			inModifierMode = true
 			if i+1 >= len(args) {
@@ -463,6 +472,8 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 				return command.Parsed{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
 			case strings.HasPrefix(arg, "--recent="):
 				return command.Parsed{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
+			case strings.HasPrefix(arg, "--size="):
+				return command.Parsed{}, SizeEqualsFormError()
 			case strings.HasPrefix(arg, "--depth="):
 				return command.Parsed{}, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 			case arg == "--diff":
@@ -734,6 +745,15 @@ func FormatScopeSummary(s command.ExecutionScope) string {
 				continue
 			}
 			parts = append(parts, fmt.Sprintf("recent=%d", *stage.Limit))
+		case command.StageSize:
+			switch len(stage.Nums) {
+			case 0:
+				parts = append(parts, "size=true")
+			case 1:
+				parts = append(parts, fmt.Sprintf("size_min=%d", stage.Nums[0]))
+			default:
+				parts = append(parts, fmt.Sprintf("size=%d..%d", stage.Nums[0], stage.Nums[1]))
+			}
 		case command.StageDepth:
 			if stage.Limit == nil {
 				continue
