@@ -313,21 +313,6 @@ func emitLinesSliceRaw(w io.Writer, absPath string, linesStart, linesEnd int) er
 	return scanner.Err()
 }
 
-func emitNumberedFileBodyFromDisk(w io.Writer, absPath string) error {
-	f, err := os.Open(absPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	nw := &numberedWriter{w: w, line: 1, atLineStart: true}
-	buf := make([]byte, readBufferSize())
-	if _, err := io.CopyBuffer(nw, f, buf); err != nil {
-		return fmt.Errorf("failed while streaming %s: %w", absPath, err)
-	}
-	return nil
-}
-
 // emitLinesFile writes a wrapped file with line numbering. For sliced mode
 // (LinesStart > 0), it adds a lines="START-END" attribute and only emits
 // the requested range. For bare --lines, it numbers the entire file.
@@ -430,44 +415,6 @@ func emitLinesFile(w io.Writer, entry discovery.Entry) error {
 	return err
 }
 
-// emitLinesFileBody writes file content with line numbering to a raw writer
-// (no XML wrapper). For sliced mode, only emits the requested range.
-func emitLinesFileBody(w io.Writer, absPath string, linesStart, linesEnd int) error {
-	f, err := os.Open(absPath)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	startLine := 1
-	if linesStart > 0 {
-		startLine = linesStart
-	}
-	nw := &numberedWriter{w: w, line: startLine, atLineStart: true}
-
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, readBufferSize()), 10*1024*1024)
-	lineNum := 0
-
-	for scanner.Scan() {
-		lineNum++
-		if linesStart > 0 && lineNum < linesStart {
-			continue
-		}
-		if linesEnd > 0 && lineNum > linesEnd {
-			break
-		}
-		line := scanner.Bytes()
-		if _, err := nw.Write(line); err != nil {
-			return fmt.Errorf("failed while writing %s: %w", absPath, err)
-		}
-		if _, err := nw.Write([]byte{'\n'}); err != nil {
-			return fmt.Errorf("failed while writing %s: %w", absPath, err)
-		}
-	}
-	return scanner.Err()
-}
-
 type numberedWriter struct {
 	w           io.Writer
 	line        int
@@ -507,12 +454,6 @@ func formatLineNumber(n int) []byte {
 		return []byte(fmt.Sprintf("%6d\t", n))
 	}
 	return []byte(fmt.Sprintf("%d\t", n))
-}
-
-func emitSectionedOutputPlan(cfg EmitConfig, env EmitEnvironment, plan Plan, stdout io.Writer, colors platform.Palette) (EmitStats, error) {
-	return WithPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
-		return writeSectionedOutputPlanPayload(w, plan, true)
-	})
 }
 
 func writeSectionedOutputPlanPayload(w io.Writer, plan Plan, prefetch bool) error {
@@ -902,20 +843,6 @@ func buildFileOpenTagWithLines(relPath, typeAttr, linesAttr string) []byte {
 type SnippetRange struct {
 	Start int
 	End   int
-}
-
-// emitDiffEntry emits git patches for tracked files and falls back to full
-// content for untracked files, matching the shell tool's diff UX.
-func emitDiffEntry(w io.Writer, gitCtx git.Context, entry discovery.Entry) error {
-	payload, _, keep, err := BuildPreparedDiffPayload(gitCtx, entry)
-	if err != nil {
-		return err
-	}
-	if !keep {
-		return nil
-	}
-	_, err = w.Write(payload)
-	return err
 }
 
 func DiffEntryOutput(gitCtx git.Context, entry discovery.Entry) (string, string, bool, error) {

@@ -398,19 +398,3 @@ func contentMatchPathsForArgs(currentArgs []string, flag, query string) ([]strin
 	return relPaths, nil
 }
 
-func sortedUniqueEntryRelPaths(entries []discovery.Entry) []string {
-	seen := make(map[string]struct{}, len(entries))
-	relPaths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.RelPath == "" {
-			continue
-		}
-		if _, ok := seen[entry.RelPath]; ok {
-			continue
-		}
-		seen[entry.RelPath] = struct{}{}
-		relPaths = append(relPaths, entry.RelPath)
-	}
-	sort.Strings(relPaths)
-	return relPaths
-}

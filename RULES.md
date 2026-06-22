@@ -166,6 +166,18 @@ Subpackages and platform shims:
 
     This corollary refines rule 18's "standalone token" part — the test enforces that placeholders aren't concatenated into compound strings, but it cannot verify that the substituted value is itself a single shell token. Keep the value trivial by construction, the same way rule 18 part 2 keeps the value safe by construction.
 
+25. **Multi-file body previews are capped AND cancellation-aware; tree-text previews are neither** — any preview pane whose handler streams the *bodies* of more than one file (`output.WriteOutputPlanPayload*` looping over multiple plan items) must wrap its writer in `output.PreviewCapWriter` constructed with `output.PreviewByteLimit` (128 KiB) and `search.ReloadCancelContext()`. On the sentinel `output.ErrPreviewLimitReached`, the caller treats the result as success-with-truncation (when `cap.Truncated()`) or silent return (when `cap.Cancelled()`), never as failure.
+
+    The cap exists because fzf's preview pane renders a constant number of lines regardless of input size; emitting more bytes than fit is pure I/O waste, and on Windows + Defender it scales linearly with file count (every per-file `os.Open` is intercepted). The cancellation hook exists because fzf SIGTERMs the previous preview child when focus changes (on macOS/Linux): without a context check inside the per-entry write loop, the superseded emit runs to completion and delays the next focus's preview by however long the previous file scan takes. Folding cancellation into the cap writer turns that into a microsecond bail; nothing inside `WriteOutputPlanPayload*` needs to know about either condition.
+
+    **The cap MUST NOT be applied to tree-text previews** (`RenderTreePreviewFromPlan`, `renderTreeDocument`, `EncodeTreePayloadFromPlan`, the `--internal-tree-preview` / `--internal-tree-payload` handlers). Tree previews render the *user-visible scope summary* — paths, size annotations, git badges, the document the user reads to decide whether to commit. Truncating mid-tree would silently misrepresent scope coverage, a rule 1 ("Preview must be truthful") violation. Tree documents are bounded by entry count (one row per file), not by per-file body size, so they don't have the multi-MiB cost surface that multi-file body previews do.
+
+    **The cap MUST NOT be applied to the final emit** — the bytes the user actually pastes, bundles, or saves. The cap lives only inside the `--internal-*-preview` handler call sites (`cli.go:88/112/125`); final emit runs in the parent process via `output.EmitOutputPlan`, a structurally separate path the preview wrappers never reach.
+
+    Single-file previews (per-file picker focus, content-match-list rows, `--recent` table render) are bounded by file size or single-document length and do not require the cap.
+
+    **Enforced:** `TestRunPipelineArchitectureGuards` (`requireMultiFilePreviewHandlersWrapInPreviewCap` + `requirePreviewCapWriterStaysInPreviewHandlers`) asserts every named multi-file preview handler calls `output.NewPreviewCapWriter`, and asserts only the whitelisted preview files may construct one. A new multi-file body preview that forgets the cap, or a refactor that accidentally routes final emit through the cap, fails the build. See `docs/versions/v0.6.2/reports/ACTIVE_PLAN_multi_file_preview_cap.md`.
+
 ## Execution flow
 
 1. Parse args and build scopes (via `CommandSpec` / `FlagSpec` declarative model).

@@ -178,10 +178,6 @@ func writeLinesPickerCheckpoint(view resolvedScopeView, entries []discovery.Entr
 	return checkpointPath, cleanup, nil
 }
 
-func chooseStartupStartLine(checkpointPath string, maxLines int) (int, error) {
-	return chooseStartupStartLineWithEscHint(checkpointPath, maxLines, "")
-}
-
 func chooseStartupStartLineWithEscHint(checkpointPath string, maxLines int, escHint string) (int, error) {
 	previewCmd := buildLinesPickerStartPreviewCommand(checkpointPath)
 	lines := startupLinePickerLines(1, maxLines)
@@ -301,20 +297,12 @@ func chooseLineWithFzf(prompt, header string, lines []string, previewCommand str
 	return "", err
 }
 
-func linesPickerStartHeader() string {
-	return linesPickerStartHeaderWithEscHint("")
-}
-
 func linesPickerStartHeaderWithEscHint(escHint string) string {
 	return discovery.PickerHeader(
 		"Pick the start line.",
 		"Hover a line to preview from there to EOF.",
 		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
 	)
-}
-
-func linesPickerEndHeader() string {
-	return linesPickerEndHeaderWithEscHint("")
 }
 
 func linesPickerEndHeaderWithEscHint(escHint string) string {

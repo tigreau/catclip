@@ -106,6 +106,12 @@ type startupCurrentScopeState struct {
 	AnyUntracked            bool
 	AllUntracked            bool
 	Scopes                  []command.ExecutionScope
+	// GitStatusMap is the porcelain map (workPath → "S"/"M"/"SM"/"?")
+	// collected once in startupCurrentScopeStateForArgs and reused by
+	// startupModifierCurrentScopePreviewCommand so the checkpoint write
+	// doesn't repeat the git status call. nil when git is disabled or
+	// the scope is empty (the caller falls back to a fresh fetch).
+	GitStatusMap map[string]string
 }
 
 var startupModifierMetaChoices = []StartupModifierChoice{
@@ -1141,27 +1147,6 @@ func startupResolvedTargetPaths(args []string) []string {
 	return paths
 }
 
-func startupCurrentScopeTargetPaths(args []string) ([]string, error) {
-	cfg, err := cli.ParseArgsAllowImplicitDot(args)
-	if err != nil {
-		return nil, err
-	}
-	scopeSpecs := cfg.Command.Scopes()
-	if len(scopeSpecs) == 0 {
-		return nil, nil
-	}
-	lastTargets := scopeSpecs[len(scopeSpecs)-1].Targets()
-	targets := make([]string, 0, len(lastTargets))
-	for _, target := range lastTargets {
-		target = normalizeRelPath(target)
-		if target == "" {
-			target = "."
-		}
-		targets = append(targets, target)
-	}
-	return targets, nil
-}
-
 func startupCurrentScopeIncludedTargetPaths(args []string) ([]string, error) {
 	cfg, err := cli.ParseArgsAllowImplicitDot(args)
 	if err != nil {
@@ -1387,73 +1372,6 @@ func startupLeadingModifierNeedsInitialScope(arg string) bool {
 	}
 }
 
-func resolveStartupModifierTokens(currentArgs, modifierTokens []string) ([]string, bool, error) {
-	finalArgs := append([]string(nil), currentArgs...)
-	usedFzf := false
-	for i := 0; i < len(modifierTokens); i++ {
-		switch modifierTokens[i] {
-		case "--only", "--exclude":
-			if i+1 >= len(modifierTokens) {
-				return nil, false, discovery.ErrSelectionCancelled
-			}
-			value := modifierTokens[i+1]
-			i++
-			var (
-				err          error
-				valueUsedFzf bool
-			)
-			finalArgs, valueUsedFzf, err = resolveStartupModifierValue(finalArgs, modifierTokens[i-1], value)
-			if err != nil {
-				return nil, false, err
-			}
-			usedFzf = usedFzf || valueUsedFzf
-		case "--contains":
-			if i+1 >= len(modifierTokens) {
-				return nil, false, discovery.ErrSelectionCancelled
-			}
-			finalArgs = append(finalArgs, modifierTokens[i], modifierTokens[i+1])
-			i++
-		case "--recent":
-			finalArgs = append(finalArgs, modifierTokens[i])
-			if i+1 >= len(modifierTokens) {
-				continue
-			}
-			if cli.IsModifierBoundaryToken(modifierTokens[i+1]) {
-				continue
-			}
-			finalArgs = append(finalArgs, modifierTokens[i+1])
-			i++
-		case "--size":
-			finalArgs = append(finalArgs, modifierTokens[i])
-			nums := make([]int, 0, 2)
-			consumed := 0
-			for consumed < 2 && i+1 < len(modifierTokens) && !cli.IsModifierBoundaryToken(modifierTokens[i+1]) {
-				i++
-				n, err := cli.ParseSizeBoundToken(modifierTokens[i])
-				if err != nil {
-					return nil, false, err
-				}
-				nums = append(nums, n)
-				finalArgs = append(finalArgs, strconv.Itoa(n))
-				consumed++
-			}
-			if i+1 < len(modifierTokens) && !cli.IsModifierBoundaryToken(modifierTokens[i+1]) {
-				return nil, false, cli.SizeTooManyValuesError(modifierTokens[i+1])
-			}
-			if err := cli.ValidateSizeBounds(nums); err != nil {
-				return nil, false, err
-			}
-		default:
-			finalArgs = append(finalArgs, modifierTokens[i])
-		}
-	}
-	return finalArgs, usedFzf, nil
-}
-
-func resolveStartupModifierValue(currentArgs []string, flag, value string) ([]string, bool, error) {
-	return append(append([]string(nil), currentArgs...), flag, value), false, nil
-}
-
 func pathBase(relPath string) string {
 	parts := strings.Split(relPath, "/")
 	return parts[len(parts)-1]
@@ -1529,22 +1447,38 @@ func chooseStartupModifierWithEscHint(currentArgs []string, escHint string) (Sta
 }
 
 func chooseStartupModifierChoiceWithEscHint(currentArgs []string, escHint string) (StartupModifierChoice, error) {
+	finishBench := platform.InternalBenchSpan("ui.startup.modifier_picker")
+	finishStateBench := platform.InternalBenchSpan("ui.startup.modifier_picker.scope_state")
 	state, view, err := startupCurrentScopeStateForArgs(currentArgs)
+	finishStateBench(
+		"err", platform.InternalBenchError(err),
+		"entries", platform.InternalBenchInt(len(view.Entries)),
+	)
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return StartupModifierChoice{}, err
 	}
 	if state.Known && state.Empty && !state.NeedsInclude {
+		finishBench("err", "false", "no_files", "true")
 		return StartupModifierChoice{}, startupNoFilesMatchedError(state.Scopes)
 	}
 	lines, index := startupModifierChoiceLines(startupAvailableModifierChoicesWithState(currentArgs, state))
 	if len(lines) == 0 {
+		finishBench("err", "false", "no_choices", "true")
 		return StartupModifierChoice{}, discovery.ErrSelectionCancelled
 	}
 	bin, err := discovery.FuzzyResolverBinary()
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return StartupModifierChoice{}, err
 	}
+	finishPrepBench := platform.InternalBenchSpan("ui.startup.modifier_picker.prepare_preview",
+		"entries", platform.InternalBenchInt(len(view.Entries)),
+	)
 	previewCmd, previewTmpdir := startupModifierCurrentScopePreviewCommand(state, view)
+	finishPrepBench(
+		"has_preview", platform.InternalBenchBool(previewCmd != ""),
+	)
 	if previewTmpdir != "" {
 		defer os.RemoveAll(previewTmpdir)
 	}
@@ -1566,19 +1500,24 @@ func chooseStartupModifierChoiceWithEscHint(currentArgs []string, escHint string
 	}
 	result, err := picker.Run(bin, themedFzfRequest(req))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
+		finishBench("err", "false", "cancelled", "true")
 		return StartupModifierChoice{}, discovery.ErrSelectionCancelled
 	}
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return StartupModifierChoice{}, err
 	}
 	if len(result.Matches) == 0 {
+		finishBench("err", "false", "no_match", "true")
 		return StartupModifierChoice{}, discovery.ErrSelectionCancelled
 	}
 	selected := result.Matches[0]
 	choice, ok := index[selected]
 	if !ok {
+		finishBench("err", "false", "unmapped_match", "true")
 		return StartupModifierChoice{}, discovery.ErrSelectionCancelled
 	}
+	finishBench("err", "false", "choice", choice.Key)
 	return choice, nil
 }
 
@@ -1863,10 +1802,6 @@ func entryRelPaths(entries []discovery.Entry) []string {
 		paths = append(paths, e.RelPath)
 	}
 	return paths
-}
-
-func chooseSnippetBoundaryWithFzf(previewCommand string) (startupSnippetBoundaryChoice, error) {
-	return chooseSnippetBoundaryWithFzfAndEscHint(previewCommand, "")
 }
 
 func chooseSnippetBoundaryWithFzfAndEscHint(previewCommand, escHint string) (startupSnippetBoundaryChoice, error) {
@@ -2429,10 +2364,6 @@ func startupStageSelectionCoversAll(selected, candidates []string) bool {
 	return true
 }
 
-func resolveStartupModifierStageValues(currentArgs []string, flag, prompt string, values []string, allowInteractiveEmpty bool, previewCommand string) ([]string, bool, error) {
-	return resolveStartupModifierStageValuesWithEscHint(currentArgs, flag, prompt, values, allowInteractiveEmpty, previewCommand, "")
-}
-
 func resolveStartupModifierStageValuesWithEscHint(currentArgs []string, flag, prompt string, values []string, allowInteractiveEmpty bool, previewCommand string, escHint string) ([]string, bool, error) {
 	cleanupPreview := func() {}
 	defer func() {
@@ -2781,17 +2712,46 @@ func startupModifierCurrentScopePreviewCommand(state startupCurrentScopeState, v
 	checkpointPath := filepath.Join(tmpdir, "scope.json")
 	statuses := map[string]string{}
 	if view.GitContext.Enabled {
-		statuses, err = git.StatusMapForPathspecs(view.GitContext, discovery.GitStatusPathspecsForEntries(view.GitContext, view.Entries))
-		if err != nil {
-			_ = os.RemoveAll(tmpdir)
-			return "", ""
+		if state.GitStatusMap != nil {
+			// Reuse the porcelain map already collected by
+			// startupCurrentScopeStateForArgs (single git invocation
+			// per parent flow). Trace label kept for continuity but
+			// records the cache hit explicitly.
+			finishStatusBench := platform.InternalBenchSpan("ui.startup.modifier_picker.git_status_map",
+				"entries", platform.InternalBenchInt(len(view.Entries)),
+			)
+			statuses = state.GitStatusMap
+			finishStatusBench(
+				"err", "false",
+				"statuses", platform.InternalBenchInt(len(statuses)),
+				"cached", "true",
+			)
+		} else {
+			finishStatusBench := platform.InternalBenchSpan("ui.startup.modifier_picker.git_status_map",
+				"entries", platform.InternalBenchInt(len(view.Entries)),
+			)
+			statuses, err = git.StatusMapForPathspecs(view.GitContext, discovery.GitStatusPathspecsForEntries(view.GitContext, view.Entries))
+			finishStatusBench(
+				"err", platform.InternalBenchError(err),
+				"statuses", platform.InternalBenchInt(len(statuses)),
+				"cached", "false",
+			)
+			if err != nil {
+				_ = os.RemoveAll(tmpdir)
+				return "", ""
+			}
 		}
 	}
-	if err := discovery.WriteCheckpoint(checkpointPath, view.Invocation.WorkingDir, discovery.CheckpointData{
+	finishWriteBench := platform.InternalBenchSpan("ui.startup.modifier_picker.write_checkpoint",
+		"entries", platform.InternalBenchInt(len(view.Entries)),
+	)
+	werr := discovery.WriteCheckpoint(checkpointPath, view.Invocation.WorkingDir, discovery.CheckpointData{
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,
-	}); err != nil {
+	})
+	finishWriteBench("err", platform.InternalBenchError(werr))
+	if werr != nil {
 		_ = os.RemoveAll(tmpdir)
 		return "", ""
 	}
@@ -3018,7 +2978,11 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 	}
 	if len(view.Scopes) > 0 {
 		current := view.Scopes[len(view.Scopes)-1]
+		finishIgnoredBench := platform.InternalBenchSpan("ui.startup.scope_state.has_scoped_ignored",
+			"targets", platform.InternalBenchInt(len(current.Targets)),
+		)
 		hasScopedIgnored, err := startupHasScopedIgnoredTargets(current.Targets)
+		finishIgnoredBench("err", platform.InternalBenchError(err))
 		if err == nil {
 			state.HasScopedIgnoredTargets = hasScopedIgnored
 		}
@@ -3041,18 +3005,52 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 		return state, view, nil
 	}
 
-	staged, err := startupCurrentScopeSelectionSet(view.GitContext, command.ExecutionScope{Changed: true, Staged: true}, currentRepoPaths)
+	// Single `git status --porcelain` covers staged + unstaged + untracked.
+	// Replaces three sequential git invocations (one each for staged /
+	// unstaged / untracked); per the v0.6.2 Windows trace each separate
+	// invocation cost ~150 ms (Defender intercepts every git subprocess
+	// .git/ read), so the consolidation saves ~300 ms on warm boot. The
+	// resulting map is also reused by startupModifierCurrentScopePreviewCommand
+	// to write the modifier-menu checkpoint without a second porcelain
+	// call (state.GitStatusMap).
+	finishGitSelBench := platform.InternalBenchSpan("ui.startup.scope_state.git_selection_sets",
+		"repo_paths", platform.InternalBenchInt(total),
+	)
+	pathspecs := discovery.GitStatusPathspecsForEntries(view.GitContext, view.Entries)
+	statusMap, err := git.StatusMapForPathspecs(view.GitContext, pathspecs)
 	if err != nil {
+		finishGitSelBench("err", platform.InternalBenchError(err))
 		return startupCurrentScopeState{}, resolvedScopeView{}, err
 	}
-	unstaged, err := startupCurrentScopeSelectionSet(view.GitContext, command.ExecutionScope{Changed: true, Unstaged: true}, currentRepoPaths)
-	if err != nil {
-		return startupCurrentScopeState{}, resolvedScopeView{}, err
+	state.GitStatusMap = statusMap
+
+	staged := make(map[string]struct{})
+	unstaged := make(map[string]struct{})
+	untracked := make(map[string]struct{})
+	for workPath, status := range statusMap {
+		repoPath := normalizeRelPath(view.GitContext.ToRepoPath(workPath))
+		if _, inScope := currentRepoPaths[repoPath]; !inScope {
+			continue
+		}
+		switch status {
+		case "S":
+			staged[repoPath] = struct{}{}
+		case "M":
+			unstaged[repoPath] = struct{}{}
+		case "SM":
+			staged[repoPath] = struct{}{}
+			unstaged[repoPath] = struct{}{}
+		case "?":
+			untracked[repoPath] = struct{}{}
+		}
 	}
-	untracked, err := startupCurrentScopeSelectionSet(view.GitContext, command.ExecutionScope{Changed: true, Untracked: true}, currentRepoPaths)
-	if err != nil {
-		return startupCurrentScopeState{}, resolvedScopeView{}, err
-	}
+	finishGitSelBench(
+		"err", "false",
+		"statuses", platform.InternalBenchInt(len(statusMap)),
+		"staged", platform.InternalBenchInt(len(staged)),
+		"unstaged", platform.InternalBenchInt(len(unstaged)),
+		"untracked", platform.InternalBenchInt(len(untracked)),
+	)
 	// `Changed:true` (no sub-flag) on discovery.CollectChangedRepoPaths returns
 	// `staged ∪ unstaged ∪ untracked` — its extra `git diff HEAD` call
 	// is a subset of `staged ∪ unstaged` for tracked files. Recompute
@@ -3130,21 +3128,6 @@ func startupHasScopedIgnoredTargets(scopeTargets []string) (bool, error) {
 	return search.HasScopedIgnoredTargetsStreaming(context.Background(), wd, scopeTargets, hissPath)
 }
 
-func startupCurrentScopeSelectionSet(gitCtx git.Context, sel command.ExecutionScope, currentRepoPaths map[string]struct{}) (map[string]struct{}, error) {
-	paths, err := discovery.CollectChangedRepoPaths(gitCtx, sel)
-	if err != nil {
-		return nil, err
-	}
-	set := make(map[string]struct{})
-	for _, repoPath := range paths {
-		repoPath = normalizeRelPath(repoPath)
-		if _, ok := currentRepoPaths[repoPath]; !ok {
-			continue
-		}
-		set[repoPath] = struct{}{}
-	}
-	return set, nil
-}
 
 func startupAnyAllForCurrentScope(total int, set map[string]struct{}) (bool, bool) {
 	if total == 0 || len(set) == 0 {

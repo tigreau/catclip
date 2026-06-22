@@ -142,17 +142,6 @@ func formatRecentAge(now, modTime time.Time) string {
 	}
 }
 
-// formatDuration renders an elapsed duration for `--verbose` timing lines, rounded
-// to a readable precision: microseconds for sub-millisecond spans, milliseconds
-// otherwise (e.g. "812µs", "1.204s"). It formats how long something took, not a
-// wall-clock time.
-func formatDuration(d time.Duration) string {
-	if d < time.Millisecond {
-		return d.Round(time.Microsecond).String()
-	}
-	return d.Round(time.Millisecond).String()
-}
-
 // recencyBucket classifies how recently a file changed, for UI that colors by
 // freshness (the --preview table). It is date logic, so it lives here next to the
 // formatters rather than in the preview renderer.

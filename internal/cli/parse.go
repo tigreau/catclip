@@ -525,18 +525,6 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 
 // Parser helpers
 
-func splitCommaPatterns(value string) []string {
-	parts := strings.Split(value, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if part == "" {
-			continue
-		}
-		out = append(out, part)
-	}
-	return out
-}
-
 func consumeModifierValues(args []string, start int) ([]string, int) {
 	values := make([]string, 0, len(args)-start)
 	i := start

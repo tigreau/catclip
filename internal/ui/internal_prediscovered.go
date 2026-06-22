@@ -123,6 +123,22 @@ func FzfFilterTreeRenderOptions() treeRenderOptions {
 //
 // Unlike the tree-document preview, this path includes file bodies because the
 // picker is slicing those bodies; seeing the slice is the point of the preview.
+//
+// The stdout writer is wrapped in output.PreviewCapWriter with the
+// reload-cancellation context. Two short-circuit conditions matter on
+// large corpora:
+//
+//  1. Byte cap (output.PreviewByteLimit) bounds per-focus I/O. fzf's
+//     preview pane renders a constant number of lines; emitting the
+//     full plan (1.6–3.7 MiB on vscode-main) is pure waste, and on
+//     Windows + Defender every per-file os.Open is intercepted.
+//  2. Cancellation: when fzf moves focus, it SIGTERMs the previous
+//     preview child. Honoring search.ReloadCancelContext lets the
+//     write loop bail mid-emit instead of finishing a giant file scan
+//     and delaying the next focus's preview.
+//
+// Either condition surfaces as output.ErrPreviewLimitReached, which we
+// treat as success-with-(truncation|cancellation), not failure.
 func RunInternalLinesPreview(cfg prediscoveredCommandConfig, emitCfg output.EmitConfig, stdout io.Writer) error {
 	finishBench := platform.InternalBenchSpan("ui.internal.lines_preview",
 		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
@@ -168,16 +184,36 @@ func RunInternalLinesPreview(cfg prediscoveredCommandConfig, emitCfg output.Emit
 	finishPlanBench("items", platform.InternalBenchInt(plan.Len()))
 	// Prefetch disabled: the preview pane only renders a screenful of
 	// output, so we never need every file body queued ahead of time.
+	cap := output.NewPreviewCapWriter(stdout, search.ReloadCancelContext(), output.PreviewByteLimit)
 	finishWriteBench := platform.InternalBenchSpan("ui.internal.lines_preview.write_payload",
 		"items", platform.InternalBenchInt(plan.Len()),
 	)
-	err = output.WriteOutputPlanPayloadWithoutPrefetch(stdout, emitCfg, plan)
-	finishWriteBench("err", platform.InternalBenchError(err))
+	err = output.WriteOutputPlanPayloadWithoutPrefetch(cap, emitCfg, plan)
+	if errors.Is(err, output.ErrPreviewLimitReached) {
+		err = nil
+	}
+	finishWriteBench(
+		"err", platform.InternalBenchError(err),
+		"bytes", platform.InternalBenchInt(int(cap.BytesWritten())),
+		"truncated", platform.InternalBenchBool(cap.Truncated()),
+		"cancelled", platform.InternalBenchBool(cap.Cancelled()),
+	)
+	if err == nil && cap.Truncated() {
+		// Footer goes to the raw stdout, not the cap (cap is full).
+		_, _ = io.WriteString(stdout, "\n\n[lines preview truncated at 128 KiB — full content is in the file]\n")
+	}
 	finishBench("err", platform.InternalBenchError(err))
 	return err
 }
 
 func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, stdout io.Writer) error {
+	// Before any work: terminate the prior keystroke's child if it's
+	// still alive. On Windows fzf does not SIGTERM superseded reload
+	// children, so without this they pile up — four typed characters
+	// = four parallel 6.5 s rg scans fighting for CPU and Defender.
+	// See killSupersededPredecessor doc for the file-coordination
+	// design. No-op on POSIX (fzf already killed prior).
+	killSupersededPredecessor(cfg.CheckpointPath, predecessorBucketContentMatch)
 	finishBench := platform.InternalBenchSpan("ui.internal.content_match_list",
 		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
 	)
@@ -262,10 +298,28 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
+	// Prefix-extension memo: if the previous keystroke ran and cached
+	// its matched paths, AND the new pattern is a prefix-extension of
+	// the previous one, restrict the rg scan to that prior set. The
+	// new matches are necessarily a subset, so the result is identical
+	// but the per-keystroke cost drops from full-corpus scan to a
+	// re-scan of the prior matches only. See contentMatchMemo doc.
+	pattern := contentMatchScopePattern(scope)
+	memoPath := contentMatchMemoPath(cfg.CheckpointPath)
+	memoHit := false
+	entriesForScan := entries
+	if memo, ok := readContentMatchMemo(memoPath); ok {
+		if restricted, hit := restrictEntriesByMemo(entries, memo, pattern); hit {
+			memoHit = true
+			entriesForScan = restricted
+		}
+	}
 	finishRowsBench := platform.InternalBenchSpan("ui.internal.content_match_list.first_match_rows",
-		"entries", platform.InternalBenchInt(len(entries)),
+		"entries", platform.InternalBenchInt(len(entriesForScan)),
+		"candidate_entries", platform.InternalBenchInt(len(entries)),
+		"memo_hit", platform.InternalBenchBool(memoHit),
 	)
-	rows, err := contentMatchRowsWithFirstMatchLines(entries, contentMatchScopePattern(scope))
+	rows, err := contentMatchRowsWithFirstMatchLines(entriesForScan, pattern)
 	finishRowsBench(
 		"err", platform.InternalBenchError(err),
 		"rows", platform.InternalBenchInt(len(rows)),
@@ -278,11 +332,15 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
+	// Write the new memo for the next keystroke. Best-effort: a failed
+	// write costs the next keystroke a full scan, not correctness.
+	writeContentMatchMemo(memoPath, pattern, matchedAbsPathsFromRows(rows, entriesForScan))
 	err = writeContentMatchRows(stdout, rows)
 	finishBench(
 		"err", platform.InternalBenchError(err),
 		"rows", platform.InternalBenchInt(len(rows)),
 		"double_pass", "false",
+		"memo_hit", platform.InternalBenchBool(memoHit),
 	)
 	return err
 }

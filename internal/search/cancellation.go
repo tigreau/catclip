@@ -40,3 +40,13 @@ func InstallReloadCancellation() {
 func ReloadWasCancelled() bool {
 	return reloadCancelCtx.Err() != nil
 }
+
+// ReloadCancelContext exposes the reload-cancellation context so non-rg
+// callers (e.g. multi-file preview writers) can honor fzf's supersede
+// signal too. The returned context is cancelled when the current preview
+// child receives SIGTERM/SIGINT (after InstallReloadCancellation has
+// armed it). Outside an internal preview process this returns the
+// never-cancelled background context.
+func ReloadCancelContext() context.Context {
+	return reloadCancelCtx
+}

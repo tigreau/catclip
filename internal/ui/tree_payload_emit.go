@@ -89,14 +89,27 @@ func RenderTreePreviewFromPlan(
 }
 
 func RunInternalTreePayloadFilePreview(inputDir, inputStem string, stdout io.Writer) error {
+	finishBench := platform.InternalBenchSpan("ui.internal.tree_payload_file_preview",
+		"stem", inputStem,
+	)
+	finishOpenBench := platform.InternalBenchSpan("ui.internal.tree_payload_file_preview.open")
 	f, err := os.Open(filepath.Join(inputDir, inputStem+".json"))
+	finishOpenBench("err", platform.InternalBenchError(err))
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
 	defer f.Close()
+	finishDecodeBench := platform.InternalBenchSpan("ui.internal.tree_payload_file_preview.decode")
 	doc, err := decodeTreePayload(f)
+	finishDecodeBench("err", platform.InternalBenchError(err))
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
-	return renderTreeDocument(stdout, doc, FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+	finishRenderBench := platform.InternalBenchSpan("ui.internal.tree_payload_file_preview.render")
+	err = renderTreeDocument(stdout, doc, FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+	finishRenderBench("err", platform.InternalBenchError(err))
+	finishBench("err", platform.InternalBenchError(err))
+	return err
 }

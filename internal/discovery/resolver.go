@@ -1945,17 +1945,6 @@ func (r *Resolver) resolveTargetMatches(matches []TargetMatch, colors platform.P
 	return DedupeEntriesByPath(entries), nil
 }
 
-func (r *Resolver) dirVisible(relPath string) (bool, error) {
-	if relPath == "." || relPath == "" {
-		return true, nil
-	}
-	if err := r.ensureIgnoreSets(); err != nil {
-		return false, err
-	}
-	_, ok := r.visibleWithHissDirs[relPath]
-	return ok, nil
-}
-
 func (r *Resolver) BuildVisibleDirIndex() error {
 	if r.visibleDirsReady {
 		return nil
@@ -2189,14 +2178,6 @@ func (r *Resolver) resolveVisibleFilesByBasename(baseRel, baseName string) ([]En
 	return matches, blocked, nil
 }
 
-func (r *Resolver) lookupVisibleFilesByExactBasename(baseName string) ([]Entry, []SkippedMatch, error) {
-	clone := *r
-	clone.WantedBasenames = map[string]struct{}{baseName: {}}
-	clone.visibleFiles = visibleFileIndex{}
-	clone.visibleFilesReady = false
-	return clone.resolveVisibleFilesByBasename(".", baseName)
-}
-
 func (r *Resolver) fuzzySearchDirs(baseRel, needle string) ([]string, error) {
 	if err := r.BuildVisibleDirIndex(); err != nil {
 		return nil, err
@@ -2400,22 +2381,6 @@ func runFzfFilterLines(bin, query string, lines []string) ([]string, error) {
 	return picker.Filter(bin, query, lines)
 }
 
-func chooseWithFzf(bin, query, prompt string, candidates []string, kind, state string) (string, error) {
-	return chooseWithFzfLines(bin, query, prompt, "1,2", FzfPreviewCommand(false), formatFzfCandidates(candidates, kind, state))
-}
-
-func chooseSingleFzfLine(query, prompt, withNth string, lines []string) (string, error) {
-	bin, err := FuzzyResolverBinary()
-	if err != nil {
-		return "", err
-	}
-	return chooseWithFzfLines(bin, query, prompt, withNth, "", lines)
-}
-
-func chooseTargetWithFzf(bin, query, prompt string, candidates []string, includeTarget bool) (string, error) {
-	return chooseWithFzfLines(bin, query, prompt, "1", FzfPreviewCommand(includeTarget), candidates)
-}
-
 func chooseWithFzfLines(bin, query, prompt, withNth, previewCommand string, lines []string) (string, error) {
 	platform.StopActiveSpinner()
 	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
@@ -2435,18 +2400,6 @@ func chooseWithFzfLines(bin, query, prompt, withNth, previewCommand string, line
 		return "", ErrSelectionCancelled
 	}
 	return result.Matches[0], nil
-}
-
-func chooseManyWithFzf(bin, query, prompt string, candidates []string) ([]string, error) {
-	return chooseManyWithFzfNth(bin, query, prompt, "1,2", candidates)
-}
-
-func chooseManyFilePathsWithFzf(query, prompt, header string, candidates []string) ([]string, error) {
-	bin, err := FuzzyResolverBinary()
-	if err != nil {
-		return nil, err
-	}
-	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", header, FzfPreviewCommand(false), formatFzfCandidates(candidates, treeTargetKindFile, treeTargetStateText))
 }
 
 // FzfFileSetPreviewCommand is the legacy fallback command for free-form
@@ -3015,19 +2968,6 @@ func ignoredFileMessage(relTarget, source string, fromChained, includesActive bo
 		return message
 	}
 	return message + IgnoreRemovalHint(source, colors)
-}
-
-func ignoredTargetNeedsIncludeMessage(resolvedPath, query string, colors platform.Palette) string {
-	if normalizeRelPath(query) == normalizeRelPath(resolvedPath) {
-		return fmt.Sprintf("\n%sError: %s is ignored.%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
-			colors.Err, SingleQuoted(resolvedPath), colors.Reset,
-			colors.Dim, colors.Reset,
-			colors.Dim, colors.Reset, colors.OK, SingleQuoted(resolvedPath), colors.Reset)
-	}
-	return fmt.Sprintf("\n%sError: %s only matches ignored targets.%s\n\n  %sUse --include to browse blocked files and directories for this scope.%s\n  %sExample:%s %scatclip --include %s%s",
-		colors.Err, SingleQuoted(query), colors.Reset,
-		colors.Dim, colors.Reset,
-		colors.Dim, colors.Reset, colors.OK, SingleQuoted(query), colors.Reset)
 }
 
 func includeQueryNeedsSelectionMessage(query string, colors platform.Palette) string {

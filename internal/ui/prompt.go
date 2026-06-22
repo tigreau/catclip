@@ -74,28 +74,6 @@ func PromptYesNo(prompt string, defaultYes bool, stderr io.Writer) (bool, error)
 	return defaultYes, nil
 }
 
-// readLineResponse is the long-form reader used for free-text prompts
-// (e.g. the hiss editor path's preference saving). Returns the response
-// plus an ok flag indicating whether input was available at all.
-func readLineResponse(prompt string, stderr io.Writer) (string, bool, error) {
-	if headlessPromptGuardActive() {
-		return "", false, headlessPromptBugError()
-	}
-	if platform.IsTerminalFile(os.Stdin) {
-		response, ok := readPromptLine(os.Stdin, stderr, prompt)
-		return response, ok, nil
-	}
-
-	ttyIn, ttyOut, err := platform.OpenPromptTTY()
-	if err != nil {
-		return "", false, nil
-	}
-	defer platform.ClosePromptTTY(ttyIn, ttyOut)
-
-	response, ok := readPromptLine(ttyIn, ttyOut, prompt)
-	return response, ok, nil
-}
-
 func readPromptResponse(prompt string, stderr io.Writer) (string, bool, error) {
 	if headlessPromptGuardActive() {
 		return "", false, headlessPromptBugError()

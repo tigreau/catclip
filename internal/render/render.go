@@ -805,29 +805,6 @@ func formatByteCount(totalBytes int64) string {
 	}
 }
 
-func splitLogicalLines(data []byte) []string {
-	if len(data) == 0 {
-		return nil
-	}
-
-	lines := make([]string, 0, bytes.Count(data, []byte{'\n'})+1)
-	start := 0
-	for start < len(data) {
-		offset := bytes.IndexByte(data[start:], '\n')
-		if offset < 0 {
-			lines = append(lines, string(data[start:]))
-			break
-		}
-		end := start + offset
-		lines = append(lines, string(data[start:end]))
-		start = end + 1
-	}
-	if len(lines) == 0 && utf8.Valid(data) {
-		return []string{string(data)}
-	}
-	return lines
-}
-
 func isSmartCaseInsensitive(pattern string) bool {
 	for _, r := range pattern {
 		if unicode.IsUpper(r) {

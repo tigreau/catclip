@@ -3,10 +3,13 @@ package ui
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 
 	"github.com/tigreau/catclip/internal/output"
+	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/search"
 )
 
 // snippetBoundarySource is the context-independent data the lazy `snippet mode>`
@@ -114,14 +117,56 @@ func streamSnippetBoundaryPreview(source snippetBoundarySource, choice startupSn
 // `snippet mode>` picker. It loads the source written at picker open and streams
 // the focused boundary key's snippet output, syntax-highlighted to match the
 // output picker's preview. Unknown keys emit nothing.
+//
+// stdout is wrapped in output.PreviewCapWriter with the reload-cancellation
+// context so:
+//
+//  1. Per-focus emission is bounded by output.PreviewByteLimit (fzf only
+//     renders a screenful; emitting the full payload across hundreds of
+//     matched files is pure waste).
+//  2. When fzf moves focus and SIGTERMs the preview child, the inner
+//     write loop bails on the next entry instead of finishing all
+//     remaining file reads.
+//
+// streamSnippetBoundaryPreview swallows write errors as "fzf closed the
+// pipe," so we read cap.Truncated() after the call to decide on the
+// truncation footer.
 func RunInternalSnippetBoundaryPreview(sourcePath, key string, stdout io.Writer) error {
+	finishBench := platform.InternalBenchSpan("ui.internal.snippet_boundary_preview",
+		"key", key,
+	)
+	finishReadBench := platform.InternalBenchSpan("ui.internal.snippet_boundary_preview.read_source")
 	source, err := readSnippetBoundarySource(sourcePath)
+	finishReadBench(
+		"err", platform.InternalBenchError(err),
+		"entries", platform.InternalBenchInt(len(source.Entries)),
+	)
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
 	choice, ok := snippetBoundaryChoiceByKey(key)
 	if !ok {
+		finishBench("err", "false", "unknown_key", "true")
 		return nil
 	}
-	return streamSnippetBoundaryPreview(source, choice, stdout, true)
+	cap := output.NewPreviewCapWriter(stdout, search.ReloadCancelContext(), output.PreviewByteLimit)
+	finishStreamBench := platform.InternalBenchSpan("ui.internal.snippet_boundary_preview.stream",
+		"entries", platform.InternalBenchInt(len(source.Entries)),
+	)
+	err = streamSnippetBoundaryPreview(source, choice, cap, true)
+	if errors.Is(err, output.ErrPreviewLimitReached) {
+		err = nil
+	}
+	finishStreamBench(
+		"err", platform.InternalBenchError(err),
+		"bytes", platform.InternalBenchInt(int(cap.BytesWritten())),
+		"truncated", platform.InternalBenchBool(cap.Truncated()),
+		"cancelled", platform.InternalBenchBool(cap.Cancelled()),
+	)
+	if err == nil && cap.Truncated() {
+		_, _ = io.WriteString(stdout, "\n[snippet preview truncated at 128 KiB]\n")
+	}
+	finishBench("err", platform.InternalBenchError(err))
+	return err
 }

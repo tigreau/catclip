@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -31,25 +32,40 @@ func RunInternalSinkToggle(modePath string, stdout io.Writer) error {
 }
 
 func RunInternalSinkPreview(modePath, outputPath, treePath string, stdout io.Writer) error {
+	finishBench := platform.InternalBenchSpan("ui.internal.sink_preview")
+	finishModeBench := platform.InternalBenchSpan("ui.internal.sink_preview.read_mode")
 	mode, err := os.ReadFile(modePath)
+	finishModeBench("err", platform.InternalBenchError(err))
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
 	targetPath := outputPath
+	modeName := "output"
 	if strings.TrimSpace(string(mode)) == "tree" {
 		targetPath = treePath
+		modeName = "tree"
 	}
+	finishContentBench := platform.InternalBenchSpan("ui.internal.sink_preview.read_target",
+		"mode", modeName,
+	)
 	content, err := os.ReadFile(targetPath)
+	finishContentBench(
+		"err", platform.InternalBenchError(err),
+		"bytes", platform.InternalBenchInt(len(content)),
+	)
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
 	_, err = stdout.Write(content)
+	finishBench(
+		"err", platform.InternalBenchError(err),
+		"mode", modeName,
+		"bytes", platform.InternalBenchInt(len(content)),
+	)
 	return err
 }
-
-const sinkPreviewDirectPasteByteLimit = 128 * 1024
-
-var errSinkPreviewLimitReached = errors.New("sink preview limit reached")
 
 type StartupPreparedOutputState struct {
 	Git       git.Context
@@ -99,12 +115,6 @@ type startupSinkPreviewFiles struct {
 	PreviewCommand string
 	ToggleBinding  string
 	Cleanup        func()
-}
-
-type limitedBufferWriter struct {
-	buf       bytes.Buffer
-	limit     int64
-	truncated bool
 }
 
 var startupSinkChoicesSmall = []startupSinkChoice{
@@ -360,11 +370,11 @@ func PrepareStartupSinkPreviewFiles(ctx StartupSinkPickerContext) (startupSinkPr
 		return startupSinkPreviewFiles{}, err
 	}
 
-	outputPreview, err := renderSinkPreviewWithMode(ctx, sinkPreviewModeOutputText, sinkPreviewDirectPasteByteLimit)
+	outputPreview, err := renderSinkPreviewWithMode(ctx, sinkPreviewModeOutputText, output.PreviewByteLimit)
 	if err != nil {
 		return fail(err)
 	}
-	treePreview, err := renderSinkPreviewWithMode(ctx, sinkPreviewModeTreeReport, sinkPreviewDirectPasteByteLimit)
+	treePreview, err := renderSinkPreviewWithMode(ctx, sinkPreviewModeTreeReport, output.PreviewByteLimit)
 	if err != nil {
 		return fail(err)
 	}
@@ -445,17 +455,18 @@ func renderSinkOutputTextPreview(plan output.Plan, emitCfg output.EmitConfig, li
 	// actually paste). Highlighting adds ANSI escapes on top; the final
 	// preview pane bytes may exceed the limit, but the truncation
 	// decision still reflects the raw emit size.
-	w := &limitedBufferWriter{limit: limit}
-	if err := output.WriteOutputPlanPayloadWithoutPrefetch(w, emitCfg, plan); err != nil && !errors.Is(err, errSinkPreviewLimitReached) {
+	var buf bytes.Buffer
+	w := output.NewPreviewCapWriter(&buf, context.Background(), limit)
+	if err := output.WriteOutputPlanPayloadWithoutPrefetch(w, emitCfg, plan); err != nil && !errors.Is(err, output.ErrPreviewLimitReached) {
 		return sinkPreview{}, err
 	}
-	rawSize := int64(len(w.buf.Bytes()))
-	highlighted := highlightFileBlocksForSinkPreview(w.buf.Bytes())
+	rawSize := int64(buf.Len())
+	highlighted := highlightFileBlocksForSinkPreview(buf.Bytes())
 	return sinkPreview{
 		Mode:           sinkPreviewModeOutputText,
 		Body:           highlighted,
-		Truncated:      w.truncated,
-		FullBytesKnown: !w.truncated,
+		Truncated:      w.Truncated(),
+		FullBytesKnown: !w.Truncated(),
 		FullBytes:      rawSize,
 	}, nil
 }
@@ -560,17 +571,18 @@ func sinkPreviewBodyHasLineNumbers(body []byte) bool {
 }
 
 func renderSinkTreeReportPreview(ctx StartupSinkPickerContext, limit int64) (sinkPreview, error) {
-	w := &limitedBufferWriter{limit: limit}
+	var buf bytes.Buffer
+	w := output.NewPreviewCapWriter(&buf, context.Background(), limit)
 	err := RenderPreview(ctx.Render, ctx.Git, ctx.Plan, ctx.Report, w, w, platform.ANSIPalette())
-	if err != nil && !errors.Is(err, errSinkPreviewLimitReached) {
+	if err != nil && !errors.Is(err, output.ErrPreviewLimitReached) {
 		return sinkPreview{}, err
 	}
-	body := append([]byte(nil), w.buf.Bytes()...)
+	body := append([]byte(nil), buf.Bytes()...)
 	return sinkPreview{
 		Mode:           sinkPreviewModeTreeReport,
 		Body:           body,
-		Truncated:      w.truncated,
-		FullBytesKnown: !w.truncated,
+		Truncated:      w.Truncated(),
+		FullBytesKnown: !w.Truncated(),
 		FullBytes:      int64(len(body)),
 	}, nil
 }
@@ -595,23 +607,3 @@ func formatSinkPreview(preview sinkPreview) []byte {
 	return out
 }
 
-func (w *limitedBufferWriter) Write(p []byte) (int, error) {
-	if len(p) == 0 {
-		return 0, nil
-	}
-	if w.limit <= 0 {
-		w.truncated = true
-		return 0, errSinkPreviewLimitReached
-	}
-	remaining := w.limit - int64(w.buf.Len())
-	if remaining <= 0 {
-		w.truncated = true
-		return 0, errSinkPreviewLimitReached
-	}
-	if int64(len(p)) > remaining {
-		w.truncated = true
-		n, _ := w.buf.Write(p[:int(remaining)])
-		return n, errSinkPreviewLimitReached
-	}
-	return w.buf.Write(p)
-}

@@ -38,17 +38,6 @@ func RenderConfigFromParsedCommand(cfg command.Parsed) RenderConfig {
 	}
 }
 
-func cloneStringMap(src map[string]string) map[string]string {
-	if src == nil {
-		return nil
-	}
-	dst := make(map[string]string, len(src))
-	for key, value := range src {
-		dst[key] = value
-	}
-	return dst
-}
-
 func NeedsTreeRender(cfg RenderConfig) bool {
 	if cfg.NoTree {
 		return false

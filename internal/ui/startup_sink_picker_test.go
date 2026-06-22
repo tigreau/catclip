@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -412,7 +411,7 @@ func TestSinkTreeReportPreviewRendersAnsiColors(t *testing.T) {
 		Render: RenderConfig{Preview: true},
 		Plan:   plan,
 		Report: report,
-	}, sinkPreviewDirectPasteByteLimit)
+	}, output.PreviewByteLimit)
 	if err != nil {
 		t.Fatalf("renderSinkTreeReportPreview returned error: %v", err)
 	}
@@ -443,42 +442,6 @@ func testSinkOutputPlan(t *testing.T, project, relPath string) output.Plan {
 		t.Fatal("expected non-empty output plan")
 	}
 	return plan
-}
-
-func runSinkPreviewCommand(t *testing.T, command string) string {
-	t.Helper()
-	return runShellCommand(t, command)
-}
-
-func runShellCommand(t *testing.T, command string) string {
-	t.Helper()
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		batPath := filepath.Join(t.TempDir(), "run.bat")
-		if err := os.WriteFile(batPath, []byte("@echo off\r\n"+command+"\r\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		cmd = exec.Command("cmd", "/c", batPath)
-	} else {
-		cmd = exec.Command("/bin/sh", "-c", command)
-	}
-	cmd.Env = append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("command %q failed: %v\n%s", command, err, string(out))
-	}
-	return string(out)
-}
-
-func sinkPreviewToggleCommandForTest(t *testing.T, binding string) string {
-	t.Helper()
-	const prefix = "ctrl-t:execute-silent("
-	const suffix = ")+refresh-preview"
-	firstBinding := strings.Split(binding, ",")[0]
-	if !strings.HasPrefix(firstBinding, prefix) || !strings.HasSuffix(firstBinding, suffix) {
-		t.Fatalf("unexpected toggle binding %q", binding)
-	}
-	return strings.TrimSuffix(strings.TrimPrefix(firstBinding, prefix), suffix)
 }
 
 func TestMeasureOutputForSinkMenuUsesLargeMenuAtBundleThreshold(t *testing.T) {

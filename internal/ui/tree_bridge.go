@@ -125,14 +125,6 @@ func buildTreeSummaryFromReport(report output.Report) *treeDocumentSummary {
 	return renderpkg.BuildSummary(report.Sizes, report.HumanSize, report.Tokens, report.CountWord)
 }
 
-func normalizeTreeTargetKind(kind string) string {
-	return renderpkg.NormalizeTargetKind(kind)
-}
-
-func normalizeTreeTargetState(state string) string {
-	return renderpkg.NormalizeTargetState(state)
-}
-
 func encodeTreePayload(w io.Writer, doc treeDocument) error {
 	return renderpkg.EncodePayload(w, doc)
 }

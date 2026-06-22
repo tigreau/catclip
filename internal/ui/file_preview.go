@@ -149,6 +149,13 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 // shell branching in the command string. See fzfContentPreviewCommand for
 // the command builder.
 func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
+	// Before any work: terminate the prior focus-change's child if it's
+	// still alive. The checkpoint_tree mode (empty FilePath + non-empty
+	// checkpoint) ran 5–9 s of rg.matches + build_plan in v0.6.2 traces,
+	// piling up against new previews on rapid focus moves. Separate
+	// bucket from content-match-list so they don't kill each other's
+	// children (both spawn from the same picker tmpdir).
+	killSupersededPredecessor(cfg.CheckpointPath, predecessorBucketFilePreview)
 	finishBench := platform.InternalBenchSpan("ui.internal.file_preview",
 		"checkpoint", fmt.Sprint(cfg.CheckpointPath != ""),
 		"file_path_empty", fmt.Sprint(strings.TrimSpace(cfg.FilePath) == ""),

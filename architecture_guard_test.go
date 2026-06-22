@@ -42,6 +42,8 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	uiFiles := parseUIGoFiles(t)
 	requireInteractivePickersAvoidPersistentSideEffects(t, append(files, uiFiles...))
 	requireInternalRenderHandlersAvoidDerivation(t, uiFiles)
+	requireMultiFilePreviewHandlersWrapInPreviewCap(t, uiFiles)
+	requirePreviewCapWriterStaysInPreviewHandlers(t, append(files, uiFiles...))
 	requireRenderPackageAvoidDerivationDeps(t, renderFiles)
 	requireDiscoveryPackageAllowedImports(t, discoveryFiles)
 	requireOutputPackageAllowedImports(t, parseOutputGoFiles(t))
@@ -266,6 +268,143 @@ func requireInternalRenderHandlersAvoidDerivation(t *testing.T, files []parsedGo
 			"search.FirstMatchLinePerFile", "search.HasScopedIgnoredTargetsStreaming",
 		},
 	)
+}
+
+// requireMultiFilePreviewHandlersWrapInPreviewCap enforces that every
+// preview handler that streams multi-file body bytes wraps its writer
+// in output.PreviewCapWriter. Without the cap, fzf preview pipes can
+// be fed multi-MiB payloads per focus on large corpora — Defender
+// scales linearly with file count on Windows, and the user only sees
+// a screenful. With the cap, the per-focus cost is bounded by
+// PreviewByteLimit (128 KiB). The plan that introduced this guard is
+// docs/versions/v0.6.2/reports/ACTIVE_PLAN_multi_file_preview_cap.md.
+//
+// The guard scans each named function's body for a direct call to
+// output.NewPreviewCapWriter. Each handler must still exist — a
+// silent rename cannot retire the rule.
+func requireMultiFilePreviewHandlersWrapInPreviewCap(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	required := []string{
+		"RunInternalLinesPreview",
+		"RunInternalSnippetBoundaryPreview",
+		"renderSinkOutputTextPreview",
+		"renderSinkTreeReportPreview",
+	}
+	requireFuncsCall(t, files, required, "output.NewPreviewCapWriter")
+}
+
+// previewCapAllowedFiles lists the source files that may construct an
+// output.PreviewCapWriter. Anything outside this set is a leak — the
+// cap MUST NOT be applied to the final emit (clipboard / bundle /
+// stdout); doing so would silently truncate the bytes the user
+// pastes. Confirmed 2026-06-21 by tracing the call graph: the three
+// handler call sites (cli.go:88, :112, :125) are the only paths into
+// preview rendering, and they live in these three files. Any future
+// refactor that puts a NewPreviewCapWriter call outside this list is
+// almost certainly capping a path that must emit the full payload.
+var previewCapAllowedFiles = []string{
+	"internal_prediscovered.go",
+	"snippet_boundary_lazy.go",
+	"startup_sink_picker.go",
+}
+
+func requirePreviewCapWriterStaysInPreviewHandlers(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	allowed := make(map[string]struct{}, len(previewCapAllowedFiles))
+	for _, name := range previewCapAllowedFiles {
+		allowed[name] = struct{}{}
+	}
+	for _, parsed := range files {
+		if _, ok := allowed[filepath.Base(parsed.name)]; ok {
+			continue
+		}
+		ast.Inspect(parsed.file, func(node ast.Node) bool {
+			call, ok := node.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel == nil {
+				return true
+			}
+			pkgIdent, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if pkgIdent.Name == "output" && sel.Sel.Name == "NewPreviewCapWriter" {
+				t.Errorf("%s calls output.NewPreviewCapWriter; the cap belongs only in preview handlers (%v) — capping a final-emit path would silently truncate the bytes the user pastes", parsed.name, previewCapAllowedFiles)
+			}
+			return true
+		})
+	}
+}
+
+// requireFuncsCall asserts that each named function body contains a
+// direct call to the given callee. Mirrors requireFuncsAvoidCalls but
+// inverts the polarity: a guard for "this MUST be present" instead of
+// "this MUST be absent." Used to lock in cross-cutting requirements
+// (e.g. every multi-file preview handler must wrap its writer in
+// output.PreviewCapWriter).
+func requireFuncsCall(t *testing.T, files []parsedGoFile, funcNames []string, callee string) {
+	t.Helper()
+	funcSet := make(map[string]struct{}, len(funcNames))
+	for _, name := range funcNames {
+		funcSet[name] = struct{}{}
+	}
+	found := make(map[string]bool, len(funcNames))
+	hasCall := make(map[string]bool, len(funcNames))
+	pkgName, selName := splitCallee(callee)
+	for _, parsed := range files {
+		for _, decl := range parsed.file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
+			}
+			if _, ok := funcSet[fn.Name.Name]; !ok {
+				continue
+			}
+			found[fn.Name.Name] = true
+			ast.Inspect(fn.Body, func(node ast.Node) bool {
+				call, ok := node.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				switch fun := call.Fun.(type) {
+				case *ast.Ident:
+					if pkgName == "" && fun.Name == selName {
+						hasCall[fn.Name.Name] = true
+					}
+				case *ast.SelectorExpr:
+					if fun.Sel == nil {
+						return true
+					}
+					if pkgIdent, ok := fun.X.(*ast.Ident); ok {
+						if pkgIdent.Name == pkgName && fun.Sel.Name == selName {
+							hasCall[fn.Name.Name] = true
+						}
+					}
+				}
+				return true
+			})
+		}
+	}
+	for _, name := range funcNames {
+		if !found[name] {
+			t.Errorf("required handler %s not found; update the cap-wrapping guard (renamed or removed?)", name)
+			continue
+		}
+		if !hasCall[name] {
+			t.Errorf("%s does not call %s; multi-file body previews must wrap their writer in output.PreviewCapWriter (see docs/versions/v0.6.2/reports/ACTIVE_PLAN_multi_file_preview_cap.md)", name, callee)
+		}
+	}
+}
+
+func splitCallee(callee string) (pkg, sel string) {
+	dot := strings.IndexByte(callee, '.')
+	if dot < 0 {
+		return "", callee
+	}
+	return callee[:dot], callee[dot+1:]
 }
 
 // requireRenderPackageAvoidDerivationDeps enforces the renderer package

@@ -140,10 +140,6 @@ func applyStartupRecentSelection(currentArgs []string, result picker.Result) ([]
 	return append(finalArgs, strconv.Itoa(limit)), nil
 }
 
-func recentPickerHeader() string {
-	return recentPickerHeaderWithEscHint("")
-}
-
 func recentPickerHeaderWithEscHint(escHint string) string {
 	return discovery.PickerHeader(
 		"Pick recent files.",
@@ -219,11 +215,26 @@ func RecentPreviewConfigFromParsedCommand(cfg command.Parsed) recentPreviewConfi
 }
 
 func RunInternalRecentPreview(cfg recentPreviewConfig, stdout io.Writer) error {
+	finishBench := platform.InternalBenchSpan("ui.internal.recent_preview",
+		"selected", cfg.Selected,
+	)
+	finishReadBench := platform.InternalBenchSpan("ui.internal.recent_preview.read_data")
 	entries, err := readRecentPreviewData(cfg.DataPath)
+	finishReadBench(
+		"err", platform.InternalBenchError(err),
+		"entries", platform.InternalBenchInt(len(entries)),
+	)
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
-	_, err = io.WriteString(stdout, renderRecentPreview(entries, cfg.Selected, time.Now()))
+	finishRenderBench := platform.InternalBenchSpan("ui.internal.recent_preview.render",
+		"entries", platform.InternalBenchInt(len(entries)),
+	)
+	rendered := renderRecentPreview(entries, cfg.Selected, time.Now())
+	finishRenderBench("bytes", platform.InternalBenchInt(len(rendered)))
+	_, err = io.WriteString(stdout, rendered)
+	finishBench("err", platform.InternalBenchError(err))
 	return err
 }
 

@@ -49,9 +49,16 @@ func canScopeStatusPathspecs(pathspecs []string) bool {
 
 func parseStatusMap(ctx Context, output string) map[string]string {
 	statuses := make(map[string]string)
-	lines := strings.Split(strings.TrimSpace(output), "\n")
+	// Do NOT TrimSpace the whole output before splitting — porcelain
+	// lines for unstaged-modified entries begin with a literal space
+	// (xy[0]=' ', xy[1]='M'), and TrimSpace would silently strip the
+	// first such line's leading space, shifting line[3:] by one byte
+	// and producing a truncated path with the wrong staged/unstaged
+	// classification. Trim trailing newline only.
+	output = strings.TrimRight(output, "\n")
+	lines := strings.Split(output, "\n")
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" || len(line) < 4 {
+		if len(line) < 4 {
 			continue
 		}
 		xy := line[:2]

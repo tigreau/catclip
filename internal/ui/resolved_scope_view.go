@@ -50,17 +50,34 @@ func resolvedCurrentScopeView(invocation command.Resolved, renderCfg RenderConfi
 		return resolvedScopeView{}, nil
 	}
 
+	finishBench := platform.InternalBenchSpan("ui.resolved_scope_view",
+		"scopes", platform.InternalBenchInt(len(invocation.Scopes)),
+	)
 	invocationCfg := invocation.Config
 	resolvedScopes := append([]command.ExecutionScope(nil), invocation.Scopes...)
+	finishGitBench := platform.InternalBenchSpan("ui.resolved_scope_view.git_detect")
 	gitCtx := git.Detect(invocationCfg.WorkingDir)
+	finishGitBench("enabled", platform.InternalBenchBool(gitCtx.Enabled))
 	scopeIndex := len(resolvedScopes) - 1
 	currentScope := resolvedScopes[scopeIndex]
+	finishEvalBench := platform.InternalBenchSpan("ui.resolved_scope_view.evaluate_scope",
+		"scope_index", platform.InternalBenchInt(scopeIndex),
+	)
 	discovered, err := discovery.EvaluateScope(invocationCfg, gitCtx, scopeIndex, currentScope, io.Discard, platform.Palette{})
+	finishEvalBench(
+		"err", platform.InternalBenchError(err),
+		"entries", platform.InternalBenchInt(len(discovered.Entries)),
+	)
 	if err != nil {
+		finishBench("err", platform.InternalBenchError(err))
 		return resolvedScopeView{}, err
 	}
 	entries := discovered.Entries
 
+	finishBench(
+		"err", "false",
+		"entries", platform.InternalBenchInt(len(entries)),
+	)
 	return resolvedScopeView{
 		Invocation: invocationCfg,
 		Render:     renderCfg,

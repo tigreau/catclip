@@ -42,10 +42,6 @@ func validateStartupDepthValue(currentArgs []string, value string) (int, error) 
 	return depth, nil
 }
 
-func chooseStartupDepth(currentArgs []string, query string) (int, bool, error) {
-	return chooseStartupDepthWithEscHint(currentArgs, query, "")
-}
-
 func chooseStartupDepthWithEscHint(currentArgs []string, query string, escHint string) (int, bool, error) {
 	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
 	if err != nil {
@@ -174,10 +170,6 @@ func chooseDepthWithFzf(query string, lines []string, previewCommand string, esc
 		return "", discovery.ErrSelectionCancelled
 	}
 	return "", err
-}
-
-func depthPickerHeader() string {
-	return depthPickerHeaderWithEscHint("")
 }
 
 func depthPickerHeaderWithEscHint(escHint string) string {
