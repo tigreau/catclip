@@ -111,9 +111,14 @@ func restrictEntriesByMemo(entries []discovery.Entry, memo contentMatchMemo, new
 		// match set is also empty by definition.
 		return nil, true
 	}
+	// Keys must be filepath.Clean'd too. On Windows, Clean rewrites
+	// "/" → "\" (native separator); leaving the stored keys raw while
+	// the lookup keys are Clean'd produces a separator mismatch and
+	// the memo silently returns an empty subset. macOS/Linux dodge
+	// the bug because Clean is a no-op for already-POSIX paths.
 	allowed := make(map[string]struct{}, len(memo.AbsPaths))
 	for _, p := range memo.AbsPaths {
-		allowed[p] = struct{}{}
+		allowed[filepath.Clean(p)] = struct{}{}
 	}
 	out := make([]discovery.Entry, 0, len(memo.AbsPaths))
 	for _, entry := range entries {

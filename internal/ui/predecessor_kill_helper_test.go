@@ -11,7 +11,13 @@ func startLongRunningHelper(t *testing.T) *exec.Cmd {
 	t.Helper()
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.Command("timeout", "/t", "30", "/nobreak")
+		// `timeout /t N /nobreak` requires an interactive console.
+		// Under CI (Go's exec.Command always redirects stdin to
+		// DevNull) it errors immediately with "Input redirection is
+		// not supported, exiting the process immediately." `ping`
+		// has no console dependency: -n 30 sends 30 pings to
+		// loopback, each spaced ~1s, total ~30s.
+		cmd = exec.Command("ping", "-n", "30", "127.0.0.1")
 	} else {
 		cmd = exec.Command("sleep", "30")
 	}
