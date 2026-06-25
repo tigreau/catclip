@@ -100,6 +100,14 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityRequiredValue,
 	},
 	{
+		Flag:           "--not-contains",
+		StageKind:      command.StageNotContains,
+		Arity:          flagArityOne,
+		Family:         flagFamilyContentFilter,
+		BoundaryPolicy: scopeStageBoundaryNone,
+		Recoverability: flagRecoverabilityRequiredValue,
+	},
+	{
 		Flag:           "--paths",
 		StageKind:      command.StagePaths,
 		Arity:          flagArityNone,
@@ -235,7 +243,7 @@ func (f flagSemanticFamily) scopeStageCategory() (scopeStageCategory, bool) {
 
 func IsValueTakingFlag(arg string) bool {
 	switch arg {
-	case "--include", "--only", "--exclude", "--depth", "--contains", "--snippet",
+	case "--include", "--only", "--exclude", "--depth", "--contains", "--not-contains", "--snippet",
 		"--internal-tree-target", "--internal-tree-kind", "--internal-tree-state",
 		"--internal-file-path", "--input-dir", "--input-stem":
 		return true

@@ -14,6 +14,7 @@ const (
 	StageSize         StageKind = "size"
 	StageDepth        StageKind = "depth"
 	StageContains     StageKind = "contains"
+	StageNotContains  StageKind = "not-contains"
 	StageChanged      StageKind = "changed"
 	StageStaged       StageKind = "staged"
 	StageUnstaged     StageKind = "unstaged"

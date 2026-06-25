@@ -53,7 +53,7 @@ var errRipgrepUnavailable = errors.New("Error: this catclip install is missing b
 // user types characters one at a time, so the pattern is invalid most of
 // the time) can use errors.Is to swallow this silently; non-interactive
 // callers let it propagate so the user sees the rg error.
-var ErrRipgrepBadPattern = errors.New("Error: --contains/--snippet pattern failed to compile in ripgrep PCRE2 engine.")
+var ErrRipgrepBadPattern = errors.New("Error: --contains/--not-contains/--snippet pattern failed to compile in ripgrep PCRE2 engine.")
 
 type RipgrepFileOptions struct {
 	NoIgnore  bool
@@ -654,8 +654,13 @@ func FirstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 	return out, nil
 }
 
-func RunRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, error) {
-	finishBench := platform.InternalBenchSpan("search.rg.matches",
+func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[string]struct{}, error) {
+	inv := len(invert) > 0 && invert[0]
+	spanName := "search.rg.matches"
+	if inv {
+		spanName = "search.rg.not_matches"
+	}
+	finishBench := platform.InternalBenchSpan(spanName,
 		"paths", platform.InternalBenchInt(len(absPaths)),
 	)
 	bin, ok := RipgrepBinary()
@@ -675,10 +680,18 @@ func RunRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, 
 		args := []string{
 			"--color=never",
 			"--no-messages",
-			"--files-with-matches",
+		}
+		if inv {
+			args = append(args, "--files-without-match")
+		} else {
+			args = append(args, "--files-with-matches")
+		}
+		args = append(args,
 			"--pcre2",
 			"-0",
-			"-m", "1",
+		)
+		if !inv {
+			args = append(args, "-m", "1")
 		}
 		if isSmartCaseInsensitive(pattern) {
 			args = append(args, "--ignore-case")
@@ -699,6 +712,10 @@ func RunRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, 
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				switch exitErr.ExitCode() {
 				case 1:
+					// invert=false: no files matched in chunk → skip.
+					// invert=true:  every file matched → no "without-match"
+					//   rows to emit → skip.
+					// Both cases: continue to next chunk.
 					continue
 				case 2:
 					if isRipgrepBadPatternStderr(stderr.Bytes()) {
@@ -732,6 +749,213 @@ func RunRipgrepMatches(pattern string, absPaths []string) (map[string]struct{}, 
 		"chunks", platform.InternalBenchInt(chunks),
 		"matches", platform.InternalBenchInt(len(matches)),
 	)
+	return matches, nil
+}
+
+
+// RunRipgrepDirect is the scope-rooted sibling of RunRipgrepMatches:
+// one rg call that walks `target` (relative to workingDir) and applies
+// the regex in one pass. Returns the set of matched files (relative
+// paths) using the same map[string]struct{} shape as RunRipgrepMatches.
+//
+// When invert is true, uses --files-without-match instead of
+// --files-with-matches and drops -m 1 (max-count has no meaning when
+// looking for absence of matches). Used by --not-contains direct mode.
+//
+// Eligibility: callers must verify the scope qualifies via
+// command.IsDirectModeEligible. This helper does not check eligibility
+// itself; passing a scope with filters rg can't natively express
+// silently produces a wrong (broader) set.
+//
+// Smart-case: catclip's content match is smart-case by default
+// (all-lowercase pattern → case-insensitive). This helper passes
+// --ignore-case when isSmartCaseInsensitive(pattern) is true, matching
+// RunRipgrepMatches.
+//
+// Path normalization: rg emits "./path" when the scope target is "."
+// and "src/path" when the target is "src". This helper passes results
+// through normalizeRelPath so callers always see catclip-canonical
+// relative paths.
+//
+// Bad pattern: rg exit 2 + stderr matching PCRE2 markers →
+// ErrRipgrepBadPattern. rg "no matches" exit 1 → empty map, no error.
+func RunRipgrepDirect(workingDir, target, pattern, hissPath string, invert ...bool) (map[string]struct{}, error) {
+	inv := len(invert) > 0 && invert[0]
+	spanName := "search.rg.direct"
+	if inv {
+		spanName = "search.rg.direct_not_matches"
+	}
+	finishBench := platform.InternalBenchSpan(spanName,
+		"target", target,
+		"pattern_len", platform.InternalBenchInt(len(pattern)),
+	)
+	bin, ok := RipgrepBinary()
+	if !ok {
+		finishBench("err", "true")
+		return nil, errRipgrepUnavailable
+	}
+
+	args := []string{}
+	if inv {
+		args = append(args, "--files-without-match")
+	} else {
+		args = append(args, "--files-with-matches")
+	}
+	args = append(args,
+		"--pcre2",
+		"--hidden",
+		"--no-ignore-dot",
+		"--no-require-git",
+		"--no-messages",
+		"-0",
+	)
+	if !inv {
+		args = append(args, "-m", "1")
+	}
+	if hissPath != "" {
+		args = append(args, "--ignore-file", hissPath)
+	}
+	if isSmartCaseInsensitive(pattern) {
+		args = append(args, "--ignore-case")
+	}
+	args = append(args, "-e", pattern, "--", target)
+
+	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
+	cmd.Dir = workingDir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	t0 := time.Now()
+	out, err := cmd.Output()
+	if benchEnabled() {
+		benchRgMatchesTotal.Add(int64(time.Since(t0)))
+		benchRgMatchesCalls.Add(1)
+	}
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			switch exitErr.ExitCode() {
+			case 1:
+				finishBench("err", "false", "matches", "0")
+				return map[string]struct{}{}, nil
+			case 2:
+				if isRipgrepBadPatternStderr(stderr.Bytes()) {
+					finishBench("err", "true", "bad_pattern", "true")
+					return nil, ErrRipgrepBadPattern
+				}
+			}
+		}
+		finishBench("err", "true")
+		return nil, err
+	}
+
+	matches := make(map[string]struct{})
+	for _, match := range splitNullSeparated(out) {
+		rel := normalizeRelPath(match)
+		if rel == "" || rel == "." {
+			continue
+		}
+		matches[rel] = struct{}{}
+	}
+	finishBench("err", "false", "matches", platform.InternalBenchInt(len(matches)))
+	return matches, nil
+}
+
+
+// RunRipgrepDirectMatchLines is the scope-rooted sibling of
+// FirstMatchLinePerFile. One rg call walks `target` and returns
+// {relPath → first-match line number} in one pass.
+//
+// Same eligibility, smart-case, normalization, and error semantics as
+// RunRipgrepDirect. Output parsing mirrors FirstMatchLinePerFile's
+// NUL-delimited line-number format: `{path}\0{lineno}:{matched line}\n`.
+func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string) (map[string]int, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.direct_match_lines",
+		"target", target,
+		"pattern_len", platform.InternalBenchInt(len(pattern)),
+	)
+	bin, ok := RipgrepBinary()
+	if !ok {
+		finishBench("err", "true")
+		return nil, errRipgrepUnavailable
+	}
+
+	args := []string{
+		"--color=never",
+		"--no-messages",
+		"--no-heading",
+		"--line-number",
+		"--null",
+		"--pcre2",
+		"-H",
+		"--max-count", "1",
+		"--only-matching",
+		"--replace", "",
+		"--hidden",
+		"--no-ignore-dot",
+		"--no-require-git",
+	}
+	if hissPath != "" {
+		args = append(args, "--ignore-file", hissPath)
+	}
+	if isSmartCaseInsensitive(pattern) {
+		args = append(args, "--ignore-case")
+	}
+	args = append(args, "-e", pattern, "--", target)
+
+	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
+	cmd.Dir = workingDir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	t0 := time.Now()
+	out, err := cmd.Output()
+	if benchEnabled() {
+		benchRgMatchesTotal.Add(int64(time.Since(t0)))
+		benchRgMatchesCalls.Add(1)
+	}
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			switch exitErr.ExitCode() {
+			case 1:
+				finishBench("err", "false", "matches", "0")
+				return map[string]int{}, nil
+			case 2:
+				if isRipgrepBadPatternStderr(stderr.Bytes()) {
+					finishBench("err", "true", "bad_pattern", "true")
+					return nil, ErrRipgrepBadPattern
+				}
+			}
+		}
+		finishBench("err", "true")
+		return nil, err
+	}
+
+	matches := make(map[string]int)
+	for _, rec := range bytes.Split(out, []byte{'\n'}) {
+		if len(rec) == 0 {
+			continue
+		}
+		nul := bytes.IndexByte(rec, 0)
+		if nul < 0 {
+			continue
+		}
+		path := normalizeRelPath(string(rec[:nul]))
+		if path == "" || path == "." {
+			continue
+		}
+		rest := rec[nul+1:]
+		colon := bytes.IndexByte(rest, ':')
+		if colon < 0 {
+			continue
+		}
+		line, err := strconv.Atoi(string(rest[:colon]))
+		if err != nil || line < 1 {
+			continue
+		}
+		if _, dup := matches[path]; dup {
+			continue
+		}
+		matches[path] = line
+	}
+	finishBench("err", "false", "matches", platform.InternalBenchInt(len(matches)))
 	return matches, nil
 }
 

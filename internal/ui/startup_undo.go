@@ -205,7 +205,7 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 				StartArgs:   cloneStringSlice(args),
 				PendingArgs: cloneStringSlice(pending[1:]),
 			}, nil, false, nil
-		case "--include", "--only", "--exclude", "--contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines",
+		case "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines",
 			"--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff":
 			return startupInteractiveFrame{
 				Kind:                       startupInteractiveFrameStage,
@@ -492,7 +492,7 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 			inModifierMode = true
 			_, next := cli.ConsumeModifierValues(args, i+1)
 			i = next - 1
-		case "--contains", "--snippet", "--depth":
+		case "--contains", "--not-contains", "--snippet", "--depth":
 			inModifierMode = true
 			if i+1 < len(args) {
 				i++
@@ -549,7 +549,7 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 			inModifierMode = true
 			_, next := cli.ConsumeModifierValues(args, i+1)
 			i = next - 1
-		case "--contains", "--snippet", "--depth":
+		case "--contains", "--not-contains", "--snippet", "--depth":
 			inModifierMode = true
 			if i+1 < len(args) {
 				i++

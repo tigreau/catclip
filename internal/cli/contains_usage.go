@@ -11,6 +11,16 @@ func ContainsMissingPatternError(args []string, containsIndex int) error {
 	return ValidationFailure{Reason: ReasonRequiredValue, Flag: "--contains", Suggestion: FormatResolvedStartupCommand(suggestionArgs)}
 }
 
+// NotContainsMissingPatternError mirrors ContainsMissingPatternError
+// for --not-contains. The same suggestion shape doesn't apply (there's
+// no --not-snippet to swap to), so this returns the plain
+// ValidationFailure without a suggestion.
+func NotContainsMissingPatternError(args []string, notContainsIndex int) error {
+	_ = args
+	_ = notContainsIndex
+	return ValidationFailure{Reason: ReasonRequiredValue, Flag: "--not-contains"}
+}
+
 func suggestContainsSnippetOrdering(args []string, containsIndex int) ([]string, bool) {
 	if containsIndex+2 >= len(args) {
 		return nil, false

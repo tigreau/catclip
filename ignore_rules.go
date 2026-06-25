@@ -395,7 +395,7 @@ func writeIgnoreRulesLegend(out io.Writer, contributing []*ignoreSource, colors 
 	var order []*legendRow
 	for _, s := range contributing {
 		key := legendGroupKey(s.kind)
-		display := displayPath(s.path)
+		display := platform.DisplayPath(s.path)
 		if g, ok := groups[key]; ok {
 			g.paths = append(g.paths, display)
 			if s.rank > g.rank {

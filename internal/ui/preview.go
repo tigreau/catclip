@@ -5,7 +5,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
@@ -115,7 +114,7 @@ func WriteNormalDiagnostics(cfg RenderConfig, gitCtx git.Context, plan output.Pl
 }
 
 func writeFilterSummary(w io.Writer, gitCtx git.Context, colors platform.Palette) error {
-	shortConfig := shortPath(discovery.GlobalHissPath())
+	shortConfig := platform.DisplayPath(discovery.GlobalHissPath())
 	if gitCtx.Enabled && repoHasGitIgnore(gitCtx) {
 		_, err := fmt.Fprintf(w, "  %sFiltered by .gitignore + %s%s\n", colors.Git, shortConfig, colors.Reset)
 		return err
@@ -172,7 +171,7 @@ func WriteClipboardSuccess(w io.Writer, plan output.Plan, stats output.EmitStats
 
 func writeBundleSuccess(w io.Writer, count int, word string, stats output.EmitStats, colors platform.Palette) error {
 	size := humanByteSize(stats.PayloadBytes)
-	path := displayPath(stats.BundlePath)
+	path := platform.DisplayPath(stats.BundlePath)
 	if _, err := fmt.Fprintf(w,
 		"\n%sBundled%s %s%d %s%s %s→%s %s%s%s %s(%s)%s\n%sPaste attaches a file — works in web UIs and file managers, not terminals.%s\n%sUse --no-bundle to copy text instead.%s\n",
 		colors.OK, colors.Reset,
@@ -214,22 +213,6 @@ func repoHasGitIgnore(gitCtx git.Context) bool {
 	}
 	info, err := os.Stat(filepath.Join(gitCtx.Root, ".gitignore"))
 	return err == nil && !info.IsDir()
-}
-
-func shortPath(value string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return value
-	}
-	home = filepath.Clean(home)
-	value = filepath.Clean(value)
-	if value == home {
-		return "~"
-	}
-	if strings.HasPrefix(value, home+string(os.PathSeparator)) {
-		return "~" + string(os.PathSeparator) + strings.TrimPrefix(value, home+string(os.PathSeparator))
-	}
-	return value
 }
 
 // printPreviewTree renders the compact directory tree shown before clipboard or

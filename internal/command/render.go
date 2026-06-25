@@ -130,6 +130,11 @@ func CanonicalScopeArgs(s ExecutionScope) []string {
 			for _, value := range stage.Values {
 				parts = append(parts, shellEnforceSingleQuote(value))
 			}
+		case StageNotContains:
+			parts = append(parts, "--not-contains")
+			for _, value := range stage.Values {
+				parts = append(parts, shellEnforceSingleQuote(value))
+			}
 		case StagePaths:
 			parts = append(parts, "--paths")
 		case StageSnippet:

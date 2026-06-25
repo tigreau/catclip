@@ -33,6 +33,7 @@ type ScopeSpec struct {
 
 	hasContainsFilter   bool
 	containsPattern     string
+	notContainsPatterns []string
 	hasPathsOutput      bool
 	hasSnippetOutput    bool
 	snippetPattern      string
@@ -69,6 +70,9 @@ func ExecutionScopeFromScopeSpec(s ScopeSpec) ExecutionScope {
 	}
 	if s.HasContainsFilter() {
 		out.Contains = s.ContainsPattern()
+	}
+	if s.HasNotContainsFilter() {
+		out.NotContains = s.NotContainsPatterns()
 	}
 	if s.HasSnippetOutput() {
 		out.Snippet = true
@@ -129,6 +133,7 @@ func scopeSpecFromExecutionScope(s ExecutionScope) ScopeSpec {
 		stages:              cloneStages(s.Stages),
 		hasContainsFilter:   s.HasStage(StageContains),
 		containsPattern:     s.Contains,
+		notContainsPatterns: cloneStringSlice(s.NotContains),
 		hasPathsOutput:      s.Paths || s.HasStage(StagePaths),
 		hasSnippetOutput:    s.Snippet || s.HasStage(StageSnippet),
 		snippetPattern:      s.SnippetPattern,
@@ -168,8 +173,10 @@ func (s ScopeSpec) OnlyPatterns() []string    { return cloneStringSlice(s.only) 
 func (s ScopeSpec) ExcludePatterns() []string { return cloneStringSlice(s.exclude) }
 func (s ScopeSpec) Stages() []Stage           { return cloneStages(s.stages) }
 
-func (s ScopeSpec) HasContainsFilter() bool  { return s.hasContainsFilter }
-func (s ScopeSpec) ContainsPattern() string  { return s.containsPattern }
+func (s ScopeSpec) HasContainsFilter() bool      { return s.hasContainsFilter }
+func (s ScopeSpec) ContainsPattern() string      { return s.containsPattern }
+func (s ScopeSpec) NotContainsPatterns() []string { return cloneStringSlice(s.notContainsPatterns) }
+func (s ScopeSpec) HasNotContainsFilter() bool    { return len(s.notContainsPatterns) > 0 }
 func (s ScopeSpec) HasPathsOutput() bool     { return s.hasPathsOutput }
 func (s ScopeSpec) HasSnippetOutput() bool   { return s.hasSnippetOutput }
 func (s ScopeSpec) SnippetPattern() string   { return s.snippetPattern }
@@ -191,5 +198,6 @@ func (s ScopeSpec) clone() ScopeSpec {
 	s.only = cloneStringSlice(s.only)
 	s.exclude = cloneStringSlice(s.exclude)
 	s.stages = cloneStages(s.stages)
+	s.notContainsPatterns = cloneStringSlice(s.notContainsPatterns)
 	return s
 }

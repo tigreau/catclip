@@ -277,6 +277,22 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 			}
 			current.Stages = append(current.Stages, command.Stage{Kind: kind, Values: []string{regex}})
 			continue
+		case "--not-contains":
+			inModifierMode = true
+			if err := stageState.apply(command.StageNotContains); err != nil {
+				return command.Spec{}, err
+			}
+			if i+1 >= len(args) {
+				return command.Spec{}, NotContainsMissingPatternError(args, i)
+			}
+			i++
+			regex := args[i]
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return command.Spec{}, RegexModifierExtraValueError(arg, regex, args[i+1])
+			}
+			current.NotContains = append(current.NotContains, regex)
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageNotContains, Values: []string{regex}})
+			continue
 		case "--changed":
 			inModifierMode = true
 			if err := stageState.apply(command.StageChanged); err != nil {
@@ -364,6 +380,8 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 			return command.Spec{}, DiffStandaloneError()
 		case strings.HasPrefix(arg, "--contains="):
 			return command.Spec{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
+		case strings.HasPrefix(arg, "--not-contains="):
+			return command.Spec{}, newUsageError("Error: --not-contains requires a space before the pattern.\n  Use: catclip src --not-contains 'pattern'\n  Not: catclip src --not-contains='pattern'")
 		case strings.HasPrefix(arg, "--snippet="):
 			return command.Spec{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
 		case strings.HasPrefix(arg, "--recent="):

@@ -1,12 +1,9 @@
 package catclip
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 )
 
 // previewMetaSep splits an aligned metadata line into fields on runs of 2+ spaces.
@@ -44,17 +41,6 @@ func parsePreviewRecordsRoot(t *testing.T, out string) map[string][]string {
 		i++
 	}
 	return records
-}
-
-// setProjectModTime sets the modtime on a project-relative file. Dup
-// of internal/ui/recent_picker_test.go's helper for root main_test.go
-// callers that test recent-stage sort behavior via Main().
-func setProjectModTime(t *testing.T, project, rel string, modTime time.Time) {
-	t.Helper()
-	absPath := filepath.Join(project, rel)
-	if err := os.Chtimes(absPath, modTime, modTime); err != nil {
-		t.Fatalf("os.Chtimes(%s) returned error: %v", rel, err)
-	}
 }
 
 // rootAnsiEscape matches SGR sequences chroma's TTY formatter emits.

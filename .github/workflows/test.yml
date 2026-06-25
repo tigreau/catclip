@@ -337,6 +337,60 @@ jobs:
           fi
           echo "--no-bundle left bundle count unchanged"
 
+      - name: Help text shell-paste form (DisplayPath regression guard)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin_ext=".exe"
+          fi
+          export CATCLIP_RG="$(pwd)/bin/rg${bin_ext}"
+          export CATCLIP_FZF="$(pwd)/bin/fzf${bin_ext}"
+
+          help_short=$("./catclip-bin${bin_ext}" --help)
+          help_full=$("./catclip-bin${bin_ext}" --help-all)
+
+          check() {
+            local label="$1"; shift
+            local text="$1"; shift
+            local mode="$1"; shift
+            local needle="$1"; shift
+            if [[ "$mode" == "want" ]]; then
+              if ! printf '%s' "$text" | grep -F -q -- "$needle"; then
+                echo "FAIL [$label]: missing $needle" >&2
+                printf '%s\n' "$text" >&2
+                exit 1
+              fi
+            else
+              if printf '%s' "$text" | grep -F -q -- "$needle"; then
+                echo "FAIL [$label]: stale '$needle' present (shortPath regression)" >&2
+                printf '%s\n' "$text" >&2
+                exit 1
+              fi
+            fi
+          }
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # The v0.6.3 DisplayPath consolidation fixed the shortPath
+            # Windows bug: PowerShell does not expand "~" for external
+            # programs, so a printed "~\.config\catclip\.hiss" failed to
+            # paste-run. The fix uses "$HOME\.config\catclip\.hiss"
+            # which PowerShell expands as an automatic variable.
+            check "help_short" "$help_short" want '$HOME\.config\catclip\.hiss'
+            check "help_full"  "$help_full"  want '$HOME\.config\catclip\.hiss'
+            check "help_short" "$help_short" never '~\.config\catclip'
+            check "help_full"  "$help_full"  never '~\.config\catclip'
+          else
+            # POSIX shells expand "~" before passing args to external tools.
+            # Guard against "$HOME" leaking into the POSIX branch.
+            check "help_short" "$help_short" want '~/.config/catclip/.hiss'
+            check "help_full"  "$help_full"  want '~/.config/catclip/.hiss'
+            check "help_short" "$help_short" never '$HOME/.config/catclip'
+            check "help_full"  "$help_full"  never '$HOME/.config/catclip'
+          fi
+          echo "DisplayPath help-text smoke passed on ${{ runner.os }}"
+
       - name: --contains smoke test
         shell: bash
         run: |

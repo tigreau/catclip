@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/tigreau/catclip/internal/command"
@@ -249,6 +250,48 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		finishBench("err", "false", "empty_pattern", "true", "rows", "0")
 		return nil
 	}
+	// Direct-rg shortcut: when the scope is a bare target plus a live
+	// content match (no narrowing filters that rg can't natively
+	// express), one rg call against the scope target produces both the
+	// file set AND first-match line numbers, replacing the chunked
+	// per-file rg fan-out below.
+	//
+	// CORRECTNESS: the prediscovered checkpoint may carry an upstream-
+	// filtered subset of the scope's filesystem files (e.g. parent ran
+	// `catclip src --only "*.go"`, picker only sees the .go entries).
+	// The live picker argv doesn't carry the parent's filters, so an
+	// unconstrained `rg PATTERN <target>` would silently widen the
+	// result set to include files the parent filtered out. To stay
+	// correct, the direct path intersects rg's result with the
+	// checkpoint entry set — direct rg gives the {relPath → line}
+	// shape in one call, and the intersection enforces the upstream
+	// filter invariant.
+	//
+	// See docs/versions/v0.6.3/reports/ACTIVE_PLAN_direct_rg_contains_snippet.md
+	// for the eligibility analysis. Falls back to the chunked path
+	// when any live-scope modifier (--only / --exclude / --recent /
+	// git filters / etc.) is active.
+	// The runDirectContentMatch helper only handles the positive
+	// content predicate (--contains / --snippet). Pure-negative or
+	// mixed-with-negative scopes fall back to the chunked path until
+	// the picker dispatch grows a per-stage direct-mode pipeline
+	// (v0.6.4 follow-up — tracked in
+	// ACTIVE_PLAN_not_contains_modifier.md). The general eligibility
+	// predicate permits --not-contains scopes, so we gate the picker
+	// dispatch on the additional "no NotContains" condition.
+	if command.IsDirectModeEligible(cfg.Invocation, scope) && len(scope.NotContains) == 0 {
+		err := runDirectContentMatch(cfg, scope, checkpoint.Entries, stdout)
+		if err == nil {
+			finishBench("err", "false", "route", "direct")
+			return nil
+		}
+		if errors.Is(err, search.ErrRipgrepBadPattern) {
+			finishBench("err", "false", "bad_pattern", "true", "rows", "0", "route", "direct")
+			return nil
+		}
+		finishBench("err", platform.InternalBenchError(err), "route", "direct")
+		return err
+	}
 	candidateScope, ok := scopeWithoutTerminalLiveContentMatchStage(scope)
 	if !ok {
 		finishTailBench := platform.InternalBenchSpan("ui.internal.content_match_list.apply_tail_double_pass",
@@ -298,13 +341,47 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
+	pattern := contentMatchScopePattern(scope)
+	liveKind, _ := liveContentMatchKind(scope)
+
+	// --not-contains live: prune entries matching the pattern; no
+	// first-match line (there's no match to center the preview on).
+	// The memo plumbing is contains-shaped (prefix-extension narrows
+	// the match set) and doesn't transfer cleanly to prunes, so skip
+	// it for this kind.
+	if liveKind == command.StageNotContains {
+		finishRowsBench := platform.InternalBenchSpan("ui.internal.content_match_list.not_contains_rows",
+			"entries", platform.InternalBenchInt(len(entries)),
+		)
+		pruned, err := discovery.FilterEntriesByNotContent(discovery.EnsureEntryAbsPaths(entries, cfg.Invocation.WorkingDir), pattern)
+		finishRowsBench(
+			"err", platform.InternalBenchError(err),
+			"rows", platform.InternalBenchInt(len(pruned)),
+		)
+		if err != nil {
+			if errors.Is(err, search.ErrRipgrepBadPattern) {
+				finishBench("err", "false", "bad_pattern", "true", "rows", "0")
+				return nil
+			}
+			finishBench("err", platform.InternalBenchError(err))
+			return err
+		}
+		rows := contentMatchRowsFromEntries(pruned)
+		err = writeContentMatchRows(stdout, rows)
+		finishBench(
+			"err", platform.InternalBenchError(err),
+			"rows", platform.InternalBenchInt(len(rows)),
+			"live_kind", "not-contains",
+		)
+		return err
+	}
+
 	// Prefix-extension memo: if the previous keystroke ran and cached
 	// its matched paths, AND the new pattern is a prefix-extension of
 	// the previous one, restrict the rg scan to that prior set. The
 	// new matches are necessarily a subset, so the result is identical
 	// but the per-keystroke cost drops from full-corpus scan to a
 	// re-scan of the prior matches only. See contentMatchMemo doc.
-	pattern := contentMatchScopePattern(scope)
 	memoPath := contentMatchMemoPath(cfg.CheckpointPath)
 	memoHit := false
 	entriesForScan := entries
@@ -343,4 +420,75 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		"memo_hit", platform.InternalBenchBool(memoHit),
 	)
 	return err
+}
+
+// runDirectContentMatch handles the direct-rg eligible path: one rg
+// call against the scope target returns {relPath → first-match line}
+// in a single walk, replacing the chunked rg fan-out.
+//
+// Caller must verify command.IsDirectModeEligible(cfg.Invocation,
+// scope) before invoking. The .hiss overlay is best-effort: if
+// ReadableHissPath() fails (file unreadable / broken), the helper
+// falls back to no overlay rather than aborting the picker reload —
+// matching how RunRipgrepFiles handles the same case.
+//
+// allowedEntries is the prediscovered checkpoint's filtered entry
+// set. The picker's argv-derived scope can't see the parent's
+// upstream filters, so rg's raw walk may include files the parent
+// filtered out. Intersecting against allowedEntries enforces the
+// upstream filter invariant. Pass nil to skip intersection (e.g.
+// the headless/fallback path where no prior filtering occurred).
+//
+// The memo (used by the chunked path for prefix-extension restriction)
+// is intentionally not touched here. Direct mode's per-call cost is
+// low enough that the memo's savings are minor, and skipping the
+// write avoids cross-route contamination if eligibility flips mid-
+// session.
+func runDirectContentMatch(cfg prediscoveredCommandConfig, scope command.ExecutionScope, allowedEntries []discovery.Entry, stdout io.Writer) error {
+	pattern := contentMatchScopePattern(scope)
+	target := scope.Targets[0]
+	hissPath, hissErr := discovery.ReadableHissPath()
+	if hissErr != nil {
+		hissPath = ""
+	}
+	finishDirectBench := platform.InternalBenchSpan("ui.internal.content_match_list.direct",
+		"target", target,
+		"pattern_len", platform.InternalBenchInt(len(pattern)),
+	)
+	firstLines, err := search.RunRipgrepDirectMatchLines(cfg.Invocation.WorkingDir, target, pattern, hissPath)
+	finishDirectBench(
+		"err", platform.InternalBenchError(err),
+		"matches", platform.InternalBenchInt(len(firstLines)),
+		"bad_pattern", platform.InternalBenchCancelled(err, search.ErrRipgrepBadPattern),
+	)
+	if err != nil {
+		return err
+	}
+	var allowed map[string]struct{}
+	if allowedEntries != nil {
+		allowed = make(map[string]struct{}, len(allowedEntries))
+		for _, entry := range allowedEntries {
+			rel := normalizeRelPath(entry.RelPath)
+			if rel == "" {
+				continue
+			}
+			allowed[rel] = struct{}{}
+		}
+	}
+	rows := make([]contentMatchRow, 0, len(firstLines))
+	for relPath, line := range firstLines {
+		if relPath == "" || line < 1 {
+			continue
+		}
+		if allowed != nil {
+			if _, ok := allowed[relPath]; !ok {
+				continue
+			}
+		}
+		rows = append(rows, contentMatchRow{RelPath: relPath, FirstMatchLine: line})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].RelPath < rows[j].RelPath
+	})
+	return writeContentMatchRows(stdout, rows)
 }

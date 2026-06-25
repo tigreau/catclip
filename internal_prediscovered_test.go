@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -516,6 +517,276 @@ func TestRunInternalPrediscoveredRequiresPreviewMode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--internal-prediscovered requires --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestRunInternalPrediscoveredContentMatchListDirectModeMatchesChunked
+// asserts that the direct-rg fast path produces the same per-file
+// {relPath → first-match line} mapping as the chunked path for a bare
+// --contains scope (the only flavor where direct mode is eligible).
+// Test fixture has no upstream filters, so the prediscovered entries
+// equal the filesystem walk; intersection collapses to identity and
+// any divergence between direct and chunked is a real bug.
+func TestRunInternalPrediscoveredContentMatchListDirectModeMatchesChunked(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a.go":     "package main\n// TODO one\n",
+		"src/b.go":     "package main\n// Function comment\n", // smart-case: "function" matches
+		"sub/c.go":     "package sub\n// function two\n",
+		"d.md":         "TODO docs\n",
+		"empty.go":     "",
+		"BinaryFile":   "\x00\x00\x00\x00",
+		"src/case.go":  "package main\n// Todo mixed case\n",
+		"src/upper.go": "package main\n// TODO\n",
+	})
+	parentCfg := parseInProject(t, project, []string{"."})
+	gitCtx := git.Detect(parentCfg.WorkingDir)
+	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	if err != nil {
+		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
+	}
+	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
+	if err := discovery.WriteCheckpoint(checkpointPath, parentCfg.WorkingDir, discovery.CheckpointData{
+		GitContext: gitCtx,
+		GitStatus:  map[string]string{},
+		Entries:    discovered.Entries,
+	}); err != nil {
+		t.Fatalf("discovery.WriteCheckpoint returned error: %v", err)
+	}
+
+	patterns := []string{"TODO", "function", "Function", "todo"}
+	for _, pattern := range patterns {
+		t.Run("pattern_"+pattern, func(t *testing.T) {
+			freshCfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", ".", "--contains", pattern})
+			if err != nil {
+				t.Fatalf("parseArgs fresh: %v", err)
+			}
+			checkpointCfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, "--contains", pattern})
+			if err != nil {
+				t.Fatalf("parseArgs checkpoint: %v", err)
+			}
+
+			var freshOut, ckptOut bytes.Buffer
+			if err := run(freshCfg, &freshOut, io.Discard); err != nil {
+				t.Fatalf("fresh run: %v", err)
+			}
+			if err := run(checkpointCfg, &ckptOut, io.Discard); err != nil {
+				t.Fatalf("checkpoint run: %v", err)
+			}
+			if !bytes.Equal(freshOut.Bytes(), ckptOut.Bytes()) {
+				t.Fatalf("pattern %q: direct (checkpoint) output differs from chunked (fresh)\nfresh:\n%s\ncheckpoint:\n%s", pattern, freshOut.String(), ckptOut.String())
+			}
+		})
+	}
+}
+
+// TestRunInternalPrediscoveredContentMatchListLiveNotContains
+// asserts the picker hot path handles --not-contains as the LIVE
+// (per-keystroke) pattern: each keystroke prunes files matching the
+// typed regex from the entry set. Mirrors the existing
+// TestRunInternalPrediscoveredContentMatchListMatchesFreshEvaluation
+// test for --not-contains live mode.
+func TestRunInternalPrediscoveredContentMatchListLiveNotContains(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"a.go": "package main\n// TODO one\n",
+		"b.go": "package main\nfunc f() {}\n",
+		"c.go": "package main\ntype X int\n",
+		"d.md": "TODO docs\n",
+	})
+	parentCfg := parseInProject(t, project, []string{"."})
+	gitCtx := git.Detect(parentCfg.WorkingDir)
+	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	if err != nil {
+		t.Fatalf("EvaluateScope: %v", err)
+	}
+	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
+	if err := discovery.WriteCheckpoint(checkpointPath, parentCfg.WorkingDir, discovery.CheckpointData{
+		GitContext: gitCtx,
+		GitStatus:  map[string]string{},
+		Entries:    discovered.Entries,
+	}); err != nil {
+		t.Fatalf("WriteCheckpoint: %v", err)
+	}
+
+	// Picker reload command: live --not-contains TODO typed in the
+	// picker. The handler should prune a.go and d.md (both contain
+	// TODO) and keep b.go, c.go.
+	cfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, "--not-contains", "TODO"})
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	var stdout bytes.Buffer
+	if err := run(cfg, &stdout, io.Discard); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	out := stdout.String()
+	for _, kept := range []string{"b.go", "c.go"} {
+		if !strings.Contains(out, kept) {
+			t.Fatalf("expected %s in output (no TODO in it):\n%s", kept, out)
+		}
+	}
+	for _, dropped := range []string{"a.go", "d.md"} {
+		if strings.Contains(out, "\t"+dropped+"\t") {
+			t.Fatalf("expected %s pruned (contains TODO):\n%s", dropped, out)
+		}
+	}
+}
+
+// TestRunInternalPrediscoveredContentMatchListAppliesNotContains
+// asserts the picker hot path (per-keystroke reload via
+// --internal-content-match-list --internal-prediscovered) applies
+// --not-contains correctly when it's set on the parent scope.
+//
+// Direct-mode dispatch is gated out for scopes with NotContains;
+// this test exercises the chunked-path fallback to confirm it
+// honors the --not-contains stage. Otherwise picker reloads for
+// mixed `--contains FOO --not-contains BAR` flows would silently
+// include files matching BAR.
+func TestRunInternalPrediscoveredContentMatchListAppliesNotContains(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"a.go": "package main\nfunc f() { /* TODO */ }\n",
+		"b.go": "package main\nfunc g() {}\n",
+		"c.go": "package main\ntype X int\n",
+		"d.go": "package main\nfunc h() { /* TODO */ }\n",
+	})
+	parentCfg := parseInProject(t, project, []string{".", "--not-contains", "TODO"})
+	gitCtx := git.Detect(parentCfg.WorkingDir)
+	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	if err != nil {
+		t.Fatalf("EvaluateScope: %v", err)
+	}
+	// Parent's discovery already applied --not-contains TODO → only
+	// b.go and c.go survive. The checkpoint mirrors that.
+	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
+	if err := discovery.WriteCheckpoint(checkpointPath, parentCfg.WorkingDir, discovery.CheckpointData{
+		GitContext: gitCtx,
+		GitStatus:  map[string]string{},
+		Entries:    discovered.Entries,
+	}); err != nil {
+		t.Fatalf("WriteCheckpoint: %v", err)
+	}
+
+	// Picker reload command: live --contains func plus the fixed
+	// --not-contains TODO. The picker hot path must prune any file
+	// matching TODO from the result, even if it matches the live
+	// --contains.
+	cfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, "--not-contains", "TODO", "--contains", "func"})
+	if err != nil {
+		t.Fatalf("parseArgs: %v", err)
+	}
+	var stdout bytes.Buffer
+	if err := run(cfg, &stdout, io.Discard); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	// Look for the file rows in the output. b.go matches "func" and
+	// has no TODO → included. a.go and d.go match "func" but have
+	// TODO → excluded.
+	out := stdout.String()
+	if !strings.Contains(out, "b.go") {
+		t.Fatalf("expected b.go in picker reload output:\n%s", out)
+	}
+	for _, banned := range []string{"a.go", "d.go"} {
+		// Look for the row form `<basename>  <relpath>\t...`. Bare
+		// matches in any column would incorrectly flag the row.
+		if strings.Contains(out, "\t"+banned+"\t") {
+			t.Fatalf("--not-contains TODO should have pruned %s from picker output:\n%s", banned, out)
+		}
+	}
+}
+
+// TestNotContainsPrunesFiles asserts the headless --not-contains
+// flow drops files matching the regex, mirroring the math
+// full_set − contains(P) on the same fixture.
+func TestNotContainsPrunesFiles(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"a.go":   "package main\n// TODO one\n",
+		"b.go":   "package main\n// nothing here\n",
+		"c.md":   "TODO docs\n",
+		"d.md":   "just docs\n",
+	})
+
+	captureAll := func(t *testing.T, args []string) []string {
+		t.Helper()
+		cfg, err := cli.ParseArgs(args)
+		if err != nil {
+			t.Fatalf("parse %v: %v", args, err)
+		}
+		var stdout bytes.Buffer
+		if err := run(cfg, &stdout, io.Discard); err != nil {
+			t.Fatalf("run %v: %v", args, err)
+		}
+		paths := []string{}
+		for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+			if line != "" {
+				paths = append(paths, line)
+			}
+		}
+		sort.Strings(paths)
+		return paths
+	}
+
+	// Switch to project dir so the relative target "." resolves.
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatalf("chdir project: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	full := captureAll(t, []string{".", "--paths", "--headless", "--quiet"})
+	contains := captureAll(t, []string{".", "--contains", "TODO", "--paths", "--headless", "--quiet"})
+	without := captureAll(t, []string{".", "--not-contains", "TODO", "--paths", "--headless", "--quiet"})
+
+	// full == contains ∪ without, disjoint.
+	containsSet := map[string]struct{}{}
+	for _, p := range contains {
+		containsSet[p] = struct{}{}
+	}
+	for _, p := range without {
+		if _, dup := containsSet[p]; dup {
+			t.Fatalf("path %q appeared in both --contains and --not-contains output", p)
+		}
+	}
+	if len(contains)+len(without) != len(full) {
+		t.Fatalf("contains(%d) + without(%d) != full(%d)\nfull: %v\ncontains: %v\nwithout: %v",
+			len(contains), len(without), len(full), full, contains, without)
+	}
+}
+
+// TestNotContainsCombinedWithContains asserts the argv-ordered
+// pipeline produces a strict subset of --contains and excludes
+// any file matching the --not-contains regex.
+func TestNotContainsCombinedWithContains(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"a.go": "package main\nimport \"x\"\n// TODO one\n",
+		"b.go": "package main\nimport \"y\"\n",
+		"c.go": "package main\n// no deps\n",
+		"d.go": "package main\nimport \"z\"\n// TODO\n",
+	})
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatalf("chdir project: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+
+	cfg, err := cli.ParseArgs([]string{".", "--contains", "import", "--not-contains", "TODO", "--paths", "--headless", "--quiet"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var stdout bytes.Buffer
+	if err := run(cfg, &stdout, io.Discard); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	sort.Strings(got)
+	want := []string{"b.go"} // has import, doesn't have TODO
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("--contains import --not-contains TODO\n  got:  %v\n  want: %v", got, want)
 	}
 }
 

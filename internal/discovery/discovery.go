@@ -163,19 +163,6 @@ func normalizeRelPath(value string) string {
 	return value
 }
 
-func dedupeSortedStrings(values []string) []string {
-	if len(values) == 0 {
-		return values
-	}
-	out := values[:1]
-	for _, value := range values[1:] {
-		if value != out[len(out)-1] {
-			out = append(out, value)
-		}
-	}
-	return out
-}
-
 func DedupeEntriesByPath(entries []Entry) []Entry {
 	if len(entries) == 0 {
 		return entries

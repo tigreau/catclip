@@ -41,11 +41,13 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 	defer search.BenchReport()
 
 	switch cfg.Action {
-	case command.ActionHelp:
-		_, err := io.WriteString(stdout, cli.ShortHelpText(cfg.Version, displayPath(discovery.GlobalHissPath()), platform.ActivePaletteForWriter(stdout)))
-		return err
-	case command.ActionHelpAll:
-		_, err := io.WriteString(stdout, cli.FullHelpText(cfg.Version, displayPath(discovery.GlobalHissPath()), platform.ActivePaletteForWriter(stdout)))
+	case command.ActionHelp, command.ActionHelpAll:
+		helpText := cli.ShortHelpText
+		if cfg.Action == command.ActionHelpAll {
+			helpText = cli.FullHelpText
+		}
+		hiss := platform.DisplayPath(discovery.GlobalHissPath())
+		_, err := io.WriteString(stdout, helpText(cfg.Version, hiss, platform.ActivePaletteForWriter(stdout)))
 		return err
 	case command.ActionVersion:
 		_, err := fmt.Fprintf(stdout, "catclip %s\n", cfg.Version)

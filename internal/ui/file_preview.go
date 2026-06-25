@@ -332,6 +332,15 @@ func internalPreviewPatternIsEmpty(s command.ExecutionScope) bool {
 	if s.HasStage(command.StageContains) {
 		return strings.TrimSpace(s.Contains) == ""
 	}
+	if s.HasStage(command.StageNotContains) {
+		// --not-contains live mode: empty pattern means the user
+		// hasn't typed anything yet — show the hint instead of trying
+		// to prune the file set with no regex.
+		if len(s.NotContains) == 0 {
+			return true
+		}
+		return strings.TrimSpace(s.NotContains[len(s.NotContains)-1]) == ""
+	}
 	return false
 }
 

@@ -47,6 +47,7 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 		{Left: "catclip src lib docs", Right: "Copy multiple folders"},
 		{Left: `catclip "*.go"`, Right: "All .go files in the project (glob pattern)"},
 		{Left: `catclip src "*.go"`, Right: "Union: src/ files + all .go files"},
+		{Left: `catclip "internal/*.go"`, Right: "Only .go files directly inside internal/"},
 	})
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Interactive mode (build commands from menus):"))
@@ -68,6 +69,7 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 		{Left: "catclip src --paths", Right: "Emit bare relative paths, not file bodies"},
 		{Left: "catclip . --paths --then src", Right: "Show repo structure, then copy full files from src"},
 		{Left: "catclip src --contains TODO", Right: "Find files containing specific text"},
+		{Left: "catclip src --not-contains TODO", Right: "Drop files containing TODO; keep the rest"},
 		{Left: "catclip src --snippet TODO", Right: "Only the matching blocks, not full files"},
 		{Left: "catclip src --snippet TODO 3", Right: "Matching lines plus 3 lines around each match"},
 		{Left: "catclip src --lines", Right: "Add line numbers to file output"},
@@ -130,9 +132,6 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 	fmt.Fprintf(&b, "  %s\n", cmd(`git diff --name-only main | catclip . --only -`))
 	fmt.Fprintf(&b, "    Copy every file that differs from the main branch.\n")
 	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "  %s\n", cmd(`catclip . --contains TODO --paths -p | catclip . --exclude -`))
-	fmt.Fprintf(&b, "    Copy the project but skip any file that contains \"TODO\".\n")
-	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --paths -p | xargs vim`))
 	fmt.Fprintf(&b, "    Open the matching source files in vim for editing (works with %s too).\n", cmd(`nano`))
 	fmt.Fprintf(&b, "\n")
@@ -190,6 +189,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("  List files:        catclip TARGET --paths\n")
 	b.WriteString("  List all files:    catclip TARGET --include '*' --with-binaries --paths\n")
 	b.WriteString("  Search files:      catclip TARGET --contains 'REGEX' --paths\n")
+	b.WriteString("  Exclude by content: catclip TARGET --not-contains 'REGEX'\n")
 	b.WriteString("  Search blocks:     catclip TARGET --snippet 'REGEX'\n")
 	b.WriteString("  Search context:    catclip TARGET --snippet 'REGEX' 3\n")
 	b.WriteString("  Read files:        catclip TARGET\n")
@@ -226,7 +226,8 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("  Glob patterns are also valid targets:\n")
 	b.WriteString("  catclip '*.go'                       All .go files in the project\n")
 	b.WriteString("  catclip '*.go' '*.ts'                All .go and .ts files (union)\n")
-	b.WriteString("  catclip src '*.go'                   src/ files + all .go files (union)\n\n")
+	b.WriteString("  catclip src '*.go'                   src/ files + all .go files (union)\n")
+	b.WriteString("  catclip 'internal/*.go'              Only .go files directly inside internal/\n\n")
 	b.WriteString("  Glob targets match against all visible files in the project, not scoped to\n")
 	b.WriteString("  sibling path targets. Modifiers apply to the full combined set:\n")
 	b.WriteString("  catclip src '*.go' --exclude '*_test.go' --recent 5\n\n")
@@ -265,6 +266,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	// ── Narrowing ───────────────────────────────────────────────────────
 	b.WriteString("NARROWING (which ones)\n\n")
 	b.WriteString("  --contains 'REGEX'    Keep files whose contents match the regex\n")
+	b.WriteString("  --not-contains 'REGEX' Drop files whose contents match the regex\n")
 	b.WriteString("  --changed             Any git-modified file\n")
 	b.WriteString("  --staged              Files in the git index\n")
 	b.WriteString("  --unstaged            Tracked files with working-tree changes\n")
@@ -320,6 +322,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("    → --size MIN MAX      filters by KiB size, sorts largest-first\n")
 	b.WriteString("    → --depth N           removes files deeper than N segments\n")
 	b.WriteString("    → --contains REGEX    removes files whose contents don't match\n")
+	b.WriteString("    → --not-contains REGEX removes files whose contents DO match\n")
 	b.WriteString("    → --changed           removes files not changed in git\n")
 	b.WriteString("    → output shape        --paths | --snippet REGEX | --*-diff\n\n")
 	b.WriteString("  --include must be the first modifier so that all filters apply to the full set.\n")
@@ -332,8 +335,8 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("    --only \"*.ts\" --recent 10    keep .ts first, then take 10 newest of those\n\n")
 	b.WriteString("  Ordering constraints after output-shape modifiers:\n\n")
 	b.WriteString("    --paths             nothing can follow (terminal)\n")
-	b.WriteString("    --snippet REGEX [N] no --contains after (already filtered by content)\n")
-	b.WriteString("    --*-diff            no --contains or git filters after (diff owns both)\n\n")
+	b.WriteString("    --snippet REGEX [N] no --contains or --not-contains after (already content-filtered)\n")
+	b.WriteString("    --*-diff            no --contains, --not-contains, or git filters after (diff owns both)\n\n")
 	b.WriteString("  Output modes cannot repeat or combine (--paths --snippet is an error).\n\n")
 
 	// ── Scopes ──────────────────────────────────────────────────────────
@@ -378,41 +381,26 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("    catclip src --then node_modules --include node_modules --paths\n\n")
 	fmt.Fprintf(&b, "  catclip's own ignore rules: %s (--hiss to edit; applied on top of .gitignore)\n\n", hissDisplayPath)
 
-	// ── Composition ─────────────────────────────────────────────────────
-	b.WriteString("COMPOSITION (stdin piping)\n\n")
-	b.WriteString("  catclip has no content negation. To exclude files by content, use a two-pass pipe:\n")
-	b.WriteString("  first pass finds matches with --contains --paths, second pass excludes them with --exclude -.\n\n")
-	b.WriteString("  --only -, --exclude -, and --include - read exact relative paths from stdin.\n\n")
-	b.WriteString("  # Exclude files containing a pattern:\n")
-	b.WriteString("  catclip src --contains 'generated' --paths --headless | catclip src --exclude - --headless\n\n")
-	b.WriteString("  # Keep only files containing a pattern:\n")
-	b.WriteString("  catclip src --contains TODO --paths --headless | catclip src --only - --headless\n\n")
-	b.WriteString("  # Compound: Go files not containing 'test', 5 most recent, function snippets:\n")
-	b.WriteString("  catclip . --only '*.go' --contains test --paths --headless \\\n")
-	b.WriteString("    | catclip . --only '*.go' --recent 5 --snippet func --exclude - --headless\n\n")
-
-	// ── Unix tool integration ──────────────────────────────────────────
-	b.WriteString("UNIX TOOL INTEGRATION\n\n")
-	b.WriteString("  --paths --headless produces one path per line, compatible with xargs and shell loops.\n\n")
-	b.WriteString("  # Line counts per file:\n")
-	b.WriteString("  catclip src --only '*.go' --paths --headless | xargs wc -l | sort -rn\n\n")
-	b.WriteString("  # Grep across selected files:\n")
-	b.WriteString("  catclip src --only '*.ts' --paths --headless | xargs grep -n 'pattern'\n\n")
-	b.WriteString("  # Git diff stats on changed files:\n")
-	b.WriteString("  catclip . --changed --paths --headless | xargs git diff --stat --\n\n")
-	b.WriteString("  # Bulk find-and-replace with sed:\n")
-	b.WriteString("  catclip src --only '*.ts' --contains 'oldName' --paths --headless | xargs sed -i '' 's/oldName/newName/g'\n\n")
-	b.WriteString("  # Open matched files in vim:\n")
-	b.WriteString("  vim $(catclip src --contains TODO --paths --headless)\n\n")
-	b.WriteString("  # Read a specific line range from a large file:\n")
-	b.WriteString("  catclip FILE --lines 400 450 --headless        # built-in, with line numbers\n")
-	b.WriteString("  catclip FILE -r --headless | sed -n '400,450p' # via sed, no line numbers\n\n")
-	b.WriteString("  # Skip a license/header at the top of a file (read body only):\n")
-	b.WriteString("  catclip FILE --snippet '(?i)copyright' --headless   # e.g. returns <file ... lines=\"1-4\">\n")
-	b.WriteString("  catclip FILE --lines 5 --headless                   # read from line 5 (one past the license end)\n\n")
-	b.WriteString("  # File count and payload size:\n")
-	b.WriteString("  catclip src --only '*.go' --paths --headless | wc -l\n")
-	b.WriteString("  catclip src --only '*.go' --headless | wc -c\n\n")
+	// ── Pipelines ───────────────────────────────────────────────────────
+	b.WriteString("PIPELINES\n\n")
+	b.WriteString("  --paths --headless produces one path per line on stdout.\n")
+	b.WriteString("  --only -, --exclude -, and --include - read exact relative paths from stdin.\n")
+	b.WriteString("  Combined, catclip plugs into either side of a shell pipeline.\n\n")
+	b.WriteString("  Catclip as input source (stdout → tool):\n\n")
+	b.WriteString("    # Line counts per file, biggest first:\n")
+	b.WriteString("    catclip src --only '*.go' --paths --headless | xargs wc -l | sort -rn\n\n")
+	b.WriteString("    # Bulk find-and-replace (macOS sed -i '' syntax):\n")
+	b.WriteString("    catclip src --only '*.ts' --contains 'oldName' --paths --headless \\\n")
+	b.WriteString("      | xargs sed -i '' 's/oldName/newName/g'\n\n")
+	b.WriteString("    # Open matched files in vim:\n")
+	b.WriteString("    vim $(catclip src --contains TODO --paths --headless)\n\n")
+	b.WriteString("    # File count and payload size of your current selection:\n")
+	b.WriteString("    catclip src --only '*.go' --paths --headless | wc -l\n")
+	b.WriteString("    catclip src --only '*.go' --headless | wc -c\n\n")
+	b.WriteString("  Catclip as filter sink (tool → stdin):\n\n")
+	b.WriteString("    # Copy files changed against an arbitrary git ref (--changed is HEAD-only;\n")
+	b.WriteString("    # this is the canonical way to scope a PR review or fork-diff copy):\n")
+	b.WriteString("    git diff --name-only main | catclip . --only - --headless\n\n")
 
 	// ── Output format ───────────────────────────────────────────────────
 	b.WriteString("OUTPUT FORMAT\n\n")
@@ -520,7 +508,8 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("    --recent [N]           Sort by mtime; optional top-N\n")
 	b.WriteString("    --size [MIN [MAX]]     Sort/filter by file size in KiB\n")
 	b.WriteString("    --depth N              Max path depth\n")
-	b.WriteString("    --contains REGEX       Content filter\n")
+	b.WriteString("    --contains REGEX       Content filter — keep files matching REGEX\n")
+	b.WriteString("    --not-contains REGEX   Content filter — drop files matching REGEX (repeatable)\n")
 	b.WriteString("    --snippet REGEX [N]    Extract matching blocks, or +/- N line context\n")
 	b.WriteString("    --lines [START [END]]  Line numbers; optional range slice\n")
 	b.WriteString("    --paths                Emit bare paths instead of file bodies\n")
@@ -550,7 +539,3 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 
 	return b.String()
 }
-
-// displayPath and loadVersion moved to path_helpers.go before the
-// help.go extraction so non-help callers (preview.go, ignore_rules.go,
-// required_tools.go) can keep using them without importing cli.

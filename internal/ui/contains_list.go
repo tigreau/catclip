@@ -126,10 +126,46 @@ func pickerFilePathDisplayLabel(relPath string) string {
 }
 
 func contentMatchScopePattern(s command.ExecutionScope) string {
+	// The picker hot path treats the LAST content-match stage as the
+	// live (per-keystroke) pattern. For --contains / --snippet flows
+	// the live stage is whatever the user typed in the picker. For
+	// --not-contains live, the picker's argv ends with `--not-contains
+	// {q}`, so the last stage's value is the live pattern.
+	if len(s.Stages) > 0 {
+		last := s.Stages[len(s.Stages)-1]
+		switch last.Kind {
+		case command.StageContains, command.StageSnippet, command.StageNotContains:
+			if len(last.Values) > 0 {
+				return last.Values[0]
+			}
+		}
+	}
 	if s.Snippet {
 		return s.SnippetPattern
 	}
-	return s.Contains
+	if s.Contains != "" {
+		return s.Contains
+	}
+	if len(s.NotContains) > 0 {
+		return s.NotContains[len(s.NotContains)-1]
+	}
+	return ""
+}
+
+// liveContentMatchKind reports which content-match stage kind is
+// driving the picker's live (per-keystroke) reload. Returns the kind
+// and true when the scope's last stage is a content predicate
+// (Contains/Snippet/NotContains); returns ("", false) otherwise.
+func liveContentMatchKind(s command.ExecutionScope) (command.StageKind, bool) {
+	if len(s.Stages) == 0 {
+		return "", false
+	}
+	last := s.Stages[len(s.Stages)-1].Kind
+	switch last {
+	case command.StageContains, command.StageSnippet, command.StageNotContains:
+		return last, true
+	}
+	return "", false
 }
 
 func contentMatchRowsForScope(cfg contentMatchListConfig) ([]contentMatchRow, error) {
@@ -186,6 +222,37 @@ func contentMatchRowsForScope(cfg contentMatchListConfig) ([]contentMatchRow, er
 		finishBench("err", platform.InternalBenchError(err))
 		return nil, err
 	}
+
+	// --not-contains live: prune entries matching the pattern; no
+	// first-match line (there's no match to center the preview on).
+	// Mirrors the prediscovered handler's --not-contains branch.
+	if liveKind, _ := liveContentMatchKind(currentScope); liveKind == command.StageNotContains {
+		finishRowsBench := platform.InternalBenchSpan("ui.content_match.not_contains_rows",
+			"entries", platform.InternalBenchInt(len(discovered.Entries)),
+		)
+		pruned, err := discovery.FilterEntriesByNotContent(discovery.EnsureEntryAbsPaths(discovered.Entries, cfg.Invocation.WorkingDir), pattern)
+		finishRowsBench(
+			"err", platform.InternalBenchError(err),
+			"rows", platform.InternalBenchInt(len(pruned)),
+			"bad_pattern", platform.InternalBenchCancelled(err, search.ErrRipgrepBadPattern),
+		)
+		if err != nil {
+			if errors.Is(err, search.ErrRipgrepBadPattern) {
+				finishBench("err", "false", "rows", "0", "bad_pattern", "true")
+				return nil, nil
+			}
+			finishBench("err", platform.InternalBenchError(err))
+			return nil, err
+		}
+		rows := contentMatchRowsFromEntries(pruned)
+		finishBench(
+			"err", "false",
+			"rows", platform.InternalBenchInt(len(rows)),
+			"live_kind", "not-contains",
+		)
+		return rows, nil
+	}
+
 	finishRowsBench := platform.InternalBenchSpan("ui.content_match.first_match_rows",
 		"entries", platform.InternalBenchInt(len(discovered.Entries)),
 	)
@@ -259,23 +326,27 @@ func contentMatchRowsFromEntries(entries []discovery.Entry) []contentMatchRow {
 }
 
 func scopeWithoutTerminalLiveContentMatchStage(scope command.ExecutionScope) (command.ExecutionScope, bool) {
-	liveKind := command.StageContains
-	if scope.Snippet {
-		liveKind = command.StageSnippet
-	}
-	if len(scope.Stages) == 0 || scope.Stages[len(scope.Stages)-1].Kind != liveKind {
+	liveKind, ok := liveContentMatchKind(scope)
+	if !ok {
 		return scope, false
 	}
 
 	out := scope
 	out.Stages = append([]command.Stage(nil), out.Stages[:len(out.Stages)-1]...)
-	if liveKind == command.StageSnippet {
+	switch liveKind {
+	case command.StageSnippet:
 		out.Snippet = false
 		out.SnippetPattern = ""
 		out.SnippetContextSet = false
 		out.SnippetContextLines = 0
-	} else {
+	case command.StageContains:
 		out.Contains = ""
+	case command.StageNotContains:
+		// Drop the LAST not-contains entry (live one); preserve any
+		// earlier fixed --not-contains values the parent set.
+		if n := len(out.NotContains); n > 0 {
+			out.NotContains = append([]string(nil), out.NotContains[:n-1]...)
+		}
 	}
 	return out, true
 }

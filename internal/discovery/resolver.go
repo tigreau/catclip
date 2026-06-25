@@ -706,6 +706,15 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 		switch len(fuzzyFiles) {
 		case 0:
 		case 1:
+			if blockedDir != nil {
+				// Same authorization as the picker branch below: the candidate
+				// came from the blocked-dir bypass, so resolveExactTarget will
+				// fail its ignore gate unless we promote the path to an include.
+				if r.IncludedTargets.exact == nil {
+					r.IncludedTargets.exact = make(map[string]struct{})
+				}
+				r.IncludedTargets.exact[normalizeRelPath(fuzzyFiles[0])] = struct{}{}
+			}
 			discovered, handled, diag, err := r.resolveExactTarget(fuzzyFiles[0], true, colors)
 			if diag != nil {
 				Diagnostics = append(Diagnostics, *diag)
@@ -714,7 +723,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 				return discovered, Diagnostics, notices, false, err
 			}
 		default:
-			selected, err := chooseFileMatch(r.Cfg, baseName, resolvedDir, fuzzyFiles, stderr, colors)
+			selected, err := chooseFileMatch(r.Cfg, baseName, resolvedDir, fuzzyFiles, blockedDir != nil, stderr, colors)
 			if err != nil {
 				if errors.Is(err, ErrSelectionCancelled) {
 					return nil, Diagnostics, notices, true, nil
@@ -722,8 +731,22 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 				return nil, Diagnostics, notices, false, err
 			}
 			selectedMatches := make([]TargetMatch, 0, len(selected))
-			for _, path := range selected {
-				selectedMatches = append(selectedMatches, TargetMatch{Path: path, Kind: "file"})
+			for _, p := range selected {
+				m := TargetMatch{Path: p, Kind: "file"}
+				if blockedDir != nil {
+					// Candidates came from the blocked-dir bypass — they are
+					// gitignored. Authorize the picked path on this resolver
+					// so discovery emits it; mirrors what `--include` would
+					// do at parse time. Mark the match so callers that key on
+					// Ignored route through the include-aware path.
+					if r.IncludedTargets.exact == nil {
+						r.IncludedTargets.exact = make(map[string]struct{})
+					}
+					r.IncludedTargets.exact[normalizeRelPath(p)] = struct{}{}
+					m.Ignored = true
+					m.IgnoreSource = blockedDir.Source
+				}
+				selectedMatches = append(selectedMatches, m)
 			}
 			discovered, err := r.resolveTargetMatches(selectedMatches, colors)
 			if err != nil {
@@ -770,7 +793,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 			for i, h := range includedHits {
 				paths[i] = h.Path
 			}
-			selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", paths, stderr, colors)
+			selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", paths, false, stderr, colors)
 			if err != nil {
 				if errors.Is(err, ErrSelectionCancelled) {
 					return nil, Diagnostics, notices, true, nil
@@ -810,7 +833,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 				return discovered, Diagnostics, notices, false, err
 			}
 		default:
-			selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", fuzzyFiles, stderr, colors)
+			selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", fuzzyFiles, false, stderr, colors)
 			if err != nil {
 				if errors.Is(err, ErrSelectionCancelled) {
 					return nil, Diagnostics, notices, true, nil
@@ -921,7 +944,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 				for i, h := range includedHits {
 					paths[i] = h.Path
 				}
-				selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", paths, stderr, colors)
+				selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", paths, false, stderr, colors)
 				if err != nil {
 					if errors.Is(err, ErrSelectionCancelled) {
 						return nil, Diagnostics, notices, true, nil
@@ -961,7 +984,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 					return discovered, Diagnostics, notices, false, err
 				}
 			default:
-				selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", fuzzyFiles, stderr, colors)
+				selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", fuzzyFiles, false, stderr, colors)
 				if err != nil {
 					if errors.Is(err, ErrSelectionCancelled) {
 						return nil, Diagnostics, notices, true, nil
@@ -2251,10 +2274,10 @@ func chooseDirectoryMatch(cfg command.Invocation, needle, currentRel string, mat
 	if err != nil {
 		return nil, err
 	}
-	return chooseManyWithTypedFzf(path, needle, "dir> ", matches, treeTargetKindDir, treeTargetStateOK)
+	return chooseManyWithTypedFzf(path, needle, "dir> ", matches, treeTargetKindDir, treeTargetStateOK, false)
 }
 
-func chooseFileMatch(cfg command.Invocation, needle, currentRel string, matches []string, stderr io.Writer, colors platform.Palette) ([]string, error) {
+func chooseFileMatch(cfg command.Invocation, needle, currentRel string, matches []string, includeTarget bool, stderr io.Writer, colors platform.Palette) ([]string, error) {
 	if !canPromptForChoice(cfg) {
 		return nil, headlessFileAmbiguityError(needle, currentRel, matches)
 	}
@@ -2263,7 +2286,7 @@ func chooseFileMatch(cfg command.Invocation, needle, currentRel string, matches 
 	if err != nil {
 		return nil, err
 	}
-	return chooseManyWithTypedFzf(path, needle, "file> ", matches, treeTargetKindFile, treeTargetStateText)
+	return chooseManyWithTypedFzf(path, needle, "file> ", matches, treeTargetKindFile, treeTargetStateText, includeTarget)
 }
 
 func chooseTargetMatch(cfg command.Invocation, needle string, matches []TargetMatch, stderr io.Writer, colors platform.Palette) ([]TargetMatch, error) {
@@ -2381,27 +2404,6 @@ func runFzfFilterLines(bin, query string, lines []string) ([]string, error) {
 	return picker.Filter(bin, query, lines)
 }
 
-func chooseWithFzfLines(bin, query, prompt, withNth, previewCommand string, lines []string) (string, error) {
-	platform.StopActiveSpinner()
-	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
-		Query:          query,
-		Prompt:         prompt,
-		WithNth:        withNth,
-		PreviewCommand: previewCommand,
-		Lines:          lines,
-	}))
-	if errors.Is(err, picker.ErrSelectionCancelled) {
-		return "", ErrSelectionCancelled
-	}
-	if err != nil {
-		return "", err
-	}
-	if len(result.Matches) == 0 {
-		return "", ErrSelectionCancelled
-	}
-	return result.Matches[0], nil
-}
-
 // FzfFileSetPreviewCommand is the legacy fallback command for free-form
 // file-set previews. Normal modifier pickers use
 // startupCheckpointFileSetPreviewCommand so preview keystrokes load entries[N]
@@ -2486,12 +2488,8 @@ func ChooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, f
 	return fzfChooseResult{Query: result.Query, Key: result.Key, Matches: result.Matches}, nil
 }
 
-func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind, state string) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", FzfPreviewCommand(false), formatFzfCandidates(candidates, kind, state))
-}
-
-func chooseManyWithFzfNth(bin, query, prompt, nth string, candidates []string) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, nth, "1,2", "", FzfPreviewCommand(false), formatFzfCandidates(candidates, "", ""))
+func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind, state string, includeTarget bool) ([]string, error) {
+	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", FzfPreviewCommand(includeTarget), formatFzfCandidates(candidates, kind, state))
 }
 
 func chooseManyTargetMatchesWithFzfHeader(bin, query, prompt, header string, candidates []string, includeTarget bool) ([]string, error) {
@@ -2629,7 +2627,7 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 	}
 	noop := func() {}
 	switch flag {
-	case "--contains", "--snippet":
+	case "--contains", "--snippet", "--not-contains":
 	default:
 		return fallback(), "", noop
 	}
@@ -2702,8 +2700,11 @@ func ContentMatchPickerHeader(flag string) string {
 
 func ContentMatchPickerHeaderWithEscHint(flag, escHint string) string {
 	firstLine := "Keep files whose contents match a regex."
-	if flag == "--snippet" {
+	switch flag {
+	case "--snippet":
 		firstLine = "Extract snippets whose contents match a regex."
+	case "--not-contains":
+		firstLine = "Drop files whose contents match a regex."
 	}
 	return PickerHeader(
 		firstLine,
@@ -2729,15 +2730,6 @@ func ShellQuoteArg(arg string) string {
 		return arg
 	}
 	return strconv.Quote(arg)
-}
-
-// shellEnforceSingleQuote always wraps arg in POSIX single quotes, escaping
-// embedded single quotes, so a value is rendered as an unambiguous literal even
-// when it has no shell-special characters. Used for regex modifiers so resolved
-// commands show the pattern quoted and copy-paste safely regardless of $, *, or
-// spaces in the pattern.
-func shellEnforceSingleQuote(arg string) string {
-	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
 }
 
 func formatFzfCandidates(candidates []string, kind, state string) []string {
@@ -3127,14 +3119,14 @@ func WriteNoFilesMatchedMessage(scopes []command.ExecutionScope, stderr io.Write
 		return err
 	}
 	// Add a case-sensitivity bullet only when a regex filter was used —
-	// --contains and --snippet are PCRE2 regex matchers, case-sensitive
-	// by default. --only/--exclude are shell globs and don't have this
-	// concern; targets aren't pattern-matched at all. Keeping the bullet
-	// conditional avoids misleading users who hit zero-match for an
-	// unrelated reason.
+	// --contains, --not-contains, and --snippet are PCRE2 regex matchers,
+	// case-sensitive by default (well: smart-case). --only/--exclude are
+	// shell globs and don't have this concern; targets aren't
+	// pattern-matched at all. Keeping the bullet conditional avoids
+	// misleading users who hit zero-match for an unrelated reason.
 	usedRegexFilter := false
 	for _, s := range scopes {
-		if s.Contains != "" || s.Snippet {
+		if s.Contains != "" || s.Snippet || len(s.NotContains) > 0 {
 			usedRegexFilter = true
 			break
 		}

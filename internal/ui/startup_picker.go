@@ -34,8 +34,9 @@ const (
 	startupModifierModeRecent   startupModifierMode = "recent"
 	startupModifierModeSize     startupModifierMode = "size"
 	startupModifierModeDepth    startupModifierMode = "depth"
-	startupModifierModeContains startupModifierMode = "contains"
-	startupModifierModeSnippet  startupModifierMode = "snippet"
+	startupModifierModeContains    startupModifierMode = "contains"
+	startupModifierModeNotContains startupModifierMode = "not-contains"
+	startupModifierModeSnippet     startupModifierMode = "snippet"
 	startupModifierModeLines    startupModifierMode = "lines"
 	startupModifierModeGit      startupModifierMode = "git"
 )
@@ -48,6 +49,7 @@ const (
 	StartupTrailingActionExclude      startupTrailingAction = "exclude"
 	startupTrailingActionRecent       startupTrailingAction = "recent"
 	StartupTrailingActionContains     startupTrailingAction = "contains"
+	StartupTrailingActionNotContains  startupTrailingAction = "not-contains"
 	StartupTrailingActionSnippet      startupTrailingAction = "snippet"
 )
 
@@ -181,6 +183,13 @@ var startupModifierChoices = []StartupModifierChoice{
 		Description: "Keep files whose contents match a regex",
 		Args:        []string{"--contains"},
 		Mode:        startupModifierModeContains,
+	},
+	{
+		Key:         "not-contains",
+		Label:       "--not-contains",
+		Description: "Drop files whose contents match a regex",
+		Args:        []string{"--not-contains"},
+		Mode:        startupModifierModeNotContains,
 	},
 	{
 		Key:         "snippet",
@@ -631,7 +640,7 @@ func startupHasUnresolvedScope(args []string) bool {
 			}
 			scopeHasExplicitTarget = false
 			continue
-		case "--include", "--only", "--exclude", "--contains", "--snippet", "--depth":
+		case "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--depth":
 			if !scopeHasExplicitTarget {
 				return true
 			}
@@ -729,7 +738,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules",
 			"--input-dir", "--input-stem":
 			return false, nil
-		case "--include", "--only", "--exclude", "--contains", "--snippet", "--depth":
+		case "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--depth":
 			if arg == "--depth" {
 				if i+1 < len(args) {
 					if _, err := discovery.ParseDepthToken(args[i+1]); err == nil {
@@ -738,7 +747,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 				}
 				continue
 			}
-			if arg == "--contains" || arg == "--snippet" {
+			if arg == "--contains" || arg == "--not-contains" || arg == "--snippet" {
 				if i+1 < len(args) {
 					i++
 					if arg == "--snippet" && i+1 < len(args) {
@@ -860,7 +869,7 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 				i++
 				parsed.modifiers = append(parsed.modifiers, tokens[i])
 			}
-		case "--only", "--exclude", "--contains", "--snippet", "--depth":
+		case "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--depth":
 			flag := tokens[i]
 			if i+1 >= len(tokens) {
 				switch flag {
@@ -872,6 +881,8 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 					return startupInputParse{}, cli.RequiredStageValueError("--snippet")
 				case "--depth":
 					return startupInputParse{}, cli.RequiredStageValueError("--depth")
+				case "--not-contains":
+					return startupInputParse{}, cli.NotContainsMissingPatternError(tokens, i)
 				default:
 					return startupInputParse{}, cli.ContainsMissingPatternError(tokens, i)
 				}
@@ -939,6 +950,8 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 			switch {
 			case strings.HasPrefix(tokens[i], "--contains="):
 				return startupInputParse{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: --contains 'pattern'")
+			case strings.HasPrefix(tokens[i], "--not-contains="):
+				return startupInputParse{}, newUsageError("Error: --not-contains requires a space before the pattern.\n  Use: --not-contains 'pattern'")
 			case strings.HasPrefix(tokens[i], "--recent="):
 				return startupInputParse{}, newUsageError("Error: --recent requires a space before the value.\n  Use: --recent 5\n  Or:  --recent")
 			case strings.HasPrefix(tokens[i], "--size="):
@@ -1301,7 +1314,7 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 			i += 1 + consumed
 			modifierMode = true
 			hadScopeInput = true
-		case "--include", "--only", "--exclude", "--contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines":
+		case "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines":
 			argsAfterStage, newScopeTargets, stageUsedFzf, consumed, err := resolveStartupModifierStage(resolver, finalArgs, currentScopeTargets, currentScopeExplicitTargets, []string{arg}, args[i+1:], false)
 			if err != nil {
 				return nil, nil, false, err
@@ -1363,7 +1376,7 @@ func startupLeadingModifierNeedsInitialScope(arg string) bool {
 		return false
 	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 		return true
-	case "--", "--include", "--only", "--exclude", "--contains", "--snippet", "--recent", "--size", "--depth", "--paths",
+	case "--", "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths",
 		"--changed", "--staged", "--unstaged", "--untracked",
 		"--changed-diff", "--staged-diff", "--unstaged-diff":
 		return true
@@ -1393,6 +1406,9 @@ func resolveStartupTrailingActionArgs(resolver *discovery.Resolver, prefixArgs [
 		return args, true, err
 	case StartupTrailingActionContains:
 		args, usedFzf, err := resolveStartupContentArgs(prefixArgs, "--contains")
+		return args, usedFzf, err
+	case StartupTrailingActionNotContains:
+		args, usedFzf, err := resolveStartupContentArgs(prefixArgs, "--not-contains")
 		return args, usedFzf, err
 	case StartupTrailingActionSnippet:
 		args, usedFzf, err := resolveStartupContentArgs(prefixArgs, "--snippet")
@@ -1632,6 +1648,12 @@ func resolveStartupModifierChoice(resolver *discovery.Resolver, finalArgs, curre
 			return nil, true || containsUsedFzf, err
 		}
 		return args, true || containsUsedFzf, nil
+	case startupModifierModeNotContains:
+		args, ncUsedFzf, err := resolveStartupContentArgs(finalArgs, "--not-contains")
+		if err != nil {
+			return nil, true || ncUsedFzf, err
+		}
+		return args, true || ncUsedFzf, nil
 	case startupModifierModeSnippet:
 		args, containsUsedFzf, err := resolveStartupContentArgs(finalArgs, "--snippet")
 		if err != nil {
@@ -2176,6 +2198,19 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 				return nil, append([]string(nil), currentScopeTargets...), false, 0, cli.ContainsMissingPatternError(currentArgs, len(currentArgs))
 			}
 			args, usedFzf, err := resolveStartupContentArgsWithEscHint(currentArgs, "--contains", escHint)
+			return args, append([]string(nil), currentScopeTargets...), usedFzf, 0, err
+		}
+		finalArgs := append(append([]string(nil), currentArgs...), flag, remaining[0])
+		return finalArgs, append([]string(nil), currentScopeTargets...), false, 1, nil
+	case "--not-contains":
+		if err := cli.ValidateCurrentScopeFlagAddition(currentArgs, "--not-contains"); err != nil {
+			return nil, append([]string(nil), currentScopeTargets...), false, 0, err
+		}
+		if len(remaining) == 0 || (allowInteractiveCompletion && startupRemainingIsBarePlaceholderChain(remaining)) {
+			if !allowInteractiveCompletion {
+				return nil, append([]string(nil), currentScopeTargets...), false, 0, cli.NotContainsMissingPatternError(currentArgs, len(currentArgs))
+			}
+			args, usedFzf, err := resolveStartupContentArgsWithEscHint(currentArgs, "--not-contains", escHint)
 			return args, append([]string(nil), currentScopeTargets...), usedFzf, 0, err
 		}
 		finalArgs := append(append([]string(nil), currentArgs...), flag, remaining[0])

@@ -232,7 +232,7 @@ func currentScopeStagesFromArgsLegacy(args []string) []command.Stage {
 				}
 				i++
 			}
-		case "--contains", "--snippet", "--depth":
+		case "--contains", "--not-contains", "--snippet", "--depth":
 			kind, _ := ScopeStageKindForFlag(args[i])
 			stages = append(stages, command.Stage{Kind: kind})
 			if i+1 < len(args) && !IsModifierBoundaryToken(args[i+1]) {

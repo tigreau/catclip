@@ -42,6 +42,33 @@ func FilterEntriesByContent(entries []Entry, pattern string) ([]Entry, error) {
 	return out, nil
 }
 
+// FilterEntriesByNotContent is the inverse of FilterEntriesByContent:
+// returns the entries whose contents DO NOT match the pattern. Used
+// by --not-contains to prune matching files from the candidate set.
+//
+// The intermediate set returned by RunRipgrepNotMatches is the rg
+// view of "files without match." Membership against that set picks
+// the surviving entries directly — no inversion of the chunked
+// result needed.
+func FilterEntriesByNotContent(entries []Entry, pattern string) ([]Entry, error) {
+	if err := ValidateNotContainsPattern(pattern); err != nil {
+		return nil, err
+	}
+
+	withoutMatch, err := search.RunRipgrepMatches(pattern, EntryAbsPaths(entries), true)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		if _, ok := withoutMatch[filepath.Clean(entry.AbsPath)]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out, nil
+}
+
 func EntryAbsPaths(entries []Entry) []string {
 	paths := make([]string, 0, len(entries))
 	for _, entry := range entries {
@@ -73,6 +100,16 @@ func EnsureEntryAbsPaths(entries []Entry, workingDir string) []Entry {
 func ValidateContainsPattern(pattern string) error {
 	if pattern == "" {
 		return newUsageError("Error: --contains requires a regex pattern.")
+	}
+	return nil
+}
+
+// ValidateNotContainsPattern is the --not-contains analog of
+// ValidateContainsPattern. Same intent (non-empty check, real syntax
+// errors come from rg) but the error message names the correct flag.
+func ValidateNotContainsPattern(pattern string) error {
+	if pattern == "" {
+		return newUsageError("Error: --not-contains requires a regex pattern.")
 	}
 	return nil
 }

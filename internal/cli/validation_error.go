@@ -104,6 +104,8 @@ func renderRequiredValueValidationFailure(e ValidationFailure) string {
 			return base
 		}
 		return fmt.Sprintf("%s\n  Did you mean: %s", base, e.Suggestion)
+	case "--not-contains":
+		return "Error: --not-contains requires a regex pattern.\n  Example: catclip src --not-contains 'TODO'"
 	case "--snippet":
 		return "Error: --snippet requires a regex pattern.\n  Example: catclip src --snippet 'TODO'"
 	case "--depth":

@@ -67,6 +67,7 @@ var stageApplierTable = map[command.StageKind]stageApplier{
 	command.StageSize:         ApplySizeStageCase,
 	command.StageDepth:        ApplyDepthStageCase,
 	command.StageContains:     applyContentStageCase,
+	command.StageNotContains:  applyNotContentStageCase,
 	command.StageSnippet:      applyContentStageCase,
 	command.StageChanged:      applyChangedStageCase,
 	command.StageStaged:       applyStagedStageCase,
@@ -149,6 +150,17 @@ func applyContentStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
 	}
 	entries = EnsureEntryAbsPaths(entries, ctx.Resolver.Cfg.WorkingDir)
 	return FilterEntriesByContent(entries, ctx.Stage.Values[0])
+}
+
+// applyNotContentStageCase is the --not-contains prune step: drops
+// entries whose contents match the regex. One Stage per --not-contains
+// occurrence; applied in argv order alongside --contains stages.
+func applyNotContentStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
+	if len(ctx.Stage.Values) == 0 {
+		return entries, nil
+	}
+	entries = EnsureEntryAbsPaths(entries, ctx.Resolver.Cfg.WorkingDir)
+	return FilterEntriesByNotContent(entries, ctx.Stage.Values[0])
 }
 
 // applyChangedStageCase serves command.StageChanged and command.StageChangedDiff;

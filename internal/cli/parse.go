@@ -459,6 +459,21 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 				cfg.Warnings = append(cfg.Warnings, "Warning: --contains uses regex, not globs. Did you mean '.*' instead of '*'?\n  Example: --contains 'use.*Context' (not 'use*Context')")
 			}
 			lastNoValueModifier = ""
+		case "--not-contains":
+			inModifierMode = true
+			if i+1 >= len(args) {
+				return command.Parsed{}, NotContainsMissingPatternError(args, i)
+			}
+			i++
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				return command.Parsed{}, RegexModifierExtraValueError("--not-contains", args[i], args[i+1])
+			}
+			current.NotContains = append(current.NotContains, args[i])
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageNotContains, Values: []string{args[i]}})
+			if looksLikeGlobConfusion(args[i]) {
+				cfg.Warnings = append(cfg.Warnings, "Warning: --not-contains uses regex, not globs. Did you mean '.*' instead of '*'?\n  Example: --not-contains 'use.*Context' (not 'use*Context')")
+			}
+			lastNoValueModifier = ""
 		case "--paths":
 			inModifierMode = true
 			current.Paths = true
@@ -468,6 +483,8 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			switch {
 			case strings.HasPrefix(arg, "--contains="):
 				return command.Parsed{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
+			case strings.HasPrefix(arg, "--not-contains="):
+				return command.Parsed{}, newUsageError("Error: --not-contains requires a space before the pattern.\n  Use: catclip src --not-contains 'pattern'\n  Not: catclip src --not-contains='pattern'")
 			case strings.HasPrefix(arg, "--snippet="):
 				return command.Parsed{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
 			case strings.HasPrefix(arg, "--recent="):
@@ -672,6 +689,9 @@ func validateWithBinariesCompatibility(s command.ExecutionScope) error {
 	if s.Contains != "" {
 		return newUsageError("Error: --with-binaries cannot be combined with --contains.\n  --contains searches file content, which is not meaningful for binary files.")
 	}
+	if len(s.NotContains) > 0 {
+		return newUsageError("Error: --with-binaries cannot be combined with --not-contains.\n  --not-contains searches file content, which is not meaningful for binary files.")
+	}
 	if s.Snippet {
 		return newUsageError("Error: --with-binaries cannot be combined with --snippet.\n  --snippet extracts content blocks, which is not meaningful for binary files.")
 	}
@@ -699,6 +719,9 @@ func FormatScopeSummary(s command.ExecutionScope) string {
 	}
 	if s.Contains != "" {
 		parts = append(parts, fmt.Sprintf("contains=%q", s.Contains))
+	}
+	if len(s.NotContains) > 0 {
+		parts = append(parts, fmt.Sprintf("not_contains=%q", s.NotContains))
 	}
 	if s.Snippet {
 		if s.SnippetPattern != "" {

@@ -4634,7 +4634,7 @@ func TestHelpTextIncludesShellParitySections(t *testing.T) {
 	})
 	_ = parseInProject(t, project, []string{"."})
 
-	hissDisplay := displayPath(discovery.GlobalHissPath())
+	hissDisplay := platform.DisplayPath(discovery.GlobalHissPath())
 	help := cli.ShortHelpText("0.2.1", hissDisplay, platform.Palette{})
 	full := cli.FullHelpText("0.2.1", hissDisplay, platform.Palette{})
 
@@ -4643,7 +4643,7 @@ func TestHelpTextIncludesShellParitySections(t *testing.T) {
 			t.Fatalf("expected short help to contain %q, got:\n%s", want, help)
 		}
 	}
-	for _, want := range []string{"Agent Reference", "OPERATIONS", "TARGETING", "FILTERING", "PIPELINE MODEL", "AUTHORIZATION", "OUTPUT FORMAT", "CLIPBOARD DELIVERY", "EXIT CODES", "COMMON ERRORS", "MODIFIER REFERENCE", displayPath(discovery.GlobalHissPath())} {
+	for _, want := range []string{"Agent Reference", "OPERATIONS", "TARGETING", "FILTERING", "PIPELINE MODEL", "AUTHORIZATION", "OUTPUT FORMAT", "CLIPBOARD DELIVERY", "EXIT CODES", "COMMON ERRORS", "MODIFIER REFERENCE", platform.DisplayPath(discovery.GlobalHissPath())} {
 		if !strings.Contains(full, want) {
 			t.Fatalf("expected full help to contain %q, got:\n%s", want, full)
 		}
@@ -5138,23 +5138,6 @@ func TestRunSkipsCoveredLaterTargetInScope(t *testing.T) {
 	}
 }
 
-func startupModifierChoiceKeysContain(choices []ui.StartupModifierChoice, want string) bool {
-	for _, choice := range choices {
-		if choice.Key == want {
-			return true
-		}
-	}
-	return false
-}
-
-func startupModifierChoiceKeys(choices []ui.StartupModifierChoice) []string {
-	keys := make([]string, 0, len(choices))
-	for _, choice := range choices {
-		keys = append(keys, choice.Key)
-	}
-	return keys
-}
-
 func TestFormatHeadlessCandidateListTruncatesAfterLimit(t *testing.T) {
 	items := []string{
 		"a", "b", "c", "d", "e",
@@ -5241,7 +5224,7 @@ func TestCanonicalScopeArgsCoversAllStageKinds(t *testing.T) {
 				s.Stages[0].Limit = &limit
 			case command.StageSize:
 				s.Stages[0].Nums = []int{1, 5}
-			case command.StageInclude, command.StageOnly, command.StageExclude, command.StageContains, command.StageSnippet:
+			case command.StageInclude, command.StageOnly, command.StageExclude, command.StageContains, command.StageNotContains, command.StageSnippet:
 				s.Stages[0].Values = []string{"x"}
 			case command.StageLines:
 				s.LinesStart = 1

@@ -8,7 +8,6 @@ import (
 	"os"
 
 	"github.com/tigreau/catclip/internal/cli"
-	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/platform"
 	"github.com/tigreau/catclip/internal/ui"
@@ -18,14 +17,6 @@ import (
 // Constants and types
 // =============================================================================
 
-// canPromptForChoice was a method on command.Invocation at root. After the
-// command extraction it stays root-side as a free function so internal/command
-// can remain stdlib-only — the platform.CanPromptInteractively dependency is
-// runtime concern, not part of the command model.
-func canPromptForChoice(cfg command.Invocation) bool {
-	return !cfg.Headless && !cfg.Internal && platform.CanPromptInteractively()
-}
-
 type usageError struct {
 	message string
 }
@@ -34,12 +25,6 @@ type exitError struct {
 	message string
 	code    int
 }
-
-const tokenWarnThreshold = 100000
-
-// snippetContextMax bounds --snippet REGEX N. Above this the context is close
-// to "read most of the file" and should be an explicit --lines/full request.
-const snippetContextMax = 200
 
 func (e usageError) Error() string {
 	return e.message
@@ -194,24 +179,6 @@ func internalBenchCommandKind(args []string) string {
 	return "run"
 }
 
-func rawArgsHasHeadless(args []string) bool {
-	for _, arg := range args {
-		if arg == "--headless" {
-			return true
-		}
-	}
-	return false
-}
-
-func rawArgsRequestQuiet(args []string) bool {
-	for _, arg := range args {
-		if arg == "-q" || arg == "--quiet" || arg == "--headless" {
-			return true
-		}
-	}
-	return false
-}
-
 func shouldWriteResolvedStartupCommand(result ui.StartupPickerResult, quiet bool) bool {
 	if !result.UsedFzf {
 		return false
@@ -220,20 +187,6 @@ func shouldWriteResolvedStartupCommand(result ui.StartupPickerResult, quiet bool
 		return true
 	}
 	return result.ForceResolvedCommand
-}
-
-func rawArgsUseStdinPathValues(args []string) bool {
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--include", "--only", "--exclude":
-			values, next := cli.ConsumeModifierValues(args, i+1)
-			if len(values) == 1 && values[0] == "-" {
-				return true
-			}
-			i = next - 1
-		}
-	}
-	return false
 }
 
 func writeResolvedStartupCommand(stderr io.Writer, args []string) error {

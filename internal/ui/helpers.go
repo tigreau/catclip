@@ -2,10 +2,7 @@ package ui
 
 import (
 	"fmt"
-	"os"
 	"path"
-	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/tigreau/catclip/internal/cli"
@@ -130,35 +127,6 @@ func formatByteCount(totalBytes int64) string {
 	default:
 		return fmt.Sprintf("%.2fGB", float64(totalBytes)/gb)
 	}
-}
-
-// displayPath collapses a home-relative path to a shell-paste-safe
-// shorthand. Dup of root path_helpers.go's helper — sync changes.
-//
-// POSIX uses `~/...` (every POSIX shell expands `~` before passing args
-// to external tools). Windows uses `$HOME\...` because PowerShell does
-// NOT expand `~` for external programs (notepad, code, nano, explorer,
-// start, ...) — a printed `~\Documents\foo.txt` fails on paste with
-// "The system cannot find the path specified". PowerShell DOES expand
-// `$HOME` because it's a PowerShell automatic variable. Legacy cmd.exe
-// doesn't expand `$HOME` either (uses `%USERPROFILE%`), but PowerShell
-// is the modern Windows default.
-func displayPath(p string) string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return p
-	}
-	homePrefix := "~"
-	if runtime.GOOS == "windows" {
-		homePrefix = "$HOME"
-	}
-	if p == home {
-		return homePrefix
-	}
-	if strings.HasPrefix(p, home+string(filepath.Separator)) {
-		return homePrefix + string(filepath.Separator) + strings.TrimPrefix(p, home+string(filepath.Separator))
-	}
-	return p
 }
 
 // exitError is a typed exit-code error returned by UI helpers that
