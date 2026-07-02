@@ -175,7 +175,7 @@ catclip skips `.gitignored` paths and paths matched by `.hiss` (the ignore confi
 ```bash
 catclip --hiss             # edit ignore rules
 catclip --hiss-reset       # restore defaults
-catclip --include tests    # allow an ignored folder for this run
+catclip tests --include tests   # allow an ignored folder for this run
 ```
 
 ---

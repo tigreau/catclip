@@ -753,14 +753,42 @@ func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[s
 }
 
 
+// DirectOption configures one of the boolean knobs on the direct rg
+// helpers (RunRipgrepDirect, RunRipgrepDirectMatchLines). Use
+// DirectInvert() for --files-without-match (--not-contains direct
+// mode) and DirectNoIgnore() to bypass .gitignore when the parent
+// scope had --include (see ACTIVE_PLAN_picker_no_ignore_for_include).
+type DirectOption func(*directOptions)
+
+type directOptions struct {
+	invert   bool
+	noIgnore bool
+}
+
+// DirectInvert switches from --files-with-matches to --files-without-match.
+func DirectInvert() DirectOption { return func(o *directOptions) { o.invert = true } }
+
+// DirectNoIgnore appends --no-ignore so rg walks gitignored paths.
+// --ignore-file (.hiss) still applies.
+func DirectNoIgnore() DirectOption { return func(o *directOptions) { o.noIgnore = true } }
+
+func directOptionsFrom(opts []DirectOption) directOptions {
+	var cfg directOptions
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	return cfg
+}
+
 // RunRipgrepDirect is the scope-rooted sibling of RunRipgrepMatches:
 // one rg call that walks `target` (relative to workingDir) and applies
 // the regex in one pass. Returns the set of matched files (relative
 // paths) using the same map[string]struct{} shape as RunRipgrepMatches.
 //
-// When invert is true, uses --files-without-match instead of
-// --files-with-matches and drops -m 1 (max-count has no meaning when
-// looking for absence of matches). Used by --not-contains direct mode.
+// Options: DirectInvert switches to --files-without-match (drops -m 1).
+// DirectNoIgnore appends --no-ignore for parent-include flows.
 //
 // Eligibility: callers must verify the scope qualifies via
 // command.IsDirectModeEligible. This helper does not check eligibility
@@ -779,10 +807,10 @@ func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[s
 //
 // Bad pattern: rg exit 2 + stderr matching PCRE2 markers →
 // ErrRipgrepBadPattern. rg "no matches" exit 1 → empty map, no error.
-func RunRipgrepDirect(workingDir, target, pattern, hissPath string, invert ...bool) (map[string]struct{}, error) {
-	inv := len(invert) > 0 && invert[0]
+func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...DirectOption) (map[string]struct{}, error) {
+	cfg := directOptionsFrom(opts)
 	spanName := "search.rg.direct"
-	if inv {
+	if cfg.invert {
 		spanName = "search.rg.direct_not_matches"
 	}
 	finishBench := platform.InternalBenchSpan(spanName,
@@ -796,7 +824,7 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, invert ...bo
 	}
 
 	args := []string{}
-	if inv {
+	if cfg.invert {
 		args = append(args, "--files-without-match")
 	} else {
 		args = append(args, "--files-with-matches")
@@ -809,8 +837,14 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, invert ...bo
 		"--no-messages",
 		"-0",
 	)
-	if !inv {
+	if !cfg.invert {
 		args = append(args, "-m", "1")
+	}
+	if cfg.noIgnore {
+		// Picker subprocesses inherit --no-ignore from the parent's
+		// --include via the checkpoint's NoIgnore flag; --ignore-file
+		// still applies, so .hiss continues to filter.
+		args = append(args, "--no-ignore")
 	}
 	if hissPath != "" {
 		args = append(args, "--ignore-file", hissPath)
@@ -867,7 +901,8 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, invert ...bo
 // Same eligibility, smart-case, normalization, and error semantics as
 // RunRipgrepDirect. Output parsing mirrors FirstMatchLinePerFile's
 // NUL-delimited line-number format: `{path}\0{lineno}:{matched line}\n`.
-func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string) (map[string]int, error) {
+func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string, opts ...DirectOption) (map[string]int, error) {
+	cfg := directOptionsFrom(opts)
 	finishBench := platform.InternalBenchSpan("search.rg.direct_match_lines",
 		"target", target,
 		"pattern_len", platform.InternalBenchInt(len(pattern)),
@@ -892,6 +927,9 @@ func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string) (m
 		"--hidden",
 		"--no-ignore-dot",
 		"--no-require-git",
+	}
+	if cfg.noIgnore {
+		args = append(args, "--no-ignore")
 	}
 	if hissPath != "" {
 		args = append(args, "--ignore-file", hissPath)

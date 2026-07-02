@@ -337,6 +337,98 @@ jobs:
           fi
           echo "--no-bundle left bundle count unchanged"
 
+      - name: --version shows bundled tool provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin_ext=".exe"
+          fi
+          export CATCLIP_RG="$(pwd)/bin/rg${bin_ext}"
+          export CATCLIP_FZF="$(pwd)/bin/fzf${bin_ext}"
+
+          version_out=$("./catclip-bin${bin_ext}" --version)
+          echo "--- catclip --version ---"
+          echo "$version_out"
+          echo "-------------------------"
+
+          # Line 1: "catclip <version>"
+          if ! printf '%s\n' "$version_out" | head -1 | grep -qE '^catclip '; then
+            echo "FAIL: first line does not start with 'catclip '" >&2
+            exit 1
+          fi
+
+          # Line 2: fzf line with FZF_VERSION and env marker (env is set).
+          if ! printf '%s\n' "$version_out" | grep -q "fzf ${FZF_VERSION}"; then
+            echo "FAIL: no 'fzf ${FZF_VERSION}' line" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$version_out" | grep -q '(CATCLIP_FZF)'; then
+            echo "FAIL: expected (CATCLIP_FZF) marker (env override active)" >&2
+            exit 1
+          fi
+
+          # Line 3: rg line with RIPGREP_VERSION and env marker.
+          if ! printf '%s\n' "$version_out" | grep -q "rg  ${RIPGREP_VERSION}"; then
+            echo "FAIL: no 'rg  ${RIPGREP_VERSION}' line (double space between tool and version)" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$version_out" | grep -q '(CATCLIP_RG)'; then
+            echo "FAIL: expected (CATCLIP_RG) marker (env override active)" >&2
+            exit 1
+          fi
+
+          # Missing-binary branch — unset both env vars and point at nowhere.
+          # The default bundled-tool search WILL find bin/rg and bin/fzf via
+          # ExecutableCandidateDirs (they sit next to the built catclip binary),
+          # so to force the missing branch we point env at a bogus path AND
+          # move the bin/ dir out of the way for this invocation.
+          bogus=$(mktemp -d)
+          missing_out=$(
+            CATCLIP_RG="$bogus/nope-rg" \
+            CATCLIP_FZF="$bogus/nope-fzf" \
+              "./catclip-bin${bin_ext}" --version || true
+          )
+          echo "--- catclip --version (missing) ---"
+          echo "$missing_out"
+          echo "-----------------------------------"
+          if ! printf '%s\n' "$missing_out" | grep -q '<not found'; then
+            echo "FAIL: missing-binary branch did not emit '<not found' hint" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$missing_out" | grep -q 'CATCLIP_RG points at missing file'; then
+            echo "FAIL: missing-binary hint should name CATCLIP_RG when env override is set" >&2
+            exit 1
+          fi
+
+          # Path abbreviation regression guard: on macOS/Linux --version
+          # should show '~' for a HOME-rooted path; on Windows '$HOME'.
+          # We can't guarantee the runner's bin/ lives under $HOME so this
+          # check is only assertive when the path IS under HOME.
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # If CATCLIP_FZF is under $HOME the printed path should use $HOME.
+            case "${CATCLIP_FZF}" in
+              "$HOME"/*|"$HOME"\\*)
+                if ! printf '%s\n' "$version_out" | grep -qF '$HOME'; then
+                  echo "FAIL: Windows --version output missing '\$HOME' abbreviation for HOME-rooted CATCLIP_FZF" >&2
+                  exit 1
+                fi
+                ;;
+            esac
+          else
+            case "${CATCLIP_FZF}" in
+              "$HOME"/*)
+                if ! printf '%s\n' "$version_out" | grep -q '~/'; then
+                  echo "FAIL: POSIX --version output missing '~/' abbreviation for HOME-rooted CATCLIP_FZF" >&2
+                  exit 1
+                fi
+                ;;
+            esac
+          fi
+
+          echo "--version bundled-tool provenance verified on ${{ runner.os }}"
+
       - name: Help text shell-paste form (DisplayPath regression guard)
         shell: bash
         run: |

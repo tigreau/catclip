@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/git"
@@ -71,7 +72,18 @@ type Resolver struct {
 	visibleWithHiss      map[string]struct{}
 	visibleAllDirs       map[string]struct{}
 	visibleWithHissDirs  map[string]struct{}
-	ignoreSetsReady      bool
+	// Case-fold reverse indices populated alongside the visible-set maps.
+	// On case-insensitive filesystems (APFS, NTFS) a user-typed target like
+	// `Cli.go` resolves at the FS level to the canonical `cli.go`, but the
+	// case-sensitive map lookups in fileBlockedBy / dirBlockedBy miss, causing
+	// the resolver to falsely report ".gitignore" as the blocker. These maps
+	// give those helpers a case-fold fallback so they match rg's behavior:
+	// path arguments work regardless of casing on case-insensitive FS.
+	visibleAllFold          map[string]struct{}
+	visibleWithHissFold     map[string]struct{}
+	visibleAllDirsFold      map[string]struct{}
+	visibleWithHissDirsFold map[string]struct{}
+	ignoreSetsReady         bool
 }
 
 // Scope is the typed output of the discover stage for a
@@ -105,6 +117,40 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		ScopeTargets:      append([]string(nil), s.Targets...),
 	}
 	var err error
+
+	// Emit a notice for each --include path that was already visible (no
+	// gitignore/hiss rule blocked it). The include then had no effect, and
+	// silently passing it through hides a real user mistake. Wildcard
+	// --include `*` is treated as a deliberate broadening and not classified.
+	// See ACTIVE_PLAN_rg_parity_sweep.md §1.
+	noopNotices, noopErr := classifyNoOpIncludeNotices(&resolver, s.IncludedTargets)
+	if noopErr != nil {
+		return result, noopErr
+	}
+	result.Notices = append(result.Notices, noopNotices...)
+
+	// Effect-4 gate (unrelated --include) is intentionally NOT wired in
+	// yet. The literal "is include related to any target?" check clashes
+	// with two v0.5.x features that overload --include with additional
+	// meanings:
+	//   1. Basename target + --include ancestor probe (v0.5.7): e.g.
+	//      `catclip target.md --include blocked` resolves target.md as a
+	//      basename inside blocked/. Literal target `target.md` isn't
+	//      related to include `blocked`, but the resolution is valid.
+	//   2. Scope-relative --include (v0.5.7): e.g.
+	//      `catclip src --include vendor` finds src/vendor, not root vendor.
+	//      Literal target `src` and include `vendor` aren't related, but
+	//      the scoped resolution is intentional.
+	// Firing effect-4 at scope entry breaks both. A correct implementation
+	// needs to run AFTER target resolution and know which include values
+	// were actually consumed by the walker; that's tracked in the
+	// include-as-authorization follow-up. For now, the walker's block
+	// checks (ignoredDirMessage / ignoredFileMessage) still surface the
+	// user-visible "--include does not cover this target" error, and the
+	// silent no-op case (visible target + orphaned include) stays as-is.
+	// The classifyEffect4Diagnostics helper remains for future use once
+	// the design distinguishes orphaned from scope-relative includes.
+	_ = classifyEffect4Diagnostics // referenced to prevent dead-code warnings
 
 	var entries []Entry
 	selectedPaths := make([]string, 0, len(s.Targets))
@@ -159,6 +205,23 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	}
 
 	entries = DedupeEntriesByPath(entries)
+
+	// If any per-target resolution produced an IsError diagnostic
+	// (ignored-dir / ignored-file guidance, include-not-covering
+	// guidance, etc.), the scope is unsatisfiable. Emitting the
+	// partial entries from sibling targets would silently "succeed"
+	// on a subset of what the user asked for — surfacing 2 cmd files
+	// while `docs` in the same scope errored teaches the wrong
+	// mental model. Drop the entries and mark scope-unsatisfiable so
+	// the run exits 2 with the message already printed.
+	if diagnosticsContainError(result.Diagnostics) {
+		entries = nil
+		for i := range result.Diagnostics {
+			if result.Diagnostics[i].IsError {
+				result.Diagnostics[i].IsScopeUnsatisfiable = true
+			}
+		}
+	}
 
 	if s.HasGitSelection() && !gitCtx.Enabled {
 		// Hard-fail this scope: the user requested a git-only selection
@@ -253,8 +316,193 @@ func (r *Resolver) ensureIgnoreSets() error {
 	r.visibleWithHiss = visibleWithHiss
 	r.visibleAllDirs = search.DirsContainingFiles(visibleAll)
 	r.visibleWithHissDirs = search.DirsContainingFiles(visibleWithHiss)
+	r.visibleAllFold = lowercaseStringSet(visibleAll)
+	r.visibleWithHissFold = lowercaseStringSet(visibleWithHiss)
+	r.visibleAllDirsFold = lowercaseStringSet(r.visibleAllDirs)
+	r.visibleWithHissDirsFold = lowercaseStringSet(r.visibleWithHissDirs)
 	r.ignoreSetsReady = true
 	return nil
+}
+
+// classifyNoOpIncludeNotices returns a deduped slice of human notices —
+// one per --include path that was already visible (no gitignore/hiss rule
+// blocked it). The classifier consults the resolver's visible-set maps
+// directly (with case-fold fallback) so it does not depend on the
+// IncludedTargets that were just built; that keeps the wildcard short-
+// circuit in fileBlockedBy / dirBlockedBy from masking what should be a
+// "no rule" answer.
+//
+// Wildcard --include `*` is intentionally untouched: the user typed it to
+// authorize every gitignored path, so reporting individual elements as
+// no-ops would be noise. Stat errors and dotpath ("." / "") entries are
+// skipped: the user is allowed to be redundant; we only flag the case
+// where the include's only effect is empty.
+func classifyNoOpIncludeNotices(r *Resolver, includes []string) ([]string, error) {
+	if r.IncludedTargets.wildcard || len(includes) == 0 {
+		return nil, nil
+	}
+	if err := r.ensureIgnoreSets(); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]struct{}, len(includes))
+	var notices []string
+	for _, raw := range includes {
+		rel := normalizeRelPath(raw)
+		if rel == "" || rel == "." {
+			continue
+		}
+		if _, dup := seen[rel]; dup {
+			continue
+		}
+		abs := filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(rel))
+		info, statErr := os.Stat(abs)
+		if statErr != nil {
+			// Path doesn't resolve on disk — discovery's normal flow will
+			// surface the right error. Don't second-guess it.
+			continue
+		}
+		lowered := strings.ToLower(rel)
+		var visible bool
+		if info.IsDir() {
+			if _, ok := r.visibleWithHissDirs[rel]; ok {
+				visible = true
+			} else if _, ok := r.visibleWithHissDirsFold[lowered]; ok {
+				visible = true
+			}
+		} else {
+			if _, ok := r.visibleWithHiss[rel]; ok {
+				visible = true
+			} else if _, ok := r.visibleWithHissFold[lowered]; ok {
+				visible = true
+			}
+		}
+		if !visible {
+			continue
+		}
+		seen[rel] = struct{}{}
+		notices = append(notices, fmt.Sprintf(
+			"Notice: --include %s was already visible (no ignore rule blocked it); the flag had no effect for this path.",
+			SingleQuoted(rel)))
+	}
+	return notices, nil
+}
+
+// classifyEffect4Diagnostics returns one Diagnostic per --include value
+// that fails the effect-4 relation check: the include value neither
+// equals a scope target, descends from a scope target, nor is an
+// ancestor of any scope target. In every one of those "unrelated"
+// cases, the include cannot authorize any file the walker will visit
+// under the current scope — silently accepting it would teach users
+// the wrong mental model ("--include adds a walk root"). See
+// ACTIVE_NOTE_include_double_syntax_rationale.md, effect 4.
+//
+// Wildcard `--include *` bypasses this check by design (scope-wide is
+// not "unrelated"). A "." scope target covers every possible include
+// value; no check needed. Duplicate include values are only reported
+// once. Include values under a chained-parent target that includes
+// "." are covered too.
+// diagnosticsContainError reports whether any diagnostic in the slice
+// is a hard error (IsError). Used to convert per-target error
+// diagnostics into scope-unsatisfiable so downstream doesn't emit
+// partial entries from sibling targets while one errored.
+func diagnosticsContainError(diags []Diagnostic) bool {
+	for _, d := range diags {
+		if d.IsError {
+			return true
+		}
+	}
+	return false
+}
+
+func classifyEffect4Diagnostics(includes []string, scopeTargets []string, colors platform.Palette) []Diagnostic {
+	if IncludeTargetsContainWildcard(includes) {
+		return nil
+	}
+	if len(includes) == 0 || len(scopeTargets) == 0 {
+		return nil
+	}
+	normTargets := make([]string, 0, len(scopeTargets))
+	for _, t := range scopeTargets {
+		n := normalizeRelPath(t)
+		if n == "" || n == "." {
+			// "." covers everything under the working dir; no include
+			// can be "unrelated" to it. Bail with no diagnostics.
+			return nil
+		}
+		normTargets = append(normTargets, n)
+	}
+	seen := make(map[string]struct{}, len(includes))
+	var diags []Diagnostic
+	for _, inc := range includes {
+		n := normalizeRelPath(inc)
+		if n == "" || n == "." {
+			continue
+		}
+		if n == "*" {
+			continue
+		}
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		if includePathRelatedToTargets(n, normTargets) {
+			continue
+		}
+		diags = append(diags, Diagnostic{
+			Message: includeUnrelatedMessage(n, normTargets, colors),
+			IsError: true,
+		})
+	}
+	return diags
+}
+
+// includePathRelatedToTargets reports whether inc is "related to" any
+// scope target: equal, descendant, or ancestor. The ancestor case
+// covers deep includes like `catclip docs --include docs/policy` — the
+// target `docs` is inc's ancestor, so inc IS related.
+func includePathRelatedToTargets(inc string, targets []string) bool {
+	for _, t := range targets {
+		if t == inc {
+			return true
+		}
+		if strings.HasPrefix(inc, t+"/") {
+			return true
+		}
+		if strings.HasPrefix(t, inc+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// includeUnrelatedMessage renders the effect-4 error message. Format
+// tracks the "consistent voice" table in
+// RESOLVED_PLAN_include_as_authorization.md §D.
+func includeUnrelatedMessage(inc string, scopeTargets []string, _ platform.Palette) string {
+	suggestedTargets := append(append([]string(nil), scopeTargets...), inc)
+	var b strings.Builder
+	fmt.Fprintf(&b, "catclip: --include %s does not authorize any target in scope.\n\n", SingleQuoted(inc))
+	b.WriteString("  --include is authorization-only — it cannot add a new walk root.\n")
+	fmt.Fprintf(&b, "  To include %s alongside your current targets, add %s as a positional\n", SingleQuoted(inc), SingleQuoted(inc))
+	b.WriteString("  target too:\n\n")
+	fmt.Fprintf(&b, "    catclip %s --include %s\n\n", strings.Join(suggestedTargets, " "), inc)
+	fmt.Fprintf(&b, "  Interactive tip: `catclip %s --` opens the target picker with ignored\n", strings.Join(scopeTargets, " "))
+	b.WriteString("  entries visible; selecting one writes the target+include pair for you.")
+	return b.String()
+}
+
+// lowercaseStringSet builds a parallel set keyed by strings.ToLower so
+// case-sensitive lookups can fall back to case-fold on case-insensitive
+// filesystems. Cheap: one extra map per call site, populated once.
+func lowercaseStringSet(in map[string]struct{}) map[string]struct{} {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(in))
+	for k := range in {
+		out[strings.ToLower(k)] = struct{}{}
+	}
+	return out
 }
 
 // dirBlockedBy reports the ignore source blocking a directory's contents,
@@ -277,6 +525,17 @@ func (r *Resolver) dirBlockedBy(relPath string) (*BlockInfo, error) {
 		return nil, nil
 	}
 	if _, ok := r.visibleAllDirs[relPath]; ok {
+		return &BlockInfo{Source: ".hiss"}, nil
+	}
+	// Case-fold fallback: on case-insensitive filesystems (APFS, NTFS) the
+	// user-typed `Docs` resolves at the FS level to canonical `docs`. rg
+	// already accepts this transparently; mirror that behavior here so
+	// dirBlockedBy doesn't falsely attribute the miss to .gitignore.
+	lowered := strings.ToLower(relPath)
+	if _, ok := r.visibleWithHissDirsFold[lowered]; ok {
+		return nil, nil
+	}
+	if _, ok := r.visibleAllDirsFold[lowered]; ok {
 		return &BlockInfo{Source: ".hiss"}, nil
 	}
 	paths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{
@@ -311,6 +570,17 @@ func (r *Resolver) fileBlockedBy(relPath string) (*BlockInfo, error) {
 	if _, ok := r.visibleAll[relPath]; ok {
 		return &BlockInfo{Source: ".hiss"}, nil
 	}
+	// Case-fold fallback: matches dirBlockedBy. On macOS APFS / Windows NTFS
+	// the user-typed `Cli.go` is the same physical file as the visible-set's
+	// canonical `cli.go`; without this fallback the missed lookup falsely
+	// resolves to ".gitignore" and the user sees a wrong-attribution error.
+	lowered := strings.ToLower(relPath)
+	if _, ok := r.visibleWithHissFold[lowered]; ok {
+		return nil, nil
+	}
+	if _, ok := r.visibleAllFold[lowered]; ok {
+		return &BlockInfo{Source: ".hiss"}, nil
+	}
 	return &BlockInfo{Source: ".gitignore"}, nil
 }
 
@@ -331,6 +601,57 @@ func (r *Resolver) targetIncluded(target string) bool {
 		}
 	}
 	return false
+}
+
+// walkAuthorizedByInclude reports whether the walker is permitted to
+// descend into `target` on the basis of --include. It is a strictly
+// broader predicate than targetIncluded: in addition to the "target
+// is inside (or is) an include" cases that targetIncluded covers, it
+// also returns true when `target` is a strict ancestor of any include
+// value. That extra case is the "deep include" walk-authorization —
+// e.g. `catclip docs --include docs/policy` needs to descend into
+// `docs/` even though `docs/` itself isn't emitted by targetIncluded.
+// Per-entry filtering of the walked file set (see filterByTargetIncluded)
+// narrows the emit set back to just the descendants the user actually
+// authorized. See ACTIVE_NOTE_include_double_syntax_rationale.md
+// (effects 1–3) for the semantic and v0.6.4's include-as-authorization
+// plan for the walker changes.
+func (r *Resolver) walkAuthorizedByInclude(target string) bool {
+	if r.targetIncluded(target) {
+		return true
+	}
+	target = normalizeRelPath(target)
+	if target == "" || target == "." {
+		return false
+	}
+	prefix := target + "/"
+	for path := range r.IncludedTargets.exact {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// filterByTargetIncluded returns the subset of entries that pass the
+// per-entry --include authorization check. Used after discoverFilesUnder
+// on an include-authorized ignored subtree: the walker was allowed to
+// enter because walkAuthorizedByInclude was true, and this filter narrows
+// the emitted set to entries whose own path matches an include value
+// (exact / dir-prefix). Wildcard --include short-circuits (every entry
+// passes). Called only from the ignored-content code paths — non-ignored
+// entries are outside --include's jurisdiction.
+func (r *Resolver) filterByTargetIncluded(entries []Entry) []Entry {
+	if r.IncludedTargets.wildcard || len(entries) == 0 {
+		return entries
+	}
+	kept := entries[:0]
+	for _, e := range entries {
+		if r.targetIncluded(e.RelPath) {
+			kept = append(kept, e)
+		}
+	}
+	return kept
 }
 
 // includedDescendantsOf returns the user-supplied include paths that are
@@ -402,8 +723,10 @@ func (r *Resolver) TargetIsReachable(target string) (bool, error) {
 		if block == nil || block.Source == "" {
 			return true, nil
 		}
-		// Path exists but is blocked. Reachable only if --include covers it.
-		if r.IncludedTargets.wildcard || r.targetIncluded(normalized) {
+		// Path exists but is blocked. Reachable only if --include
+		// authorizes it — either directly (targetIncluded) or as an
+		// ancestor of a deep include (walkAuthorizedByInclude).
+		if r.IncludedTargets.wildcard || r.walkAuthorizedByInclude(normalized) {
 			return true, nil
 		}
 		return false, nil
@@ -652,7 +975,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 	if normalizedTarget == "" {
 		normalizedTarget = "."
 	}
-	if r.targetIncluded(normalizedTarget) {
+	if r.walkAuthorizedByInclude(normalizedTarget) {
 		discovered, targetDiagnostics, selectionCancelled, err := r.resolveIncludedTarget(target, normalizedTarget, stderr, colors)
 		return discovered, targetDiagnostics, notices, selectionCancelled, err
 	}
@@ -1049,7 +1372,7 @@ func (r *Resolver) resolveGlobTarget(scopeIndex int, pattern string, colors plat
 	}
 	if len(matched) == 0 {
 		diag := Diagnostic{
-			Message:          targetNotFoundWarning(pattern, scopeIndex, colors),
+			Message:          globZeroMatchWarning(r, pattern, scopeIndex, colors),
 			IsTargetNotFound: true,
 		}
 		return nil, []Diagnostic{diag}, nil, false, nil
@@ -1126,10 +1449,11 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 			return nil, true, nil, err
 		}
 		if block != nil {
-			if !r.targetIncluded(relTarget) {
-				return nil, true, &Diagnostic{Message: ignoredDirMessage(relTarget, block.Source, hasIncludes, r.includedDescendantsOf(relTarget), colors), IsError: true}, nil
+			if !r.walkAuthorizedByInclude(relTarget) {
+				return nil, true, &Diagnostic{Message: ignoredDirMessage(relTarget, block.Source, hasIncludes, r.includedDescendantsOf(relTarget), r.ScopeTargets, colors), IsError: true}, nil
 			}
 			files, err := discoverFilesUnder(r.Cfg.WorkingDir, relTarget, "", r.classifyTextFile, block)
+			files = r.filterByTargetIncluded(files)
 			return withTargetRoot(files, relTarget), true, nil, err
 		}
 		files, err := r.discoverVisibleFilesUnder(relTarget)
@@ -1163,8 +1487,15 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 		return nil, true, nil, err
 	}
 	if block != nil {
+		// Single-file target: walkAuthorizedByInclude allows the ancestor
+		// case (e.g. --include docs/ authorizing docs/x.md), and
+		// targetIncluded is the strict per-entry check the emit filter
+		// uses. For a lone file, walk-auth and emit-auth are the same
+		// question — the file either matches or it doesn't. Use the
+		// stricter targetIncluded here so we don't authorize a file that
+		// wouldn't survive the emit filter under a bulk walk.
 		if !r.targetIncluded(relTarget) {
-			return nil, true, &Diagnostic{Message: ignoredFileMessage(relTarget, block.Source, fromChained, hasIncludes, colors), IsError: true}, nil
+			return nil, true, &Diagnostic{Message: ignoredFileMessage(relTarget, block.Source, fromChained, hasIncludes, r.ScopeTargets, colors), IsError: true}, nil
 		}
 		entry = withAllowedByInclude(entry, *block)
 	}
@@ -1406,7 +1737,17 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	}
 	stopSpinner := func() {}
 	if !r.interactiveTargetsOk {
-		stopSpinner = platform.StartLoadingSpinner(os.Stderr, "Loading targets...")
+		// Renamed from "Loading targets..." to plain English; the
+		// 5 s delayed hint acknowledges the unavoidable cold-boot
+		// scan cost (Defender on Windows; cold FS cache everywhere)
+		// so users don't think it's hung and Ctrl-C out. See
+		// RESOLVED_PLAN_target_picker_spinner_reassurance.md.
+		stopSpinner = platform.StartLoadingSpinnerWithDelayedHint(
+			os.Stderr,
+			"Scanning files...",
+			"(first run is supposed to be slow)",
+			5*time.Second,
+		)
 	}
 	allTargets, err := r.allVisibleTargets()
 	stopSpinner()
@@ -2621,6 +2962,19 @@ func FzfContentMatchListCommand(currentArgs []string, flag string) string {
 // (the `[all current matches]` row's scope tree). Match-list reload and
 // preview share the same checkpoint file — one JSON write per picker
 // open.
+// currentArgsHaveInclude reports whether the parent scope's argv carries
+// any --include, meaning gitignored entries were authorized into the
+// discovered set. The picker's direct rg subprocess needs --no-ignore
+// for the walk to surface those same files.
+func currentArgsHaveInclude(args []string) bool {
+	for _, a := range args {
+		if a == "--include" {
+			return true
+		}
+	}
+	return false
+}
+
 func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (string, string, func()) {
 	fallback := func() string {
 		return FzfContentMatchListCommand(currentArgs, flag)
@@ -2660,6 +3014,7 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,
+		NoIgnore:   currentArgsHaveInclude(currentArgs),
 	}); err != nil {
 		_ = os.RemoveAll(tmpdir)
 		return fallback(), "", noop
@@ -2872,6 +3227,62 @@ func PickerHeader(lines ...string) string {
 	return strings.Join(lines, "\n")
 }
 
+// longestLiteralPathPrefix returns the longest leading path segment of
+// pattern that contains no glob characters. For "cmd/*.go" it returns
+// "cmd"; for "internal/cli/*.go" → "internal/cli"; for "*.go" → "".
+func longestLiteralPathPrefix(pattern string) string {
+	segs := strings.Split(pattern, "/")
+	literal := segs[:0]
+	for _, seg := range segs {
+		if strings.ContainsAny(seg, "*?[") {
+			break
+		}
+		literal = append(literal, seg)
+	}
+	return strings.Join(literal, "/")
+}
+
+// globZeroMatchWarning classifies why a glob-shaped target produced zero
+// matches and emits the right diagnostic. Three cases:
+//   - parent dir is ignored → existing --include hint with a correctly
+//     rewritten example;
+//   - parent dir is visible → explain glob anchoring + suggest the
+//     recursive form (`<prefix>/**/<pat>`) and the `--only` workaround;
+//   - parent missing / no literal prefix → fall through to
+//     targetNotFoundWarning unchanged.
+//
+// Replaces the misleading unconditional "If the parent directory is
+// ignored, use --include" message that fired even when the parent was
+// fully visible. See v0.6.4 ACTIVE_PLAN_natural_glob_targets_followup.md.
+func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors platform.Palette) string {
+	prefix := longestLiteralPathPrefix(pattern)
+	if prefix == "" || prefix == "." {
+		return targetNotFoundWarning(pattern, scopeIndex, colors)
+	}
+	suffix := strings.TrimPrefix(pattern, prefix+"/")
+	if suffix == pattern {
+		// prefix did not consume any portion of pattern; treat as missing
+		return targetNotFoundWarning(pattern, scopeIndex, colors)
+	}
+	if block, _ := r.dirBlockedBy(prefix); block != nil && block.Source != "" {
+		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %sAuthorize it first, or use a recursive glob:%s\n    %scatclip %s/**/%s --include %s%s\n    %scatclip %s --only %s --include %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), block.Source, colors.Reset, scopeIndex+1,
+			colors.Dim, colors.Reset,
+			colors.OK, prefix, suffix, SingleQuoted(prefix), colors.Reset,
+			colors.OK, SingleQuoted(prefix), SingleQuoted(suffix), SingleQuoted(prefix), colors.Reset)
+	}
+	exists, _ := r.TargetPathExists(prefix)
+	if !exists {
+		return targetNotFoundWarning(pattern, scopeIndex, colors)
+	}
+	return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %s%s is anchored — it matches %s directly in %s, not in subdirs.%s\n  %sFor recursive match:%s\n    %scatclip %s/**/%s%s\n    %scatclip %s --only %s%s",
+		colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+		colors.Dim, SingleQuoted(pattern), SingleQuoted(suffix), SingleQuoted(prefix+"/"), colors.Reset,
+		colors.Dim, colors.Reset,
+		colors.OK, prefix, suffix, colors.Reset,
+		colors.OK, prefix, SingleQuoted(suffix), colors.Reset)
+}
+
 func targetNotFoundWarning(target string, scopeIndex int, colors platform.Palette) string {
 	if strings.Contains(target, "/") {
 		return fmt.Sprintf("%sWarning:%s Target %s not found (scope %d).\n\n  %sIf the parent directory is ignored, use --include to allow it first.%s\n  %sExample:%s %scatclip --include %s --only %s%s",
@@ -2907,7 +3318,30 @@ func IgnoreRemovalHint(source string, colors platform.Palette) string {
 		colors.Dim, colors.Reset, colors.OK, colors.Reset)
 }
 
-func ignoredDirMessage(relTarget, source string, includesActive bool, includedDescendants []string, colors platform.Palette) string {
+// scopeTargetsForHint renders the user's positional target list as a
+// shell-safe command tail. Falls back to the single relTarget when
+// scopeTargets is empty (defensive; the resolver always has at least
+// one). Preserves the user's original argv order so hints don't
+// silently reshuffle their input.
+func scopeTargetsForHint(relTarget string, scopeTargets []string) string {
+	if len(scopeTargets) == 0 {
+		return relTarget
+	}
+	parts := make([]string, 0, len(scopeTargets))
+	for _, t := range scopeTargets {
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
+		parts = append(parts, t)
+	}
+	if len(parts) == 0 {
+		return relTarget
+	}
+	return strings.Join(parts, " ")
+}
+
+func ignoredDirMessage(relTarget, source string, includesActive bool, includedDescendants []string, scopeTargets []string, colors platform.Palette) string {
+	scopeTail := scopeTargetsForHint(relTarget, scopeTargets)
 	// Most actionable case: the user passed `--include <path>` where the
 	// include path lives inside the target (so the include is a
 	// descendant, not the ancestor that --include needs). Show them the
@@ -2932,30 +3366,39 @@ func ignoredDirMessage(relTarget, source string, includesActive bool, includedDe
 			colors.Dim, colors.Reset, colors.OK, SingleQuoted(relTarget), colors.Reset,
 		) + IgnoreRemovalHint(source, colors)
 	}
-	return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s\n  %sTo narrow inside it:%s   %scatclip --include %s --only \"*.ext\"%s",
+	// Canonical double-syntax hint: `catclip <scope-targets> --include
+	// <path>`. Preserves ALL of the user's positional targets so a run
+	// like `catclip cmd docs` gets `catclip cmd docs --include docs`,
+	// not the misleading `catclip docs --include docs` (which drops
+	// cmd). Matches the effect-5 error's suggestion.
+	return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to authorize %s for this run.%s\n  %sExample:%s %scatclip %s --include %s%s\n  %sTo narrow inside it:%s   %scatclip %s --include %s --only \"*.ext\"%s",
 		colors.Bold, colors.Err, colors.Reset, colors.Err, SingleQuoted(relTarget), source, colors.Reset,
-		colors.Dim, colors.Reset,
-		colors.Dim, colors.Reset, colors.OK, SingleQuoted(relTarget), colors.Reset,
-		colors.Dim, colors.Reset, colors.OK, SingleQuoted(relTarget), colors.Reset,
+		colors.Dim, SingleQuoted(relTarget), colors.Reset,
+		colors.Dim, colors.Reset, colors.OK, scopeTail, SingleQuoted(relTarget), colors.Reset,
+		colors.Dim, colors.Reset, colors.OK, scopeTail, SingleQuoted(relTarget), colors.Reset,
 	) + IgnoreRemovalHint(source, colors)
 }
 
-func ignoredFileMessage(relTarget, source string, fromChained, includesActive bool, colors platform.Palette) string {
+func ignoredFileMessage(relTarget, source string, fromChained, includesActive bool, scopeTargets []string, colors platform.Palette) string {
+	scopeTail := scopeTargetsForHint(relTarget, scopeTargets)
 	if includesActive {
-		message := fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s",
+		message := fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip %s --include %s%s",
 			colors.Bold, colors.Err, colors.Reset, colors.Err, SingleQuoted(relTarget), source, colors.Reset,
 			colors.Dim, colors.Reset,
-			colors.Dim, colors.Reset, colors.OK, SingleQuoted(relTarget), colors.Reset)
+			colors.Dim, colors.Reset, colors.OK, scopeTail, SingleQuoted(relTarget), colors.Reset)
 		if fromChained {
 			return message
 		}
 		return message + fmt.Sprintf("\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
 			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
 	}
-	message := fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to allow it for this run.%s\n  %sExample:%s %scatclip --include %s%s",
+	// Canonical double-syntax hint preserving all scope targets so
+	// `catclip cmd docs/blocked.md` renders `catclip cmd docs/blocked.md
+	// --include docs/blocked.md`, not the target-dropping shorter form.
+	message := fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to authorize %s for this run.%s\n  %sExample:%s %scatclip %s --include %s%s",
 		colors.Bold, colors.Err, colors.Reset, colors.Err, SingleQuoted(relTarget), source, colors.Reset,
-		colors.Dim, colors.Reset,
-		colors.Dim, colors.Reset, colors.OK, SingleQuoted(relTarget), colors.Reset)
+		colors.Dim, SingleQuoted(relTarget), colors.Reset,
+		colors.Dim, colors.Reset, colors.OK, scopeTail, SingleQuoted(relTarget), colors.Reset)
 	if fromChained {
 		return message
 	}
@@ -3112,7 +3555,7 @@ func WriteNoFilesMatchedMessage(scopes []command.ExecutionScope, stderr io.Write
 	if _, err := fmt.Fprintf(stderr, "  %s  1. Directory is empty or contains only binary files%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(stderr, "  %s  2. All files matched by ignore rules%s\n", colors.Dim, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(stderr, "  %s  2. All files were ignored by .gitignore or .hiss rules%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintf(stderr, "  %s  3. Typo in target name%s\n", colors.Dim, colors.Reset); err != nil {
@@ -3136,12 +3579,17 @@ func WriteNoFilesMatchedMessage(scopes []command.ExecutionScope, stderr io.Write
 			return err
 		}
 	}
-	if _, err := fmt.Fprintf(stderr, "\n  %sTry: catclip --all-ignore-rules            # see every ignore rule in effect (.hiss + .gitignore)%s\n", colors.Dim, colors.Reset); err != nil {
+	// Hint form uses `<target> --include <path>` so users copy the
+	// canonical double-syntax shape ignoredDirMessage and effect-5
+	// both point at. Bare `catclip --include <path>` errors under
+	// effect-5 in strict mode; teaching users a form that fails is
+	// worse than showing the working shape.
+	if _, err := fmt.Fprintf(stderr, "\n  %sTry: catclip --all-ignore-rules             # list every active ignore rule (.hiss + .gitignore)%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(stderr, "  %s     catclip --include blocked-dir         # browse blocked dirs/files for this run%s\n", colors.Dim, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(stderr, "  %s     catclip <target> --include <path>      # authorize a gitignored path for this run%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}
-	_, err := fmt.Fprintf(stderr, "  %s     catclip --hiss                        # edit catclip's own ignore rules%s\n", colors.Dim, colors.Reset)
+	_, err := fmt.Fprintf(stderr, "  %s     catclip --hiss                         # edit catclip's own ignore rules%s\n", colors.Dim, colors.Reset)
 	return err
 }

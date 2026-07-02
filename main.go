@@ -85,10 +85,16 @@ func Main() {
 	finishGateBench("err", "false")
 
 	finishToolsBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "ensure_required_tools")
-	if err := ensureRequiredTools(os.Stderr); err != nil {
-		finishToolsBench("err", platform.InternalBenchError(err))
-		os.Exit(1)
-		return
+	// --version bypasses the required-tools gate: its whole purpose
+	// is to diagnose which bundled tool is missing, so failing hard
+	// before we can print anything defeats the diagnostic. --help
+	// stays gated (users typing --help don't need tool provenance).
+	if commandKind != "version" {
+		if err := ensureRequiredTools(os.Stderr); err != nil {
+			finishToolsBench("err", platform.InternalBenchError(err))
+			os.Exit(1)
+			return
+		}
 	}
 	finishToolsBench("err", "false")
 

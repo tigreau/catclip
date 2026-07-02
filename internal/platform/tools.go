@@ -22,8 +22,16 @@ func BundledToolBinary(envVar, toolName string) (string, bool) {
 	return firstExistingBinary(bundledToolCandidates(toolName))
 }
 
-func envOverrideSet(envVar string) bool {
+// EnvOverrideSet reports whether the given env var is set to a
+// non-empty value. Exported so the --version renderer can label
+// resolved tool paths with the override name (e.g. "(CATCLIP_FZF)")
+// when the user has explicitly pointed catclip at a specific binary.
+func EnvOverrideSet(envVar string) bool {
 	return strings.TrimSpace(os.Getenv(envVar)) != ""
+}
+
+func envOverrideSet(envVar string) bool {
+	return EnvOverrideSet(envVar)
 }
 
 func configuredBinaryOverride(envVar string) (string, bool) {

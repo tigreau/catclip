@@ -579,6 +579,68 @@ func TestRunInternalPrediscoveredContentMatchListDirectModeMatchesChunked(t *tes
 	}
 }
 
+// TestRunInternalPrediscoveredContentMatchListHonorsParentInclude
+// reproduces the v0.6.3 direct-mode regression: when the parent scope
+// authorized gitignored files via --include, the picker subprocess
+// must also bypass gitignore (--no-ignore) so those files appear in
+// the match-list. Before the fix, parent discovered 2 entries matching
+// the pattern; picker returned 0 because direct rg respected
+// .gitignore and never entered the authorized subtree.
+//
+// See docs/versions/v0.6.4/reports/ACTIVE_PLAN_picker_no_ignore_for_include.md.
+func TestRunInternalPrediscoveredContentMatchListHonorsParentInclude(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":     "docs/\n",
+		"docs/readme.md": "talks about fzf and other things\n",
+		"docs/other.md":  "no relevant content\n",
+		"docs/sub/x.md":  "fzf-related notes here\n",
+		"src/main.go":    "package main\n",
+	})
+
+	parentCfg := parseInProject(t, project, []string{"docs", "--include", "docs", "--contains", "fzf"})
+	gitCtx := git.Detect(parentCfg.WorkingDir)
+	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	if err != nil {
+		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
+	}
+	if len(discovered.Entries) == 0 {
+		t.Fatalf("parent discovery should authorize docs/ entries; got 0")
+	}
+
+	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
+	if err := discovery.WriteCheckpoint(checkpointPath, parentCfg.WorkingDir, discovery.CheckpointData{
+		GitContext: gitCtx,
+		GitStatus:  map[string]string{},
+		Entries:    discovered.Entries,
+		NoIgnore:   true,
+	}); err != nil {
+		t.Fatalf("discovery.WriteCheckpoint returned error: %v", err)
+	}
+
+	freshCfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "docs", "--include", "docs", "--contains", "fzf"})
+	if err != nil {
+		t.Fatalf("parseArgs fresh: %v", err)
+	}
+	checkpointCfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "--internal-prediscovered", checkpointPath, "--contains", "fzf"})
+	if err != nil {
+		t.Fatalf("parseArgs checkpoint: %v", err)
+	}
+
+	var freshOut, ckptOut bytes.Buffer
+	if err := run(freshCfg, &freshOut, io.Discard); err != nil {
+		t.Fatalf("fresh run: %v", err)
+	}
+	if err := run(checkpointCfg, &ckptOut, io.Discard); err != nil {
+		t.Fatalf("checkpoint run: %v", err)
+	}
+	if ckptOut.Len() == 0 {
+		t.Fatalf("checkpoint picker returned 0 rows for fzf-matching content under --include'd docs/ (the original bug)\nfresh output was:\n%s", freshOut.String())
+	}
+	if !bytes.Equal(freshOut.Bytes(), ckptOut.Bytes()) {
+		t.Fatalf("checkpoint output differs from fresh\nfresh:\n%s\ncheckpoint:\n%s", freshOut.String(), ckptOut.String())
+	}
+}
+
 // TestRunInternalPrediscoveredContentMatchListLiveNotContains
 // asserts the picker hot path handles --not-contains as the LIVE
 // (per-keystroke) pattern: each keystroke prunes files matching the

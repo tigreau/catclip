@@ -1614,7 +1614,13 @@ func resolveStartupModifierChoice(resolver *discovery.Resolver, finalArgs, curre
 		if err != nil {
 			return nil, true, err
 		}
-		return append(finalArgs, args...), true || includeUsedFzf, nil
+		candidate := append(finalArgs, args...)
+		includePaths := extractIncludePathsFromPickerArgs(args)
+		final, narrowUsedFzf, narrowErr := maybeNarrowConfirm(candidate, includePaths, currentScopeExplicitTargets)
+		if narrowErr != nil {
+			return nil, true, narrowErr
+		}
+		return final, true || includeUsedFzf || narrowUsedFzf, nil
 	case startupModifierModeOnly:
 		args, onlyUsedFzf, err := resolveStartupScopeFileSetArgs(finalArgs, "--only", "only> ")
 		return args, true || onlyUsedFzf, err
@@ -2065,7 +2071,14 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 				return nil, nil, false, 0, err
 			}
 			finalArgs := append(append([]string(nil), currentArgs...), resolvedArgs...)
-			return finalArgs, append(append([]string(nil), currentScopeTargets...), resolvedTargets...), usedFzf, 0, nil
+			// v0.6.4 narrow-confirm: if the just-resolved include is subset of
+			// the scope target, offer "keep / narrow" before returning.
+			includePaths := extractIncludePathsFromPickerArgs(resolvedArgs)
+			narrowed, narrowUsedFzf, narrowErr := maybeNarrowConfirm(finalArgs, includePaths, currentScopeExplicitTargets)
+			if narrowErr != nil {
+				return nil, nil, false, 0, narrowErr
+			}
+			return narrowed, append(append([]string(nil), currentScopeTargets...), resolvedTargets...), usedFzf || narrowUsedFzf, 0, nil
 		}
 		if err := cli.ValidateIncludeValues(values); err != nil {
 			return nil, nil, false, 0, err

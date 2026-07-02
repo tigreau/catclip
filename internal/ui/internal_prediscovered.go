@@ -280,7 +280,7 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 	// predicate permits --not-contains scopes, so we gate the picker
 	// dispatch on the additional "no NotContains" condition.
 	if command.IsDirectModeEligible(cfg.Invocation, scope) && len(scope.NotContains) == 0 {
-		err := runDirectContentMatch(cfg, scope, checkpoint.Entries, stdout)
+		err := runDirectContentMatch(cfg, scope, checkpoint.Entries, checkpoint.NoIgnore, stdout)
 		if err == nil {
 			finishBench("err", "false", "route", "direct")
 			return nil
@@ -444,7 +444,7 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 // low enough that the memo's savings are minor, and skipping the
 // write avoids cross-route contamination if eligibility flips mid-
 // session.
-func runDirectContentMatch(cfg prediscoveredCommandConfig, scope command.ExecutionScope, allowedEntries []discovery.Entry, stdout io.Writer) error {
+func runDirectContentMatch(cfg prediscoveredCommandConfig, scope command.ExecutionScope, allowedEntries []discovery.Entry, noIgnore bool, stdout io.Writer) error {
 	pattern := contentMatchScopePattern(scope)
 	target := scope.Targets[0]
 	hissPath, hissErr := discovery.ReadableHissPath()
@@ -455,7 +455,11 @@ func runDirectContentMatch(cfg prediscoveredCommandConfig, scope command.Executi
 		"target", target,
 		"pattern_len", platform.InternalBenchInt(len(pattern)),
 	)
-	firstLines, err := search.RunRipgrepDirectMatchLines(cfg.Invocation.WorkingDir, target, pattern, hissPath)
+	var rgOpts []search.DirectOption
+	if noIgnore {
+		rgOpts = append(rgOpts, search.DirectNoIgnore())
+	}
+	firstLines, err := search.RunRipgrepDirectMatchLines(cfg.Invocation.WorkingDir, target, pattern, hissPath, rgOpts...)
 	finishDirectBench(
 		"err", platform.InternalBenchError(err),
 		"matches", platform.InternalBenchInt(len(firstLines)),

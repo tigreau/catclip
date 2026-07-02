@@ -116,6 +116,21 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			}
 		}
 		if len(s.Targets) == 0 {
+			// Effect 5: --include with no positional target. Refuse to
+			// insert the "." default when --include is set. Two shapes
+			// the user might have meant — "just docs" (walk docs only)
+			// vs "everything + docs" (walk repo, authorize docs) — have
+			// different perf and output. Silently picking one hides the
+			// ambiguity. Error with a canonical-form hint pointing at
+			// the double-syntax shape ignoredDirMessage suggests. Gated
+			// on !allowImplicitDotScope so inspection parsers used by
+			// the startup picker / preview probes still fall through to
+			// the "." default (the picker's resolved argv always
+			// includes a positional, so the error surfaces to
+			// strict-runtime entry only).
+			if len(s.IncludedTargets) > 0 && !allowImplicitDotScope {
+				return BareIncludeMissingTargetError(s.IncludedTargets[0])
+			}
 			if cfg.Headless {
 				return newUsageError("Error: --headless requires explicit targets.\n  Pass a path, --include, or another scope-defining flag.\n  Example: catclip . --headless")
 			}

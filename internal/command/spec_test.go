@@ -89,7 +89,19 @@ func TestCloneStagesPreservesExactValues(t *testing.T) {
 	}
 }
 
-func TestDeepIncludeCanonicalRenderAuthorizesParentAndNarrowsToFiles(t *testing.T) {
+// v0.6.4 include-as-authorization update (was
+// TestDeepIncludeCanonicalRenderAuthorizesParentAndNarrowsToFiles):
+//
+// Under the walker's per-entry check (§B of the include-as-authorization
+// plan), the deep-include shape no longer needs the parser-side
+// rewrite that produced "--include <ancestor> --only <deep files>".
+// The user's original argv (--include of specific file paths) is now
+// the canonical form; the walker's walkAuthorizedByInclude ancestor
+// authorization enters the parent, and per-entry targetIncluded emits
+// only the file-path matches. The canonical rendered command should
+// therefore preserve the original --include values verbatim, NOT
+// synthesize a broader --include + narrower --only pair.
+func TestDeepIncludeCanonicalRenderKeepsUserIncludesVerbatim(t *testing.T) {
 	spec := FinalizedSpecFromExecutionScopes([]ExecutionScope{{
 		Targets:         []string{"architecture"},
 		IncludedTargets: []string{"architecture/TEST_CONTRACTS.md", "architecture/MODIFIER_INDEX.md"},
@@ -106,15 +118,14 @@ func TestDeepIncludeCanonicalRenderAuthorizesParentAndNarrowsToFiles(t *testing.
 	got := CanonicalResolvedInvocationCommand(resolved, RenderFlags{})
 	wantParts := []string{
 		"catclip architecture",
-		"--include architecture",
-		"--only architecture/TEST_CONTRACTS.md architecture/MODIFIER_INDEX.md",
+		"--include architecture/TEST_CONTRACTS.md architecture/MODIFIER_INDEX.md",
 	}
 	for _, want := range wantParts {
 		if !strings.Contains(got, want) {
 			t.Fatalf("canonical command missing %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "--include architecture/TEST_CONTRACTS.md") {
-		t.Fatalf("canonical command kept descendant-only include instead of authorizing parent:\n%s", got)
+	if strings.Contains(got, "--only ") {
+		t.Fatalf("canonical command should NOT synthesize --only under v0.6.4 walker semantic:\n%s", got)
 	}
 }

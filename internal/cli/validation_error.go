@@ -27,6 +27,7 @@ const (
 	ReasonTerminalBoundaryOrder          Reason = "terminal_boundary_order"
 	ReasonIncludeAfterModifier           Reason = "include_after_modifier"
 	ReasonRepeatedInclude                Reason = "repeated_include"
+	ReasonBareIncludeMissingTarget       Reason = "bare_include_missing_target"
 )
 
 // ValidationFailure is the structured error the parser returns on rule
@@ -87,6 +88,24 @@ func renderValidationFailure(e ValidationFailure) string {
 		return "Error: --include must come before other modifiers in the same scope.\n  --include adds files, so it must appear before filters that narrow them.\n  Move --include before other modifiers, or start a new scope with --then."
 	case ReasonRepeatedInclude:
 		return "Error: --include can only appear once per scope.\n  Combine targets in a single --include, or start a new scope with --then."
+	case ReasonBareIncludeMissingTarget:
+		if e.Flag == "*" {
+			return "Error: --include '*' requires a positional target.\n\n" +
+				"  --include '*' authorizes every gitignored descendant within a walk\n" +
+				"  scope. With no positional target, there's no walk scope to authorize.\n" +
+				"  Add a positional target to define the scope:\n\n" +
+				"    catclip . --include '*'      # authorize all ignored, repo-wide\n" +
+				"    catclip docs --include '*'   # authorize all ignored under docs\n\n" +
+				"  Interactive tip: bare `catclip` (no args) opens the target picker."
+		}
+		return fmt.Sprintf("Error: --include %s requires a positional target.\n\n"+
+			"  --include is authorization-only — it authorizes gitignored paths WITHIN a\n"+
+			"  walk scope. With no positional target, there's no walk scope for the\n"+
+			"  authorization to apply to. Add the path as a positional target too:\n\n"+
+			"    catclip %s --include %s\n\n"+
+			"  Interactive tip: bare `catclip` (no args) opens the target picker;\n"+
+			"  selecting an ignored entry writes the target+include pair for you.",
+			singleQuoted(e.Flag), e.Flag, e.Flag)
 	default:
 		return "Error: invalid command."
 	}
@@ -121,6 +140,16 @@ func renderRequiredValueValidationFailure(e ValidationFailure) string {
 
 func RequiredStageValueError(flag string) error {
 	return ValidationFailure{Reason: ReasonRequiredValue, Flag: flag}
+}
+
+// BareIncludeMissingTargetError fires for effect 5 of the
+// include-as-authorization design: `--include <path>` with no
+// positional target. sampleInclude carries the first --include value
+// so the message can show the canonical double-syntax fix. Wildcard
+// (`*`) gets its own suggestion set. See
+// ACTIVE_NOTE_include_double_syntax_rationale.md, effect 5.
+func BareIncludeMissingTargetError(sampleInclude string) error {
+	return ValidationFailure{Reason: ReasonBareIncludeMissingTarget, Flag: sampleInclude}
 }
 
 // RegexModifierExtraValueError fires when a bare token follows a regex

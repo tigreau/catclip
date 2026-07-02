@@ -223,9 +223,68 @@ resolve_bundled_tool_source_into() {
   fi
 
   resolved="$(command -v "$tool_name" || true)"
-  [[ -n "$resolved" ]] || die "'$tool_name' is required for local source installs because catclip packages a private bundled copy with every install.
-  Install $tool_name first, or set $env_var to an executable path."
+  if [[ -z "$resolved" ]]; then
+    die_missing_source_tool "$tool_name" "$env_var"
+  fi
   printf -v "$out_var" '%s' "$resolved"
+}
+
+# die_missing_source_tool prints a scenario-appropriate hint before
+# exiting. Two branches:
+#   - Reinstall path: TOOLS_DIR/<tool> already exists from a prior
+#     install, so we tell the user to self-bootstrap via the env var.
+#   - Fresh install: no existing bundle, so we list package-manager
+#     install commands.
+# Kept as its own function so the die string is readable and both
+# branches can share the "or set $env_var to an executable path"
+# escape hatch line.
+die_missing_source_tool() {
+  local tool_name="$1"
+  local env_var="$2"
+  local existing_bundle="$TOOLS_DIR/$tool_name"
+  local pkg_name
+  local message
+
+  # Binary name → package name. Every mainstream package manager uses
+  # "ripgrep" for the rg binary; keep this table close to the message
+  # so future tools slot in without hunting.
+  case "$tool_name" in
+    rg)  pkg_name="ripgrep" ;;
+    fzf) pkg_name="fzf" ;;
+    *)   pkg_name="$tool_name" ;;
+  esac
+
+  if [[ -x "$existing_bundle" ]]; then
+    message="'$tool_name' is not on PATH, and this install needs a source to bundle from.
+
+  You have an existing bundled $tool_name at:
+    $existing_bundle
+
+  To self-bootstrap from it (fast path — reuses your existing copy), rerun with:
+    $env_var=$existing_bundle ./install.sh
+
+  To upgrade $tool_name instead, install it first, then rerun without the env var:
+    macOS:            brew install $pkg_name
+    Debian/Ubuntu:    sudo apt install $pkg_name
+    Fedora:           sudo dnf install $pkg_name
+    Arch:             sudo pacman -S $pkg_name
+
+  Or point install.sh at any executable manually:
+    $env_var=/path/to/$tool_name ./install.sh"
+  else
+    message="'$tool_name' is required for local source installs because catclip packages a private bundled copy with every install.
+
+  Install $tool_name first:
+    macOS:            brew install $pkg_name
+    Debian/Ubuntu:    sudo apt install $pkg_name
+    Fedora:           sudo dnf install $pkg_name
+    Arch:             sudo pacman -S $pkg_name
+
+  Or point install.sh at an existing binary:
+    $env_var=/path/to/$tool_name ./install.sh"
+  fi
+
+  die "$message"
 }
 
 homebrew_manages_catclip() {

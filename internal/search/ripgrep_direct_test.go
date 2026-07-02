@@ -158,6 +158,39 @@ func TestRunRipgrepDirectMatchLinesBadPattern(t *testing.T) {
 	}
 }
 
+// TestRunRipgrepDirectNoIgnoreSurfacesGitignored asserts that DirectNoIgnore
+// causes rg to walk paths a .gitignore would otherwise hide. Mirrors the
+// picker-include flow: parent had --include, so the picker subprocess sets
+// CheckpointData.NoIgnore=true and direct rg follows suit.
+func TestRunRipgrepDirectNoIgnoreSurfacesGitignored(t *testing.T) {
+	dir := t.TempDir()
+	if err := writeFile(filepath.Join(dir, ".gitignore"), "ignored/\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := osMkdirAll(filepath.Join(dir, "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(filepath.Join(dir, "ignored", "hit.go"), "// TODO inside ignored\n"); err != nil {
+		t.Fatal(err)
+	}
+
+	defaultMatches, err := RunRipgrepDirect(dir, ".", "TODO", "")
+	if err != nil {
+		t.Fatalf("RunRipgrepDirect default: %v", err)
+	}
+	if _, ok := defaultMatches["ignored/hit.go"]; ok {
+		t.Fatalf("default mode should respect .gitignore; got %v", defaultMatches)
+	}
+
+	noIgnoreMatches, err := RunRipgrepDirect(dir, ".", "TODO", "", DirectNoIgnore())
+	if err != nil {
+		t.Fatalf("RunRipgrepDirect(DirectNoIgnore): %v", err)
+	}
+	if _, ok := noIgnoreMatches["ignored/hit.go"]; !ok {
+		t.Fatalf("DirectNoIgnore should surface gitignored matches; got %v", noIgnoreMatches)
+	}
+}
+
 // TestRunRipgrepDirectNoMatchReturnsEmpty asserts rg exit-1 (no match)
 // surfaces as an empty map with no error, matching the chunked path.
 func TestRunRipgrepDirectNoMatchReturnsEmpty(t *testing.T) {
@@ -269,7 +302,7 @@ func TestRunRipgrepDirectInvertIsInverse(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunRipgrepDirect: %v", err)
 	}
-	notMatched, err := RunRipgrepDirect(dir, ".", "TODO", "", true)
+	notMatched, err := RunRipgrepDirect(dir, ".", "TODO", "", DirectInvert())
 	if err != nil {
 		t.Fatalf("RunRipgrepDirect(invert): %v", err)
 	}
@@ -291,7 +324,7 @@ func TestRunRipgrepDirectInvertBadPattern(t *testing.T) {
 	if err := writeFile(filepath.Join(dir, "f.go"), "package x\n"); err != nil {
 		t.Fatal(err)
 	}
-	_, err := RunRipgrepDirect(dir, ".", "(", "", true)
+	_, err := RunRipgrepDirect(dir, ".", "(", "", DirectInvert())
 	if err != ErrRipgrepBadPattern {
 		t.Fatalf("RunRipgrepDirect(invert) with bad pattern: got %v, want ErrRipgrepBadPattern", err)
 	}

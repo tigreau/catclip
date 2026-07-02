@@ -88,7 +88,16 @@ func ExecutionScopeFromScopeSpec(s ScopeSpec) ExecutionScope {
 	if s.OutputMode() == EntryModeDiff {
 		out.Diff = true
 	}
-	return RewriteDeepIncludeScope(out)
+	// v0.6.4 include-as-authorization: the walker's per-entry
+	// targetIncluded check + walkAuthorizedByInclude ancestor-authorization
+	// (see internal/discovery/resolver.go) now do the narrowing that
+	// RewriteDeepIncludeScope's --only synthesis was hacking in.
+	// Rewriting the include set to add auto-ancestors would poison the
+	// per-entry filter (broader include values pass more paths), so the
+	// rewrite is skipped entirely. See
+	// docs/architecture/ACTIVE_NOTE_include_double_syntax_rationale.md
+	// for the walker semantic that replaced this.
+	return out
 }
 
 // ExecutionScopesFromSpec is the bulk convenience wrapper.

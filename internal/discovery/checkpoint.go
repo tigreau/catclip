@@ -23,6 +23,12 @@ type CheckpointData struct {
 	GitContext git.Context
 	GitStatus  map[string]string
 	Entries    []Entry
+	// NoIgnore signals that the parent scope was discovered with
+	// gitignore bypassed (via --include). Picker subprocesses that
+	// run direct rg over the same scope must also bypass gitignore;
+	// otherwise authorized-ignored files vanish from the picker.
+	// See docs/versions/v0.6.4/reports/ACTIVE_PLAN_picker_no_ignore_for_include.md.
+	NoIgnore bool
 }
 
 const checkpointVersion = 1
@@ -32,6 +38,7 @@ type checkpointDocument struct {
 	GitContext checkpointGit     `json:"git_context"`
 	GitStatus  map[string]string `json:"git_status"`
 	Entries    []CheckpointEntry `json:"entries"`
+	NoIgnore   bool              `json:"no_ignore,omitempty"`
 }
 
 type checkpointGit struct {
@@ -178,6 +185,7 @@ func decodeCheckpoint(r io.Reader) (CheckpointData, error) {
 		GitContext: doc.GitContext.toGitContext(),
 		GitStatus:  cloneStringMapOrEmpty(doc.GitStatus),
 		Entries:    checkpointToEntries(doc.Entries),
+		NoIgnore:   doc.NoIgnore,
 	}, nil
 }
 
@@ -187,6 +195,7 @@ func newCheckpointDocument(data CheckpointData) checkpointDocument {
 		GitContext: newCheckpointGit(data.GitContext),
 		GitStatus:  cloneStringMapOrEmpty(data.GitStatus),
 		Entries:    entriesToCheckpoint(data.Entries),
+		NoIgnore:   data.NoIgnore,
 	}
 }
 

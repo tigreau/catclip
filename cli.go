@@ -50,8 +50,7 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		_, err := io.WriteString(stdout, helpText(cfg.Version, hiss, platform.ActivePaletteForWriter(stdout)))
 		return err
 	case command.ActionVersion:
-		_, err := fmt.Fprintf(stdout, "catclip %s\n", cfg.Version)
-		return err
+		return ui.RenderVersionOutput(cfg.Version, stdout)
 	case command.ActionEditHiss:
 		return runEditHiss(hissConfigFromParsedCommand(cfg), stderr)
 	case command.ActionResetHiss:
@@ -158,7 +157,15 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		} else {
 			discoverySpinnerStop := func() {}
 			if !cfg.Quiet {
-				discoverySpinnerStop = platform.StartLoadingSpinner(platform.SpinnerOutputFile(stderr), "Scanning files...")
+				// Same 5 s delayed reassurance as the target-picker
+				// spinner; this discovery phase is the one that
+				// dominates cold runs on big trees.
+				discoverySpinnerStop = platform.StartLoadingSpinnerWithDelayedHint(
+					platform.SpinnerOutputFile(stderr),
+					"Scanning files...",
+					"(first run is supposed to be slow)",
+					5*time.Second,
+				)
 			}
 			var err error
 			discoveryResult, err = discovery.DiscoverInvocation(resolved, gitCtx, stderr, colors)

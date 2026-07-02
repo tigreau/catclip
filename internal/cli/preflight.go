@@ -54,6 +54,12 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		if s.Staged || s.Unstaged || s.Untracked {
 			s.Changed = true
 		}
+		// Effect 5: --include with no positional target. See the twin
+		// check in parse.go for the rationale (ambiguity between
+		// "just <include>" and "everything + <include>").
+		if len(s.Targets) == 0 && len(s.IncludedTargets) > 0 {
+			return BareIncludeMissingTargetError(s.IncludedTargets[0])
+		}
 		if len(s.Targets) == 0 {
 			s.Targets = []string{"."}
 		}

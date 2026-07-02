@@ -1969,8 +1969,14 @@ func TestRunBlockedDirectoryRequiresInclude(t *testing.T) {
 	if strings.Contains(stdout.String(), "tests/main.ts") {
 		t.Fatalf("expected blocked directory to stay excluded, got:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Use --include to allow it for this run") {
+	if !strings.Contains(stderr.String(), "Use --include to authorize") {
 		t.Fatalf("expected --include guidance, got:\n%s", stderr.String())
+	}
+	// v0.6.4: hint suggests the canonical double-syntax form
+	// (`catclip <path> --include <path>`) so it matches the effect-5
+	// error's canonical suggestion.
+	if !strings.Contains(stderr.String(), "catclip tests --include 'tests'") {
+		t.Fatalf("expected canonical double-syntax hint in stderr, got:\n%s", stderr.String())
 	}
 }
 
@@ -3026,6 +3032,126 @@ func TestRunChainedDirectoryFileTargetScopesFileSearch(t *testing.T) {
 	}
 }
 
+// TestRunIncludeNoOpEmitsNotice asserts the v0.6.4 rg-parity-sweep §1
+// behavior: when --include names a path that's already visible (no
+// gitignore/hiss rule blocked it), the flag has no effect and we say
+// so. The notice replaces silent acceptance of a user mistake.
+func TestRunIncludeNoOpEmitsNotice(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"cli.go": "package main\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "cli.go", "--include", "cli.go"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	want := "Notice: --include 'cli.go' was already visible (no ignore rule blocked it)"
+	if !strings.Contains(stderr.String(), want) {
+		t.Fatalf("expected no-op include notice, stderr was:\n%s", stderr.String())
+	}
+}
+
+// TestRunIncludeNoOpMixedCaseSurfacesOnlyForNoOpEntry asserts the mixed
+// case: --include with multiple values where one is visible (no-op) and
+// one is gitignored (legitimate authorization). Notice fires for the
+// no-op only; the legitimate include continues to authorize discovery.
+func TestRunIncludeNoOpMixedCaseSurfacesOnlyForNoOpEntry(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":     "docs/\n",
+		"cli.go":         "package main\n",
+		"docs/readme.md": "# Docs\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", ".", "--include", "cli.go", "docs"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "Notice: --include 'cli.go' was already visible") {
+		t.Fatalf("expected notice for cli.go only, stderr was:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Notice: --include 'docs'") {
+		t.Fatalf("legit gitignore-blocked include must NOT trigger the notice, stderr was:\n%s", stderr.String())
+	}
+	// docs/readme.md should still appear in output since --include docs authorized it
+	if !strings.Contains(stdout.String(), "docs/readme.md") {
+		t.Fatalf("legitimate --include docs should still authorize the gitignored path, stdout:\n%s", stdout.String())
+	}
+}
+
+// TestRunIncludeWildcardSkipsNoOpClassification asserts that
+// `--include *` (the deliberate "open everything ignored" broadcast)
+// is never flagged as no-op even though each member would individually
+// pass the visibility check.
+func TestRunIncludeWildcardSkipsNoOpClassification(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"cli.go": "package main\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", ".", "--include", "*"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if strings.Contains(stderr.String(), "Notice: --include") {
+		t.Fatalf("wildcard --include must not trigger no-op classification, stderr was:\n%s", stderr.String())
+	}
+	_ = stdout
+}
+
+// TestRunCaseInsensitiveTargetResolvesOnCaseFoldFS asserts the
+// v0.6.4 fix: on case-insensitive filesystems (APFS, NTFS) a user-
+// typed target like `Cli.go` no longer surfaces the wrong-attribution
+// "ignored by .gitignore" error. Matches rg's behavior — path
+// arguments work regardless of casing on case-insensitive FS.
+func TestRunCaseInsensitiveTargetResolvesOnCaseFoldFS(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skipf("case-insensitive FS test: skipping on %s (assumed case-sensitive)", runtime.GOOS)
+	}
+	project := setupTestProject(t, map[string]string{
+		"cli.go": "package main\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "Cli.go"})
+
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("expected case-fold path to resolve, got err=%v stderr=%s", err, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "is ignored by .gitignore") {
+		t.Fatalf("case-fold path must not be misattributed as gitignored, stderr was:\n%s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "package main") {
+		t.Fatalf("expected file content in stdout, got:\n%s", stdout.String())
+	}
+}
+
+// TestRunCaseSensitiveTargetMissingOnCaseSensitiveFS guards the
+// Linux/ext4 behavior: a typed-wrong-case target should still fail
+// (file truly doesn't exist), unchanged by the case-fold fix.
+func TestRunCaseSensitiveTargetMissingOnCaseSensitiveFS(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skipf("case-sensitive FS test: skipping on %s", runtime.GOOS)
+	}
+	project := setupTestProject(t, map[string]string{
+		"cli.go": "package main\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "Cli.go"})
+
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatalf("expected wrong-case target to fail on case-sensitive FS, stdout=%s", stdout.String())
+	}
+	_ = stderr
+}
+
 func TestRunMissingFileTargetShowsDirectFilenameGuidance(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/app.ts": "export const ok = true\n",
@@ -3043,6 +3169,59 @@ func TestRunMissingFileTargetShowsDirectFilenameGuidance(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "use --include to allow that blocked file or directory first") {
 		t.Fatalf("expected blocked-directory guidance, got:\n%s", stderr.String())
+	}
+}
+
+// TestRunGlobZeroMatchVisibleParent asserts the v0.6.4 fix:
+// a glob like "cmd/*.go" against a visible-but-empty-of-.go dir no longer
+// falsely tells the user to add --include. The new message explains glob
+// anchoring and suggests the recursive form.
+func TestRunGlobZeroMatchVisibleParent(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"cmd/sub/main.go": "package main\n",
+		"src/app.ts":      "export const ok = true\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "cmd/*.go"})
+
+	var stdout, stderr bytes.Buffer
+	_ = run(cfg, &stdout, &stderr)
+	stderrText := stderr.String()
+	if strings.Contains(stderrText, "If the parent directory is ignored, use --include to allow it first") {
+		t.Fatalf("visible-parent glob should NOT show the misleading --include hint, got:\n%s", stderrText)
+	}
+	if !strings.Contains(stderrText, "is anchored — it matches") {
+		t.Fatalf("expected anchoring explanation, got:\n%s", stderrText)
+	}
+	if !strings.Contains(stderrText, "cmd/**/*.go") {
+		t.Fatalf("expected recursive-glob suggestion 'cmd/**/*.go', got:\n%s", stderrText)
+	}
+}
+
+// TestRunGlobZeroMatchIgnoredParent asserts the ignored-parent branch of
+// the v0.6.4 fix: when the literal prefix IS gitignored, the --include
+// hint stays — now with an accurate ignore-source label and a proper
+// example using the rewritten glob.
+func TestRunGlobZeroMatchIgnoredParent(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":     "docs/\n",
+		"docs/readme.md": "# Docs\n",
+		"src/app.ts":     "export const ok = true\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "docs/*.md"})
+
+	var stdout, stderr bytes.Buffer
+	_ = run(cfg, &stdout, &stderr)
+	stderrText := stderr.String()
+	if !strings.Contains(stderrText, "is ignored by .gitignore") {
+		t.Fatalf("expected ignored-parent source attribution, got:\n%s", stderrText)
+	}
+	if !strings.Contains(stderrText, "--include 'docs'") {
+		t.Fatalf("expected --include hint with quoted prefix, got:\n%s", stderrText)
+	}
+	if !strings.Contains(stderrText, "docs/**/*.md") {
+		t.Fatalf("expected recursive-glob form 'docs/**/*.md', got:\n%s", stderrText)
 	}
 }
 
@@ -3101,7 +3280,10 @@ func TestRunNoMatchShowsShellStyleFooter(t *testing.T) {
 		"Possible causes:",
 		"1. Directory is empty or contains only binary files",
 		`Try: catclip --all-ignore-rules`,
-		`catclip --include blocked-dir`,
+		// v0.6.4: hint updated to canonical shape (was
+		// `catclip --include blocked-dir`, which errors under
+		// effect-5); teach a form that works.
+		`catclip <target> --include <path>`,
 		`catclip --hiss`,
 	} {
 		if !strings.Contains(errOut, want) {
@@ -3405,10 +3587,23 @@ func TestRunDeepIncludeDirectoryNarrowsToSubtree(t *testing.T) {
 	}
 }
 
-// An include value that is NOT under any target must still produce the
-// "include does not cover this target" error — the rewrite only fires
-// when every include value is covered by a target.
-func TestRunDeepIncludeUncoveredValueStillErrors(t *testing.T) {
+// v0.6.4 include-as-authorization update (was
+// TestRunDeepIncludeUncoveredValueStillErrors):
+//
+// Under the walker's per-entry check (Section B of the
+// include-as-authorization plan), the covered include value authorizes
+// walking docs and per-entry filters emit to that path; the uncovered
+// (already-visible) include value becomes a classifyNoOpIncludeNotices
+// notice, not a hard error. This is the additive-authorization semantic:
+// an orphan include on a visible path silently no-ops with a notice
+// rather than poisoning the whole scope.
+//
+// The effect-4 gate (unrelated --include as a hard error) is out of
+// scope for this test — see the classifyEffect4Diagnostics comment in
+// resolver.go for why literal-relatedness checks clash with basename
+// and scope-relative include resolution and are deferred to a
+// follow-up.
+func TestRunMixedCoveredAndOrphanIncludeEmitsCoveredAndNoticesOrphan(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -3419,19 +3614,134 @@ func TestRunDeepIncludeUncoveredValueStillErrors(t *testing.T) {
 	})
 	initGitRepo(t, project)
 
-	// docs/a/keep.md is under the target, but src/main.go is not —
-	// the mixed set must not rewrite.
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "docs", "--include", "docs/a/keep.md", "src/main.go"})
+	// Run without --quiet so the classifyNoOpIncludeNotices notice
+	// (already-visible src/main.go include) is visible on stderr.
+	cfg := parseInProject(t, project, []string{"--print", "docs", "--include", "docs/a/keep.md", "src/main.go"})
 	var stdout, stderr bytes.Buffer
-	err := run(cfg, &stdout, &stderr)
-	if err == nil {
-		t.Fatalf("expected error for mixed covered/uncovered include set, got output:\n%s", stdout.String())
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("expected mixed-include shape to succeed under additive-authorization, got err: %v\nstderr:\n%s", err, stderr.String())
 	}
-	// The ignored-target message is written to stderr; run() returns a
-	// sentinel error. Assert against stderr, matching the other
-	// blocked-target tests in this file.
-	if !strings.Contains(stderr.String(), "is ignored by") {
-		t.Fatalf("expected ignored-target message on stderr, got:\n%s", stderr.String())
+	if !strings.Contains(stdout.String(), `<file path="docs/a/keep.md">`) {
+		t.Fatalf("expected docs/a/keep.md in output (walker per-entry check), got:\n%s", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "src/main.go") {
+		t.Fatalf("src/main.go was a --include value, NOT a positional target; it should not appear in the emit set:\n%s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "src/main.go") {
+		t.Fatalf("expected no-op notice for orphan include 'src/main.go' on stderr, got:\n%s", stderr.String())
+	}
+}
+
+// TestIncludeAdditiveAcrossNonIgnoredTargets — the include-as-authorization
+// plan's motivating repro. `catclip cmd docs --include docs/policy` must
+// emit cmd files AND docs/policy files, NOT drop cmd via a scope-wide
+// --only. This validates §A + §B end-to-end: the auto-StageOnly
+// synthesis is gone (§A), and the walker's per-entry targetIncluded
+// check + walkAuthorizedByInclude ancestor authorization narrow to the
+// correct set at walk time (§B).
+func TestIncludeAdditiveAcrossNonIgnoredTargets(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	project := setupTestProject(t, map[string]string{
+		".gitignore":         "docs/\n",
+		"cmd/main.go":        "package main\n",
+		"docs/policy/one.md": "policy\n",
+		"docs/policy/two.md": "policy two\n",
+		"docs/architecture/x.md": "arch\n",
+	})
+	initGitRepo(t, project)
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "cmd", "docs", "--include", "docs/policy"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v\nstderr:\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `<file path="cmd/main.go">`) {
+		t.Fatalf("expected cmd/main.go in output; §A regression (--only synthesis dropped cmd):\n%s", out)
+	}
+	if !strings.Contains(out, `<file path="docs/policy/one.md">`) {
+		t.Fatalf("expected docs/policy/one.md in output:\n%s", out)
+	}
+	if strings.Contains(out, "architecture") {
+		t.Fatalf("§B regression: per-entry filter should exclude docs/architecture/*:\n%s", out)
+	}
+}
+
+// TestIncludeWildcardBypassesEffect4Check — `catclip cmd --include '*'`
+// authorizes any ignored subtree under any positional's walk; the
+// per-entry filter's wildcard short-circuit lets everything through.
+// The rationale note's wildcard rules require this shape to succeed.
+func TestIncludeWildcardBypassesEffect4Check(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	project := setupTestProject(t, map[string]string{
+		".gitignore":            "cmd/build/\n",
+		"cmd/main.go":           "package main\n",
+		"cmd/build/artifact.js": "artifact\n",
+	})
+	initGitRepo(t, project)
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "cmd", "--include", "*"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("wildcard include on visible-target scope should succeed, got err: %v\nstderr:\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `<file path="cmd/main.go">`) {
+		t.Fatalf("expected cmd/main.go:\n%s", out)
+	}
+	if !strings.Contains(out, `<file path="cmd/build/artifact.js">`) {
+		t.Fatalf("expected cmd/build/artifact.js (wildcard authorizes ignored descendants):\n%s", out)
+	}
+}
+
+// TestEffect5_BareIncludeErrors — --include with no positional target
+// must error at parse time with the effect-5 canonical-form hint. This
+// is the "no walk scope to authorize" case from the rationale note.
+func TestEffect5_BareIncludeErrors(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"cmd/main.go": "package main\n",
+	})
+	// parseInProject wraps ParseArgs (strict) — the mode where effect-5
+	// fires. Inspection parsers still auto-fill "." for their partial-arg
+	// shapes; see the gate on !allowImplicitDotScope in parse.go.
+	defer func() {
+		if r := recover(); r != nil {
+			// parseInProject t.Fatalf's on parse error; that's a
+			// side effect of the harness, not the test's assertion.
+			// We assert on the error text instead via a helper below.
+			_ = r
+		}
+	}()
+	_, err := cli.ParseArgs([]string{"--include", "cmd", "--headless"})
+	_ = project
+	if err == nil {
+		t.Fatal("expected effect-5 error for bare --include, got nil")
+	}
+	if !strings.Contains(err.Error(), "requires a positional target") {
+		t.Fatalf("expected 'requires a positional target' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "catclip cmd --include cmd") {
+		t.Fatalf("expected canonical-form hint 'catclip cmd --include cmd' in error, got: %v", err)
+	}
+}
+
+// TestEffect5_BareIncludeWildcardVariant — --include '*' with no
+// positional target gets its own message with the "define the scope"
+// suggestion set (`catclip . --include '*'` or `catclip docs --include '*'`).
+func TestEffect5_BareIncludeWildcardVariant(t *testing.T) {
+	_, err := cli.ParseArgs([]string{"--include", "*", "--headless"})
+	if err == nil {
+		t.Fatal("expected effect-5 wildcard error for bare --include '*', got nil")
+	}
+	if !strings.Contains(err.Error(), "--include '*' requires a positional target") {
+		t.Fatalf("expected wildcard-variant error text, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "catclip . --include '*'") {
+		t.Fatalf("expected 'catclip . --include *' example in hint, got: %v", err)
 	}
 }
 
@@ -3665,8 +3975,11 @@ func TestRunGitIgnoredDirectoryRequiresInclude(t *testing.T) {
 	if strings.Contains(stdout.String(), `ignored/common/ok.ts`) {
 		t.Fatalf("expected gitignored directory to stay hidden, got:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Use --include to allow it for this run") {
+	if !strings.Contains(stderr.String(), "Use --include to authorize") {
 		t.Fatalf("expected --include guidance, got:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "catclip ignored --include 'ignored'") {
+		t.Fatalf("expected canonical double-syntax hint in stderr, got:\n%s", stderr.String())
 	}
 }
 
@@ -4013,8 +4326,11 @@ func TestRunGitIgnoredFileRequiresInclude(t *testing.T) {
 	if strings.Contains(stdout.String(), "ignored/secret.ts") {
 		t.Fatalf("expected gitignored file to stay excluded, got:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "Use --include to allow it for this run") {
+	if !strings.Contains(stderr.String(), "Use --include to authorize") {
 		t.Fatalf("expected --include guidance, got:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "catclip ignored/secret.ts --include 'ignored/secret.ts'") {
+		t.Fatalf("expected canonical double-syntax hint in stderr, got:\n%s", stderr.String())
 	}
 }
 
@@ -4638,12 +4954,12 @@ func TestHelpTextIncludesShellParitySections(t *testing.T) {
 	help := cli.ShortHelpText("0.2.1", hissDisplay, platform.Palette{})
 	full := cli.FullHelpText("0.2.1", hissDisplay, platform.Palette{})
 
-	for _, want := range []string{"Quick Start:", "Interactive mode (build commands from menus):", "Filtering:", "Git Filters (requires a git repo):", "For agents and full flag reference: catclip --help-all"} {
+	for _, want := range []string{"Quick Start:", "Interactive mode (build commands from menus):", "Filtering:", "Git Filters (requires a git repo):", "Full reference manual: catclip --help-all"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("expected short help to contain %q, got:\n%s", want, help)
 		}
 	}
-	for _, want := range []string{"Agent Reference", "OPERATIONS", "TARGETING", "FILTERING", "PIPELINE MODEL", "AUTHORIZATION", "OUTPUT FORMAT", "CLIPBOARD DELIVERY", "EXIT CODES", "COMMON ERRORS", "MODIFIER REFERENCE", platform.DisplayPath(discovery.GlobalHissPath())} {
+	for _, want := range []string{"Reference Manual", "COMMON TASKS", "TARGETING", "FILTERING", "PIPELINE MODEL", "AUTHORIZATION", "OUTPUT FORMAT", "CLIPBOARD DELIVERY", "EXIT CODES", "COMMON ERRORS", "MODIFIER REFERENCE", platform.DisplayPath(discovery.GlobalHissPath())} {
 		if !strings.Contains(full, want) {
 			t.Fatalf("expected full help to contain %q, got:\n%s", want, full)
 		}
