@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -159,11 +160,15 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 			if !cfg.Quiet {
 				// Same 5 s delayed reassurance as the target-picker
 				// spinner; this discovery phase is the one that
-				// dominates cold runs on big trees.
+				// dominates cold runs on big trees. On Windows the
+				// dominant cold cost is Defender scanning every file a
+				// content search reads (once per boot), so the hint
+				// says why, matching the content picker's searching
+				// preview document.
 				discoverySpinnerStop = platform.StartLoadingSpinnerWithDelayedHint(
 					platform.SpinnerOutputFile(stderr),
 					"Scanning files...",
-					"(first run is supposed to be slow)",
+					platform.SlowFileScanHint(),
 					5*time.Second,
 				)
 			}
@@ -183,6 +188,7 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 			for _, stat := range discoveryResult.ScopeStats {
 				fmt.Fprintf(stderr, "[verbose] scope %d: discovered %d file(s) in %s\n", stat.Index+1, stat.Count, formatDuration(stat.Duration))
 			}
+			printTextClassificationResidue(stderr)
 		}
 		diagnostics := make([]discovery.Diagnostic, 0, len(cfg.Warnings)+len(discoveryResult.Diagnostics))
 		for _, warning := range cfg.Warnings {
@@ -443,6 +449,7 @@ type internalCommandConfig struct {
 	TreeInputDir           string
 	TreeInputStem          string
 	FilePreview            bool
+	FileSearchingPreview   bool
 	ContentMatchList       bool
 	SnippetBoundaryPreview bool
 	RecentPreview          bool
@@ -458,6 +465,7 @@ func internalCommandConfigFromParsedCommand(cfg command.Parsed) internalCommandC
 		TreeInputDir:           cfg.TreeInputDir,
 		TreeInputStem:          cfg.TreeInputStem,
 		FilePreview:            cfg.FilePreview,
+		FileSearchingPreview:   cfg.FileSearchingPreview,
 		ContentMatchList:       cfg.ContentMatchList,
 		SnippetBoundaryPreview: cfg.SnippetBoundaryPreview,
 		RecentPreview:          cfg.RecentPreview,
@@ -468,7 +476,7 @@ func internalCommandConfigFromParsedCommand(cfg command.Parsed) internalCommandC
 }
 
 func (cfg internalCommandConfig) isInternalKind() bool {
-	return cfg.TreePreview || cfg.FilePreview ||
+	return cfg.TreePreview || cfg.FilePreview || cfg.FileSearchingPreview ||
 		cfg.ContentMatchList || cfg.SnippetBoundaryPreview || cfg.RecentPreview ||
 		cfg.LinesPreview ||
 		cfg.PrediscoveredPath != "" || cfg.TreeInputDir != "" ||
@@ -478,6 +486,9 @@ func (cfg internalCommandConfig) isInternalKind() bool {
 func validateImplementedFeatureSet(cfg internalCommandConfig) error {
 	if cfg.PrediscoveredPath != "" && !cfg.TreePreview && !cfg.ContentMatchList && !cfg.LinesPreview && !cfg.FilePreview {
 		return newUsageError("Error: --internal-prediscovered requires --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview.")
+	}
+	if cfg.FileSearchingPreview && !cfg.FilePreview {
+		return newUsageError("Error: --internal-searching-preview requires --internal-file-preview.")
 	}
 	if (cfg.TreeInputDir != "" || cfg.TreeInputStem != "") && !cfg.TreePreview {
 		return newUsageError("Error: --input-dir and --input-stem require --internal-tree-preview.")
@@ -538,4 +549,64 @@ func emitEnvironmentFromInvocationConfig(cfg command.Invocation) output.EmitEnvi
 // edit at run-time entry.
 func warnDirectoryPatternSemantics(stderr io.Writer, colors platform.Palette) (bool, error) {
 	return true, nil
+}
+
+// printTextClassificationResidue reports, under --verbose, which files
+// the hybrid Stage 2 classifier had to content-scan because their names
+// were undecidable (see internal/search/known_files.go). This is the
+// list-growth feedback loop, so the extension histogram leads: an
+// extension recurring here is a list candidate with evidence. Individual
+// paths print only when the residue is small enough to read.
+func printTextClassificationResidue(stderr io.Writer) {
+	residue, textCount := search.TextClassificationResidue()
+	if len(residue) == 0 {
+		return
+	}
+	fmt.Fprintf(stderr, "[verbose] text classification: %d file(s) content-scanned (name undecidable), %d classified text\n", len(residue), textCount)
+
+	counts := map[string]int{}
+	for _, rel := range residue {
+		counts[residueReportExtension(rel)]++
+	}
+	type extRow struct {
+		ext string
+		n   int
+	}
+	rows := make([]extRow, 0, len(counts))
+	for ext, n := range counts {
+		rows = append(rows, extRow{ext: ext, n: n})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].n != rows[j].n {
+			return rows[i].n > rows[j].n
+		}
+		return rows[i].ext < rows[j].ext
+	})
+	const histogramCap = 20
+	for i, r := range rows {
+		if i == histogramCap {
+			fmt.Fprintf(stderr, "[verbose]   ... and %d more extension(s)\n", len(rows)-histogramCap)
+			break
+		}
+		fmt.Fprintf(stderr, "[verbose]   %4d  %s\n", r.n, r.ext)
+	}
+
+	const pathPrintCap = 20
+	if len(residue) <= pathPrintCap {
+		for _, rel := range residue {
+			fmt.Fprintf(stderr, "[verbose]   %s\n", rel)
+		}
+	}
+}
+
+// residueReportExtension mirrors the classifier's last-dot-segment
+// extension semantics for reporting (".tar.gz" groups under ".gz";
+// dotfiles and extensionless names group under "(no extension)").
+func residueReportExtension(rel string) string {
+	base := strings.ToLower(filepath.Base(rel))
+	lastDot := strings.LastIndexByte(base, '.')
+	if lastDot <= 0 || lastDot == len(base)-1 {
+		return "(no extension)"
+	}
+	return "." + base[lastDot+1:]
 }

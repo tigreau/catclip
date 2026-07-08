@@ -74,6 +74,14 @@ func BatchSnippetMatches(entries []discovery.Entry) (SnippetMatchCache, error) {
 		if e.Mode != command.EntryModeSnippet || e.SnippetPattern == "" || e.AbsPath == "" {
 			continue
 		}
+		if len(e.SnippetMatchLines) > 0 {
+			// The snippet stage already pinned this entry's matched
+			// lines in its membership pass; no re-scan needed. Entries
+			// without pins (checkpoint round-trips from older binaries,
+			// non-stage snippet paths) still batch below — the pinned
+			// path is a fast path, never the source of truth.
+			continue
+		}
 		paths, ok := pathsByPattern[e.SnippetPattern]
 		if !ok {
 			paths = map[string]struct{}{}
@@ -117,7 +125,10 @@ func PrepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches S
 		unit.BodyBytes = bodyBytes
 		return unit, true, nil
 	case command.EntryModeSnippet:
-		matchedLines := snippetMatches.Lookup(entry.SnippetPattern, entry.AbsPath)
+		matchedLines := entry.SnippetMatchLines
+		if len(matchedLines) == 0 {
+			matchedLines = snippetMatches.Lookup(entry.SnippetPattern, entry.AbsPath)
+		}
 		if len(matchedLines) == 0 {
 			return PreparedFileUnit{}, false, nil
 		}

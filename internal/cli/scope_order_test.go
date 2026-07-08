@@ -129,33 +129,6 @@ func TestValidateCurrentScopeFlagSequenceRejectsContainsAfterPaths(t *testing.T)
 	}
 }
 
-func TestScopeStageBoundaryPolicies(t *testing.T) {
-	if !scopeStageBoundaryAllowsCategory(scopeStageBoundaryDiff, scopeStageCategorySetRefinement) {
-		t.Fatal("diff boundary should allow later set refinement")
-	}
-	if scopeStageBoundaryAllowsCategory(scopeStageBoundaryDiff, scopeStageCategoryContentFilter) {
-		t.Fatal("diff boundary should reject later content filters")
-	}
-	if scopeStageBoundaryAllowsCategory(scopeStageBoundaryDiff, scopeStageCategoryGitChangeFilter) {
-		t.Fatal("diff boundary should reject later git change filters")
-	}
-	if !scopeStageBoundaryAllowsCategory(scopeStageBoundaryDiff, scopeStageCategoryOutputMode) {
-		t.Fatal("diff boundary should defer output-mode rejection to conflict validation")
-	}
-	if scopeStageBoundaryAllowsCategory(scopeStageBoundarySnippet, scopeStageCategoryContentFilter) {
-		t.Fatal("snippet boundary should reject later content filters")
-	}
-	if !scopeStageBoundaryAllowsCategory(scopeStageBoundarySnippet, scopeStageCategoryGitChangeFilter) {
-		t.Fatal("snippet boundary should still allow later git change filters")
-	}
-	if scopeStageBoundaryAllowsCategory(scopeStageBoundaryTerminal, scopeStageCategorySetRefinement) {
-		t.Fatal("terminal boundary should reject later same-scope stages")
-	}
-	if scopeStageBoundaryAllowsCategory(scopeStageBoundaryTerminal, scopeStageCategoryOutputMode) {
-		t.Fatal("terminal boundary should reject later same-scope output modes")
-	}
-}
-
 func TestValidateCurrentScopeFlagSequenceRejectsIncludeAfterModifier(t *testing.T) {
 	for _, prior := range []string{"--only", "--exclude", "--changed", "--contains", "--recent"} {
 		args := []string{"src", prior}

@@ -1,47 +1,20 @@
 package command
 
 import (
-	"path"
 	"strconv"
 	"strings"
 )
 
-// Private duplicates of root-package helpers used by command-local code
-// (RewriteDeepIncludeScope, canonical render). Stdlib-only; duplicating
-// keeps internal/command a leaf with no catclip-domain imports. Mirrors
-// internal/search/helpers.go and internal/git/helpers.go.
+// Private duplicates of root-package helpers used by command-local
+// canonical render. Stdlib-only; duplicating keeps internal/command a
+// leaf with no catclip-domain imports. Mirrors internal/search/helpers.go
+// and internal/git/helpers.go.
 //
 // shellQuoteArg and shellEnforceSingleQuote are root copies — the
 // authoritative versions live in resolver.go and are used heavily
 // outside the parser/canonical render. Per reviewer guidance: dup
 // (don't move), so root keeps its versions for fzf preview commands
 // and other shell-bound contexts.
-
-func normalizeRelPath(value string) string {
-	if value == "" {
-		return ""
-	}
-	value = strings.ReplaceAll(value, "\\", "/")
-	value = path.Clean(value)
-	value = strings.TrimPrefix(value, "./")
-	if value == "." || value == "/" {
-		return "."
-	}
-	return value
-}
-
-func hasGlobChars(pattern string) bool {
-	return strings.ContainsAny(pattern, "*?[")
-}
-
-func includeTargetsContainWildcard(targets []string) bool {
-	for _, t := range targets {
-		if t == "*" {
-			return true
-		}
-	}
-	return false
-}
 
 func cloneStringSlice(in []string) []string {
 	if len(in) == 0 {

@@ -215,15 +215,10 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 				AllowInteractiveCompletion: false,
 			}, nil, false, nil
 		default:
+			if err := cli.EqualsFormRejectionError(arg); err != nil {
+				return startupInteractiveFrame{}, nil, false, err
+			}
 			switch {
-			case strings.HasPrefix(arg, "--contains="):
-				return startupInteractiveFrame{}, nil, false, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
-			case strings.HasPrefix(arg, "--recent="):
-				return startupInteractiveFrame{}, nil, false, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
-			case strings.HasPrefix(arg, "--size="):
-				return startupInteractiveFrame{}, nil, false, cli.SizeEqualsFormError()
-			case strings.HasPrefix(arg, "--depth="):
-				return startupInteractiveFrame{}, nil, false, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 			case strings.HasPrefix(arg, "--"):
 				return startupInteractiveFrame{}, nil, false, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", discovery.SingleQuoted(arg))
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
@@ -500,7 +495,7 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 		case "--recent":
 			inModifierMode = true
 			if i+1 < len(args) && !cli.IsModifierBoundaryToken(args[i+1]) {
-				if _, err := discovery.ParseRecentLimitToken(args[i+1]); err == nil {
+				if _, err := cli.ParseRecentLimitToken(args[i+1]); err == nil {
 					i++
 				}
 			}
@@ -557,7 +552,7 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 		case "--recent":
 			inModifierMode = true
 			if i+1 < len(args) && !cli.IsModifierBoundaryToken(args[i+1]) {
-				if _, err := discovery.ParseRecentLimitToken(args[i+1]); err == nil {
+				if _, err := cli.ParseRecentLimitToken(args[i+1]); err == nil {
 					i++
 				}
 			}

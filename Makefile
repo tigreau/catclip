@@ -95,6 +95,22 @@ $(BIN_DIR)/fzf:
 
 RIPGREP_VERSION := 14.1.1
 FZF_VERSION := 0.71.0
+RELEASE_PLATFORM ?= all
+ifneq ($(strip $(PLATFORM)),)
+RELEASE_PLATFORM := $(PLATFORM)
+endif
+VALID_RELEASE_PLATFORMS := all darwin linux windows
+
+ifneq ($(filter release-local,$(MAKECMDGOALS)),)
+ifeq ($(filter $(RELEASE_PLATFORM),$(VALID_RELEASE_PLATFORMS)),)
+$(error RELEASE_PLATFORM must be one of: $(VALID_RELEASE_PLATFORMS))
+endif
+endif
+
+define build_release
+	@RIPGREP_VERSION=$(RIPGREP_VERSION) FZF_VERSION=$(FZF_VERSION) DIST_DIR=$(DIST_DIR) \
+		scripts/build-release.sh $(1)
+endef
 
 test: dev
 	go test ./...
@@ -105,23 +121,25 @@ run: dev
 clean:
 	rm -rf $(BIN_DIR)
 
-# make release-local — cross-build catclip for every platform
+# make release-local [PLATFORM=all|darwin|linux|windows] — cross-build catclip for every platform
 # the CI workflow ships, bundle rg/fzf, and pack tar.gz/zip into dist/.
 # Mirrors .github/workflows/release.yml so artifacts match the release.
 release-local:
 	@mkdir -p $(DIST_DIR)
-	@RIPGREP_VERSION=$(RIPGREP_VERSION) FZF_VERSION=$(FZF_VERSION) DIST_DIR=$(DIST_DIR) \
-		scripts/build-release.sh darwin amd64 x86_64-apple-darwin tar.gz darwin_amd64 tar.gz tar ""
-	@RIPGREP_VERSION=$(RIPGREP_VERSION) FZF_VERSION=$(FZF_VERSION) DIST_DIR=$(DIST_DIR) \
-		scripts/build-release.sh darwin arm64 aarch64-apple-darwin tar.gz darwin_arm64 tar.gz tar ""
-	@RIPGREP_VERSION=$(RIPGREP_VERSION) FZF_VERSION=$(FZF_VERSION) DIST_DIR=$(DIST_DIR) \
-		scripts/build-release.sh linux amd64 x86_64-unknown-linux-musl tar.gz linux_amd64 tar.gz tar ""
-	@RIPGREP_VERSION=$(RIPGREP_VERSION) FZF_VERSION=$(FZF_VERSION) DIST_DIR=$(DIST_DIR) \
-		scripts/build-release.sh linux arm64 aarch64-unknown-linux-gnu tar.gz linux_arm64 tar.gz tar ""
-	@RIPGREP_VERSION=$(RIPGREP_VERSION) FZF_VERSION=$(FZF_VERSION) DIST_DIR=$(DIST_DIR) \
-		scripts/build-release.sh windows amd64 x86_64-pc-windows-msvc zip windows_amd64 zip zip ".exe"
+	@printf 'Building local release artifacts for PLATFORM=%s\n' "$(RELEASE_PLATFORM)"
+ifneq ($(filter $(RELEASE_PLATFORM),all darwin),)
+	$(call build_release,darwin amd64 x86_64-apple-darwin tar.gz darwin_amd64 tar.gz tar "")
+	$(call build_release,darwin arm64 aarch64-apple-darwin tar.gz darwin_arm64 tar.gz tar "")
+endif
+ifneq ($(filter $(RELEASE_PLATFORM),all linux),)
+	$(call build_release,linux amd64 x86_64-unknown-linux-musl tar.gz linux_amd64 tar.gz tar "")
+	$(call build_release,linux arm64 aarch64-unknown-linux-gnu tar.gz linux_arm64 tar.gz tar "")
+endif
+ifneq ($(filter $(RELEASE_PLATFORM),all windows),)
+	$(call build_release,windows amd64 x86_64-pc-windows-msvc zip windows_amd64 zip zip ".exe")
+endif
 	@printf '\nLocal release artifacts:\n'
-	@ls -lh $(DIST_DIR)/catclip_*
+	@ls -lh $(DIST_DIR)/catclip_$(if $(filter all,$(RELEASE_PLATFORM)),*,$(RELEASE_PLATFORM)_*)
 
 release-clean:
 	rm -rf $(DIST_DIR)

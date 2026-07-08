@@ -20,6 +20,14 @@ type ScopeView struct {
 	WorkingDir string
 	GitContext git.Context
 	Entries    []Entry
+	// Targets is the current scope's positional targets, verbatim as the
+	// user typed them. The checkpoint content-match reload command embeds
+	// them so the child's scope matches the parent's — without them the
+	// child parses an implicit "." scope and direct-mode rg walks the
+	// whole working dir instead of the target (caught live 2026-07-04:
+	// cwd=Desktop, target=vscode-main → per-keystroke rg over the entire
+	// Desktop, dying with exit 2 on the first unreadable Desktop file).
+	Targets []string
 }
 
 // scopeViewResolverFn is the root-registered callback that derives a

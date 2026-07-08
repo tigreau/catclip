@@ -3,7 +3,6 @@ package discovery
 import (
 	"os"
 	"sort"
-	"strconv"
 )
 
 // applyRecentStage filters entries to the most-recently-modified slice
@@ -38,30 +37,32 @@ func ApplyRecentStage(entries []Entry, workingDir string, limit *int) ([]Entry, 
 // EnsureEntryModTimes fills ModTime + SizeBytes for any entry missing
 // them, statting on disk via os.Stat. Used by applyRecentStage and by
 // root's preview_table.go (for the file-list preview pane).
+//
+// Fail-fast contract: mirrors EnsureEntrySizes. --recent was invoked
+// as a filter, so a missing entry is a real error that surfaces here.
 func EnsureEntryModTimes(entries []Entry, workingDir string) ([]Entry, error) {
 	entries = EnsureEntryAbsPaths(entries, workingDir)
+	paths := make([]string, len(entries))
 	for i := range entries {
 		if !entries[i].ModTime.IsZero() {
 			continue
 		}
-		info, err := os.Stat(entries[i].AbsPath)
-		if err != nil {
-			return nil, err
+		paths[i] = entries[i].AbsPath
+	}
+	infos, errs := parallelStat(paths, os.Stat)
+	for i := range entries {
+		if paths[i] == "" {
+			continue
 		}
-		entries[i].ModTime = info.ModTime()
-		entries[i].SizeBytes = info.Size()
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		entries[i].ModTime = infos[i].ModTime()
+		entries[i].SizeBytes = infos[i].Size()
 		entries[i].SizeKnown = true
 	}
 	return entries, nil
 }
 
-// ParseRecentLimitToken parses --recent's optional integer argument.
-// Exported so the root parser-side helpers can validate args before
-// applyRecentStage runs.
-func ParseRecentLimitToken(token string) (int, error) {
-	limit, err := strconv.Atoi(token)
-	if err != nil || limit <= 0 {
-		return 0, newUsageError("Error: --recent takes an optional positive integer.\n  Example: catclip src --recent\n  Example: catclip src --recent 5")
-	}
-	return limit, nil
-}
+// Token validation for --recent lives in internal/cli
+// (cli.ParseRecentLimitToken); stage appliers take already-parsed ints.

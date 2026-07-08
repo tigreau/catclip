@@ -61,6 +61,7 @@ type Parsed struct {
 	TreeKind               string
 	TreeState              string
 	FilePreview            bool
+	FileSearchingPreview   bool
 	FilePath               string
 	ContentMatchList       bool
 	RecentPreview          bool
@@ -94,7 +95,7 @@ type Parsed struct {
 // it via this method. Both kept until the cli/ parser extraction
 // retires the root wrapper.
 func (p Parsed) IsInternalKind() bool {
-	return p.TreePreview || p.FilePreview ||
+	return p.TreePreview || p.FilePreview || p.FileSearchingPreview ||
 		p.ContentMatchList || p.SnippetBoundaryPreview || p.RecentPreview ||
 		p.LinesPreview ||
 		p.PrediscoveredPath != "" || p.TreeInputDir != "" ||

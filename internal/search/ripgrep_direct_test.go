@@ -1,8 +1,10 @@
 package search
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"testing"
 )
@@ -235,12 +237,12 @@ func TestRunRipgrepDirectStripsLeadingDotSlash(t *testing.T) {
 func TestRunRipgrepMatchesInvertIsInverse(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		"a.go":     "// TODO one\n",
-		"b.go":     "// no match\n",
-		"c.go":     "// TODO three\n",
-		"d.md":     "TODO docs\n",
-		"e.txt":    "plain text\n",
-		"f.py":     "# nothing here\n",
+		"a.go":  "// TODO one\n",
+		"b.go":  "// no match\n",
+		"c.go":  "// TODO three\n",
+		"d.md":  "TODO docs\n",
+		"e.txt": "plain text\n",
+		"f.py":  "# nothing here\n",
 	}
 	for rel, content := range files {
 		if err := writeFile(filepath.Join(dir, rel), content); err != nil {
@@ -282,11 +284,11 @@ func TestRunRipgrepMatchesInvertIsInverse(t *testing.T) {
 func TestRunRipgrepDirectInvertIsInverse(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		"a.go":      "// TODO one\n",
-		"b.go":      "// no match\n",
-		"sub/c.go":  "// TODO three\n",
-		"sub/d.md":  "TODO docs\n",
-		"e.txt":     "plain text\n",
+		"a.go":     "// TODO one\n",
+		"b.go":     "// no match\n",
+		"sub/c.go": "// TODO three\n",
+		"sub/d.md": "TODO docs\n",
+		"e.txt":    "plain text\n",
 	}
 	for rel, content := range files {
 		full := filepath.Join(dir, rel)
@@ -349,9 +351,9 @@ func TestRunRipgrepMatchesInvertBadPattern(t *testing.T) {
 func TestRunRipgrepMatchesInvertSmartCaseEngagement(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
-		"a.go": "func Hello()\n",  // matches "func" both case-sensitive and -insensitive
-		"b.go": "Func Hello()\n",  // matches "func" only when smart-case
-		"c.go": "type X int\n",     // never matches "func"
+		"a.go": "func Hello()\n", // matches "func" both case-sensitive and -insensitive
+		"b.go": "Func Hello()\n", // matches "func" only when smart-case
+		"c.go": "type X int\n",   // never matches "func"
 	}
 	for rel, content := range files {
 		if err := writeFile(filepath.Join(dir, rel), content); err != nil {
@@ -388,4 +390,52 @@ func sortedKeys(m map[string]struct{}) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// TestRunRipgrepDirectToleratesUnreadableFiles pins the exit-2 tolerance
+// added 2026-07-04: rg exits 2 when the walk hits an unreadable file
+// (locked, permission-denied, cloud placeholder) even under
+// --no-messages, while still printing rows for everything it could
+// read. A picker keystroke must not die for that — unreadable files are
+// simply absent from the result.
+func TestRunRipgrepDirectToleratesUnreadableFiles(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 000 does not block reads on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file permissions")
+	}
+	dir := t.TempDir()
+	if err := writeFile(filepath.Join(dir, "readable.go"), "// TODO here\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeFile(filepath.Join(dir, "locked.go"), "// TODO locked\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "locked.go"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(filepath.Join(dir, "locked.go"), 0o644)
+
+	matches, err := RunRipgrepDirect(dir, ".", "TODO", "")
+	if err != nil {
+		t.Fatalf("expected partial results despite unreadable file, got error: %v", err)
+	}
+	if _, ok := matches["readable.go"]; !ok {
+		t.Fatalf("expected readable.go in matches, got %v", matches)
+	}
+	if _, ok := matches["locked.go"]; ok {
+		t.Fatalf("unreadable locked.go must be absent from matches, got %v", matches)
+	}
+
+	lines, err := RunRipgrepDirectMatchLines(dir, ".", "TODO", "")
+	if err != nil {
+		t.Fatalf("expected partial match-lines despite unreadable file, got error: %v", err)
+	}
+	if lines["readable.go"] != 1 {
+		t.Fatalf("expected readable.go line 1, got %v", lines)
+	}
+	if _, ok := lines["locked.go"]; ok {
+		t.Fatalf("unreadable locked.go must be absent from match-lines, got %v", lines)
+	}
 }

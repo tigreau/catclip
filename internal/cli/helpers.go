@@ -58,10 +58,11 @@ func hasGlobChars(pattern string) bool {
 	return strings.ContainsAny(pattern, "*?[")
 }
 
-// parseRecentLimitToken parses --recent's integer argument. Identical
-// to root recent_stage.go's parseRecentLimitToken (kept at root because
-// runtime stage code calls it too).
-func parseRecentLimitToken(token string) (int, error) {
+// ParseRecentLimitToken parses --recent's integer argument. The single
+// home for this validator (modifier_wiring_consolidation_v2 phase 2):
+// UI pickers import it from here; the former internal/discovery copy is
+// deleted — stage appliers take already-parsed ints.
+func ParseRecentLimitToken(token string) (int, error) {
 	limit, err := strconv.Atoi(token)
 	if err != nil || limit <= 0 {
 		return 0, newUsageError("Error: --recent takes an optional positive integer.\n  Example: catclip src --recent\n  Example: catclip src --recent 5")
@@ -69,9 +70,9 @@ func parseRecentLimitToken(token string) (int, error) {
 	return limit, nil
 }
 
-// parseDepthToken parses --depth's integer argument. Identical to root
-// depth_stage.go's parseDepthToken.
-func parseDepthToken(token string) (int, error) {
+// ParseDepthToken parses --depth's integer argument. Single home; see
+// ParseRecentLimitToken.
+func ParseDepthToken(token string) (int, error) {
 	depth, err := strconv.Atoi(token)
 	if err != nil || depth <= 0 {
 		return 0, newUsageError("Error: --depth takes a positive integer.\n  Example: catclip src --depth 2")
@@ -173,9 +174,61 @@ func intPtr(v int) *int {
 	return &v
 }
 
+// consumeDepthLimit consumes --depth's required integer arg. Shared by
+// the strict and preflight parsers so their value-consumption semantics
+// cannot drift (modifier_wiring_consolidation_v2 phase 4, following the
+// consumeOptionalSizeBounds precedent).
+func consumeDepthLimit(args []string, start int) (*int, int, error) {
+	if start >= len(args) {
+		return nil, start, RequiredStageValueError("--depth")
+	}
+	depth, err := ParseDepthToken(args[start])
+	if err != nil {
+		return nil, start, err
+	}
+	return intPtr(depth), start + 1, nil
+}
+
+// EqualsFormRejectionError rejects "--flag=value" spellings for
+// value-taking scope modifiers with a flag-appropriate hint. Returns
+// nil when arg isn't an equals form of a spec flag with scalar arity —
+// many-valued flags (--include=x, --only=x, --exclude=x) deliberately
+// keep falling through to the unknown-option error, matching the
+// hand-written ladders this replaces. Shared verbatim by both parsers;
+// a new scalar-arity flag gets equals rejection with the generic
+// pattern hint automatically.
+// Exported: the startup picker/undo frame parsers pre-empt strict parse
+// and must reject with the same text (they had drifted hand ladders that
+// missed --not-contains/--snippet before sharing this).
+func EqualsFormRejectionError(arg string) error {
+	eq := strings.IndexByte(arg, '=')
+	if eq < 0 {
+		return nil
+	}
+	flag := arg[:eq]
+	spec, ok := scopeModifierFlagSpecForFlag(flag)
+	if !ok {
+		return nil
+	}
+	switch spec.Arity {
+	case flagArityOne, flagArityOptionalOne, flagArityOptionalTwo:
+	default:
+		return nil
+	}
+	switch flag {
+	case "--size":
+		return SizeEqualsFormError()
+	case "--recent":
+		return newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
+	case "--depth":
+		return newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
+	default:
+		return newUsageError("Error: %s requires a space before the pattern.\n  Use: catclip src %s 'pattern'\n  Not: catclip src %s='pattern'", flag, flag, flag)
+	}
+}
+
 // consumeOptionalRecentLimit consumes an optional integer arg for
-// --recent. Returns nil limit when no integer follows. Dup of
-// recent_stage.go's helper because root stage code uses it too.
+// --recent. Shared by the strict and preflight parsers.
 func consumeOptionalRecentLimit(args []string, start int) (*int, int, error) {
 	if start >= len(args) {
 		return nil, start, nil
@@ -184,7 +237,7 @@ func consumeOptionalRecentLimit(args []string, start int) (*int, int, error) {
 	if IsModifierBoundaryToken(next) {
 		return nil, start, nil
 	}
-	limit, err := parseRecentLimitToken(next)
+	limit, err := ParseRecentLimitToken(next)
 	if err != nil {
 		return nil, start, err
 	}

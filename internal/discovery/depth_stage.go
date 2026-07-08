@@ -2,16 +2,10 @@ package discovery
 
 import (
 	"path"
-	"strconv"
 )
 
-func ParseDepthToken(token string) (int, error) {
-	depth, err := strconv.Atoi(token)
-	if err != nil || depth <= 0 {
-		return 0, newUsageError("Error: --depth takes a positive integer.\n  Example: catclip src --depth 2")
-	}
-	return depth, nil
-}
+// Token validation for --depth lives in internal/cli
+// (cli.ParseDepthToken); stage appliers take already-parsed ints.
 
 func ApplyDepthStage(entries []Entry, depth int) ([]Entry, error) {
 	if len(entries) == 0 {

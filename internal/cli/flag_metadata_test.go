@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tigreau/catclip/internal/command"
@@ -140,5 +141,75 @@ func TestIsModifierBoundaryTokenUsesSharedValueTakingFlags(t *testing.T) {
 	}
 	if IsModifierBoundaryToken("Button.tsx") {
 		t.Fatal("did not expect plain target to be a modifier boundary")
+	}
+}
+
+// Phase 1 pins (modifier_wiring_consolidation_v2): optional-value
+// consumers must treat rejected-standalone and unknown flags as
+// boundaries, not values. These lock current behavior BEFORE the token
+// helpers derive from specs — a derivation that silently drops --diff
+// from the known-boundary set turns the first case into a recent-limit
+// parse error, which these catch.
+func TestOptionalValueConsumersStopAtBoundaryFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"recent then rejected-standalone diff", []string{"src", "--recent", "--diff"}, "--diff"},
+		{"size then rejected-standalone diff", []string{"src", "--size", "--diff"}, "--diff"},
+		{"recent then unknown flag", []string{"src", "--recent", "--foo"}, "Unknown option"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseArgs(tc.args)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected error mentioning %q, got: %v", tc.want, err)
+			}
+			if strings.Contains(err.Error(), "--recent takes") || strings.Contains(err.Error(), "--size expects") {
+				t.Fatalf("boundary flag was consumed as a value: %v", err)
+			}
+		})
+	}
+}
+
+// The derived boundary set must carry --diff and --paths as KNOWN
+// boundaries (today they ride the strings.HasPrefix("--") fallback);
+// the fallback remains responsible only for tokens absent from every
+// metadata table.
+func TestModifierBoundaryTokensDerivedFromSpecs(t *testing.T) {
+	for _, spec := range ScopeModifierFlagSpecs {
+		if _, ok := modifierBoundaryTokens[spec.Flag]; !ok {
+			t.Fatalf("spec flag %s missing from derived boundary set", spec.Flag)
+		}
+	}
+	for _, known := range []string{"--diff", "--paths", "--then", "--", "-v", "--hiss"} {
+		if _, ok := modifierBoundaryTokens[known]; !ok {
+			t.Fatalf("expected %s in the derived known-boundary set", known)
+		}
+	}
+	if _, ok := modifierBoundaryTokens["--foo"]; ok {
+		t.Fatal("unknown flags must stay on the fallback path, not the known set")
+	}
+}
+
+// Bidirectional totality with command's stageFlags table (phase 3):
+// the forward direction (every declared kind has a spec with a flag) is
+// TestScopeModifierFlagSpecsClassifyEveryDeclaredStageKind — since Flag
+// now joins from command.StageFlag, that test failing-or-panicking
+// covers "spec kind missing from stageFlags". This covers the reverse:
+// a stageFlags entry with no spec is an orphan spelling nothing parses.
+func TestCommandStageFlagsHaveMatchingSpecs(t *testing.T) {
+	for kind, flag := range command.StageFlags() {
+		spec, ok := scopeModifierFlagSpecForStageKind(kind)
+		if !ok {
+			t.Fatalf("command.StageFlags has %q (%s) but cli has no flag spec for it", kind, flag)
+		}
+		if spec.Flag != flag {
+			t.Fatalf("spec flag %q != command.StageFlags spelling %q for kind %q", spec.Flag, flag, kind)
+		}
 	}
 }

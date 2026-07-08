@@ -12,10 +12,11 @@ import (
 // rely on.
 //
 // Invariant: the rendered command must reproduce the executed run. Any
-// new StageKind (or any new execution-affecting flag on Invocation /
-// RenderFlags) needs a case in CanonicalScopeArgs or a branch in
-// CanonicalGlobalArgs. TestCanonicalScopeArgsCoversAllStageKinds fails
-// if a flag from scopeModifierFlagSpecs has no case here.
+// new StageKind needs an entry in stageFlags (stage_info.go) plus a
+// payload case in CanonicalScopeArgs if it carries values; any new
+// execution-affecting flag on Invocation / RenderFlags needs a branch
+// in CanonicalGlobalArgs. TestCanonicalScopeArgsCoversAllStageKinds
+// fails if a flag from scopeModifierFlagSpecs doesn't round-trip.
 //
 // These functions previously lived at root in command_render.go; they
 // were moved here in the v0.6.0 cli/ extraction so canonical rendering
@@ -85,60 +86,42 @@ func CanonicalGlobalArgs(invocationCfg Invocation, flags RenderFlags) []string {
 // Invariant: the resolved command must equal the executed command.
 // Anything catclip applies to a run must be representable here, and
 // copy/pasting the rendered command must produce the same output.
-// When adding a new StageKind (or execution-affecting field on
-// ExecutionScope), add a case below — TestCanonicalScopeArgsCoversAllStageKinds
-// fails if a flag from scopeModifierFlagSpecs has no case here.
+// When adding a new StageKind, register it in stageFlags
+// (stage_info.go); add a payload case below only if the stage carries
+// values — TestCanonicalScopeArgsCoversAllStageKinds fails if a flag
+// from scopeModifierFlagSpecs doesn't round-trip.
 func CanonicalScopeArgs(s ExecutionScope) []string {
 	parts := make([]string, 0, len(s.Targets)+len(s.Stages)*2)
 	for _, target := range s.Targets {
 		parts = append(parts, shellQuoteArg(target))
 	}
 	for _, stage := range s.Stages {
+		flag, ok := StageFlag(stage.Kind)
+		if !ok {
+			// Unknown kinds were silently skipped by the old switch
+			// too; the cli spec builder and the totality tests make
+			// this unreachable for declared kinds.
+			continue
+		}
+		parts = append(parts, flag)
 		switch stage.Kind {
-		case StageInclude:
-			parts = append(parts, "--include")
+		case StageInclude, StageOnly, StageExclude:
 			for _, value := range stage.Values {
 				parts = append(parts, shellQuoteArg(value))
 			}
-		case StageOnly:
-			parts = append(parts, "--only")
-			for _, value := range stage.Values {
-				parts = append(parts, shellQuoteArg(value))
-			}
-		case StageExclude:
-			parts = append(parts, "--exclude")
-			for _, value := range stage.Values {
-				parts = append(parts, shellQuoteArg(value))
-			}
-		case StageRecent:
-			parts = append(parts, "--recent")
+		case StageRecent, StageDepth:
 			if stage.Limit != nil {
 				parts = append(parts, shellQuoteArg(strconv.Itoa(*stage.Limit)))
 			}
 		case StageSize:
-			parts = append(parts, "--size")
 			for _, n := range stage.Nums {
 				parts = append(parts, shellQuoteArg(strconv.Itoa(n)))
 			}
-		case StageDepth:
-			parts = append(parts, "--depth")
-			if stage.Limit != nil {
-				parts = append(parts, shellQuoteArg(strconv.Itoa(*stage.Limit)))
-			}
-		case StageContains:
-			parts = append(parts, "--contains")
+		case StageContains, StageNotContains:
 			for _, value := range stage.Values {
 				parts = append(parts, shellEnforceSingleQuote(value))
 			}
-		case StageNotContains:
-			parts = append(parts, "--not-contains")
-			for _, value := range stage.Values {
-				parts = append(parts, shellEnforceSingleQuote(value))
-			}
-		case StagePaths:
-			parts = append(parts, "--paths")
 		case StageSnippet:
-			parts = append(parts, "--snippet")
 			for _, value := range stage.Values {
 				parts = append(parts, shellEnforceSingleQuote(value))
 			}
@@ -146,29 +129,12 @@ func CanonicalScopeArgs(s ExecutionScope) []string {
 				parts = append(parts, strconv.Itoa(s.SnippetContextLines))
 			}
 		case StageLines:
-			parts = append(parts, "--lines")
 			if s.LinesStart > 0 {
 				parts = append(parts, shellQuoteArg(strconv.Itoa(s.LinesStart)))
 				if s.LinesEnd > 0 {
 					parts = append(parts, shellQuoteArg(strconv.Itoa(s.LinesEnd)))
 				}
 			}
-		case StageChanged:
-			parts = append(parts, "--changed")
-		case StageStaged:
-			parts = append(parts, "--staged")
-		case StageUnstaged:
-			parts = append(parts, "--unstaged")
-		case StageUntracked:
-			parts = append(parts, "--untracked")
-		case StageDiff:
-			parts = append(parts, "--diff")
-		case StageChangedDiff:
-			parts = append(parts, "--changed-diff")
-		case StageStagedDiff:
-			parts = append(parts, "--staged-diff")
-		case StageUnstagedDiff:
-			parts = append(parts, "--unstaged-diff")
 		}
 	}
 	return parts

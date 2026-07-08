@@ -467,7 +467,7 @@ func TestAllIgnoredTargetsIncludesIgnoredEntries(t *testing.T) {
 		AllowFileSymlinks: false,
 	}
 
-	targets, err := resolver.AllIgnoredTargets()
+	targets, err := resolver.AllIgnoredTargets(nil)
 	if err != nil {
 		t.Fatalf("allIgnoredTargets returned error: %v", err)
 	}
@@ -512,7 +512,7 @@ func TestAllIgnoredTargetsTracksNoTextDirectoryState(t *testing.T) {
 		AllowFileSymlinks: false,
 	}
 
-	targets, err := resolver.AllIgnoredTargets()
+	targets, err := resolver.AllIgnoredTargets(nil)
 	if err != nil {
 		t.Fatalf("allIgnoredTargets returned error: %v", err)
 	}
@@ -3789,8 +3789,20 @@ if [ "$prompt" = "match> " ]; then
 		echo "missing toggle-all header" >&2
 		exit 91
 	}
-	printf '%%s\n' "$bindings" | grep -F -- "start:reload:" >/dev/null || {
-		echo "missing start reload binding" >&2
+	printf '%%s\n' "$bindings" | grep -F -- "start:preview<" >/dev/null || {
+		echo "missing start searching preview binding" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F -- "change:preview<" >/dev/null || {
+		echo "missing change searching preview binding" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F -- "+reload<" >/dev/null || {
+		echo "missing chained reload binding" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F -- "--internal-searching-preview" >/dev/null || {
+		echo "missing internal searching preview command" >&2
 		exit 91
 	}
 	printf '%%s\n' "$bindings" | grep -F -- %q >/dev/null || {
@@ -4015,7 +4027,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [ "$prompt" = "match> " ]; then
-	printf '%s\n' "$preview" | grep -F -- '--internal-file-preview --internal-file-path {3}' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1}' >/dev/null || {
 		echo "missing file preview command: $preview" >&2
 		exit 91
 	}
@@ -5317,4 +5329,86 @@ func TestBuildInternalContentHintDocumentRoutesByMode(t *testing.T) {
 	if containsDoc.File == nil || containsDoc.File.Content != internalContainsPreviewEmptyHint {
 		t.Fatalf("contains hint mismatch: %#v", containsDoc.File)
 	}
+}
+
+// AllIgnoredTargets narrows its enumeration universe to literal scope
+// targets: entries outside the targets (and off their ancestor chains)
+// are never walked or classified. Pinned 2026-07-07 after the Desktop
+// repro (cwd=parent dir, target=repo → the wide walk content-scanned
+// every sibling project just to discard it). Ancestor dirs of a deep
+// target must survive narrowing via path-prefix derivation, and
+// "."/fuzzy targets must fall back to the wide universe.
+func TestAllIgnoredTargetsNarrowsToScopeTargets(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"repo/src/app.ts":              "export const app = true\n",
+		"repo/node_modules/r/index.js": "module.exports = {}\n",
+		"sibling/node_modules/x.js":    "module.exports = {}\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "repo"})
+	resolver := discovery.Resolver{
+		Cfg:               invocationConfigFromParsedCommand(cfg),
+		AllowFileSymlinks: false,
+	}
+
+	targets, err := resolver.AllIgnoredTargets([]string{"repo"})
+	if err != nil {
+		t.Fatalf("AllIgnoredTargets returned error: %v", err)
+	}
+	lookup := make(map[string]discovery.TargetMatch, len(targets))
+	for _, target := range targets {
+		lookup[target.Path] = target
+	}
+	if _, ok := lookup["repo/node_modules"]; !ok {
+		t.Fatalf("expected in-scope ignored dir repo/node_modules, got %v", pathsOfTargetMatches(targets))
+	}
+	if _, ok := lookup["sibling/node_modules"]; ok {
+		t.Fatalf("narrowed universe must not include the sibling project's ignored dir, got %v", pathsOfTargetMatches(targets))
+	}
+	// Ignored ANCESTOR of a deep target survives narrowing via
+	// path-prefix derivation: a walk rooted at blocked/sub still
+	// contributes "blocked" to the dir set, and attribution marks it
+	// gitignore-blocked.
+	ancestorProject := setupTestProject(t, map[string]string{
+		".gitignore":         "blocked/\n",
+		"blocked/sub/kit.md": "kit\n",
+		"visible.go":         "package x\n",
+	})
+	ancestorCfg := parseInProject(t, ancestorProject, []string{"--quiet", "--print", "."})
+	ancestorResolver := discovery.Resolver{
+		Cfg:               invocationConfigFromParsedCommand(ancestorCfg),
+		AllowFileSymlinks: false,
+	}
+	ancestors, err := ancestorResolver.AllIgnoredTargets([]string{"blocked/sub"})
+	if err != nil {
+		t.Fatalf("AllIgnoredTargets ancestor case returned error: %v", err)
+	}
+	ancestorLookup := make(map[string]discovery.TargetMatch, len(ancestors))
+	for _, target := range ancestors {
+		ancestorLookup[target.Path] = target
+	}
+	if got, ok := ancestorLookup["blocked"]; !ok || !got.Ignored || got.Kind != "dir" {
+		t.Fatalf("expected ignored ancestor dir 'blocked' to survive the narrowed walk, got %#v (present=%v, all=%v)", got, ok, pathsOfTargetMatches(ancestors))
+	}
+
+	// "." target falls back to the wide universe: the sibling appears.
+	wide, err := resolver.AllIgnoredTargets([]string{"."})
+	if err != nil {
+		t.Fatalf("AllIgnoredTargets wide returned error: %v", err)
+	}
+	wideLookup := make(map[string]struct{}, len(wide))
+	for _, target := range wide {
+		wideLookup[target.Path] = struct{}{}
+	}
+	if _, ok := wideLookup["sibling/node_modules"]; !ok {
+		t.Fatalf("expected wide fallback for '.' target to include sibling, got %v", pathsOfTargetMatches(wide))
+	}
+}
+
+func pathsOfTargetMatches(targets []discovery.TargetMatch) []string {
+	out := make([]string, 0, len(targets))
+	for _, target := range targets {
+		out = append(out, target.Path)
+	}
+	return out
 }

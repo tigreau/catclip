@@ -149,6 +149,11 @@ func applyContentStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
 		return entries, nil
 	}
 	entries = EnsureEntryAbsPaths(entries, ctx.Resolver.Cfg.WorkingDir)
+	if ctx.Stage.Kind == command.StageSnippet {
+		// One-pass membership + line-number pinning; the output build
+		// consumes Entry.SnippetMatchLines instead of re-running rg.
+		return FilterEntriesBySnippetContent(entries, ctx.Stage.Values[0])
+	}
 	return FilterEntriesByContent(entries, ctx.Stage.Values[0])
 }
 

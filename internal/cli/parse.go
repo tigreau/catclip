@@ -227,6 +227,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			cfg.TreeState = args[i]
 		case "--internal-file-preview":
 			cfg.FilePreview = true
+		case "--internal-searching-preview":
+			cfg.FilePreview = true
+			cfg.FileSearchingPreview = true
 		case "--internal-file-path":
 			if i+1 >= len(args) {
 				return command.Parsed{}, newUsageError("Error: --internal-file-path requires a path.")
@@ -449,15 +452,12 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			lastNoValueModifier = ""
 		case "--depth":
 			inModifierMode = true
-			if i+1 >= len(args) {
-				return command.Parsed{}, RequiredStageValueError("--depth")
-			}
-			i++
-			depth, err := parseDepthToken(args[i])
+			limit, next, err := consumeDepthLimit(args, i+1)
 			if err != nil {
 				return command.Parsed{}, err
 			}
-			current.Stages = append(current.Stages, command.Stage{Kind: command.StageDepth, Limit: intPtr(depth)})
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageDepth, Limit: limit})
+			i = next - 1
 			lastNoValueModifier = ""
 		case "--contains":
 			inModifierMode = true
@@ -495,19 +495,10 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StagePaths})
 			lastNoValueModifier = arg
 		default:
+			if err := EqualsFormRejectionError(arg); err != nil {
+				return command.Parsed{}, err
+			}
 			switch {
-			case strings.HasPrefix(arg, "--contains="):
-				return command.Parsed{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
-			case strings.HasPrefix(arg, "--not-contains="):
-				return command.Parsed{}, newUsageError("Error: --not-contains requires a space before the pattern.\n  Use: catclip src --not-contains 'pattern'\n  Not: catclip src --not-contains='pattern'")
-			case strings.HasPrefix(arg, "--snippet="):
-				return command.Parsed{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
-			case strings.HasPrefix(arg, "--recent="):
-				return command.Parsed{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
-			case strings.HasPrefix(arg, "--size="):
-				return command.Parsed{}, SizeEqualsFormError()
-			case strings.HasPrefix(arg, "--depth="):
-				return command.Parsed{}, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 			case arg == "--diff":
 				return command.Parsed{}, DiffStandaloneError()
 			case strings.HasPrefix(arg, "--"):
@@ -644,13 +635,6 @@ func readModifierPathsFromStdin(flag string, cache *stdinPathCache) ([]string, e
 	return append([]string(nil), cache.paths...), nil
 }
 
-// ReadNormalizedStdinPaths is exported because positional_glob_normalization.go
-// at root needs the same line-reading logic.
-func ReadNormalizedStdinPaths(stdin io.Reader) ([]string, error) {
-	_, paths, err := readStdinPathValues(stdin)
-	return paths, err
-}
-
 func readStdinPathValues(stdin io.Reader) ([]string, []string, error) {
 	scanner := bufio.NewScanner(stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -669,35 +653,6 @@ func readStdinPathValues(stdin io.Reader) ([]string, []string, error) {
 		return nil, nil, err
 	}
 	return rawPaths, paths, nil
-}
-
-// LooksLikeDirectoryPattern is exported because positional glob
-// normalization at root needs the same heuristic.
-func LooksLikeDirectoryPattern(workingDir, pattern string, ignoredDirs map[string]struct{}) bool {
-	if pattern == "" || strings.HasSuffix(pattern, "/") || hasGlobChars(pattern) {
-		return false
-	}
-
-	if info, err := os.Stat(filepath.Join(workingDir, filepath.FromSlash(pattern))); err == nil && info.IsDir() {
-		return true
-	}
-	if _, ok := ignoredDirs[pattern]; ok {
-		return true
-	}
-
-	if strings.Contains(pattern, "/") || strings.Contains(pattern, ".") {
-		return false
-	}
-	for i, r := range pattern {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
-			continue
-		}
-		if i == 0 && r >= 'A' && r <= 'Z' {
-			continue
-		}
-		return false
-	}
-	return pattern != ""
 }
 
 func validateWithBinariesCompatibility(s command.ExecutionScope) error {
@@ -790,29 +745,6 @@ func FormatScopeSummary(s command.ExecutionScope) string {
 		}
 	}
 	return strings.Join(parts, " ")
-}
-
-// CommandScopesUseRecentStage and CommandScopesUsePathsStage are
-// exported helpers used by root prediscovered/output code to know
-// whether to enable certain branches.
-func CommandScopesUseRecentStage(scopes []command.ScopeSpec) bool {
-	for _, s := range scopes {
-		for _, stage := range s.Stages() {
-			if stage.Kind == command.StageRecent {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func CommandScopesUsePathsStage(scopes []command.ScopeSpec) bool {
-	for _, s := range scopes {
-		if s.HasPathsOutput() {
-			return true
-		}
-	}
-	return false
 }
 
 // FormatResolvedStartupCommand renders the canonical "Resolved

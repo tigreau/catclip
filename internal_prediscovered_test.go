@@ -168,6 +168,7 @@ func TestPrediscoveredCheckpointFileEntrySchemaCoversAllFields(t *testing.T) {
 		"SnippetPattern",
 		"SnippetContextSet",
 		"SnippetContextLines",
+		"SnippetMatchLines",
 		"Lines",
 		"LinesStart",
 		"LinesEnd",
@@ -760,10 +761,10 @@ func TestRunInternalPrediscoveredContentMatchListAppliesNotContains(t *testing.T
 // full_set − contains(P) on the same fixture.
 func TestNotContainsPrunesFiles(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"a.go":   "package main\n// TODO one\n",
-		"b.go":   "package main\n// nothing here\n",
-		"c.md":   "TODO docs\n",
-		"d.md":   "just docs\n",
+		"a.go": "package main\n// TODO one\n",
+		"b.go": "package main\n// nothing here\n",
+		"c.md": "TODO docs\n",
+		"d.md": "just docs\n",
 	})
 
 	captureAll := func(t *testing.T, args []string) []string {

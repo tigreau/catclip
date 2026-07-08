@@ -1,44 +1,62 @@
 package platform
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
 
 // The spinner is TTY-gated (IsTerminalFile). Tests here exercise the
 // two pure state-machine surfaces that don't require a real terminal:
-//   - spinnerMessageWithHint composes the rendered text based on the
-//     hintOn flag; the delayed-timer branch's user-visible effect is
-//     entirely this function's output.
+//   - spinnerHintLines keeps delayed hints as static rows above the
+//     spinner, instead of appending them to every animated redraw.
 //   - StartLoadingSpinner{,WithDelayedHint} return a stop() closure
 //     that must be idempotent and must not leak the delayed-hint
 //     timer when the spinner completes early.
 //
 // The timer→hintOn transition itself is stdlib time.AfterFunc; we
-// don't need to reverify it fires. The value we DO need to verify is
-// that the render composition consults hintOn correctly.
+// don't need to reverify it fires.
 
-func TestSpinnerMessageWithHint_NoHintBeforeFlag(t *testing.T) {
-	got := spinnerMessageWithHint("Scanning files...", "(first run is supposed to be slow)", false)
-	if got != "Scanning files..." {
-		t.Fatalf("hintOn=false should render bare message; got %q", got)
+func TestSpinnerHintLinesSplitsMultilineHint(t *testing.T) {
+	got := spinnerHintLines("first\nsecond\n")
+	want := []string{"first", "second"}
+	if len(got) != len(want) {
+		t.Fatalf("line count = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("line %d = %q, want %q", i, got[i], want[i])
+		}
 	}
 }
 
-func TestSpinnerMessageWithHint_HintAppendedWhenFlagOn(t *testing.T) {
-	got := spinnerMessageWithHint("Scanning files...", "(first run is supposed to be slow)", true)
-	want := "Scanning files... (first run is supposed to be slow)"
-	if got != want {
-		t.Fatalf("hintOn=true should append hint; got %q, want %q", got, want)
+func TestSpinnerHintLinesEmptyHintIsNoop(t *testing.T) {
+	if got := spinnerHintLines(""); got != nil {
+		t.Fatalf("empty hint should render no static rows, got %#v", got)
 	}
 }
 
-func TestSpinnerMessageWithHint_EmptyHintIsNoop(t *testing.T) {
-	// StartLoadingSpinner (no-hint variant) sets hint="", so even if
-	// the flag were flipped defensively, no dangling space is emitted.
-	got := spinnerMessageWithHint("Loading targets...", "", true)
-	if got != "Loading targets..." {
-		t.Fatalf("empty hint should render bare message; got %q", got)
+func TestSlowFileScanHintExplainsWindowsDefender(t *testing.T) {
+	got := slowFileScanHintForGOOS("windows")
+	if !strings.Contains(got, "antivirus") || !strings.Contains(got, "next reboot") {
+		t.Fatalf("windows scan hint should explain Defender-style scan cost, got %q", got)
+	}
+}
+
+func TestSlowFileScanHintUsesStaticRows(t *testing.T) {
+	lines := spinnerHintLines(slowFileScanHintForGOOS("windows"))
+	if len(lines) != 3 {
+		t.Fatalf("windows scan hint should be three static rows, got %#v", lines)
+	}
+	if !strings.Contains(lines[1], "10x+ slower") {
+		t.Fatalf("windows scan hint should explain the rough magnitude, got %#v", lines)
+	}
+}
+
+func TestSlowFileScanHintOmitsUnixFallback(t *testing.T) {
+	got := slowFileScanHintForGOOS("darwin")
+	if got != "" {
+		t.Fatalf("non-windows scan hint = %q", got)
 	}
 }
 

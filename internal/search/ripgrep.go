@@ -241,68 +241,221 @@ func ResolveTextFileSet(workingDir string, targets []string) (map[string]struct{
 	return set, nil
 }
 
-// runRipgrepTextFiles returns the set of files whose content contains no NUL
-// byte. rg scans every file once in parallel; binary files (which contain
-// NULs) are excluded. The query mirrors the working-directory scope of
-// RunRipgrepFiles with NoIgnore=true and Hidden=true so the returned set
-// covers every candidate the discovery pipeline can see, not just the
-// gitignored-aware view.
+// runRipgrepTextFiles returns the set of text files under workingDir.
 //
-// When targets is non-empty, the scan is restricted to those paths as rg
-// positional arguments — files outside the targets are never enumerated.
-// Pass nil/empty for the project-wide scan.
+// Hybrid classifier (2026-07-04, RESOLVED_PLAN_binary_detection_replacement.md
+// "Option C revisited"): THE DEFINITION of binary is "contains a NUL byte
+// anywhere" — what the pre-v0.6.5 full-file scan implemented. The hybrid
+// preserves that definition while avoiding corpus content reads:
+//
+//  1. Enumerate the --no-ignore universe (path list only; Defender does
+//     not toll directory enumeration the way it tolls ReadFile).
+//  2. Classify by name (known_files.go): known-text and known-binary
+//     extensions/basenames are never opened.
+//  3. The residue (names the lists cannot decide) pays the definitional
+//     full NUL scan with explicit path args — exact, and mode-independent
+//     because --text bypasses rg's own binary heuristics.
+//  4. Empty files contain no NUL → text by definition regardless of name
+//     class (an empty .png is text under the rule, matching the prior
+//     full-scan behavior); an Lstat-only pass re-admits 0-byte regular
+//     files the name pass called binary. Residue empties are already
+//     admitted by the scan itself (--files-without-match reports them).
+//
+// Known divergence from the definition (accepted; pinned by
+// TestHybridKnownTextNameDivergence): a NUL-bearing file with a
+// known-TEXT name (binary bytes in a *.md) classifies text without being
+// read. The plan's sink-gate decision is the backstop for that class.
+//
+// When targets is non-empty, the universe is restricted to those paths as
+// rg positional arguments — files outside the targets are never
+// enumerated. Pass nil/empty for the project-wide universe.
 func runRipgrepTextFiles(workingDir string, targets []string) (map[string]struct{}, error) {
 	finishBench := platform.InternalBenchSpan("search.rg.text_files",
 		"targets", platform.InternalBenchInt(len(targets)),
+		"classifier", "hybrid",
 	)
+
+	allPaths, err := RunRipgrepFiles(workingDir, RipgrepFileOptions{
+		NoIgnore: true,
+		Paths:    targets,
+	})
+	if err != nil {
+		finishBench("err", "true")
+		return nil, fmt.Errorf("text classification: no-ignore enumeration under %q failed: %w", workingDir, err)
+	}
+
+	set := make(map[string]struct{}, len(allPaths))
+	residue := make([]string, 0, 32)
+	nameBinary := 0
+	for _, rel := range allPaths {
+		switch classifyPathByName(rel) {
+		case nameClassText:
+			set[rel] = struct{}{}
+		case nameClassBinary:
+			nameBinary++
+		default:
+			residue = append(residue, rel)
+		}
+	}
+
+	residueText := 0
+	if len(residue) > 0 {
+		scanned, scanErr := runRipgrepNulScanFiles(workingDir, residue)
+		if scanErr != nil {
+			finishBench("err", "true", "residue_err", "true")
+			return nil, scanErr
+		}
+		residueText = len(scanned)
+		for rel := range scanned {
+			set[rel] = struct{}{}
+		}
+	}
+
+	statCount, admitted := admitEmptyFilesToTextSet(workingDir, allPaths, set)
+	recordTextClassificationResidue(residue, residueText)
+
+	finishBench("err", "false",
+		"results", platform.InternalBenchInt(len(set)),
+		"name_text", platform.InternalBenchInt(len(set)-residueText-admitted),
+		"name_binary", platform.InternalBenchInt(nameBinary),
+		"residue_scan_count", platform.InternalBenchInt(len(residue)),
+		"residue_text_count", platform.InternalBenchInt(residueText),
+		"residue_stat_count", platform.InternalBenchInt(statCount),
+		"residue_admitted_count", platform.InternalBenchInt(admitted),
+	)
+	return set, nil
+}
+
+// runRipgrepNulScanFiles runs the definitional full-file NUL scan
+// (`--files-without-match --text -e '\x00'`) over explicit relative paths,
+// chunked for command-line limits, and returns the subset containing no
+// NUL byte. --text forces rg's mode 3 so its own binary heuristics never
+// preempt the pattern; with explicit file args the scan is
+// mode-independent, exactly like the pre-v0.6.5 Stage 2.
+//
+// Error tolerance (matching the direct and chunked content-match
+// helpers): with explicit file args, rg exits 2 when ANY listed file
+// cannot be opened (locked, permission-denied, cloud placeholder) — even
+// under --no-messages — while still printing the rows it could classify.
+// That must not fail the scan: an unreadable file is simply absent from
+// the without-match output and classifies binary, the definitionally
+// correct answer ("cannot prove NUL-free"). Only spawn-level failures
+// are fatal, with context so nothing surfaces as a bare "exit status 2"
+// (live failure 2026-07-04: one unreadable Desktop file killed the run).
+func runRipgrepNulScanFiles(workingDir string, relPaths []string) (map[string]struct{}, error) {
 	bin, ok := RipgrepBinary()
 	if !ok {
-		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
-
-	args := []string{
-		"--files-without-match",
-		"--text",
-		"--no-ignore",
-		"--hidden",
-		"--no-messages",
-		"-0",
-		"-e", `\x00`,
-	}
-	if len(targets) > 0 {
-		args = append(args, "--")
-		args = append(args, targets...)
-	}
-
-	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
-	cmd.Dir = workingDir
-	t0 := time.Now()
-	out, err := cmd.Output()
-	if benchEnabled() {
-		benchRgTextTotal.Add(int64(time.Since(t0)))
-		benchRgTextCalls.Add(1)
-	}
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			finishBench("err", "false", "results", "0")
-			return map[string]struct{}{}, nil
+	out := make(map[string]struct{}, len(relPaths))
+	for _, chunk := range chunkExecArgs(relPaths, 256, 60*1024) {
+		args := []string{
+			"--files-without-match",
+			"--text",
+			"--no-messages",
+			"-0",
+			"-e", `\x00`,
+			"--",
 		}
-		finishBench("err", "true")
-		return nil, err
+		args = append(args, chunk...)
+		cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
+		cmd.Dir = workingDir
+		t0 := time.Now()
+		o, err := cmd.Output()
+		if benchEnabled() {
+			benchRgTextTotal.Add(int64(time.Since(t0)))
+			benchRgTextCalls.Add(1)
+		}
+		if err != nil {
+			if _, isExit := err.(*exec.ExitError); !isExit {
+				return nil, fmt.Errorf("text classification: NUL scan of %d residue file(s) under %q failed to run: %w", len(chunk), workingDir, err)
+			}
+			// Exit 1: every file in the chunk matched \x00 (all binary) —
+			// output is empty. Exit 2: some listed file was unreadable —
+			// output still carries the rows rg could classify; absent
+			// rows classify binary. Fall through and parse whatever
+			// stdout was produced.
+		}
+		for _, rel := range splitNullSeparated(o) {
+			rel = normalizeRelPath(rel)
+			if rel == "" || rel == "." {
+				continue
+			}
+			out[rel] = struct{}{}
+		}
 	}
+	return out, nil
+}
 
-	paths := splitNullSeparated(out)
-	set := make(map[string]struct{}, len(paths))
-	for _, rel := range paths {
-		rel = normalizeRelPath(rel)
-		if rel == "" || rel == "." {
+// textResidue accumulates the residue (name-undecidable, content-scanned)
+// paths across this process's text-set builds, for --verbose reporting.
+// This is also the list-growth feedback loop: an extension recurring here
+// is a candidate for known_files.go, with evidence attached.
+var (
+	textResidueMu    sync.Mutex
+	textResiduePaths []string
+	textResidueSeen  map[string]struct{}
+	textResidueText  int
+)
+
+func recordTextClassificationResidue(paths []string, textCount int) {
+	if len(paths) == 0 {
+		return
+	}
+	textResidueMu.Lock()
+	defer textResidueMu.Unlock()
+	if textResidueSeen == nil {
+		textResidueSeen = make(map[string]struct{}, len(paths))
+	}
+	for _, p := range paths {
+		if _, dup := textResidueSeen[p]; dup {
 			continue
 		}
-		set[rel] = struct{}{}
+		textResidueSeen[p] = struct{}{}
+		textResiduePaths = append(textResiduePaths, p)
 	}
-	finishBench("err", "false", "results", platform.InternalBenchInt(len(set)))
-	return set, nil
+	textResidueText += textCount
+}
+
+// TextClassificationResidue returns the residue paths content-scanned by
+// this process's text-set builds (cache misses only — cached sets record
+// nothing) and how many of them classified text. Root prints this under
+// --verbose.
+func TextClassificationResidue() (paths []string, textCount int) {
+	textResidueMu.Lock()
+	defer textResidueMu.Unlock()
+	return append([]string(nil), textResiduePaths...), textResidueText
+}
+
+// admitEmptyFilesToTextSet re-admits 0-byte regular files still absent
+// from the text set after the name pass and residue scan — i.e. empties
+// whose NAME said binary (an empty .png). Empty files contain no NUL
+// byte, so they are text by the rule-11 definition regardless of name,
+// matching the prior full-scan behavior. Lstat-only: metadata, not
+// content classification, so rg remains the sole content classifier.
+// Symlinks are excluded by policy (discovery doesn't emit symlink
+// entries). Individual Lstat failures skip the file (it stays binary).
+//
+// allPaths is the already-enumerated --no-ignore universe — required so
+// an --include-authorized empty file in a blocked subtree is considered
+// too; reusing the enumeration avoids a second rg walk.
+func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[string]struct{}) (statCount, admittedCount int) {
+	for _, rel := range allPaths {
+		if _, ok := set[rel]; ok {
+			continue
+		}
+		statCount++
+		abs := filepath.Join(workingDir, filepath.FromSlash(rel))
+		info, statErr := os.Lstat(abs)
+		if statErr != nil {
+			continue
+		}
+		if info.Size() == 0 && info.Mode().IsRegular() {
+			set[rel] = struct{}{}
+			admittedCount++
+		}
+	}
+	return statCount, admittedCount
 }
 
 // visibleFileSetCache memoizes runRipgrepVisibleFiles by
@@ -325,7 +478,11 @@ var (
 // positionals would silently change ignore semantics. The text-file set
 // (ResolveTextFileSet) uses --no-ignore and can safely be scope-narrowed;
 // the visible set cannot, without a Go-side filter step that does not yet
-// exist. See ACTIVE_PLAN_scope_aware_rg_caches.md for follow-up.
+// exist. Follow-up:
+// docs/versions/v0.6.6/reports/ACTIVE_PLAN_target_oriented_catclip.md
+// Slice 1 — its Pin #1 is the empirical matrix that must confirm or
+// refute this ancestor-pattern claim per rg call shape before any
+// narrowing here.
 func ResolveVisibleFileSet(workingDir, hissPath string) (map[string]struct{}, error) {
 	dirKey, err := filepath.Abs(workingDir)
 	if err != nil {
@@ -492,28 +649,41 @@ func RunRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 			benchRgMatchesCalls.Add(1)
 		}
 		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				switch exitErr.ExitCode() {
-				case 1:
-					continue
-				case 2:
-					if isRipgrepBadPatternStderr(stderr.Bytes()) {
-						finishBench(
-							"err", "true",
-							"bad_pattern", "true",
-							"chunks", platform.InternalBenchInt(chunks),
-							"matches", platform.InternalBenchInt(len(matches)),
-						)
-						return nil, ErrRipgrepBadPattern
-					}
-				}
+			exitErr, isExit := err.(*exec.ExitError)
+			if !isExit {
+				finishBench(
+					"err", "true",
+					"chunks", platform.InternalBenchInt(chunks),
+					"matches", platform.InternalBenchInt(len(matches)),
+				)
+				return nil, err
 			}
-			finishBench(
-				"err", "true",
-				"chunks", platform.InternalBenchInt(chunks),
-				"matches", platform.InternalBenchInt(len(matches)),
-			)
-			return nil, err
+			switch exitErr.ExitCode() {
+			case 1:
+				continue
+			case 2:
+				if isRipgrepBadPatternStderr(stderr.Bytes()) {
+					finishBench(
+						"err", "true",
+						"bad_pattern", "true",
+						"chunks", platform.InternalBenchInt(chunks),
+						"matches", platform.InternalBenchInt(len(matches)),
+					)
+					return nil, ErrRipgrepBadPattern
+				}
+				// Exit 2 without a pattern error: unreadable/vanished
+				// listed file; parse the chunk's partial output instead
+				// of failing (2026-07-04 tolerance).
+			default:
+				// Includes -1 (reload cancellation kill) — must keep
+				// propagating so ReloadWasCancelled handling works.
+				finishBench(
+					"err", "true",
+					"chunks", platform.InternalBenchInt(chunks),
+					"matches", platform.InternalBenchInt(len(matches)),
+				)
+				return nil, err
+			}
 		}
 
 		for _, rec := range bytes.Split(out, []byte{'\n'}) {
@@ -599,28 +769,41 @@ func FirstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 		cmd.Stderr = &stderr
 		result, err := cmd.Output()
 		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				switch exitErr.ExitCode() {
-				case 1:
-					continue
-				case 2:
-					if isRipgrepBadPatternStderr(stderr.Bytes()) {
-						finishBench(
-							"err", "true",
-							"bad_pattern", "true",
-							"chunks", platform.InternalBenchInt(chunks),
-							"matches", platform.InternalBenchInt(len(out)),
-						)
-						return nil, ErrRipgrepBadPattern
-					}
-				}
+			exitErr, isExit := err.(*exec.ExitError)
+			if !isExit {
+				finishBench(
+					"err", "true",
+					"chunks", platform.InternalBenchInt(chunks),
+					"matches", platform.InternalBenchInt(len(out)),
+				)
+				return nil, err
 			}
-			finishBench(
-				"err", "true",
-				"chunks", platform.InternalBenchInt(chunks),
-				"matches", platform.InternalBenchInt(len(out)),
-			)
-			return nil, err
+			switch exitErr.ExitCode() {
+			case 1:
+				continue
+			case 2:
+				if isRipgrepBadPatternStderr(stderr.Bytes()) {
+					finishBench(
+						"err", "true",
+						"bad_pattern", "true",
+						"chunks", platform.InternalBenchInt(chunks),
+						"matches", platform.InternalBenchInt(len(out)),
+					)
+					return nil, ErrRipgrepBadPattern
+				}
+				// Exit 2 without a pattern error: unreadable/vanished
+				// listed file; parse the chunk's partial output instead
+				// of failing (2026-07-04 tolerance).
+			default:
+				// Includes -1 (reload cancellation kill) — must keep
+				// propagating so ReloadWasCancelled handling works.
+				finishBench(
+					"err", "true",
+					"chunks", platform.InternalBenchInt(chunks),
+					"matches", platform.InternalBenchInt(len(out)),
+				)
+				return nil, err
+			}
 		}
 		for _, rec := range bytes.Split(result, []byte{'\n'}) {
 			if len(rec) == 0 {
@@ -709,32 +892,48 @@ func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[s
 			benchRgMatchesCalls.Add(1)
 		}
 		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				switch exitErr.ExitCode() {
-				case 1:
-					// invert=false: no files matched in chunk → skip.
-					// invert=true:  every file matched → no "without-match"
-					//   rows to emit → skip.
-					// Both cases: continue to next chunk.
-					continue
-				case 2:
-					if isRipgrepBadPatternStderr(stderr.Bytes()) {
-						finishBench(
-							"err", "true",
-							"bad_pattern", "true",
-							"chunks", platform.InternalBenchInt(chunks),
-							"matches", platform.InternalBenchInt(len(matches)),
-						)
-						return nil, ErrRipgrepBadPattern
-					}
-				}
+			exitErr, isExit := err.(*exec.ExitError)
+			if !isExit {
+				finishBench(
+					"err", "true",
+					"chunks", platform.InternalBenchInt(chunks),
+					"matches", platform.InternalBenchInt(len(matches)),
+				)
+				return nil, err
 			}
-			finishBench(
-				"err", "true",
-				"chunks", platform.InternalBenchInt(chunks),
-				"matches", platform.InternalBenchInt(len(matches)),
-			)
-			return nil, err
+			switch exitErr.ExitCode() {
+			case 1:
+				// invert=false: no files matched in chunk → skip.
+				// invert=true:  every file matched → no "without-match"
+				//   rows to emit → skip.
+				// Both cases: continue to next chunk.
+				continue
+			case 2:
+				if isRipgrepBadPatternStderr(stderr.Bytes()) {
+					finishBench(
+						"err", "true",
+						"bad_pattern", "true",
+						"chunks", platform.InternalBenchInt(chunks),
+						"matches", platform.InternalBenchInt(len(matches)),
+					)
+					return nil, ErrRipgrepBadPattern
+				}
+				// Exit 2 without a pattern error: an explicitly listed
+				// file was unreadable or vanished mid-session; rg still
+				// printed rows for the rest of the chunk. Fall through
+				// and parse the partial output — unreadable files are
+				// simply absent (2026-07-04 tolerance, matching the
+				// direct helpers).
+			default:
+				// Includes -1 (reload cancellation kill) — must keep
+				// propagating so ReloadWasCancelled handling works.
+				finishBench(
+					"err", "true",
+					"chunks", platform.InternalBenchInt(chunks),
+					"matches", platform.InternalBenchInt(len(matches)),
+				)
+				return nil, err
+			}
 		}
 
 		for _, match := range splitNullSeparated(out) {
@@ -751,7 +950,6 @@ func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[s
 	)
 	return matches, nil
 }
-
 
 // DirectOption configures one of the boolean knobs on the direct rg
 // helpers (RunRipgrepDirect, RunRipgrepDirectMatchLines). Use
@@ -807,6 +1005,15 @@ func directOptionsFrom(opts []DirectOption) directOptions {
 //
 // Bad pattern: rg exit 2 + stderr matching PCRE2 markers →
 // ErrRipgrepBadPattern. rg "no matches" exit 1 → empty map, no error.
+//
+// Production status (v0.6.5 dead-code sweep): no production caller yet —
+// the shipped direct paths use RunRipgrepDirectMatchLines only. This
+// function and DirectInvert are retained deliberately as the executable
+// spec for direct-mode file-set semantics (parity/invert/smart-case
+// contracts in ripgrep_direct_test.go), pending the --contains /
+// --not-contains direct-mode wiring. If that wiring is abandoned, delete
+// this together with DirectInvert and re-anchor the shared contract
+// tests on RunRipgrepDirectMatchLines.
 func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...DirectOption) (map[string]struct{}, error) {
 	cfg := directOptionsFrom(opts)
 	spanName := "search.rg.direct"
@@ -865,20 +1072,32 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...Dire
 		benchRgMatchesCalls.Add(1)
 	}
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			switch exitErr.ExitCode() {
-			case 1:
-				finishBench("err", "false", "matches", "0")
-				return map[string]struct{}{}, nil
-			case 2:
-				if isRipgrepBadPatternStderr(stderr.Bytes()) {
-					finishBench("err", "true", "bad_pattern", "true")
-					return nil, ErrRipgrepBadPattern
-				}
-			}
+		exitErr, isExit := err.(*exec.ExitError)
+		if !isExit {
+			finishBench("err", "true")
+			return nil, fmt.Errorf("rg direct scan of %q under %q failed to run: %w", target, workingDir, err)
 		}
-		finishBench("err", "true")
-		return nil, err
+		switch exitErr.ExitCode() {
+		case 1:
+			finishBench("err", "false", "matches", "0")
+			return map[string]struct{}{}, nil
+		case 2:
+			if isRipgrepBadPatternStderr(stderr.Bytes()) {
+				finishBench("err", "true", "bad_pattern", "true")
+				return nil, ErrRipgrepBadPattern
+			}
+			// Exit 2 without a pattern error: rg hit unreadable files
+			// mid-walk (locked, permission-denied, cloud placeholder)
+			// but still printed rows for everything it could read. Fall
+			// through and parse the partial output — a picker keystroke
+			// must not die because one file was unreadable. Unreadable
+			// files are simply absent from the output.
+		default:
+			// Includes -1 (killed by reload cancellation) — that error
+			// must keep propagating so ReloadWasCancelled handling works.
+			finishBench("err", "true")
+			return nil, err
+		}
 	}
 
 	matches := make(map[string]struct{})
@@ -892,7 +1111,6 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...Dire
 	finishBench("err", "false", "matches", platform.InternalBenchInt(len(matches)))
 	return matches, nil
 }
-
 
 // RunRipgrepDirectMatchLines is the scope-rooted sibling of
 // FirstMatchLinePerFile. One rg call walks `target` and returns
@@ -950,20 +1168,30 @@ func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string, op
 		benchRgMatchesCalls.Add(1)
 	}
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
-			switch exitErr.ExitCode() {
-			case 1:
-				finishBench("err", "false", "matches", "0")
-				return map[string]int{}, nil
-			case 2:
-				if isRipgrepBadPatternStderr(stderr.Bytes()) {
-					finishBench("err", "true", "bad_pattern", "true")
-					return nil, ErrRipgrepBadPattern
-				}
-			}
+		exitErr, isExit := err.(*exec.ExitError)
+		if !isExit {
+			finishBench("err", "true")
+			return nil, fmt.Errorf("rg direct match-lines scan of %q under %q failed to run: %w", target, workingDir, err)
 		}
-		finishBench("err", "true")
-		return nil, err
+		switch exitErr.ExitCode() {
+		case 1:
+			finishBench("err", "false", "matches", "0")
+			return map[string]int{}, nil
+		case 2:
+			if isRipgrepBadPatternStderr(stderr.Bytes()) {
+				finishBench("err", "true", "bad_pattern", "true")
+				return nil, ErrRipgrepBadPattern
+			}
+			// Exit 2 without a pattern error: unreadable files mid-walk;
+			// rg still printed rows for everything it could read. Fall
+			// through and parse the partial output rather than killing
+			// the picker keystroke. Unreadable files are simply absent.
+		default:
+			// Includes -1 (killed by reload cancellation) — must keep
+			// propagating so ReloadWasCancelled handling works.
+			finishBench("err", "true")
+			return nil, err
+		}
 	}
 
 	matches := make(map[string]int)

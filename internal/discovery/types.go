@@ -23,13 +23,22 @@ type Entry struct {
 	SnippetPattern      string
 	SnippetContextSet   bool
 	SnippetContextLines int
-	Lines               bool
-	LinesStart          int
-	LinesEnd            int
-	DiffWantStaged      bool
-	DiffWantUnstaged    bool
-	AllowedByInclude    bool
-	BlockSource         string
+	// SnippetMatchLines carries the --snippet pattern's matched line
+	// numbers, pinned by the snippet content stage in the same rg pass
+	// that decides membership (the filter-attribute-persistence model:
+	// pin → carry → consume). Valid only for SnippetPattern, and
+	// consumers are mode-gated on EntryModeSnippet, so a stale value is
+	// structurally unreadable. Absent (nil) is always safe — the
+	// BatchSnippetMatches fallback recomputes. Serialized in checkpoint
+	// JSON; old checkpoints yield nil → fallback.
+	SnippetMatchLines []int
+	Lines             bool
+	LinesStart        int
+	LinesEnd          int
+	DiffWantStaged    bool
+	DiffWantUnstaged  bool
+	AllowedByInclude  bool
+	BlockSource       string
 }
 
 // Discovered is the typed output of running discovery across all

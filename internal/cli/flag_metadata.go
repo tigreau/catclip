@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/tigreau/catclip/internal/command"
@@ -42,9 +43,27 @@ type flagSpec struct {
 	Recoverability flagInteractiveRecoverability
 }
 
-var ScopeModifierFlagSpecs = []flagSpec{
+// ScopeModifierFlagSpecs is the parser-side registry of scope-modifier
+// stages. Flag spellings are NOT written here — the builder below joins
+// each entry to command's stageFlags table (the single spelling home
+// shared with canonical rendering) and panics at init if a kind has no
+// entry there.
+var ScopeModifierFlagSpecs = buildScopeModifierFlagSpecs()
+
+func buildScopeModifierFlagSpecs() []flagSpec {
+	specs := scopeModifierFlagSpecTable
+	for i := range specs {
+		flag, ok := command.StageFlag(specs[i].StageKind)
+		if !ok {
+			panic(fmt.Sprintf("cli: no canonical flag registered in command.StageFlags for stage kind %q", specs[i].StageKind))
+		}
+		specs[i].Flag = flag
+	}
+	return specs
+}
+
+var scopeModifierFlagSpecTable = []flagSpec{
 	{
-		Flag:           "--include",
 		StageKind:      command.StageInclude,
 		Arity:          flagArityMany,
 		Family:         flagFamilyFileSetRefinement,
@@ -52,7 +71,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityRequiredValue,
 	},
 	{
-		Flag:           "--only",
 		StageKind:      command.StageOnly,
 		Arity:          flagArityMany,
 		Family:         flagFamilyFileSetRefinement,
@@ -60,7 +78,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityRequiredValue,
 	},
 	{
-		Flag:           "--exclude",
 		StageKind:      command.StageExclude,
 		Arity:          flagArityMany,
 		Family:         flagFamilyFileSetRefinement,
@@ -68,7 +85,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityRequiredValue,
 	},
 	{
-		Flag:           "--recent",
 		StageKind:      command.StageRecent,
 		Arity:          flagArityOptionalOne,
 		Family:         flagFamilyFileSetRefinement,
@@ -76,7 +92,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityOptionalValue,
 	},
 	{
-		Flag:           "--size",
 		StageKind:      command.StageSize,
 		Arity:          flagArityOptionalTwo,
 		Family:         flagFamilyFileSetRefinement,
@@ -84,7 +99,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityOptionalValue,
 	},
 	{
-		Flag:           "--depth",
 		StageKind:      command.StageDepth,
 		Arity:          flagArityOne,
 		Family:         flagFamilyFileSetRefinement,
@@ -92,7 +106,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityRequiredValue,
 	},
 	{
-		Flag:           "--contains",
 		StageKind:      command.StageContains,
 		Arity:          flagArityOne,
 		Family:         flagFamilyContentFilter,
@@ -100,7 +113,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityRequiredValue,
 	},
 	{
-		Flag:           "--not-contains",
 		StageKind:      command.StageNotContains,
 		Arity:          flagArityOne,
 		Family:         flagFamilyContentFilter,
@@ -108,7 +120,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityRequiredValue,
 	},
 	{
-		Flag:           "--paths",
 		StageKind:      command.StagePaths,
 		Arity:          flagArityNone,
 		Family:         flagFamilyOutputMode,
@@ -116,7 +127,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		Flag:           "--changed",
 		StageKind:      command.StageChanged,
 		Arity:          flagArityNone,
 		Family:         flagFamilyGitChangeFilter,
@@ -124,7 +134,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		Flag:           "--staged",
 		StageKind:      command.StageStaged,
 		Arity:          flagArityNone,
 		Family:         flagFamilyGitChangeFilter,
@@ -132,7 +141,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		Flag:           "--unstaged",
 		StageKind:      command.StageUnstaged,
 		Arity:          flagArityNone,
 		Family:         flagFamilyGitChangeFilter,
@@ -140,7 +148,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		Flag:           "--untracked",
 		StageKind:      command.StageUntracked,
 		Arity:          flagArityNone,
 		Family:         flagFamilyGitChangeFilter,
@@ -148,7 +155,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		Flag:           "--diff",
 		StageKind:      command.StageDiff,
 		Arity:          flagArityNone,
 		Family:         flagFamilyOutputMode,
@@ -156,7 +162,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		Flag:           "--changed-diff",
 		StageKind:      command.StageChangedDiff,
 		Arity:          flagArityNone,
 		Family:         flagFamilyOutputMode,
@@ -164,7 +169,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		Flag:           "--staged-diff",
 		StageKind:      command.StageStagedDiff,
 		Arity:          flagArityNone,
 		Family:         flagFamilyOutputMode,
@@ -172,7 +176,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		Flag:           "--unstaged-diff",
 		StageKind:      command.StageUnstagedDiff,
 		Arity:          flagArityNone,
 		Family:         flagFamilyOutputMode,
@@ -180,7 +183,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		Flag:           "--snippet",
 		StageKind:      command.StageSnippet,
 		Arity:          flagArityOne,
 		Family:         flagFamilyOutputMode,
@@ -188,7 +190,6 @@ var ScopeModifierFlagSpecs = []flagSpec{
 		Recoverability: flagRecoverabilityRequiredValue,
 	},
 	{
-		Flag:           "--lines",
 		StageKind:      command.StageLines,
 		Arity:          flagArityNone,
 		Family:         flagFamilyOutputMode,
@@ -241,31 +242,76 @@ func (f flagSemanticFamily) scopeStageCategory() (scopeStageCategory, bool) {
 	}
 }
 
-func IsValueTakingFlag(arg string) bool {
-	switch arg {
-	case "--include", "--only", "--exclude", "--depth", "--contains", "--not-contains", "--snippet",
-		"--internal-tree-target", "--internal-tree-kind", "--internal-tree-state",
-		"--internal-file-path", "--input-dir", "--input-stem":
-		return true
-	default:
-		return false
+// extraValueTakingFlags lists value-taking flags OUTSIDE the
+// scope-modifier spec table: internal preview plumbing and tree payload
+// inputs. Scope-modifier membership derives from spec arity below; only
+// non-spec flags belong here.
+var extraValueTakingFlags = []string{
+	"--internal-tree-target", "--internal-tree-kind", "--internal-tree-state",
+	"--internal-file-path", "--input-dir", "--input-stem",
+}
+
+// globalBoundaryFlags lists the non-stage flags that terminate
+// optional-value consumption. Kept as an explicit table (they have no
+// spec entries); spec flags join the boundary set automatically below.
+var globalBoundaryFlags = []string{
+	"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
+	"--no-bundle", "--preview", "--with-binaries",
+	"-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules",
+}
+
+// valueTakingFlags derives from spec arity (one/many) plus the explicit
+// extras: adding a value-taking modifier to ScopeModifierFlagSpecs needs
+// no edit here. Optional-arity flags (--recent, --size) are deliberately
+// NOT value-taking — their lookahead decides per token.
+var valueTakingFlags = buildValueTakingFlags()
+
+func buildValueTakingFlags() map[string]struct{} {
+	out := make(map[string]struct{}, len(ScopeModifierFlagSpecs)+len(extraValueTakingFlags))
+	for _, spec := range ScopeModifierFlagSpecs {
+		if spec.Arity == flagArityOne || spec.Arity == flagArityMany {
+			out[spec.Flag] = struct{}{}
+		}
 	}
+	for _, flag := range extraValueTakingFlags {
+		out[flag] = struct{}{}
+	}
+	return out
+}
+
+// modifierBoundaryTokens is the derived KNOWN-boundary set: --then, the
+// bare -- placeholder, every spec flag regardless of parse policy
+// (rejected-standalone --diff is still a boundary — pinned by
+// TestOptionalValueConsumersStopAtBoundaryFlags), every value-taking
+// flag, and the global table. The strings.HasPrefix("--") fallback in
+// IsModifierBoundaryToken remains responsible ONLY for tokens absent
+// from every table, so optional-value consumers stop before unknown
+// --foo and the parser reports the real unknown-option error.
+var modifierBoundaryTokens = buildModifierBoundaryTokens()
+
+func buildModifierBoundaryTokens() map[string]struct{} {
+	out := make(map[string]struct{}, len(ScopeModifierFlagSpecs)+len(extraValueTakingFlags)+len(globalBoundaryFlags)+2)
+	out["--then"] = struct{}{}
+	out["--"] = struct{}{}
+	for _, spec := range ScopeModifierFlagSpecs {
+		out[spec.Flag] = struct{}{}
+	}
+	for flag := range valueTakingFlags {
+		out[flag] = struct{}{}
+	}
+	for _, flag := range globalBoundaryFlags {
+		out[flag] = struct{}{}
+	}
+	return out
+}
+
+func IsValueTakingFlag(arg string) bool {
+	_, ok := valueTakingFlags[arg]
+	return ok
 }
 
 func IsModifierBoundaryToken(arg string) bool {
-	if arg == "--then" || arg == "--" {
-		return true
-	}
-	if IsValueTakingFlag(arg) {
-		return true
-	}
-	switch arg {
-	case "--changed", "--staged", "--unstaged", "--untracked",
-		"--changed-diff", "--staged-diff", "--unstaged-diff",
-		"--recent", "--size", "--lines",
-		"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-		"--no-bundle", "--preview", "--with-binaries",
-		"-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules":
+	if _, ok := modifierBoundaryTokens[arg]; ok {
 		return true
 	}
 	return strings.HasPrefix(arg, "--")

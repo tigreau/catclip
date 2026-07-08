@@ -216,12 +216,6 @@ func EmitOutputPlan(cfg EmitConfig, env EmitEnvironment, plan Plan, stdout io.Wr
 	})
 }
 
-func EmitRawOutputPlan(cfg EmitConfig, env EmitEnvironment, plan Plan, stdout io.Writer, colors platform.Palette) (EmitStats, error) {
-	return WithPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
-		return WriteRawOutputPlanPayload(w, plan)
-	})
-}
-
 func WriteOutputPlanPayload(w io.Writer, cfg EmitConfig, plan Plan) error {
 	return writeOutputPlanPayloadWithPrefetch(w, cfg, plan, true)
 }

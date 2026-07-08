@@ -651,7 +651,7 @@ func startupHasUnresolvedScope(args []string) bool {
 			}
 			if args[i] == "--depth" {
 				if i+1 < len(args) {
-					if _, err := discovery.ParseDepthToken(args[i+1]); err == nil {
+					if _, err := cli.ParseDepthToken(args[i+1]); err == nil {
 						i++
 					}
 				}
@@ -676,7 +676,7 @@ func startupHasUnresolvedScope(args []string) bool {
 				return true
 			}
 			if i+1 < len(args) && !cli.IsModifierBoundaryToken(args[i+1]) {
-				if _, err := discovery.ParseRecentLimitToken(args[i+1]); err == nil {
+				if _, err := cli.ParseRecentLimitToken(args[i+1]); err == nil {
 					i++
 				}
 			}
@@ -704,7 +704,7 @@ func startupHasUnresolvedScope(args []string) bool {
 			}
 			continue
 		default:
-			if strings.HasPrefix(arg, "--contains=") || strings.HasPrefix(arg, "--recent=") || strings.HasPrefix(arg, "--size=") || strings.HasPrefix(arg, "--depth=") {
+			if cli.EqualsFormRejectionError(arg) != nil {
 				return true
 			}
 			if strings.HasPrefix(arg, "--") || (strings.HasPrefix(arg, "-") && len(arg) > 1) {
@@ -741,7 +741,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 		case "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--depth":
 			if arg == "--depth" {
 				if i+1 < len(args) {
-					if _, err := discovery.ParseDepthToken(args[i+1]); err == nil {
+					if _, err := cli.ParseDepthToken(args[i+1]); err == nil {
 						i++
 					}
 				}
@@ -781,7 +781,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 			continue
 		case "--recent":
 			if i+1 < len(args) && !cli.IsModifierBoundaryToken(args[i+1]) {
-				if _, err := discovery.ParseRecentLimitToken(args[i+1]); err != nil {
+				if _, err := cli.ParseRecentLimitToken(args[i+1]); err != nil {
 					return false, nil
 				}
 				i++
@@ -794,7 +794,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 			"--changed-diff", "--staged-diff", "--unstaged-diff", "--", "--diff":
 			continue
 		}
-		if strings.HasPrefix(arg, "--contains=") || strings.HasPrefix(arg, "--recent=") || strings.HasPrefix(arg, "--size=") || strings.HasPrefix(arg, "--depth=") {
+		if cli.EqualsFormRejectionError(arg) != nil {
 			return true, nil
 		}
 		if strings.HasPrefix(arg, "--") || (strings.HasPrefix(arg, "-") && len(arg) > 1) {
@@ -888,7 +888,7 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 				}
 			}
 			if flag == "--depth" {
-				if _, err := discovery.ParseDepthToken(tokens[i+1]); err != nil {
+				if _, err := cli.ParseDepthToken(tokens[i+1]); err != nil {
 					return startupInputParse{}, err
 				}
 			}
@@ -908,7 +908,7 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 			if i+1 >= len(tokens) || cli.IsModifierBoundaryToken(tokens[i+1]) {
 				continue
 			}
-			if _, err := discovery.ParseRecentLimitToken(tokens[i+1]); err != nil {
+			if _, err := cli.ParseRecentLimitToken(tokens[i+1]); err != nil {
 				return startupInputParse{}, err
 			}
 			parsed.modifiers = append(parsed.modifiers, tokens[i+1])
@@ -952,6 +952,8 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 				return startupInputParse{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: --contains 'pattern'")
 			case strings.HasPrefix(tokens[i], "--not-contains="):
 				return startupInputParse{}, newUsageError("Error: --not-contains requires a space before the pattern.\n  Use: --not-contains 'pattern'")
+			case strings.HasPrefix(tokens[i], "--snippet="):
+				return startupInputParse{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: --snippet 'pattern'")
 			case strings.HasPrefix(tokens[i], "--recent="):
 				return startupInputParse{}, newUsageError("Error: --recent requires a space before the value.\n  Use: --recent 5\n  Or:  --recent")
 			case strings.HasPrefix(tokens[i], "--size="):
@@ -1337,15 +1339,10 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 			modifierMode = true
 			hadScopeInput = true
 		default:
+			if err := cli.EqualsFormRejectionError(arg); err != nil {
+				return nil, nil, false, err
+			}
 			switch {
-			case strings.HasPrefix(arg, "--contains="):
-				return nil, nil, false, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
-			case strings.HasPrefix(arg, "--recent="):
-				return nil, nil, false, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
-			case strings.HasPrefix(arg, "--size="):
-				return nil, nil, false, cli.SizeEqualsFormError()
-			case strings.HasPrefix(arg, "--depth="):
-				return nil, nil, false, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 			case strings.HasPrefix(arg, "--"):
 				return nil, nil, false, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", discovery.SingleQuoted(arg))
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
@@ -2130,7 +2127,7 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 			args, err := resolveStartupRecentArgsWithEscHint(currentArgs, escHint)
 			return args, append([]string(nil), currentScopeTargets...), true, 0, err
 		}
-		limit, err := discovery.ParseRecentLimitToken(remaining[0])
+		limit, err := cli.ParseRecentLimitToken(remaining[0])
 		if err != nil {
 			return nil, nil, false, 0, err
 		}

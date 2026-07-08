@@ -155,20 +155,12 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 			if err := stageState.apply(command.StageRecent); err != nil {
 				return command.Spec{}, err
 			}
-			if i+1 >= len(args) {
-				current.Stages = append(current.Stages, command.Stage{Kind: command.StageRecent})
-				continue
-			}
-			if IsModifierBoundaryToken(args[i+1]) {
-				current.Stages = append(current.Stages, command.Stage{Kind: command.StageRecent})
-				continue
-			}
-			limit, err := parseRecentLimitToken(args[i+1])
+			limit, next, err := consumeOptionalRecentLimit(args, i+1)
 			if err != nil {
 				return command.Spec{}, err
 			}
-			current.Stages = append(current.Stages, command.Stage{Kind: command.StageRecent, Limit: &limit})
-			i++
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageRecent, Limit: limit})
+			i = next - 1
 			continue
 		case "--size":
 			inModifierMode = true
@@ -187,15 +179,12 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 			if err := stageState.apply(command.StageDepth); err != nil {
 				return command.Spec{}, err
 			}
-			if i+1 >= len(args) {
-				return command.Spec{}, RequiredStageValueError("--depth")
-			}
-			depth, err := parseDepthToken(args[i+1])
+			limit, next, err := consumeDepthLimit(args, i+1)
 			if err != nil {
 				return command.Spec{}, err
 			}
-			current.Stages = append(current.Stages, command.Stage{Kind: command.StageDepth, Limit: &depth})
-			i++
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageDepth, Limit: limit})
+			i = next - 1
 			continue
 		case "--paths":
 			inModifierMode = true
@@ -381,21 +370,12 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 			continue
 		}
 
+		if err := EqualsFormRejectionError(arg); err != nil {
+			return command.Spec{}, err
+		}
 		switch {
 		case arg == "--diff":
 			return command.Spec{}, DiffStandaloneError()
-		case strings.HasPrefix(arg, "--contains="):
-			return command.Spec{}, newUsageError("Error: --contains requires a space before the pattern.\n  Use: catclip src --contains 'pattern'\n  Not: catclip src --contains='pattern'")
-		case strings.HasPrefix(arg, "--not-contains="):
-			return command.Spec{}, newUsageError("Error: --not-contains requires a space before the pattern.\n  Use: catclip src --not-contains 'pattern'\n  Not: catclip src --not-contains='pattern'")
-		case strings.HasPrefix(arg, "--snippet="):
-			return command.Spec{}, newUsageError("Error: --snippet requires a space before the pattern.\n  Use: catclip src --snippet 'pattern'\n  Not: catclip src --snippet='pattern'")
-		case strings.HasPrefix(arg, "--recent="):
-			return command.Spec{}, newUsageError("Error: --recent requires a space before the value.\n  Use: catclip src --recent 5\n  Or:  catclip src --recent")
-		case strings.HasPrefix(arg, "--size="):
-			return command.Spec{}, SizeEqualsFormError()
-		case strings.HasPrefix(arg, "--depth="):
-			return command.Spec{}, newUsageError("Error: --depth requires a space before the value.\n  Use: catclip src --depth 2")
 		case strings.HasPrefix(arg, "--"):
 			return command.Spec{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
 		case strings.HasPrefix(arg, "-") && len(arg) > 1:

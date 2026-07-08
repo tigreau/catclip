@@ -3,7 +3,9 @@ package ui
 import (
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/tigreau/catclip/internal/command"
@@ -108,6 +110,8 @@ const internalSnippetPreviewEmptyHint = `Snippet search — PCRE2 regex (smart-c
 type filePreviewConfig struct {
 	WorkingDir     string
 	FilePath       string
+	SearchingHint  bool
+	FocusedLabel   string
 	Scopes         []command.ExecutionScope
 	CheckpointPath string
 	Invocation     command.Invocation
@@ -118,6 +122,8 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 	return filePreviewConfig{
 		WorkingDir:     cfg.WorkingDir,
 		FilePath:       cfg.FilePath,
+		SearchingHint:  cfg.FileSearchingPreview,
+		FocusedLabel:   cfg.TreeTarget,
 		Scopes:         command.ExecutionScopesFromSpec(cfg.Command),
 		CheckpointPath: cfg.PrediscoveredPath,
 		Invocation:     invocationConfigFromParsedCommand(cfg),
@@ -126,26 +132,31 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 }
 
 // RunInternalFilePreview serves the content-match picker's preview pane.
-// It dispatches on three states the picker can be in:
+// It dispatches on four states the picker can be in:
 //
 //  1. Empty pattern (fzf passed `--contains ""` or `--snippet ""`, the
 //     user hasn't typed yet). Emits a static hint document teaching
 //     smart-case behavior and useful patterns. Fires regardless of which
 //     row is focused on the left.
 //
-//  2. Non-empty pattern + empty focused path (the `[all current matches]`
+//  2. Non-empty pattern + empty focused path + no focused row yet. Emits the
+//     "searching" document, including the Windows Defender explanation. This
+//     is the state between a query change and the reload producing rows.
+//
+//  3. Non-empty pattern + empty focused path (the `[all current matches]`
 //     row, whose TSV field 3 is empty). When a prediscovered checkpoint
 //     is attached, emits the full scope tree from the checkpoint — same
 //     shape as --only / --exclude's `[all files]` preview. Without a
 //     checkpoint, emits nothing (the legacy behavior).
 //
-//  3. Non-empty pattern + non-empty focused path. The existing per-file
+//  4. Non-empty pattern + non-empty focused path. The existing per-file
 //     preview path: load the file, render with optional match
 //     highlighting / snippet extraction / diff.
 //
 // The shared preview command (a single string set when the picker opens)
-// embeds both `--internal-file-path {3}` and `--internal-prediscovered <path>`
-// so this one handler can dispatch all three states without per-state
+// embeds `--internal-file-path {3}`, `--internal-tree-target {1}`, and
+// `--internal-prediscovered <path>`
+// so this one handler can dispatch these states without per-state
 // shell branching in the command string. See fzfContentPreviewCommand for
 // the command builder.
 func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
@@ -168,6 +179,33 @@ func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
 		err := renderTreeDocument(stdout, buildInternalContentHintDocument(s), FzfFilterTreeRenderOptions(), platform.ANSIPalette())
 		finishHintBench("err", platform.InternalBenchError(err))
 		finishBench("err", platform.InternalBenchError(err), "mode", "hint")
+		return err
+	}
+
+	// Non-empty pattern + no focused row + the content picker explicitly
+	// requesting the "searching" document: this is the phase between a
+	// keystroke and the reload command producing rows. The focused label
+	// separates true no-row state from the [all current matches] sentinel,
+	// which also has an empty file path. Empty-pattern regex hints still win
+	// above; once reload emits rows, sentinel rows render the checkpoint tree
+	// and real file rows render per-file previews.
+	if cfg.SearchingHint && strings.TrimSpace(cfg.FilePath) == "" && strings.TrimSpace(cfg.FocusedLabel) != contentMatchAllMatchesLabel {
+		finishSearchBench := platform.InternalBenchSpan("ui.internal.file_preview.searching_hint")
+		err := renderTreeDocument(stdout, buildInternalSearchingHintDocument(runtime.GOOS), FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+		finishSearchBench("err", platform.InternalBenchError(err))
+		finishBench("err", platform.InternalBenchError(err), "mode", "searching_hint")
+		return err
+	}
+
+	// Compatibility fallback: if a future/alternate fzf reports a zero-row
+	// list to preview helpers, render the same searching document. The main
+	// content picker no longer depends on this; it explicitly calls the
+	// cfg.SearchingHint path before each reload.
+	if strings.TrimSpace(cfg.FilePath) == "" && os.Getenv("FZF_MATCH_COUNT") == "0" {
+		finishSearchBench := platform.InternalBenchSpan("ui.internal.file_preview.searching_hint")
+		err := renderTreeDocument(stdout, buildInternalSearchingHintDocument(runtime.GOOS), FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+		finishSearchBench("err", platform.InternalBenchError(err))
+		finishBench("err", platform.InternalBenchError(err), "mode", "searching_hint")
 		return err
 	}
 
@@ -308,6 +346,28 @@ func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string, opts 
 	content, focusLines := buildInternalSnippetPreviewContent(snippet.Ranges, snippet.Lines)
 	finishBench("err", "false", "ranges", platform.InternalBenchInt(len(snippet.Ranges)))
 	return buildTreeFilePreviewDocument(relPath, "", content, pattern, false, focusLines), true
+}
+
+// buildInternalSearchingHintDocument renders the preview shown while a
+// typed pattern has zero matches so far (search still running, or a
+// genuine zero-match). goos is a parameter for testability; only Windows
+// gets the antivirus paragraph — the once-per-boot cold toll is a
+// Defender phenomenon (rg reads every candidate through the on-access
+// filter on first touch after boot; later searches hit the per-boot
+// scan cache and are fast).
+func buildInternalSearchingHintDocument(goos string) treeDocument {
+	var b strings.Builder
+	b.WriteString("Searching — no matches for this pattern yet.\n")
+	b.WriteString("\nMatches appear here when the search completes;\nrefining the pattern restarts it.\n")
+	if goos == "windows" {
+		b.WriteString("\nFirst content search after a reboot is slow on Windows:\n")
+		b.WriteString("the antivirus scans every file the search reads, once per\n")
+		b.WriteString("boot. This can take ~30s on large projects. Searches after\n")
+		b.WriteString("this one reuse the antivirus cache and finish in seconds —\n")
+		b.WriteString("the wait will not recur until the next reboot.\n")
+	}
+	// HighlightPath "hint.txt" keeps the document plain (no lexer match).
+	return buildTreeFilePreviewDocument("", "hint.txt", b.String(), "", false, nil)
 }
 
 func buildInternalSnippetHintDocument() treeDocument {

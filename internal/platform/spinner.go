@@ -3,6 +3,8 @@ package platform
 import (
 	"fmt"
 	"os"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +19,7 @@ type loadingSpinnerState struct {
 	message  string
 	hint     string // Rendered after hintDelay elapses; empty means no hint.
 	hintOn   bool
+	hintRows int
 	hintMu   sync.Mutex
 	stop     chan struct{}
 	done     chan struct{}
@@ -31,13 +34,29 @@ func StartLoadingSpinner(output *os.File, message string) func() {
 }
 
 // StartLoadingSpinnerWithDelayedHint is StartLoadingSpinner plus a
-// reassurance hint that appends to the rendered message after hintDelay
-// has elapsed without stop() being called. Used by the target-picker
-// spinner to signal "first run is supposed to be slow" past the
-// cold-boot Defender-scan patience threshold. Both message and hint
-// stay stable; only their concatenation toggles at hintDelay.
+// reassurance hint that appears after hintDelay has elapsed without stop()
+// being called. Used by slow discovery/content search paths to distinguish
+// "still scanning" from "hung". The hint is printed as static lines above
+// the spinner; only the one-line spinner is redrawn, so long hints do not
+// wrap and stack on Windows terminals.
 func StartLoadingSpinnerWithDelayedHint(output *os.File, message, hint string, hintDelay time.Duration) func() {
 	return startLoadingSpinner(output, message, hint, hintDelay)
+}
+
+// SlowFileScanHint returns the delayed spinner hint used for file-tree and
+// content-search scans. Windows gets the explicit Defender explanation because
+// the first content scan after reboot pays the on-access antivirus cost once.
+// Other platforms return no hint; normal Unix filesystem scans should not be
+// framed as inherently slow.
+func SlowFileScanHint() string {
+	return slowFileScanHintForGOOS(runtime.GOOS)
+}
+
+func slowFileScanHintForGOOS(goos string) string {
+	if goos == "windows" {
+		return "This first Windows content search can be much slower while antivirus scans each file.\nOn large projects, this can feel 10x+ slower than later searches.\nLater searches should reuse the antivirus cache until the next reboot."
+	}
+	return ""
 }
 
 func startLoadingSpinner(output *os.File, message, hint string, hintDelay time.Duration) func() {
@@ -61,8 +80,24 @@ func startLoadingSpinner(output *os.File, message, hint string, hintDelay time.D
 	drawFrame := func(frame string) {
 		state.hintMu.Lock()
 		hintOn := state.hintOn
+		hintRows := state.hintRows
+		hintLines := spinnerHintLines(state.hint)
+		if hintOn && hintRows == 0 && len(hintLines) > 0 {
+			state.hintRows = len(hintLines)
+			hintRows = state.hintRows
+		}
 		state.hintMu.Unlock()
-		_, _ = fmt.Fprintf(output, "\r\033[K%s %s", frame, spinnerMessageWithHint(state.message, state.hint, hintOn))
+
+		if hintOn && hintRows == len(hintLines) && len(hintLines) > 0 {
+			_, _ = fmt.Fprint(output, "\r\033[K")
+			for _, line := range hintLines {
+				_, _ = fmt.Fprintf(output, "%s\n", line)
+			}
+			state.hintMu.Lock()
+			state.hintOn = false
+			state.hintMu.Unlock()
+		}
+		_, _ = fmt.Fprintf(output, "\r\033[K%s %s", frame, state.message)
 	}
 
 	activeSpinner.mu.Lock()
@@ -95,7 +130,10 @@ func startLoadingSpinner(output *os.File, message, hint string, hintDelay time.D
 				if hintTimer != nil {
 					hintTimer.Stop()
 				}
-				_, _ = fmt.Fprint(output, "\r\033[K")
+				state.hintMu.Lock()
+				hintRows := state.hintRows
+				state.hintMu.Unlock()
+				clearSpinnerLines(output, hintRows)
 				activeSpinner.mu.Lock()
 				if activeSpinner.state == state {
 					activeSpinner.state = nil
@@ -128,15 +166,19 @@ func StopActiveSpinner() {
 	}
 }
 
-// spinnerMessageWithHint returns the message that renders next to the
-// spinning frame. When hintOn is true (fired by the delayed timer),
-// hint is appended after a space. Pure function so the hint-append
-// rule is unit-testable without wiring a TTY.
-func spinnerMessageWithHint(message, hint string, hintOn bool) string {
-	if hintOn && hint != "" {
-		return message + " " + hint
+func clearSpinnerLines(output *os.File, hintRows int) {
+	_, _ = fmt.Fprint(output, "\r\033[K")
+	for i := 0; i < hintRows; i++ {
+		_, _ = fmt.Fprint(output, "\033[1A\r\033[K")
 	}
-	return message
+}
+
+func spinnerHintLines(hint string) []string {
+	hint = strings.TrimRight(hint, "\r\n")
+	if hint == "" {
+		return nil
+	}
+	return strings.Split(hint, "\n")
 }
 
 func SpinnerOutputFile(w any) *os.File {

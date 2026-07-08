@@ -60,18 +60,21 @@ type Resolver struct {
 	textFileSetReady     bool
 	interactiveTargets   []TargetMatch
 	interactiveTargetsOk bool
-	ignoredTargets       []TargetMatch
-	ignoredTargetsOk     bool
-	VisibleDirs          VisibleDirIndex
-	visibleDirsReady     bool
-	visibleFiles         visibleFileIndex
-	visibleFilesReady    bool
-	VisibleFileList      []Entry
-	visibleFileListReady bool
-	visibleAll           map[string]struct{}
-	visibleWithHiss      map[string]struct{}
-	visibleAllDirs       map[string]struct{}
-	visibleWithHissDirs  map[string]struct{}
+	// ignoredTargetsByScope caches AllIgnoredTargets results per narrowed
+	// scope-target key ("" = the working-dir-wide universe). Keyed because
+	// scopeTargets is a per-call parameter (one resolver serves calls with
+	// different lists, including nil — see chooseIgnoredTargetMatches).
+	ignoredTargetsByScope map[string][]TargetMatch
+	VisibleDirs           VisibleDirIndex
+	visibleDirsReady      bool
+	visibleFiles          visibleFileIndex
+	visibleFilesReady     bool
+	VisibleFileList       []Entry
+	visibleFileListReady  bool
+	visibleAll            map[string]struct{}
+	visibleWithHiss       map[string]struct{}
+	visibleAllDirs        map[string]struct{}
+	visibleWithHissDirs   map[string]struct{}
 	// Case-fold reverse indices populated alongside the visible-set maps.
 	// On case-insensitive filesystems (APFS, NTFS) a user-typed target like
 	// `Cli.go` resolves at the FS level to the canonical `cli.go`, but the
@@ -122,7 +125,7 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	// gitignore/hiss rule blocked it). The include then had no effect, and
 	// silently passing it through hides a real user mistake. Wildcard
 	// --include `*` is treated as a deliberate broadening and not classified.
-	// See ACTIVE_PLAN_rg_parity_sweep.md §1.
+	// See RESOLVED_PLAN_rg_parity_sweep.md §1.
 	noopNotices, noopErr := classifyNoOpIncludeNotices(&resolver, s.IncludedTargets)
 	if noopErr != nil {
 		return result, noopErr
@@ -148,9 +151,13 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	// checks (ignoredDirMessage / ignoredFileMessage) still surface the
 	// user-visible "--include does not cover this target" error, and the
 	// silent no-op case (visible target + orphaned include) stays as-is.
-	// The classifyEffect4Diagnostics helper remains for future use once
-	// the design distinguishes orphaned from scope-relative includes.
-	_ = classifyEffect4Diagnostics // referenced to prevent dead-code warnings
+	// A prototype classifier (classifyEffect4Diagnostics) lived here until
+	// the v0.6.5 dead-code sweep; it implemented exactly the scope-entry
+	// literal-relatedness check this comment rules out, so a future
+	// implementation should not resurrect it wholesale. The detection
+	// taxonomy and the curated error message text are preserved in
+	// docs/versions/v0.6.4/reports/RESOLVED_PLAN_include_as_authorization.md
+	// §D (effect 4); the code itself is in git history at the sweep commit.
 
 	var entries []Entry
 	selectedPaths := make([]string, 0, len(s.Targets))
@@ -387,20 +394,6 @@ func classifyNoOpIncludeNotices(r *Resolver, includes []string) ([]string, error
 	return notices, nil
 }
 
-// classifyEffect4Diagnostics returns one Diagnostic per --include value
-// that fails the effect-4 relation check: the include value neither
-// equals a scope target, descends from a scope target, nor is an
-// ancestor of any scope target. In every one of those "unrelated"
-// cases, the include cannot authorize any file the walker will visit
-// under the current scope — silently accepting it would teach users
-// the wrong mental model ("--include adds a walk root"). See
-// ACTIVE_NOTE_include_double_syntax_rationale.md, effect 4.
-//
-// Wildcard `--include *` bypasses this check by design (scope-wide is
-// not "unrelated"). A "." scope target covers every possible include
-// value; no check needed. Duplicate include values are only reported
-// once. Include values under a chained-parent target that includes
-// "." are covered too.
 // diagnosticsContainError reports whether any diagnostic in the slice
 // is a hard error (IsError). Used to convert per-target error
 // diagnostics into scope-unsatisfiable so downstream doesn't emit
@@ -412,83 +405,6 @@ func diagnosticsContainError(diags []Diagnostic) bool {
 		}
 	}
 	return false
-}
-
-func classifyEffect4Diagnostics(includes []string, scopeTargets []string, colors platform.Palette) []Diagnostic {
-	if IncludeTargetsContainWildcard(includes) {
-		return nil
-	}
-	if len(includes) == 0 || len(scopeTargets) == 0 {
-		return nil
-	}
-	normTargets := make([]string, 0, len(scopeTargets))
-	for _, t := range scopeTargets {
-		n := normalizeRelPath(t)
-		if n == "" || n == "." {
-			// "." covers everything under the working dir; no include
-			// can be "unrelated" to it. Bail with no diagnostics.
-			return nil
-		}
-		normTargets = append(normTargets, n)
-	}
-	seen := make(map[string]struct{}, len(includes))
-	var diags []Diagnostic
-	for _, inc := range includes {
-		n := normalizeRelPath(inc)
-		if n == "" || n == "." {
-			continue
-		}
-		if n == "*" {
-			continue
-		}
-		if _, dup := seen[n]; dup {
-			continue
-		}
-		seen[n] = struct{}{}
-		if includePathRelatedToTargets(n, normTargets) {
-			continue
-		}
-		diags = append(diags, Diagnostic{
-			Message: includeUnrelatedMessage(n, normTargets, colors),
-			IsError: true,
-		})
-	}
-	return diags
-}
-
-// includePathRelatedToTargets reports whether inc is "related to" any
-// scope target: equal, descendant, or ancestor. The ancestor case
-// covers deep includes like `catclip docs --include docs/policy` — the
-// target `docs` is inc's ancestor, so inc IS related.
-func includePathRelatedToTargets(inc string, targets []string) bool {
-	for _, t := range targets {
-		if t == inc {
-			return true
-		}
-		if strings.HasPrefix(inc, t+"/") {
-			return true
-		}
-		if strings.HasPrefix(t, inc+"/") {
-			return true
-		}
-	}
-	return false
-}
-
-// includeUnrelatedMessage renders the effect-4 error message. Format
-// tracks the "consistent voice" table in
-// RESOLVED_PLAN_include_as_authorization.md §D.
-func includeUnrelatedMessage(inc string, scopeTargets []string, _ platform.Palette) string {
-	suggestedTargets := append(append([]string(nil), scopeTargets...), inc)
-	var b strings.Builder
-	fmt.Fprintf(&b, "catclip: --include %s does not authorize any target in scope.\n\n", SingleQuoted(inc))
-	b.WriteString("  --include is authorization-only — it cannot add a new walk root.\n")
-	fmt.Fprintf(&b, "  To include %s alongside your current targets, add %s as a positional\n", SingleQuoted(inc), SingleQuoted(inc))
-	b.WriteString("  target too:\n\n")
-	fmt.Fprintf(&b, "    catclip %s --include %s\n\n", strings.Join(suggestedTargets, " "), inc)
-	fmt.Fprintf(&b, "  Interactive tip: `catclip %s --` opens the target picker with ignored\n", strings.Join(scopeTargets, " "))
-	b.WriteString("  entries visible; selecting one writes the target+include pair for you.")
-	return b.String()
 }
 
 // lowercaseStringSet builds a parallel set keyed by strings.ToLower so
@@ -674,11 +590,6 @@ func (r *Resolver) includedDescendantsOf(target string) []string {
 	sort.Strings(descendants)
 	return descendants
 }
-
-// rewriteDeepIncludeScope, longestAncestorTarget, and rewriteStagesForDeepInclude
-// moved to internal/command in the v0.6.0 command extraction. The CLI form
-// goes through command.RewriteDeepIncludeScope, called from
-// command.ExecutionScopeFromScopeSpec at the spec→scope boundary.
 
 func (r *Resolver) TargetPathExists(relTarget string) (bool, error) {
 	_, err := os.Stat(filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(relTarget)))
@@ -1739,13 +1650,15 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	if !r.interactiveTargetsOk {
 		// Renamed from "Loading targets..." to plain English; the
 		// 5 s delayed hint acknowledges the unavoidable cold-boot
-		// scan cost (Defender on Windows; cold FS cache everywhere)
-		// so users don't think it's hung and Ctrl-C out. See
+		// scan cost so users don't think it's hung and Ctrl-C out.
+		// On Windows, platform.SlowFileScanHint names the Defender
+		// once-per-boot scan explicitly; elsewhere it returns no hint.
+		// See
 		// RESOLVED_PLAN_target_picker_spinner_reassurance.md.
 		stopSpinner = platform.StartLoadingSpinnerWithDelayedHint(
 			os.Stderr,
 			"Scanning files...",
-			"(first run is supposed to be slow)",
+			platform.SlowFileScanHint(),
 			5*time.Second,
 		)
 	}
@@ -1801,10 +1714,10 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 func (r *Resolver) chooseIgnoredTargetMatches(query, prompt string, selectedPaths, explicitTargets, scopeTargets []string) ([]TargetMatch, int, error) {
 	query = NormalizeInteractivePickerQuery(query)
 	stopSpinner := func() {}
-	if !r.ignoredTargetsOk {
+	if !r.ignoredTargetsCached(scopeTargets) {
 		stopSpinner = platform.StartLoadingSpinner(os.Stderr, "Loading ignored targets...")
 	}
-	allTargets, err := r.AllIgnoredTargets()
+	allTargets, err := r.AllIgnoredTargets(scopeTargets)
 	stopSpinner()
 	if err != nil {
 		return nil, 0, err
@@ -1869,7 +1782,7 @@ func (r *Resolver) ResolveInteractiveIncludeTargets(query string, selectedPaths,
 }
 
 func (r *Resolver) resolveExactIgnoredIncludeTarget(query string, scopeTargets []string) (string, bool, error) {
-	options, err := r.AllIgnoredTargets()
+	options, err := r.AllIgnoredTargets(scopeTargets)
 	if err != nil {
 		return "", false, err
 	}
@@ -2137,22 +2050,80 @@ func (r *Resolver) allVisibleTargets() ([]TargetMatch, error) {
 	return append([]TargetMatch(nil), targets...), nil
 }
 
-func (r *Resolver) AllIgnoredTargets() ([]TargetMatch, error) {
-	if r.ignoredTargetsOk {
-		return append([]TargetMatch(nil), r.ignoredTargets...), nil
+// ignoredTargetsCacheKey mirrors search's scoped cache keying: the
+// narrowed target list joined with NUL, "" for the wide universe.
+func ignoredTargetsCacheKey(narrowed []string) string {
+	return strings.Join(narrowed, "\x00")
+}
+
+// narrowableScopeTargets mirrors search.scopedCacheTargets: the
+// normalized literal target list that is safe to hand rg as positional
+// walk roots, or nil when the universe must stay working-dir-wide (no
+// targets, a "." target, a glob, or a fuzzy/missing path — resolution
+// may then land anywhere, so narrowing would be incorrect).
+func narrowableScopeTargets(workingDir string, targets []string) []string {
+	if len(targets) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(targets))
+	out := make([]string, 0, len(targets))
+	for _, t := range targets {
+		if hasGlobChars(t) {
+			return nil
+		}
+		rel := normalizeRelPath(t)
+		if rel == "" || rel == "." {
+			return nil
+		}
+		if _, err := os.Stat(filepath.Join(workingDir, filepath.FromSlash(rel))); err != nil {
+			return nil
+		}
+		if _, dup := seen[rel]; dup {
+			continue
+		}
+		seen[rel] = struct{}{}
+		out = append(out, rel)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (r *Resolver) ignoredTargetsCached(scopeTargets []string) bool {
+	key := ignoredTargetsCacheKey(narrowableScopeTargets(r.Cfg.WorkingDir, scopeTargets))
+	_, ok := r.ignoredTargetsByScope[key]
+	return ok
+}
+
+func (r *Resolver) AllIgnoredTargets(scopeTargets []string) ([]TargetMatch, error) {
+	// Narrow the enumeration universe to the scope targets when they are
+	// literal on-disk paths: the downstream
+	// filterIgnoredTargetsByScopeTargets keeps ONLY entries under a
+	// target or on a target's ancestor chain, so anything a wider walk
+	// finds is discarded anyway (live failure 2026-07-04: cwd=Desktop,
+	// target=vscode-main walked and content-scanned the entire Desktop
+	// to then throw it all away). Ancestor entries survive narrowing
+	// because dir rows are derived from the walked files' path PREFIXES —
+	// a walk rooted at blocked/sub still contributes "blocked" to the
+	// dir set. Wide fallback (narrowed == nil) covers "."/fuzzy/glob
+	// targets, where the filter keeps everything and wide is right-sized
+	// by definition.
+	narrowed := narrowableScopeTargets(r.Cfg.WorkingDir, scopeTargets)
+	cacheKey := ignoredTargetsCacheKey(narrowed)
+	if cached, ok := r.ignoredTargetsByScope[cacheKey]; ok {
+		return append([]TargetMatch(nil), cached...), nil
 	}
 
-	rgPaths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{NoIgnore: true})
+	rgPaths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{NoIgnore: true, Paths: narrowed})
 	if err != nil {
 		return nil, err
 	}
-	// AllIgnoredTargets walks project-wide (no Paths above) — the
-	// downstream filterIgnoredTargetsByScopeTargets narrows to scope. It
-	// uses a project-wide text-file set rather than r.textFileSet, which
-	// is scope-narrowed and would hide ignored items outside the scope's
-	// target subtree (.gitignore-blocked dirs an ancestor of the scope
-	// might want surfaced for --include).
-	projectTextSet, err := search.ResolveTextFileSet(r.Cfg.WorkingDir, nil)
+	// The text set narrows with the SAME list so the walked universe and
+	// the classification universe agree (ResolveTextFileSet re-applies the
+	// identical literal-targets rule internally; nil = wide for both).
+	projectTextSet, err := search.ResolveTextFileSet(r.Cfg.WorkingDir, narrowed)
 	if err != nil {
 		return nil, err
 	}
@@ -2262,8 +2233,10 @@ func (r *Resolver) AllIgnoredTargets() ([]TargetMatch, error) {
 		return targets[i].Path < targets[j].Path
 	})
 
-	r.ignoredTargets = targets
-	r.ignoredTargetsOk = true
+	if r.ignoredTargetsByScope == nil {
+		r.ignoredTargetsByScope = make(map[string][]TargetMatch, 2)
+	}
+	r.ignoredTargetsByScope[cacheKey] = targets
 	return append([]TargetMatch(nil), targets...), nil
 }
 
@@ -2787,10 +2760,6 @@ func FzfDiffFilePreviewCommand(currentArgs []string) string {
 	return strings.Join(parts, " ")
 }
 
-func ChooseContentMatchesWithFzf(query string, currentArgs []string, flag string) (fzfChooseResult, error) {
-	return ChooseContentMatchesWithFzfAndEscHint(query, currentArgs, flag, "")
-}
-
 func ChooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, flag string, escHint string) (fzfChooseResult, error) {
 	bin, err := FuzzyResolverBinary()
 	if err != nil {
@@ -2802,6 +2771,7 @@ func ChooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, f
 	if command == "" {
 		return fzfChooseResult{}, ErrSelectionCancelled
 	}
+	searchingPreviewCommand := FzfContentSearchingPreviewCommand(flag)
 
 	platform.StopActiveSpinner()
 	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
@@ -2815,7 +2785,7 @@ func ChooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, f
 		Disabled:       true,
 		Multi:          true,
 		PrintQuery:     true,
-		Bindings:       append([]string{"start:reload:" + command, "change:reload:" + command}, MultiSelectPickerBindings()...),
+		Bindings:       append(contentMatchReloadBindings(command, searchingPreviewCommand), MultiSelectPickerBindings()...),
 	}))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return fzfChooseResult{}, ErrSelectionCancelled
@@ -2827,6 +2797,16 @@ func ChooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, f
 		return fzfChooseResult{}, ErrSelectionCancelled
 	}
 	return fzfChooseResult{Query: result.Query, Key: result.Key, Matches: result.Matches}, nil
+}
+
+func contentMatchReloadBindings(reloadCommand, searchingPreviewCommand string) []string {
+	if searchingPreviewCommand == "" {
+		return []string{"start:reload:" + reloadCommand, "change:reload:" + reloadCommand}
+	}
+	return []string{
+		"start:preview<" + searchingPreviewCommand + ">+reload<" + reloadCommand + ">",
+		"change:preview<" + searchingPreviewCommand + ">+reload<" + reloadCommand + ">",
+	}
 }
 
 func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind, state string, includeTarget bool) ([]string, error) {
@@ -2901,6 +2881,7 @@ func FzfPreviewCommand(includeTarget bool) string {
 //
 //   - Empty {q}: emits the contextual hint document (smart-case tips +
 //     pattern examples). No checkpoint needed.
+//   - Non-empty {q}, empty {3}, empty {1}: emits the searching document.
 //   - Non-empty {q}, empty {3} (the `[all current matches]` row): if a
 //     checkpoint path is wired in, emits the full scope tree from the
 //     checkpoint. Otherwise emits nothing.
@@ -2921,10 +2902,36 @@ func FzfContentPreviewCommand(flag, checkpointPath string) string {
 		ShellQuoteArg(self),
 		"--quiet",
 		"--internal-file-preview",
+		"--internal-searching-preview",
 		"--internal-file-path", "{3}",
+		"--internal-tree-target", "{1}",
 	}
 	if checkpointPath != "" {
 		parts = append(parts, "--internal-prediscovered", ShellQuoteArg(checkpointPath))
+	}
+	// fzf already shell-quotes placeholders like {q}; adding our own quotes
+	// breaks regex input that includes spaces or quote characters.
+	parts = append(parts, flag, "{q}")
+	return strings.Join(parts, " ")
+}
+
+// FzfContentSearchingPreviewCommand builds the one-shot preview action used
+// before the content picker reloads results for the current query. It renders
+// the empty-regex teaching document when {q} is empty, and the searching hint
+// for non-empty {q}; normal focused-row previews still use
+// FzfContentPreviewCommand.
+func FzfContentSearchingPreviewCommand(flag string) string {
+	self, err := os.Executable()
+	if err != nil || strings.TrimSpace(self) == "" {
+		return ""
+	}
+
+	parts := []string{
+		ShellQuoteArg(self),
+		"--quiet",
+		"--internal-file-preview",
+		"--internal-searching-preview",
+		"--internal-file-path", ShellQuoteArg(""),
 	}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
@@ -3021,6 +3028,15 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 	}
 
 	parts := []string{ShellQuoteArg(self), "--quiet", "--internal-content-match-list", "--internal-prediscovered", ShellQuoteArg(checkpointPath)}
+	// Embed the parent scope's positional targets so the child parses the
+	// SAME scope instead of an implicit "." — direct-mode rg in the child
+	// searches scope.Targets[0], and without these it walks the whole
+	// working dir (correct results via checkpoint intersection, but
+	// cwd-wide cost and exit-2 fragility; live failure 2026-07-04 with
+	// cwd=Desktop, target=vscode-main).
+	for _, target := range view.Targets {
+		parts = append(parts, ShellQuoteArg(target))
+	}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
 	parts = append(parts, flag, "{q}")
@@ -3179,10 +3195,6 @@ func TargetMatchPreviewState(match TargetMatch) string {
 	default:
 		return ""
 	}
-}
-
-func TargetMatchKey(match TargetMatch) string {
-	return match.Kind + "\x00" + match.Path
 }
 
 func targetPickerHeader(prompt string) string {

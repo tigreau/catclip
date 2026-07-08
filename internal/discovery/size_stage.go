@@ -40,17 +40,28 @@ func ApplySizeStage(entries []Entry, workingDir string, nums []int) ([]Entry, er
 // because --size reasons about the payload that would be emitted; for a
 // symlinked entry, that is the target file. Discovery does not currently
 // emit symlink entries, so this preserves existing behavior in practice.
+//
+// Fail-fast contract: a single os.Stat error returns (nil, err). --size
+// was invoked as a filter, so a missing target file is a real user
+// error that should surface, not be silently skipped.
 func EnsureEntrySizes(entries []Entry, workingDir string) ([]Entry, error) {
 	entries = EnsureEntryAbsPaths(entries, workingDir)
+	paths := make([]string, len(entries))
 	for i := range entries {
 		if entries[i].SizeKnown {
 			continue
 		}
-		info, err := os.Stat(entries[i].AbsPath)
-		if err != nil {
-			return nil, err
+		paths[i] = entries[i].AbsPath
+	}
+	infos, errs := parallelStat(paths, os.Stat)
+	for i := range entries {
+		if paths[i] == "" {
+			continue
 		}
-		entries[i].SizeBytes = info.Size()
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		entries[i].SizeBytes = infos[i].Size()
 		entries[i].SizeKnown = true
 	}
 	return entries, nil
@@ -82,31 +93,4 @@ func SizeBucketKiB(sizeBytes int64) int {
 		return 0
 	}
 	return int((sizeBytes + kibibyte - 1) / kibibyte)
-}
-
-type SizeBucket struct {
-	KiB   int
-	Count int
-}
-
-func ComputeSizeBuckets(entries []Entry) []SizeBucket {
-	counts := map[int]int{}
-	for _, entry := range entries {
-		counts[SizeBucketKiB(entry.SizeBytes)]++
-	}
-	if len(counts) == 0 {
-		return nil
-	}
-
-	keys := make([]int, 0, len(counts))
-	for key := range counts {
-		keys = append(keys, key)
-	}
-	sort.Ints(keys)
-
-	buckets := make([]SizeBucket, 0, len(keys))
-	for _, key := range keys {
-		buckets = append(buckets, SizeBucket{KiB: key, Count: counts[key]})
-	}
-	return buckets
 }

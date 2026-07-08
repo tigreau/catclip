@@ -2654,11 +2654,27 @@ func TestFzfContentPreviewCommandUsesFilePreviewRenderer(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path {3} --contains {q}`) {
+	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --contains {q}`) {
 		t.Fatalf("expected contains preview to invoke file preview renderer, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
 		t.Fatalf("expected contains preview command to avoid catclip-tree pipe, got %q", command)
+	}
+}
+
+func TestFzfContentSearchingPreviewCommandUsesForcedSearchingRenderer(t *testing.T) {
+	command := discovery.FzfContentSearchingPreviewCommand("--contains")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable returned error: %v", err)
+	}
+
+	want := discovery.ShellQuoteArg(self) + ` --quiet --internal-file-preview --internal-searching-preview --internal-file-path "" --contains {q}`
+	if !strings.Contains(command, want) {
+		t.Fatalf("expected searching preview to invoke forced file preview renderer, got %q", command)
+	}
+	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
+		t.Fatalf("expected searching preview command to avoid catclip-tree pipe, got %q", command)
 	}
 }
 
@@ -2669,7 +2685,7 @@ func TestFzfContentSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-file-preview --internal-file-path {3} --snippet {q}`) {
+	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --snippet {q}`) {
 		t.Fatalf("expected snippet contains preview to forward --snippet, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
@@ -2748,7 +2764,7 @@ func TestAllIgnoredTargetsIncludesGitignoreEntriesWithoutGitRepo(t *testing.T) {
 		AllowFileSymlinks: false,
 	}
 
-	targets, err := resolver.AllIgnoredTargets()
+	targets, err := resolver.AllIgnoredTargets(nil)
 	if err != nil {
 		t.Fatalf("allIgnoredTargets returned error: %v", err)
 	}
@@ -3599,8 +3615,8 @@ func TestRunDeepIncludeDirectoryNarrowsToSubtree(t *testing.T) {
 // rather than poisoning the whole scope.
 //
 // The effect-4 gate (unrelated --include as a hard error) is out of
-// scope for this test — see the classifyEffect4Diagnostics comment in
-// resolver.go for why literal-relatedness checks clash with basename
+// scope for this test — see the effect-4 gate comment in EvaluateScope
+// (resolver.go) for why literal-relatedness checks clash with basename
 // and scope-relative include resolution and are deferred to a
 // follow-up.
 func TestRunMixedCoveredAndOrphanIncludeEmitsCoveredAndNoticesOrphan(t *testing.T) {
@@ -3644,10 +3660,10 @@ func TestIncludeAdditiveAcrossNonIgnoredTargets(t *testing.T) {
 		t.Skip("git not available")
 	}
 	project := setupTestProject(t, map[string]string{
-		".gitignore":         "docs/\n",
-		"cmd/main.go":        "package main\n",
-		"docs/policy/one.md": "policy\n",
-		"docs/policy/two.md": "policy two\n",
+		".gitignore":             "docs/\n",
+		"cmd/main.go":            "package main\n",
+		"docs/policy/one.md":     "policy\n",
+		"docs/policy/two.md":     "policy two\n",
 		"docs/architecture/x.md": "arch\n",
 	})
 	initGitRepo(t, project)
@@ -3743,84 +3759,6 @@ func TestEffect5_BareIncludeWildcardVariant(t *testing.T) {
 	if !strings.Contains(err.Error(), "catclip . --include '*'") {
 		t.Fatalf("expected 'catclip . --include *' example in hint, got: %v", err)
 	}
-}
-
-// rewriteDeepIncludeScope unit coverage: the pure transform itself.
-func TestRewriteDeepIncludeScope(t *testing.T) {
-	t.Run("deep file rewrites to include-ancestor plus only", func(t *testing.T) {
-		in := command.ExecutionScope{
-			Targets:         []string{"docs"},
-			IncludedTargets: []string{"docs/a/keep.md"},
-			Stages: []command.Stage{
-				{Kind: command.StageInclude, Values: []string{"docs/a/keep.md"}},
-			},
-		}
-		got := command.RewriteDeepIncludeScope(in)
-		if len(got.IncludedTargets) != 1 || got.IncludedTargets[0] != "docs" {
-			t.Fatalf("IncludedTargets = %v, want [docs]", got.IncludedTargets)
-		}
-		if len(got.Stages) != 2 {
-			t.Fatalf("expected 2 stages (include + only), got %d: %#v", len(got.Stages), got.Stages)
-		}
-		if got.Stages[0].Kind != command.StageInclude || got.Stages[0].Values[0] != "docs" {
-			t.Fatalf("stage 0 should be include[docs], got %#v", got.Stages[0])
-		}
-		if got.Stages[1].Kind != command.StageOnly || got.Stages[1].Values[0] != "docs/a/keep.md" {
-			t.Fatalf("stage 1 should be only[docs/a/keep.md], got %#v", got.Stages[1])
-		}
-	})
-
-	t.Run("plain include of target is untouched", func(t *testing.T) {
-		in := command.ExecutionScope{
-			Targets:         []string{"docs"},
-			IncludedTargets: []string{"docs"},
-			Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"docs"}}},
-		}
-		got := command.RewriteDeepIncludeScope(in)
-		if len(got.IncludedTargets) != 1 || got.IncludedTargets[0] != "docs" {
-			t.Fatalf("plain include should be unchanged, got %v", got.IncludedTargets)
-		}
-		if len(got.Stages) != 1 {
-			t.Fatalf("plain include should not gain an --only stage, got %#v", got.Stages)
-		}
-	})
-
-	t.Run("uncovered include bails", func(t *testing.T) {
-		in := command.ExecutionScope{
-			Targets:         []string{"docs"},
-			IncludedTargets: []string{"docs/a/keep.md", "src/main.go"},
-			Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"docs/a/keep.md", "src/main.go"}}},
-		}
-		got := command.RewriteDeepIncludeScope(in)
-		if len(got.Stages) != 1 || got.Stages[0].Kind != command.StageInclude {
-			t.Fatalf("uncovered include should leave stages untouched, got %#v", got.Stages)
-		}
-	})
-
-	t.Run("wildcard include bails", func(t *testing.T) {
-		in := command.ExecutionScope{
-			Targets:         []string{"docs"},
-			IncludedTargets: []string{"*"},
-			Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"*"}}},
-		}
-		got := command.RewriteDeepIncludeScope(in)
-		if len(got.Stages) != 1 {
-			t.Fatalf("wildcard include should be untouched, got %#v", got.Stages)
-		}
-	})
-
-	t.Run("idempotent", func(t *testing.T) {
-		in := command.ExecutionScope{
-			Targets:         []string{"docs"},
-			IncludedTargets: []string{"docs/a/keep.md"},
-			Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"docs/a/keep.md"}}},
-		}
-		once := command.RewriteDeepIncludeScope(in)
-		twice := command.RewriteDeepIncludeScope(once)
-		if len(twice.Stages) != len(once.Stages) || len(twice.IncludedTargets) != len(once.IncludedTargets) {
-			t.Fatalf("rewrite not idempotent: once=%#v twice=%#v", once, twice)
-		}
-	})
 }
 
 func TestRunDotTargetWithIncludeStillWidensToIncludedIgnoredDirectory(t *testing.T) {
@@ -5959,7 +5897,9 @@ func TestRunInternalFilePreviewEmitsTreeFromCheckpointForAllMatches(t *testing.T
 
 	cfg := parseInProject(t, project, []string{
 		"--internal-file-preview",
+		"--internal-searching-preview",
 		"--internal-file-path", "",
+		"--internal-tree-target", "[all current matches]",
 		"--internal-prediscovered", checkpointPath,
 		"src",
 		"--contains", "TODO",
@@ -5977,6 +5917,9 @@ func TestRunInternalFilePreviewEmitsTreeFromCheckpointForAllMatches(t *testing.T
 	}
 	if strings.Contains(out, "Content search") {
 		t.Fatalf("expected tree preview, not hint preview, got %q", out)
+	}
+	if strings.Contains(out, "no matches for this pattern yet") {
+		t.Fatalf("expected sentinel row to bypass searching preview, got %q", out)
 	}
 }
 
@@ -6328,4 +6271,110 @@ func TestRunGlobAndPathTargetsUnion(t *testing.T) {
 	if strings.Contains(out, "readme.md") {
 		t.Fatalf("expected non-matching files excluded, got:\n%s", out)
 	}
+}
+
+// Non-empty pattern + forced searching-preview mode renders the searching
+// hint. This is the state the content picker explicitly installs through
+// start/change preview bindings while a keystroke's search is still running
+// or has not produced rows yet. See RunInternalFilePreview state dispatch.
+func TestRunInternalFilePreviewOutputsSearchingHintWhenForcedByPicker(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "const a = 1\nTODO: first\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-searching-preview", "--internal-file-path", "", "--contains", "todo"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	out := rootAnsiEscape.ReplaceAllString(stdout.String(), "")
+	if !strings.Contains(out, "no matches for this pattern yet") {
+		t.Fatalf("expected forced searching hint, got %q", out)
+	}
+}
+
+// Non-empty pattern + empty focused path + fzf reporting a zero-row list
+// (FZF_MATCH_COUNT=0) still renders the searching hint as a compatibility
+// fallback. The picker does not rely on this undocumented env var anymore.
+func TestRunInternalFilePreviewOutputsSearchingHintWhileZeroRows(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "const a = 1\nTODO: first\n",
+	})
+	cfg := parseInProject(t, project, []string{"--internal-file-preview", "--internal-file-path", "", "--contains", "todo"})
+
+	t.Setenv("FZF_MATCH_COUNT", "0")
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	out := rootAnsiEscape.ReplaceAllString(stdout.String(), "")
+	if !strings.Contains(out, "no matches for this pattern yet") {
+		t.Fatalf("expected searching hint with FZF_MATCH_COUNT=0, got %q", out)
+	}
+
+	t.Setenv("FZF_MATCH_COUNT", "3")
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	out = rootAnsiEscape.ReplaceAllString(stdout.String(), "")
+	if strings.Contains(out, "no matches for this pattern yet") {
+		t.Fatalf("searching hint must not render when rows exist (sentinel row focus), got %q", out)
+	}
+}
+
+// TestRunRawWithThenScope closes output_pipeline_followups Item 4 (decision
+// 2026-05-12; carried since v0.5.4): raw semantics across --then scope
+// boundaries. Three pinned cases — plain concat spans scopes, an
+// incompatible output mode in ANY scope rejects the whole raw run, and
+// per-scope --lines slices concat without numbering. (The original note
+// wrote `--lines 1,3`; current syntax is space-separated START END.)
+func TestRunRawWithThenScope(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"a.txt": "alpha1\nalpha2\nalpha3\n",
+		"b.txt": "beta1\nbeta2\nbeta3\n",
+	})
+
+	t.Run("both scopes concat raw", func(t *testing.T) {
+		cfg := parseInProject(t, project, []string{"--quiet", "--print", "a.txt", "--then", "b.txt", "--raw"})
+		var stdout, stderr bytes.Buffer
+		if err := run(cfg, &stdout, &stderr); err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+		want := "alpha1\nalpha2\nalpha3\nbeta1\nbeta2\nbeta3\n"
+		if got := stdout.String(); got != want {
+			t.Fatalf("unexpected raw concat across --then\nwant:\n%s\ngot:\n%s", want, got)
+		}
+		if strings.Contains(stdout.String(), "<file path=") {
+			t.Fatalf("did not expect wrapped output, got:\n%s", stdout.String())
+		}
+	})
+
+	t.Run("paths in second scope rejects raw", func(t *testing.T) {
+		cfg := parseInProject(t, project, []string{"--quiet", "--print", "a.txt", "--then", "b.txt", "--paths", "--raw"})
+		var stdout, stderr bytes.Buffer
+		err := run(cfg, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected raw mode to reject --paths in the second scope")
+		}
+		if !strings.Contains(err.Error(), "--raw cannot be combined with --paths") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("lines slices concat raw without numbers", func(t *testing.T) {
+		cfg := parseInProject(t, project, []string{"--quiet", "--print", "a.txt", "--lines", "1", "2", "--then", "b.txt", "--lines", "2", "3", "--raw"})
+		var stdout, stderr bytes.Buffer
+		if err := run(cfg, &stdout, &stderr); err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+		want := "alpha1\nalpha2\nbeta2\nbeta3\n"
+		if got := stdout.String(); got != want {
+			t.Fatalf("unexpected raw --lines concat across --then\nwant:\n%s\ngot:\n%s", want, got)
+		}
+		if strings.Contains(stdout.String(), "   1") || strings.Contains(stdout.String(), "1 |") {
+			t.Fatalf("raw lines output must not carry line numbers, got:\n%s", stdout.String())
+		}
+	})
 }

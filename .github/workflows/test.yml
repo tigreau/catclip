@@ -74,6 +74,25 @@ jobs:
       - name: go test
         run: go test ./...
 
+      - name: Dead-code ratchet
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Whole-program dead-function check with test binaries included as
+          # roots: test-only helpers stay reachable (via test roots), so this
+          # only fires on functions nothing — production or test — calls.
+          # Example* doc functions are expected to be unreachable. See
+          # docs/versions/v0.6.6/reports/ACTIVE_PLAN_modifier_wiring_consolidation_v2.md
+          # Phase 0.
+          out=$(go run golang.org/x/tools/cmd/deadcode@latest -test ./cmd/catclip ./fileclip/cmd/fileclip ./... | grep -v 'unreachable func: Example' || true)
+          if [[ -n "$out" ]]; then
+            echo "Dead functions found — delete them or wire them:" >&2
+            echo "$out" >&2
+            exit 1
+          fi
+          echo "deadcode ratchet: clean"
+
       - name: Linux session gate smoke tests
         if: runner.os == 'Linux'
         shell: bash

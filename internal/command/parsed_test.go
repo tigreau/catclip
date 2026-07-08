@@ -21,6 +21,7 @@ func TestParsedIsInternalKindCoversEveryInternalField(t *testing.T) {
 	}{
 		{name: "TreePreview", cfg: Parsed{TreePreview: true}},
 		{name: "FilePreview", cfg: Parsed{FilePreview: true}},
+		{name: "FileSearchingPreview", cfg: Parsed{FileSearchingPreview: true}},
 		{name: "ContentMatchList", cfg: Parsed{ContentMatchList: true}},
 		{name: "SnippetBoundaryPreview", cfg: Parsed{SnippetBoundaryPreview: true}},
 		{name: "RecentPreview", cfg: Parsed{RecentPreview: true}},

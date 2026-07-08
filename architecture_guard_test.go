@@ -81,6 +81,7 @@ var previewCommandBuilders = map[string]struct{}{
 	"FzfDiffFilePreviewCommand":                 {},
 	"FzfPreviewCommand":                         {},
 	"FzfContentPreviewCommand":                  {},
+	"FzfContentSearchingPreviewCommand":         {},
 	"FzfContentMatchListCommand":                {},
 	"fzfCheckpointContentMatchListCommand":      {},
 	"startupFileSetPreviewCommand":              {},
@@ -118,6 +119,7 @@ var previewBuilderDiscoveryFunctions = map[string]struct{}{
 	"FzfDiffFilePreviewCommand":            {},
 	"FzfPreviewCommand":                    {},
 	"FzfContentPreviewCommand":             {},
+	"FzfContentSearchingPreviewCommand":    {},
 	"FzfContentMatchListCommand":           {},
 	"fzfCheckpointContentMatchListCommand": {},
 }

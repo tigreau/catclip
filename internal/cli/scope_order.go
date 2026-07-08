@@ -169,21 +169,6 @@ func outputModeConflictError(currentFlag, nextFlag string) error {
 	}
 }
 
-func scopeStageBoundaryAllowsCategory(policy scopeStageBoundaryPolicy, category scopeStageCategory) bool {
-	switch policy {
-	case scopeStageBoundaryNone:
-		return true
-	case scopeStageBoundaryDiff:
-		return category != scopeStageCategoryContentFilter && category != scopeStageCategoryGitChangeFilter
-	case scopeStageBoundarySnippet:
-		return category != scopeStageCategoryContentFilter
-	case scopeStageBoundaryTerminal:
-		return false
-	default:
-		return false
-	}
-}
-
 func currentScopeStagesFromArgs(args []string) []command.Stage {
 	if stages, ok := currentScopeStagesFromCommandSpec(args); ok {
 		return stages
@@ -220,7 +205,7 @@ func currentScopeStagesFromArgsLegacy(args []string) []command.Stage {
 		case "--recent":
 			stages = append(stages, command.Stage{Kind: command.StageRecent})
 			if i+1 < len(args) && !IsModifierBoundaryToken(args[i+1]) {
-				if _, err := parseRecentLimitToken(args[i+1]); err == nil {
+				if _, err := ParseRecentLimitToken(args[i+1]); err == nil {
 					i++
 				}
 			}

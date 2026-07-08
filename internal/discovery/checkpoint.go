@@ -71,13 +71,19 @@ type CheckpointEntry struct {
 	SnippetPattern      string            `json:"snippet_pattern,omitempty"`
 	SnippetContextSet   bool              `json:"snippet_context_set,omitempty"`
 	SnippetContextLines int               `json:"snippet_context_lines,omitempty"`
-	Lines               bool              `json:"lines,omitempty"`
-	LinesStart          int               `json:"lines_start,omitempty"`
-	LinesEnd            int               `json:"lines_end,omitempty"`
-	DiffWantStaged      bool              `json:"diff_want_staged,omitempty"`
-	DiffWantUnstaged    bool              `json:"diff_want_unstaged,omitempty"`
-	AllowedByInclude    bool              `json:"allowed_by_include,omitempty"`
-	BlockSource         string            `json:"block_source,omitempty"`
+	// SnippetMatchLines carries the snippet stage's pinned match-line
+	// numbers across the checkpoint boundary so sink-open plan builds
+	// reuse them instead of re-running rg (filter-attribute
+	// persistence). Old checkpoints lack the field → nil → the
+	// BatchSnippetMatches fallback recomputes.
+	SnippetMatchLines []int  `json:"snippet_match_lines,omitempty"`
+	Lines             bool   `json:"lines,omitempty"`
+	LinesStart        int    `json:"lines_start,omitempty"`
+	LinesEnd          int    `json:"lines_end,omitempty"`
+	DiffWantStaged    bool   `json:"diff_want_staged,omitempty"`
+	DiffWantUnstaged  bool   `json:"diff_want_unstaged,omitempty"`
+	AllowedByInclude  bool   `json:"allowed_by_include,omitempty"`
+	BlockSource       string `json:"block_source,omitempty"`
 }
 
 // MarshalCheckpoint encodes a CheckpointData as the JSON document
@@ -126,17 +132,22 @@ func ReadCheckpoint(path string) (CheckpointData, error) {
 // yields paths only (SizeKnown=false), so without this each refresh re-stats
 // the scope. See docs/versions/v0.5.5/reports/ACTIVE_PLAN_checkpoint_size_capture.md.
 //
-// Serial by decision: the one-time open cost is amortized over the picker
-// session and small next to the rg discovery picker-open already runs. A
-// per-file Lstat failure leaves that entry SizeKnown=false; it falls back to
-// the prior per-refresh behavior for that one file; the checkpoint is never
-// failed. Lstat (not Stat) matches fileBodySize and keeps symlinks excluded by
+// Continue-on-error contract: a per-file Lstat failure leaves that entry
+// SizeKnown=false; it falls back to the prior per-refresh behavior for
+// that one file; the checkpoint is never failed. Different from
+// EnsureEntrySizes / EnsureEntryModTimes, which are fail-fast because
+// they run behind an explicit --size / --recent filter — here the size
+// capture is opportunistic optimization for the checkpoint layer, so a
+// single unreadable file must not block picker open.
+//
+// Lstat (not Stat) matches fileBodySize and keeps symlinks excluded by
 // policy. Sizes freeze at this point; previews are transient and the final
 // emit re-reads bodies, so a file resized mid-session is never copied stale.
 //
 // Exported for callers like lines_picker.go that write a checkpoint by
 // hand without going through WriteCheckpoint.
 func FillEntrySizes(workingDir string, entries []Entry) []Entry {
+	paths := make([]string, len(entries))
 	for i := range entries {
 		if entries[i].SizeKnown {
 			continue
@@ -148,11 +159,14 @@ func FillEntrySizes(workingDir string, entries []Entry) []Entry {
 			}
 			abs = filepath.Join(workingDir, filepath.FromSlash(entries[i].RelPath))
 		}
-		info, err := os.Lstat(abs)
-		if err != nil {
+		paths[i] = abs
+	}
+	infos, errs := parallelStat(paths, os.Lstat)
+	for i := range entries {
+		if paths[i] == "" || errs[i] != nil {
 			continue
 		}
-		entries[i].SizeBytes = info.Size()
+		entries[i].SizeBytes = infos[i].Size()
 		entries[i].SizeKnown = true
 	}
 	return entries
@@ -232,6 +246,7 @@ func entriesToCheckpoint(entries []Entry) []CheckpointEntry {
 			SnippetPattern:      entry.SnippetPattern,
 			SnippetContextSet:   entry.SnippetContextSet,
 			SnippetContextLines: entry.SnippetContextLines,
+			SnippetMatchLines:   append([]int(nil), entry.SnippetMatchLines...),
 			Lines:               entry.Lines,
 			LinesStart:          entry.LinesStart,
 			LinesEnd:            entry.LinesEnd,
@@ -260,6 +275,7 @@ func checkpointToEntries(entries []CheckpointEntry) []Entry {
 			SnippetPattern:      entry.SnippetPattern,
 			SnippetContextSet:   entry.SnippetContextSet,
 			SnippetContextLines: entry.SnippetContextLines,
+			SnippetMatchLines:   append([]int(nil), entry.SnippetMatchLines...),
 			Lines:               entry.Lines,
 			LinesStart:          entry.LinesStart,
 			LinesEnd:            entry.LinesEnd,

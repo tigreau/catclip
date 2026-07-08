@@ -24,6 +24,7 @@ func TestInternalKindPredicateParity(t *testing.T) {
 		{name: "plain ActionRun", cfg: command.Parsed{Action: command.ActionRun}},
 		{name: "TreePreview", cfg: command.Parsed{TreePreview: true}},
 		{name: "FilePreview", cfg: command.Parsed{FilePreview: true}},
+		{name: "FileSearchingPreview", cfg: command.Parsed{FileSearchingPreview: true}},
 		{name: "ContentMatchList", cfg: command.Parsed{ContentMatchList: true}},
 		{name: "SnippetBoundaryPreview", cfg: command.Parsed{SnippetBoundaryPreview: true}},
 		{name: "RecentPreview", cfg: command.Parsed{RecentPreview: true}},

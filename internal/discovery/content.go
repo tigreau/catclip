@@ -23,6 +23,36 @@ func newUsageError(format string, args ...any) error {
 	return UsageError{message: fmt.Sprintf(format, args...)}
 }
 
+// FilterEntriesBySnippetContent is the --snippet stage's one-pass
+// producer: a single rg match-lines call decides membership (a file
+// survives iff it has matches) AND pins the matched line numbers onto
+// the surviving entries, so the output build does not pay a second rg
+// pass to recover what this pass already saw. Mirrors the content
+// picker's contentMatchRowsWithFirstMatchLines consolidation, applied
+// to the stage → plan path (filter_attribute_persistence plan).
+func FilterEntriesBySnippetContent(entries []Entry, pattern string) ([]Entry, error) {
+	if err := ValidateContainsPattern(pattern); err != nil {
+		return nil, err
+	}
+	matched, err := search.RunRipgrepMatchLines(pattern, EntryAbsPaths(entries))
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		lines, ok := matched[entry.AbsPath]
+		if !ok {
+			lines, ok = matched[filepath.Clean(entry.AbsPath)]
+		}
+		if !ok || len(lines) == 0 {
+			continue
+		}
+		entry.SnippetMatchLines = append([]int(nil), lines...)
+		out = append(out, entry)
+	}
+	return out, nil
+}
+
 func FilterEntriesByContent(entries []Entry, pattern string) ([]Entry, error) {
 	if err := ValidateContainsPattern(pattern); err != nil {
 		return nil, err

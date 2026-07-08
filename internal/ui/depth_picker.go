@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tigreau/catclip/internal/cli"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/picker"
@@ -27,7 +28,7 @@ func resolveStartupDepthArgsWithEscHint(currentArgs []string, escHint string) ([
 }
 
 func validateStartupDepthValue(currentArgs []string, value string) (int, error) {
-	depth, err := discovery.ParseDepthToken(value)
+	depth, err := cli.ParseDepthToken(value)
 	if err != nil {
 		return 0, err
 	}
@@ -66,7 +67,7 @@ func chooseStartupDepthWithEscHint(currentArgs []string, query string, escHint s
 	if err != nil {
 		return 0, true, err
 	}
-	depth, err := discovery.ParseDepthToken(selected)
+	depth, err := cli.ParseDepthToken(selected)
 	if err != nil {
 		return 0, true, err
 	}

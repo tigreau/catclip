@@ -87,17 +87,6 @@ func ExecutionScopesPreserveEvaluatedOrder(scopes []command.ExecutionScope) bool
 	return false
 }
 
-// ExecutionScopesUseRecentStage is kept as the narrow predicate for callers that
-// specifically care about --recent, not generic evaluated-order preservation.
-func ExecutionScopesUseRecentStage(scopes []command.ExecutionScope) bool {
-	for _, s := range scopes {
-		if s.HasStage(command.StageRecent) {
-			return true
-		}
-	}
-	return false
-}
-
 // ExecutionScopesUsePathsStage reports whether any scope uses --paths
 // (either as a top-level flag or as a stage). The plan sectioning is
 // keyed on this — --paths produces a separate "paths" section.

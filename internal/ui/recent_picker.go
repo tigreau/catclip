@@ -133,7 +133,7 @@ func applyStartupRecentSelection(currentArgs []string, result picker.Result) ([]
 		return finalArgs, nil
 	}
 
-	limit, err := discovery.ParseRecentLimitToken(selection)
+	limit, err := cli.ParseRecentLimitToken(selection)
 	if err != nil {
 		return nil, discovery.ErrSelectionCancelled
 	}
