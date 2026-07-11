@@ -1,4 +1,4 @@
-# catclip - conCATenate to CLIPboard
+# catclip
 
 Copy code context for AI assistants. One command, smart defaults, no setup.
 
@@ -39,7 +39,7 @@ catclip src --only "*.ts"            # keep only .ts files
 catclip src --exclude "*.css"        # skip CSS files
 catclip src --recent 5               # 5 most recently modified
 catclip src --size 0 100             # files up to 100 KiB, largest first
-catclip src --depth 2                # shallow files only
+catclip src --depth 1                # just the top level of src
 catclip src --contains TODO          # files mentioning TODO
 catclip src --snippet TODO           # blank-line-bounded blocks around matches
 catclip src --snippet TODO 3         # each match plus 3 lines of context

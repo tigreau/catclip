@@ -64,7 +64,7 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 		{Left: `catclip src --exclude "*.css"`, Right: "Skip CSS files"},
 		{Left: "catclip src --recent 3", Right: "Keep the 3 most recently modified files"},
 		{Left: "catclip src --size 0 100", Right: "Keep files up to 100 KiB, largest first"},
-		{Left: "catclip src --depth 2", Right: "Keep files up to path depth 2"},
+		{Left: "catclip src --depth 1", Right: "Just the top level of src"},
 		{Left: "catclip . --depth 1", Right: "Copy only the files in the project root"},
 		{Left: "catclip src --paths", Right: "Emit bare relative paths, not file bodies"},
 		{Left: "catclip . --paths --then src", Right: "Show repo structure, then copy full files from src"},
@@ -289,7 +289,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 		{Left: "--size", Right: "Sort all files largest-first"},
 		{Left: "--size MIN", Right: "Keep files at least MIN KiB, largest-first"},
 		{Left: "--size MIN MAX", Right: "Keep files between MIN and MAX KiB inclusive"},
-		{Left: "--depth N", Right: "Keep files at path depth N or shallower (from cwd)"},
+		{Left: "--depth N", Right: "Keep files N levels or fewer below each target"},
 	})
 	b.WriteString("                         (README.md = 1, src/main.ts = 2, src/lib/util.ts = 3)\n\n")
 
@@ -338,7 +338,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	fmt.Fprintf(&b, "    → %s   removes files matching PATTERN; keeps rest\n", flag("--exclude PATTERN"))
 	fmt.Fprintf(&b, "    → %s          sorts by mtime, keeps top N\n", flag("--recent N"))
 	fmt.Fprintf(&b, "    → %s      filters by KiB size, sorts largest-first\n", flag("--size MIN MAX"))
-	fmt.Fprintf(&b, "    → %s           removes files deeper than N segments\n", flag("--depth N"))
+	fmt.Fprintf(&b, "    → %s           removes files more than N levels below each target\n", flag("--depth N"))
 	fmt.Fprintf(&b, "    → %s    removes files whose contents don't match\n", flag("--contains REGEX"))
 	fmt.Fprintf(&b, "    → %s removes files whose contents DO match\n", flag("--not-contains REGEX"))
 	fmt.Fprintf(&b, "    → %s           removes files not changed in git\n", flag("--changed"))
@@ -455,6 +455,8 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("        42\t  const app = express();\n")
 	b.WriteString("        43\t  ...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
+	fmt.Fprintf(&b, "    %s output terminates each emitted line with a newline, even if the\n", flag("--lines"))
+	b.WriteString("    source file's final line has none.\n\n")
 	fmt.Fprintf(&b, "  %s (%s, %s, %s):\n", bold("Diff"), flag("--changed-diff"), flag("--staged-diff"), flag("--unstaged-diff"))
 	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/main.ts\" type=\"diff\">"))
 	b.WriteString("    ...unified diff...\n")
@@ -515,7 +517,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("    → Target may be empty or contain only binary files.\n")
 	b.WriteString("    → Check for typos in the target path.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bad("\"no files at depth N\""))
-	b.WriteString("    → Depth counts path segments from cwd, not from the target.\n")
+	b.WriteString("    → Depth counts path segments below each target (like rg --max-depth).\n")
 	b.WriteString("    → The error shows the actual depth range. Use the suggested value.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bad("\"positional targets must come before modifiers.\""))
 	b.WriteString("    → Move targets to the left of --only/--exclude/etc.\n")

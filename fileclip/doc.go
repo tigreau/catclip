@@ -16,5 +16,6 @@
 //
 //	fileclip.Copy("/path/to/a.txt", "/path/to/b.png")
 //
-// Platform support: macOS (v0.1), Linux (planned), Windows (planned).
+// Platform support: macOS, Windows, and Linux (Wayland and WSL sessions;
+// X11 is deliberately unsupported).
 package fileclip

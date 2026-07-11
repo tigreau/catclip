@@ -2,10 +2,33 @@ package discovery
 
 import (
 	"path"
+	"strings"
 )
 
 // Token validation for --depth lives in internal/cli
 // (cli.ParseDepthToken); stage appliers take already-parsed ints.
+
+// entryDepth is the depth of an entry relative to its target root, giving
+// --depth rg --max-depth semantics (depth 1 = a direct child of the target).
+// When TargetRoot is empty or "." — bare catclip, catclip ., and glob targets
+// — this is the project-relative depth, so those flows are the fixed point and
+// stay byte-identical to the old project-root anchoring.
+func entryDepth(e Entry) int {
+	root := normalizeRelPath(e.TargetRoot)
+	rel := normalizeRelPath(e.RelPath)
+	if root == "" || root == "." {
+		return relPathDepth(rel)
+	}
+	if rel == root {
+		// The target root itself; never produced for a directory target
+		// today (entries are strict descendants). Treat as a direct member.
+		return 1
+	}
+	if strings.HasPrefix(rel, root+"/") {
+		return relPathDepth(strings.TrimPrefix(rel, root+"/"))
+	}
+	return relPathDepth(rel) // fallback: TargetRoot is not a prefix of RelPath
+}
 
 func ApplyDepthStage(entries []Entry, depth int) ([]Entry, error) {
 	if len(entries) == 0 {
@@ -19,7 +42,7 @@ func ApplyDepthStage(entries []Entry, depth int) ([]Entry, error) {
 
 	out := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
-		if relPathDepth(entry.RelPath) <= depth {
+		if entryDepth(entry) <= depth {
 			out = append(out, entry)
 		}
 	}
@@ -44,7 +67,7 @@ func depthNoFilesAtLevelError(depth, minDepth, maxDepth int) error {
 func minEntryPathDepth(entries []Entry) int {
 	minDepth := 0
 	for _, entry := range entries {
-		d := relPathDepth(entry.RelPath)
+		d := entryDepth(entry)
 		if d > 0 && (minDepth == 0 || d < minDepth) {
 			minDepth = d
 		}
@@ -55,7 +78,7 @@ func minEntryPathDepth(entries []Entry) int {
 func MaxEntryPathDepth(entries []Entry) int {
 	maxDepth := 0
 	for _, entry := range entries {
-		depth := relPathDepth(entry.RelPath)
+		depth := entryDepth(entry)
 		if depth > maxDepth {
 			maxDepth = depth
 		}
@@ -68,10 +91,21 @@ type DepthBucket struct {
 	CumulativeCount int
 }
 
-func ComputeDepthBuckets(relPaths []string) []DepthBucket {
+// ComputeDepthBuckets groups the scope's entries by their target-anchored
+// depth (see entryDepth). It dedupes by RelPath — keeping the first entry's
+// TargetRoot — so it absorbs the caller-side dedup the picker used to do.
+func ComputeDepthBuckets(entries []Entry) []DepthBucket {
 	counts := map[int]int{}
-	for _, p := range relPaths {
-		d := relPathDepth(p)
+	seen := make(map[string]struct{}, len(entries))
+	for _, e := range entries {
+		if e.RelPath == "" {
+			continue
+		}
+		if _, ok := seen[e.RelPath]; ok {
+			continue
+		}
+		seen[e.RelPath] = struct{}{}
+		d := entryDepth(e)
 		if d > 0 {
 			counts[d]++
 		}

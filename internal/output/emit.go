@@ -260,7 +260,10 @@ func (bc *emitByteCounter) Write(p []byte) (int, error) {
 func WriteRawOutputPlanPayload(w io.Writer, plan Plan) error {
 	for _, item := range plan.items {
 		if item.kind != SectionKindFiles || (item.mode != command.EntryModeFull && item.mode != command.EntryModeLines) {
-			return fmt.Errorf("raw output requires full-file or lines items")
+			// Defense-in-depth: ValidateRawPlan rejects these combinations
+			// upstream, so this is only reachable on validator drift. Surface
+			// it as a usage error for exit-code parity with that validator.
+			return newUsageError("Error: --raw requires full-file or line-slice items.")
 		}
 		entry := item.unit.Entry
 		if entry.Lines {
@@ -1059,23 +1062,6 @@ func EmitBundle(env EmitEnvironment, payload []byte, generateDuration time.Durat
 		return EmitStats{}, fmt.Errorf("Error: bundle write: %w", err)
 	}
 	if err := FileclipCopy(tmpPath); err != nil {
-		// GNOME-below-46 Wayland: preserve the bundle file so the user can
-		// drag-and-drop / manually copy it. This is the only remaining
-		// bundle-preserving branch — v0.5.3's X11 case is gone (X11 is
-		// blocked at startup) and unknown/displayless Linux is treated like
-		// any other "no usable sink" failure.
-		if errors.Is(err, fileclip.ErrLegacyGNOMEUnsupported) {
-			return EmitStats{}, fmt.Errorf(
-				"Error: %s. Nothing was placed on your clipboard.\n\n"+
-					"Your catclip bundle was saved to:\n  %s\n\n"+
-					"Drag it into the target application, or copy it from your file manager.\n\n"+
-					"For text clipboard output, rerun with --no-bundle.\n"+
-					"%s",
-				unsupportedFileClipboardReason(err),
-				tmpPath,
-				unsupportedFileClipboardRemedy(err),
-			)
-		}
 		_ = os.Remove(tmpPath)
 		// Unknown/displayless Linux requested clipboard delivery. Detected X11
 		// is blocked at startup, so this is the SSH/Docker/TTY/CI path. Surface
@@ -1087,6 +1073,20 @@ func EmitBundle(env EmitEnvironment, payload []byte, generateDuration time.Durat
 					"Use stdout output instead:\n" +
 					"  catclip . --print\n" +
 					"  catclip . --headless",
+			)
+		}
+		// wl-copy started but exited before serving the offer (typically no
+		// reachable compositor). Mirror the text sink's wl-copy failure
+		// message so the two sinks teach the user identically.
+		if errors.Is(err, fileclip.ErrWaylandOfferNotServed) {
+			return EmitStats{}, fmt.Errorf(
+				"Error: wl-copy failed.\n\n"+
+					"wl-copy exited before the clipboard offer was served.\n\n"+
+					"Check that your Wayland compositor/session is running correctly, or use stdout:\n"+
+					"  catclip . --print\n"+
+					"  catclip . --headless\n\n"+
+					"Details: %s",
+				err,
 			)
 		}
 		// fileclip.ErrToolNotFound is the "no clipboard binary on PATH"
@@ -1112,30 +1112,6 @@ func EmitBundle(env EmitEnvironment, payload []byte, generateDuration time.Durat
 	}, nil
 }
 
-// unsupportedFileClipboardReason renders the reason clause for the bundle-
-// preserving error path. Only GNOME-below-46 Wayland reaches this code now;
-// the X11 case was retired in v0.6.0 (X11 is blocked at startup, so the
-// bundle file is never written for an X11 invocation).
-func unsupportedFileClipboardReason(err error) string {
-	if errors.Is(err, fileclip.ErrLegacyGNOMEUnsupported) {
-		return fmt.Sprintf(
-			"GNOME below %d file-reference clipboard is not supported",
-			fileclip.MinimumGNOMEFileClipboardMajor,
-		)
-	}
-	return "file-reference clipboard is not supported"
-}
-
-func unsupportedFileClipboardRemedy(err error) string {
-	if errors.Is(err, fileclip.ErrLegacyGNOMEUnsupported) {
-		return fmt.Sprintf(
-			"For one-step paste, upgrade to GNOME %d or newer.",
-			fileclip.MinimumGNOMEFileClipboardMajor,
-		)
-	}
-	return ""
-}
-
 func BundleWarnings(env EmitEnvironment) []string {
 	if env.Platform != "linux" {
 		return nil
@@ -1148,12 +1124,24 @@ func BundleWarnings(env EmitEnvironment) []string {
 	if platform.DetectLinuxSessionForEnv("linux", os.Getenv, "") != platform.LinuxSessionWayland {
 		return nil
 	}
-	if warning, ok := sandboxPortalWarning(); ok {
-		return []string{
-			warning,
-		}
+	// GNOME (producer) warning first, then the portal (sandbox broker)
+	// warning; both can fire on an old stack such as Ubuntu 22.04.
+	var warnings []string
+	if warning, ok := legacyGNOMEWarning(); ok {
+		warnings = append(warnings, warning)
 	}
-	return nil
+	if warning, ok := sandboxPortalWarning(); ok {
+		warnings = append(warnings, warning)
+	}
+	return warnings
+}
+
+func legacyGNOMEWarning() (string, bool) {
+	major, legacy := fileclip.LegacyGNOMEWayland()
+	if !legacy {
+		return "", false
+	}
+	return fmt.Sprintf("GNOME %d is older than the recommended GNOME %d baseline. Your file manager or browser may not accept the file-reference paste; drag and drop the bundle file if paste fails.", major, fileclip.MinimumGNOMEFileClipboardMajor), true
 }
 
 func sandboxPortalWarning() (string, bool) {

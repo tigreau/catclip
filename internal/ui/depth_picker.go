@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -51,7 +50,7 @@ func chooseStartupDepthWithEscHint(currentArgs []string, query string, escHint s
 	bucketFinish := platform.InternalBenchSpan("ui.depth_picker.compute_buckets",
 		"entries", platform.InternalBenchInt(len(view.Entries)),
 	)
-	buckets := discovery.ComputeDepthBuckets(uniqueSortedRelPaths(view.Entries))
+	buckets := discovery.ComputeDepthBuckets(view.Entries)
 	bucketFinish("buckets", platform.InternalBenchInt(len(buckets)))
 	if len(buckets) == 0 {
 		return 0, false, discovery.ErrSelectionCancelled
@@ -83,11 +82,11 @@ type scopeDepthInfo struct {
 }
 
 func currentScopeDepthInfo(currentArgs []string) (scopeDepthInfo, error) {
-	relPaths, err := startupScopeFileSetPaths(currentArgs)
+	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
 	if err != nil {
 		return scopeDepthInfo{}, err
 	}
-	buckets := discovery.ComputeDepthBuckets(relPaths)
+	buckets := discovery.ComputeDepthBuckets(view.Entries)
 	maxDepth := 0
 	if len(buckets) > 0 {
 		maxDepth = buckets[len(buckets)-1].Depth
@@ -120,23 +119,6 @@ func startupDepthPickerLines(buckets []discovery.DepthBucket) []string {
 		lines = append(lines, strings.Join([]string{value, value, label, value}, "\t"))
 	}
 	return lines
-}
-
-func uniqueSortedRelPaths(entries []discovery.Entry) []string {
-	seen := make(map[string]struct{}, len(entries))
-	out := make([]string, 0, len(entries))
-	for _, e := range entries {
-		if e.RelPath == "" {
-			continue
-		}
-		if _, ok := seen[e.RelPath]; ok {
-			continue
-		}
-		seen[e.RelPath] = struct{}{}
-		out = append(out, e.RelPath)
-	}
-	sort.Strings(out)
-	return out
 }
 
 func chooseDepthWithFzf(query string, lines []string, previewCommand string, escHint ...string) (string, error) {
@@ -176,7 +158,7 @@ func chooseDepthWithFzf(query string, lines []string, previewCommand string, esc
 func depthPickerHeaderWithEscHint(escHint string) string {
 	return discovery.PickerHeader(
 		"Pick maximum path depth.",
-		"Depth counts path segments from the working directory root.",
+		"Depth counts path segments below each target (like rg --max-depth).",
 		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
 	)
 }

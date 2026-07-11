@@ -219,7 +219,7 @@ Subpackages and platform shims:
    - `--include` adds authorized ignored paths (must be first, once per scope)
    - `--only` / `--exclude` run as sequential file-set stages
    - `--recent N` sorts by mtime, keeps top N
-   - `--depth N` removes files deeper than N path segments from cwd
+   - `--depth N` removes files more than N levels below each target (rg `--max-depth`)
    - `--contains` filters by content match (regex, rg-backed)
    - `--snippet` extracts blank-line-bounded blocks matching regex
    - `--lines [START [END]]` slices each surviving file to that 1-based line range

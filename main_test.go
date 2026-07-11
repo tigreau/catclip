@@ -1277,6 +1277,33 @@ func TestRunDepthRejectsValuesGreaterThanCurrentScopeMaxDepth(t *testing.T) {
 	}
 }
 
+// v0.6.6: --depth anchors at each target. `catclip src --depth 1` keeps the
+// direct children of src (src/main.ts) and drops deeper files. Under the old
+// project-root anchoring src/main.ts was project-depth 2, so --depth 1 would
+// have returned nothing; this test is a discriminator for the re-anchor.
+func TestRunDepthAnchorsToTarget(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"README.md":                 "readme\n",
+		"src/main.ts":               "main\n",
+		"src/components/Button.tsx": "button\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "--depth", "1"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	out := stdout.String()
+	if !strings.Contains(out, `<file path="src/main.ts">`) {
+		t.Fatalf("expected direct child src/main.ts at anchored depth 1, got:\n%s", out)
+	}
+	if strings.Contains(out, "src/components/Button.tsx") {
+		t.Fatalf("expected deeper src/components/Button.tsx to be filtered, got:\n%s", out)
+	}
+}
+
 func TestRunPathsEmitsBareRelativePaths(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/a.ts":        "a\n",
@@ -5059,11 +5086,14 @@ func TestEmitBundleSurfacesWaylandRequiredOnUnknownSession(t *testing.T) {
 	}
 }
 
-func TestEmitBundlePreservesBundleOnLegacyGNOMEUnsupported(t *testing.T) {
+// The wl-copy liveness failure (started but exited before serving the
+// offer) mirrors the text sink's wl-copy error so both sinks teach the
+// user identically. The temp bundle is removed; the remedy is stdout.
+func TestEmitBundleSurfacesWlCopyExitedError(t *testing.T) {
 	originalCopy := output.FileclipCopy
 	defer func() { output.FileclipCopy = originalCopy }()
 	output.FileclipCopy = func(...string) error {
-		return fileclip.ErrLegacyGNOMEUnsupported
+		return fmt.Errorf("%w: %w", fileclip.ErrToolFailed, fileclip.ErrWaylandOfferNotServed)
 	}
 
 	dir := t.TempDir()
@@ -5071,21 +5101,31 @@ func TestEmitBundlePreservesBundleOnLegacyGNOMEUnsupported(t *testing.T) {
 
 	_, err := output.EmitBundle(output.EmitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, platform.Palette{})
 	if err == nil {
-		t.Fatalf("expected output.EmitBundle to surface GNOME below %d unsupported error", fileclip.MinimumGNOMEFileClipboardMajor)
+		t.Fatal("expected output.EmitBundle to surface wl-copy exited error")
 	}
 	msg := err.Error()
-	for _, want := range []string{fmt.Sprintf("GNOME below %d file-reference clipboard is not supported", fileclip.MinimumGNOMEFileClipboardMajor), "Nothing was placed on your clipboard", "Your catclip bundle was saved to:", "Drag it into the target application", "--no-bundle", fmt.Sprintf("For one-step paste, upgrade to GNOME %d or newer.", fileclip.MinimumGNOMEFileClipboardMajor)} {
+	for _, want := range []string{
+		"wl-copy failed.",
+		"wl-copy exited before the clipboard offer was served",
+		"Wayland compositor/session",
+		"--print",
+		"--headless",
+		"Details: fileclip: clipboard tool failed: wl-copy exited before serving the clipboard offer",
+	} {
 		if !strings.Contains(msg, want) {
-			t.Errorf("GNOME below %d unsupported message missing %q, got: %s", fileclip.MinimumGNOMEFileClipboardMajor, want, msg)
+			t.Errorf("wl-copy exited message missing %q, got: %s", want, msg)
 		}
+	}
+	if strings.Contains(msg, "clipboard command failed") {
+		t.Errorf("wl-copy exited must not use the generic framing, got: %s", msg)
 	}
 
 	entries, readErr := os.ReadDir(dir)
 	if readErr != nil {
 		t.Fatalf("read bundle dir: %v", readErr)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("expected preserved bundle file, got %d entries", len(entries))
+	if len(entries) != 0 {
+		t.Fatalf("expected temp bundle to be removed, got %d entries", len(entries))
 	}
 }
 

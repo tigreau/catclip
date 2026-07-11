@@ -22,6 +22,10 @@ set urlList to current application's NSMutableArray's array()
 	for _, p := range paths {
 		escaped := strings.ReplaceAll(p, `\`, `\\`)
 		escaped = strings.ReplaceAll(escaped, `"`, `\"`)
+		// Raw newline/CR bytes are legal in APFS filenames but end an
+		// AppleScript string literal mid-token; emit them as escapes.
+		escaped = strings.ReplaceAll(escaped, "\n", `\n`)
+		escaped = strings.ReplaceAll(escaped, "\r", `\r`)
 		scriptBuilder.WriteString(fmt.Sprintf(`urlList's addObject:(current application's NSURL's fileURLWithPath:"%s")`+"\n", escaped))
 	}
 

@@ -46,7 +46,7 @@ if [ "$prompt" = "depth> " ]; then
 		echo "missing depth header" >&2
 		exit 91
 	}
-	printf '%s\n' "$header" | grep -F "Depth counts path segments from the working directory root." >/dev/null || {
+	printf '%s\n' "$header" | grep -F "Depth counts path segments below each target (like rg --max-depth)." >/dev/null || {
 		echo "missing depth explanation" >&2
 		exit 91
 	}
@@ -91,16 +91,16 @@ if [ "$prompt" = "depth> " ]; then
 		echo "preview command quotes {4} inside double quotes: $preview" >&2
 		exit 91
 	fi
-	printf '%s\n' "$input" | grep -F '1	1	keep files at depth <= 1' >/dev/null && {
-		echo "depth 1 should not appear (no files at depth 1)" >&2
+	printf '%s\n' "$input" | grep -F '1	1	keep files at depth <= 1 (1 files)' >/dev/null || {
+		echo "missing depth row 1 (src/main.ts is a direct child of the src target)" >&2
 		exit 91
 	}
-	printf '%s\n' "$input" | grep -F '2	2	keep files at depth <= 2 (1 files)' >/dev/null || {
+	printf '%s\n' "$input" | grep -F '2	2	keep files at depth <= 2 (3 files)' >/dev/null || {
 		echo "missing depth row 2" >&2
 		exit 91
 	}
-	printf '%s\n' "$input" | grep -F '3	3	keep files at depth <= 3 (3 files)' >/dev/null || {
-		echo "missing depth row 3" >&2
+	printf '%s\n' "$input" | grep -F '3	3	keep files at depth <= 3' >/dev/null && {
+		echo "depth 3 should not appear (anchored max under src is 2)" >&2
 		exit 91
 	}
 	printf '%s\n' "$input" | grep -F '2	2	keep files at depth <= 2' | head -n 1

@@ -211,6 +211,7 @@ func TestBundleWarnsForOldPortalOnWayland(t *testing.T) {
 
 	t.Setenv("XDG_SESSION_TYPE", "wayland")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("XDG_CURRENT_DESKTOP", "")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.18.4")
 
 	cfg := output.EmitConfig{
@@ -244,6 +245,7 @@ func TestBundleWarnsForOldPortalOnWayland(t *testing.T) {
 func TestBundleWarnsWhenPortalVersionCannotBeDetectedOnWayland(t *testing.T) {
 	t.Setenv("XDG_SESSION_TYPE", "wayland")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("XDG_CURRENT_DESKTOP", "")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_BIN", filepath.Join(t.TempDir(), "missing-portal"))
 
 	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
@@ -263,11 +265,87 @@ func TestBundleWarnsWhenPortalVersionCannotBeDetectedOnWayland(t *testing.T) {
 func TestBundleDoesNotWarnForNewPortalOnWayland(t *testing.T) {
 	t.Setenv("XDG_SESSION_TYPE", "wayland")
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("XDG_CURRENT_DESKTOP", "")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.21.0")
 
 	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
 	if len(warnings) != 0 {
 		t.Fatalf("expected no portal warnings, got %#v", warnings)
+	}
+}
+
+// Legacy GNOME Wayland no longer aborts the bundle copy (v0.6.6): the offer
+// is attempted and a producer-side warning rides along on the success path.
+func TestBundleWarnsForLegacyGNOMEOnWayland(t *testing.T) {
+	withCatclipBundleDir(t)
+	_, restore := withBundleStub(t)
+	defer restore()
+
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")
+	t.Setenv("CATCLIP_GNOME_VERSION", "GNOME Shell 42.9")
+	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.21.0")
+
+	cfg := output.EmitConfig{
+		OutputMode: command.OutputModeClipboard,
+	}
+	env := output.EmitEnvironment{
+		Platform:   "linux",
+		WorkingDir: t.TempDir(),
+	}
+
+	stats, err := output.WithPayloadWriter(cfg, env, io.Discard, platform.Palette{}, func(w io.Writer) error {
+		_, werr := io.WriteString(w, strings.Repeat("a", 5000))
+		return werr
+	})
+	if err != nil {
+		t.Fatalf("output.WithPayloadWriter returned error: %v", err)
+	}
+	if len(stats.Warnings) != 1 {
+		t.Fatalf("expected one GNOME warning, got %#v", stats.Warnings)
+	}
+	for _, want := range []string{"GNOME 42", "recommended GNOME 46 baseline", "drag and drop"} {
+		if !strings.Contains(stats.Warnings[0], want) {
+			t.Fatalf("GNOME warning missing %q: %q", want, stats.Warnings[0])
+		}
+	}
+	if stats.BundlePath == "" {
+		t.Fatal("expected the copy attempt to proceed and set BundlePath")
+	}
+}
+
+// Ubuntu 22.04 shape: old GNOME and old portal fire together, producer
+// (GNOME) warning first, sandbox broker (portal) warning second.
+func TestBundleWarnsForLegacyGNOMEAndOldPortalTogether(t *testing.T) {
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")
+	t.Setenv("CATCLIP_GNOME_VERSION", "GNOME Shell 42.9")
+	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.14.0")
+
+	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
+	if len(warnings) != 2 {
+		t.Fatalf("expected GNOME and portal warnings, got %#v", warnings)
+	}
+	if !strings.Contains(warnings[0], "GNOME 42") {
+		t.Fatalf("expected GNOME warning first, got %q", warnings[0])
+	}
+	if !strings.Contains(warnings[1], "xdg-desktop-portal 1.14") {
+		t.Fatalf("expected portal warning second, got %q", warnings[1])
+	}
+}
+
+func TestBundleDoesNotWarnForModernGNOMEOnWayland(t *testing.T) {
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+	t.Setenv("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")
+	t.Setenv("CATCLIP_GNOME_VERSION", "GNOME Shell 48.1")
+	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.21.0")
+
+	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
+	if len(warnings) != 0 {
+		t.Fatalf("expected no warnings on modern GNOME, got %#v", warnings)
 	}
 }
 

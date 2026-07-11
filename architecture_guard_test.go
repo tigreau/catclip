@@ -39,6 +39,15 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	// catches calls of the form search.RipgrepBinary().
 	requireCallOnlyInAllowedFiles(t, files, "search.RipgrepBinary",
 		[]string{"required_tools.go"})
+
+	// fzf execution is confined to interactive_choose.go (the v0.6.6
+	// discovery file split), so the resolver core and other discovery files
+	// never spawn or reconstruct an fzf picker. picker.Run is the boundary;
+	// the fzf command-string builders live in picker_commands.go /
+	// interactive_choose.go (audited by name in requirePreviewPlaceholders...).
+	requireCallOnlyInAllowedFiles(t, discoveryFiles, "picker.Run",
+		[]string{filepath.Join("internal", "discovery", "interactive_choose.go")})
+
 	uiFiles := parseUIGoFiles(t)
 	requireInteractivePickersAvoidPersistentSideEffects(t, append(files, uiFiles...))
 	requireInternalRenderHandlersAvoidDerivation(t, uiFiles)

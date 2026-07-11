@@ -24,53 +24,6 @@ func linuxSessionKind() platform.LinuxSessionKind {
 	return platform.DetectLinuxSession()
 }
 
-func isGNOMEDesktop() bool {
-	desktop := strings.ToLower(os.Getenv("XDG_CURRENT_DESKTOP"))
-	for _, part := range strings.FieldsFunc(desktop, func(r rune) bool {
-		return r == ':' || r == ';' || r == ',' || r == ' '
-	}) {
-		if part == "gnome" {
-			return true
-		}
-	}
-	return false
-}
-
-func gnomeMajorVersion() (int, bool) {
-	raw := strings.TrimSpace(os.Getenv("CATCLIP_GNOME_VERSION"))
-	if raw == "" {
-		out, err := exec.Command("gnome-shell", "--version").Output()
-		if err != nil {
-			return 0, false
-		}
-		raw = string(out)
-	}
-
-	for _, field := range strings.Fields(raw) {
-		field = strings.TrimLeft(field, "vV")
-		majorText := field
-		if idx := strings.IndexAny(majorText, ".-+"); idx >= 0 {
-			majorText = majorText[:idx]
-		}
-		if majorText == "" {
-			continue
-		}
-		var major int
-		if _, err := fmt.Sscanf(majorText, "%d", &major); err == nil {
-			return major, true
-		}
-	}
-	return 0, false
-}
-
-func legacyGNOMEWaylandUnsupported() bool {
-	if !isGNOMEDesktop() {
-		return false
-	}
-	major, ok := gnomeMajorVersion()
-	return ok && major < MinimumGNOMEFileClipboardMajor
-}
-
 // pathToFileURI converts an absolute path to a file:// URI with proper
 // percent-encoding (spaces -> %20, etc.), matching the text/uri-list spec.
 func pathToFileURI(path string) string {
@@ -114,9 +67,9 @@ func copyPlatform(paths []string) error {
 	case platform.LinuxSessionWSL:
 		return copyWSL(paths)
 	case platform.LinuxSessionWayland:
-		if legacyGNOMEWaylandUnsupported() {
-			return ErrLegacyGNOMEUnsupported
-		}
+		// Legacy GNOME (< MinimumGNOMEFileClipboardMajor) is attempted, not
+		// refused: v0.6.6 demoted the version gate to a caller-side warning
+		// via LegacyGNOMEWayland.
 		payload := linuxClipboardPayloadForWayland(paths)
 		return copyWayland(payload.Body, payload.MIMEType)
 	default:
@@ -168,6 +121,12 @@ func copyWayland(payload, mimeType string) error {
 		return fmt.Errorf("%w: wl-copy: %v", ErrToolFailed, err)
 	}
 	time.Sleep(200 * time.Millisecond)
+
+	// A wl-copy that cannot reach a compositor exits immediately; without
+	// this probe the copy would report success with nothing on the clipboard.
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		return fmt.Errorf("%w: %w", ErrToolFailed, ErrWaylandOfferNotServed)
+	}
 
 	// wl-copy must remain alive to serve the Wayland clipboard. Running it in
 	// foreground mode and releasing the process lets this short-lived CLI exit.

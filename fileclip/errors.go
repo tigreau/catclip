@@ -2,11 +2,12 @@ package fileclip
 
 import (
 	"errors"
-	"fmt"
 )
 
 // MinimumGNOMEFileClipboardMajor is the oldest GNOME major version verified to
-// support browser-oriented Wayland file-reference clipboard writes.
+// support browser-oriented Wayland file-reference clipboard writes. Since
+// v0.6.6 this is a warning baseline, not a gate: Copy attempts the offer on
+// older GNOME too, and [LegacyGNOMEWayland] lets callers warn about it.
 const MinimumGNOMEFileClipboardMajor = 46
 
 var (
@@ -29,15 +30,11 @@ var (
 	// own branch and is unaffected.
 	ErrLinuxClipboardSessionUnsupported = errors.New("fileclip: no supported Linux clipboard session is available")
 
-	// ErrLegacyGNOMEUnsupported is returned on GNOME Wayland versions older
-	// than the tested file-reference clipboard baseline. Below the baseline,
-	// the combination of Mutter, xdg-desktop-portal, and shipping browsers
-	// is not trusted to deliver a file-reference paste, so fileclip writes
-	// nothing rather than a half-working offer.
-	ErrLegacyGNOMEUnsupported = errors.New(fmt.Sprintf(
-		"fileclip: GNOME below %d file-reference clipboard is not supported",
-		MinimumGNOMEFileClipboardMajor,
-	))
+	// ErrWaylandOfferNotServed is returned when wl-copy started but exited
+	// before the 200ms settle window ended, meaning no clipboard offer is
+	// being served (typically no reachable Wayland compositor). It is always
+	// wrapped together with [ErrToolFailed].
+	ErrWaylandOfferNotServed = errors.New("wl-copy exited before serving the clipboard offer")
 
 	// ErrToolNotFound is returned when the required clipboard tool
 	// (osascript, wl-copy, powershell) is not installed.

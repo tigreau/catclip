@@ -112,6 +112,26 @@ func TestCopyPathWithQuotes(t *testing.T) {
 	}
 }
 
+func TestCopyPathWithNewline(t *testing.T) {
+	if os.Getenv("FILECLIP_INTEGRATION") == "" {
+		t.Skip("set FILECLIP_INTEGRATION=1 to run clipboard integration tests")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("NTFS disallows newlines in filenames")
+	}
+
+	// APFS and most Linux filesystems allow newlines in filenames; the
+	// darwin backend must emit them as AppleScript escapes, not raw bytes.
+	path := filepath.Join(t.TempDir(), "file\nwith\nnewlines.txt")
+	if err := os.WriteFile(path, []byte("newline test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Copy(path); err != nil {
+		t.Fatalf("Copy() failed for path with newlines: %v", err)
+	}
+}
+
 func TestCopySymlink(t *testing.T) {
 	if os.Getenv("FILECLIP_INTEGRATION") == "" {
 		t.Skip("set FILECLIP_INTEGRATION=1 to run clipboard integration tests")

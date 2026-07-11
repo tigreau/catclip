@@ -49,7 +49,10 @@ func TestGNOMEMajorVersionParsesOverride(t *testing.T) {
 	}
 }
 
-func TestCopyReturnsLegacyGNOMEUnsupportedOnOldGNOMEWayland(t *testing.T) {
+// TestCopyAttemptsOldGNOMEWayland pins the v0.6.6 gate demotion: legacy GNOME
+// Wayland no longer short-circuits Copy. With PATH emptied, reaching the
+// wl-copy lookup (ErrToolNotFound) proves the version gate is gone.
+func TestCopyAttemptsOldGNOMEWayland(t *testing.T) {
 	if linuxSessionKind() == platform.LinuxSessionWSL {
 		t.Skip("WSL uses the Windows clipboard path")
 	}
@@ -57,15 +60,45 @@ func TestCopyReturnsLegacyGNOMEUnsupportedOnOldGNOMEWayland(t *testing.T) {
 	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
 	t.Setenv("XDG_CURRENT_DESKTOP", "ubuntu:GNOME")
 	t.Setenv("CATCLIP_GNOME_VERSION", "GNOME Shell 42.9")
+	t.Setenv("PATH", t.TempDir())
 
 	path := filepath.Join(t.TempDir(), "gnome42.txt")
-	if err := os.WriteFile(path, []byte("legacy gnome unsupported\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("legacy gnome attempted\n"), 0o644); err != nil {
 		t.Fatalf("write temp file: %v", err)
 	}
 
 	err := Copy(path)
-	if !errors.Is(err, ErrLegacyGNOMEUnsupported) {
-		t.Fatalf("Copy error = %v, want ErrLegacyGNOMEUnsupported", err)
+	if !errors.Is(err, ErrToolNotFound) {
+		t.Fatalf("Copy error = %v, want ErrToolNotFound (copy attempt reaching wl-copy lookup)", err)
+	}
+}
+
+func TestLegacyGNOMEWayland(t *testing.T) {
+	cases := []struct {
+		name       string
+		desktop    string
+		version    string
+		wantMajor  int
+		wantLegacy bool
+	}{
+		{"legacy gnome", "ubuntu:GNOME", "GNOME Shell 42.9", 42, true},
+		{"modern gnome", "ubuntu:GNOME", "GNOME Shell 48.1", 0, false},
+		{"non-gnome desktop", "KDE", "GNOME Shell 42.9", 0, false},
+		{"unparseable version", "ubuntu:GNOME", "unknown", 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("XDG_CURRENT_DESKTOP", tc.desktop)
+			t.Setenv("CATCLIP_GNOME_VERSION", tc.version)
+
+			major, legacy := LegacyGNOMEWayland()
+			if legacy != tc.wantLegacy {
+				t.Fatalf("legacy = %v, want %v", legacy, tc.wantLegacy)
+			}
+			if tc.wantLegacy && major != tc.wantMajor {
+				t.Fatalf("major = %d, want %d", major, tc.wantMajor)
+			}
+		})
 	}
 }
 
