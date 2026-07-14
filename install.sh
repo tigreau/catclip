@@ -19,7 +19,7 @@ BIN_DIR="$PREFIX/bin"
 SHARE_DIR="$PREFIX/share/catclip"
 TOOLS_DIR="$SHARE_DIR/bin"
 
-if [[ -t 1 && "${TERM:-}" != "dumb" ]]; then
+if [[ -t 1 && "${TERM:-}" != "dumb" && -z "${NO_COLOR:-}" ]]; then
   RESET=$'\033[0m'
   BOLD=$'\033[1m'
   GREEN=$'\033[32m'
@@ -589,3 +589,7 @@ if [[ "$BIN_DIR" == "$HOME/.local/bin" ]]; then
     *) printf '%sNote:%s add %s to PATH if it is not already exported.\n' "$YELLOW" "$RESET" "$BIN_DIR" ;;
   esac
 fi
+
+printf '\n%s%sImportant:%s run catclip from inside the project you want to inspect.\n\n' "$BOLD" "$YELLOW" "$RESET"
+printf '  %scd /path/to/project%s\n' "$CYAN" "$RESET"
+printf '  %scatclip --help%s\n\n' "$CYAN" "$RESET"

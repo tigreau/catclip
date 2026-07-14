@@ -3215,10 +3215,9 @@ func TestRunMissingFileTargetShowsDirectFilenameGuidance(t *testing.T) {
 	}
 }
 
-// TestRunGlobZeroMatchVisibleParent asserts the v0.6.4 fix:
-// a glob like "cmd/*.go" against a visible-but-empty-of-.go dir no longer
-// falsely tells the user to add --include. The new message explains glob
-// anchoring and suggests the recursive form.
+// TestRunGlobZeroMatchVisibleParent pins executable recursive guidance. Target
+// `**` has no recursive semantics, so recovery must use exact directory
+// traversal followed by the cwd-relative legacy filter.
 func TestRunGlobZeroMatchVisibleParent(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"cmd/sub/main.go": "package main\n",
@@ -3233,11 +3232,25 @@ func TestRunGlobZeroMatchVisibleParent(t *testing.T) {
 	if strings.Contains(stderrText, "If the parent directory is ignored, use --include to allow it first") {
 		t.Fatalf("visible-parent glob should NOT show the misleading --include hint, got:\n%s", stderrText)
 	}
-	if !strings.Contains(stderrText, "is anchored — it matches") {
+	if !strings.Contains(stderrText, "target '*' does not cross folders") {
 		t.Fatalf("expected anchoring explanation, got:\n%s", stderrText)
 	}
-	if !strings.Contains(stderrText, "cmd/**/*.go") {
-		t.Fatalf("expected recursive-glob suggestion 'cmd/**/*.go', got:\n%s", stderrText)
+	if strings.Contains(stderrText, "**") {
+		t.Fatalf("must not advertise unsupported target doublestar, got:\n%s", stderrText)
+	}
+	if !strings.Contains(stderrText, `catclip cmd --only "*.go"`) {
+		t.Fatalf("expected exact-directory plus filter suggestion, got:\n%s", stderrText)
+	}
+
+	// Execute the suggested argv through the normal parser/resolver pipeline.
+	suggested := parseInProject(t, project, []string{"--quiet", "--print", "cmd", "--only", "*.go", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(suggested, &stdout, &stderr); err != nil {
+		t.Fatalf("suggested command failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if got, want := stdout.String(), "cmd/sub/main.go\n"; got != want {
+		t.Fatalf("suggested command selected wrong files\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
 
@@ -3260,11 +3273,137 @@ func TestRunGlobZeroMatchIgnoredParent(t *testing.T) {
 	if !strings.Contains(stderrText, "is ignored by .gitignore") {
 		t.Fatalf("expected ignored-parent source attribution, got:\n%s", stderrText)
 	}
-	if !strings.Contains(stderrText, "--include 'docs'") {
-		t.Fatalf("expected --include hint with quoted prefix, got:\n%s", stderrText)
+	if !strings.Contains(stderrText, "--include docs") {
+		t.Fatalf("expected --include hint, got:\n%s", stderrText)
 	}
-	if !strings.Contains(stderrText, "docs/**/*.md") {
-		t.Fatalf("expected recursive-glob form 'docs/**/*.md', got:\n%s", stderrText)
+	if strings.Contains(stderrText, "**") {
+		t.Fatalf("must not advertise unsupported target doublestar, got:\n%s", stderrText)
+	}
+	if !strings.Contains(stderrText, `catclip docs --include docs --only "*.md"`) {
+		t.Fatalf("expected executable authorization plus filter suggestion, got:\n%s", stderrText)
+	}
+
+	suggested := parseInProject(t, project, []string{"--quiet", "--print", "docs", "--include", "docs", "--only", "*.md", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(suggested, &stdout, &stderr); err != nil {
+		t.Fatalf("suggested ignored-directory command failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if got, want := stdout.String(), "docs/readme.md\n"; got != want {
+		t.Fatalf("suggested ignored-directory command selected wrong files\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestRunDirectoryShapedGlobZeroMatchSuggestsExactDirectory(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"internal/cli/main.go":      "package cli\n",
+		"internal/output/emit.go":   "package output\n",
+		"internal/root.go":          "package internal\n",
+		"outside/unrelated/main.go": "package main\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "internal/*/"})
+	var stdout, stderr bytes.Buffer
+	_ = run(cfg, &stdout, &stderr)
+	message := stderr.String()
+	if !strings.Contains(message, "Target globs match files, not directory names") {
+		t.Fatalf("expected file-vs-directory explanation, got:\n%s", message)
+	}
+	if !strings.Contains(message, "catclip internal") {
+		t.Fatalf("expected exact-directory suggestion, got:\n%s", message)
+	}
+	if strings.Contains(message, "**") || strings.Contains(message, "--only '*/'") || strings.Contains(message, `--only "*/"`) {
+		t.Fatalf("must not print an impossible directory glob suggestion, got:\n%s", message)
+	}
+
+	suggested := parseInProject(t, project, []string{"--quiet", "--print", "internal", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(suggested, &stdout, &stderr); err != nil {
+		t.Fatalf("suggested exact-directory command failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	got := stdout.String()
+	for _, want := range []string{"internal/cli/main.go\n", "internal/output/emit.go\n", "internal/root.go\n"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("suggested command missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "outside/") {
+		t.Fatalf("suggested command escaped the literal prefix:\n%s", got)
+	}
+}
+
+func TestRunIgnoredDirectoryShapedGlobSuggestsAuthorizedDirectory(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":                "generated/\n",
+		"generated/client/types.go": "package client\n",
+		"src/main.go":               "package main\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "generated/*/"})
+	var stdout, stderr bytes.Buffer
+	_ = run(cfg, &stdout, &stderr)
+	message := stderr.String()
+	if !strings.Contains(message, "is ignored by .gitignore") || !strings.Contains(message, "Target globs match files, not directory names") {
+		t.Fatalf("expected ignored directory-glob explanation, got:\n%s", message)
+	}
+	if !strings.Contains(message, "catclip generated --include generated") {
+		t.Fatalf("expected authorized exact-directory suggestion, got:\n%s", message)
+	}
+	if strings.Contains(message, "**") || strings.Contains(message, "--only") {
+		t.Fatalf("must not print a glob filter for a directory-shaped target, got:\n%s", message)
+	}
+
+	suggested := parseInProject(t, project, []string{"--quiet", "--print", "generated", "--include", "generated", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(suggested, &stdout, &stderr); err != nil {
+		t.Fatalf("suggested authorized-directory command failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if got, want := stdout.String(), "generated/client/types.go\n"; got != want {
+		t.Fatalf("suggested authorized-directory command selected wrong files\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestRunGlobZeroMatchSuggestionQuotesLiteralPrefix(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"source files/nested/main.go": "package main\n",
+		"src/app.ts":                  "export const app = true\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "source files/*.go"})
+	var stdout, stderr bytes.Buffer
+	_ = run(cfg, &stdout, &stderr)
+	message := stderr.String()
+	if !strings.Contains(message, `catclip "source files" --only "*.go"`) {
+		t.Fatalf("expected shell-safe literal-prefix suggestion, got:\n%s", message)
+	}
+
+	suggested := parseInProject(t, project, []string{"--quiet", "--print", "source files", "--only", "*.go", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(suggested, &stdout, &stderr); err != nil {
+		t.Fatalf("suggested spaced-prefix command failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if got, want := stdout.String(), "source files/nested/main.go\n"; got != want {
+		t.Fatalf("suggested spaced-prefix command selected wrong files\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+func TestRunTargetDoublestarHasNoRecursiveSemantics(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"cmd/root.go":         "package cmd\n",
+		"cmd/one/one.go":      "package one\n",
+		"cmd/two/deep/two.go": "package deep\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "cmd/**/*.go", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("one-level target doublestar command failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if got, want := stdout.String(), "cmd/one/one.go\n"; got != want {
+		t.Fatalf("target doublestar must behave as one path component\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
 

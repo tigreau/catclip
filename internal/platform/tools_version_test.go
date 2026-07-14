@@ -6,7 +6,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
+
+// testProbeTimeout is a generous budget for fake-binary probe tests so full-
+// suite parallel load (process-spawn queueing, macOS first-exec assessment)
+// cannot flake them; the production ProbeToolVersion still uses its own budget.
+const testProbeTimeout = 30 * time.Second
 
 func TestParseToolVersionOutput_FzfFormat(t *testing.T) {
 	got := parseToolVersionOutput("0.44.1 (26f37b8)\n")
@@ -70,7 +76,7 @@ func TestProbeToolVersion_FzfFormat(t *testing.T) {
 	}
 	dir := t.TempDir()
 	bin := writeFakeVersionBinary(t, dir, "fake-fzf", "0.44.1 (26f37b8)")
-	got, err := ProbeToolVersion(bin)
+	got, err := probeToolVersion(bin, testProbeTimeout)
 	if err != nil {
 		t.Fatalf("ProbeToolVersion(fake-fzf) err = %v", err)
 	}
@@ -85,7 +91,7 @@ func TestProbeToolVersion_RgFormat(t *testing.T) {
 	}
 	dir := t.TempDir()
 	bin := writeFakeVersionBinary(t, dir, "fake-rg", "ripgrep 14.1.0")
-	got, err := ProbeToolVersion(bin)
+	got, err := probeToolVersion(bin, testProbeTimeout)
 	if err != nil {
 		t.Fatalf("ProbeToolVersion(fake-rg) err = %v", err)
 	}
@@ -103,7 +109,7 @@ func TestProbeToolVersion_NonZeroExit(t *testing.T) {
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
 		t.Fatalf("write fake broken: %v", err)
 	}
-	_, err := ProbeToolVersion(bin)
+	_, err := probeToolVersion(bin, testProbeTimeout)
 	if err == nil {
 		t.Fatal("ProbeToolVersion(nonzero-exit) returned nil error; want error")
 	}
@@ -121,11 +127,12 @@ func TestProbeToolVersion_Timeout(t *testing.T) {
 	}
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "fake-hang")
-	// Sleep longer than ProbeToolVersionTimeout.
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 5\n"), 0o755); err != nil {
+	// Sleep longer than the short probe timeout below (fast + deterministic;
+	// no dependence on the multi-second production budget).
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 1\n"), 0o755); err != nil {
 		t.Fatalf("write fake hang: %v", err)
 	}
-	_, err := ProbeToolVersion(bin)
+	_, err := probeToolVersion(bin, 100*time.Millisecond)
 	if err == nil {
 		t.Fatal("ProbeToolVersion(hang) returned nil error; want ErrProbeTimeout")
 	}

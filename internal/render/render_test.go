@@ -18,6 +18,19 @@ func TestHighlightFilePreviewAddsANSIForRecognizedSource(t *testing.T) {
 	}
 }
 
+func TestHighlightFilePreviewWithMatchesEmphasizesOnlyRegexSpan(t *testing.T) {
+	out := HighlightFilePreviewWithMatches("main.go", "// TODO later\n", "TODO", RenderOptions{})
+	start := strings.Index(out, previewMatchStart)
+	end := strings.Index(out, previewMatchEnd)
+	later := strings.Index(out, "later")
+	if start < 0 || end < 0 {
+		t.Fatalf("expected exact-match highlight markers, got %q", out)
+	}
+	if later < 0 || end > later {
+		t.Fatalf("expected match emphasis to end before surrounding context, got %q", out)
+	}
+}
+
 func TestHighlightFilePreviewFallsBackForPlaintext(t *testing.T) {
 	in := "just some ordinary text\nwithout code markers\n"
 	out := highlightFilePreview("notes.unknown", in, RenderOptions{})

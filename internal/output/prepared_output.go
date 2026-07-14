@@ -330,7 +330,7 @@ func BuildPreparedSnippetPayloadFromSnapshot(relPath string, snapshot TextSnapsh
 // call) and feeds the same lines to all 8 widths via this entry point, avoiding
 // 8x re-splitting churn per file. Byte output is identical to the snapshot path.
 func BuildPreparedSnippetPayloadFromLines(relPath string, lines []string, matchedLines []int, opts SnippetOptions) ([]byte, int64, []SnippetRange, error) {
-	snippet, err := resolveSnippetFromLines(lines, matchedLines, opts)
+	snippet, err := resolveSnippetFromLines(lines, matchedLines, opts, profileForPath(relPath))
 	if err != nil {
 		return nil, 0, nil, err
 	}

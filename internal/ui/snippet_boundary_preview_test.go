@@ -92,11 +92,10 @@ func TestSnippetBoundaryStreamMatchesCommit(t *testing.T) {
 	}
 }
 
-// TestSnippetBoundaryHighlightIsDisplayOnly proves the syntax highlighting the UI
-// applies is a pure display layer: with the ANSI color sequences stripped, the
-// highlighted stream is byte-identical to the raw stream for every boundary. So
-// the colorized context menu shows exactly the files and lines that get copied —
-// highlighting cannot drop, add, or alter content.
+// TestSnippetBoundaryHighlightIsDisplayOnly proves the syntax and exact-match
+// highlighting the UI applies is a pure display layer: with the ANSI sequences
+// stripped, the highlighted stream is byte-identical to the raw stream for every
+// boundary. It also pins that every smart-block/N preview emphasizes the match.
 func TestSnippetBoundaryHighlightIsDisplayOnly(t *testing.T) {
 	view := benchSnippetBoundaryView(t, 40)
 	matched, err := snippetBoundaryPreviewMatchedEntries(view, "TODO", nil)
@@ -119,6 +118,9 @@ func TestSnippetBoundaryHighlightIsDisplayOnly(t *testing.T) {
 		if !bytes.Contains(colored.Bytes(), []byte("\x1b[")) && raw.Len() > 0 {
 			t.Logf("boundary %q: highlighted stream carried no ANSI (lexer may be absent for this type)", choice.Key)
 		}
+		if raw.Len() > 0 && !bytes.Contains(colored.Bytes(), []byte("\x1b[7m")) {
+			t.Errorf("boundary %q: highlighted stream did not emphasize the TODO match", choice.Key)
+		}
 		stripped := ansiEscape.ReplaceAll(colored.Bytes(), nil)
 		if !bytes.Equal(stripped, raw.Bytes()) {
 			t.Errorf("boundary %q: ANSI-stripped highlight != raw stream — highlighting altered content", choice.Key)
@@ -130,8 +132,14 @@ func TestSnippetBoundaryHighlightIsDisplayOnly(t *testing.T) {
 // over the full ~/Desktop/catclip-test-data corpus, the streamed boundary preview
 // must be byte-identical to the committed output for every boundary — guaranteeing
 // no matched file is dropped, reordered, or altered at scale. Both paths are
-// uncapped, so this is an exact comparison. Skips when the corpus is absent.
+// uncapped, so this is an exact comparison. Skips unless explicitly enabled and
+// the corpus is present. Run:
+//
+//	CATCLIP_RUN_CORPUS_TESTS=1 go test -run=TestSnippetBoundaryStreamNoDropCorpus -v -timeout=10m ./
 func TestSnippetBoundaryStreamNoDropCorpus(t *testing.T) {
+	if os.Getenv("CATCLIP_RUN_CORPUS_TESTS") != "1" {
+		t.Skip("set CATCLIP_RUN_CORPUS_TESTS=1 to run the external corpus integrity test")
+	}
 	corpus := filepath.Join(os.Getenv("HOME"), "Desktop", "catclip-test-data")
 	if _, err := os.Stat(corpus); err != nil {
 		t.Skipf("corpus not present: %s", corpus)
@@ -274,10 +282,13 @@ func benchSnippetBoundaryView(tb testing.TB, n int) resolvedScopeView {
 // (one width-independent rg pass + serialize, no body reads) versus the per-focus
 // cost (streaming one width's snippet output). It also samples peak heap during a
 // full one-width stream to confirm the one-body-at-a-time bound. Skips when the
-// corpus is absent. Run:
+// corpus is absent or the explicit corpus-test opt-in is not set. Run:
 //
-//	go test -run=TestSnippetBoundaryCorpusTiming -v -timeout=300s ./
+//	CATCLIP_RUN_CORPUS_TESTS=1 go test -run=TestSnippetBoundaryCorpusTiming -v -timeout=300s ./
 func TestSnippetBoundaryCorpusTiming(t *testing.T) {
+	if os.Getenv("CATCLIP_RUN_CORPUS_TESTS") != "1" {
+		t.Skip("set CATCLIP_RUN_CORPUS_TESTS=1 to run the external corpus timing test")
+	}
 	corpus := filepath.Join(os.Getenv("HOME"), "Desktop", "catclip-test-data")
 	if _, err := os.Stat(corpus); err != nil {
 		t.Skipf("corpus not present: %s", corpus)

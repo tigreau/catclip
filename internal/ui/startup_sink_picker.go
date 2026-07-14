@@ -479,6 +479,14 @@ func renderSinkOutputTextPreview(plan output.Plan, emitCfg output.EmitConfig, li
 // (--lines mode) are detected and skipped to avoid chroma being
 // confused by the leading "  ##\t" prefixes.
 func highlightFileBlocksForSinkPreview(raw []byte) []byte {
+	return highlightFileBlocksForSinkPreviewMatches(raw, "")
+}
+
+// highlightFileBlocksForSinkPreviewMatches is the snippet-boundary variant of
+// highlightFileBlocksForSinkPreview. The file body keeps its Chroma syntax
+// colors, while only text matching matchPattern receives the reverse-video
+// match emphasis used by --contains previews. The <file> wrappers remain plain.
+func highlightFileBlocksForSinkPreviewMatches(raw []byte, matchPattern string) []byte {
 	var out bytes.Buffer
 	out.Grow(len(raw) + len(raw)/4) // chroma adds ~25% in ANSI codes
 	opts := treeRenderOptions{PreviewTheme: "fzf-dark"}
@@ -516,7 +524,7 @@ func highlightFileBlocksForSinkPreview(raw []byte) []byte {
 		if path == "" || sinkPreviewBodyHasLineNumbers(body) {
 			out.Write(body)
 		} else {
-			out.WriteString(renderpkg.HighlightFilePreview(path, string(body), opts))
+			out.WriteString(renderpkg.HighlightFilePreviewWithMatches(path, string(body), matchPattern, opts))
 		}
 
 		out.Write(rest[:len(closeTag)])
@@ -606,4 +614,3 @@ func formatSinkPreview(preview sinkPreview) []byte {
 	}
 	return out
 }
-

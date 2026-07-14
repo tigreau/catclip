@@ -277,6 +277,25 @@ jobs:
           sed -i "s|^  sha256 \".*\"|  sha256 \"${TARBALL_SHA}\"|" "$formula"
           sed -i '/catclip-tree/d; /CATCLIP_TREE/d' "$formula"
           sed -i 's|^\(.*CATCLIP_RG:.*\),[[:space:]]*$|\1|' "$formula"
+          ruby -e '
+            path = ARGV.fetch(0)
+            source = File.read(path)
+            source.sub!(/\n  def caveats\n.*?\n  end\n(?=\n  (?:test|def) )/m, "")
+            caveats = %q{
+  def caveats
+    <<~EOS
+      Important: run catclip from inside the project you want to inspect.
+
+        cd /path/to/project
+        catclip --help
+    EOS
+  end
+}
+            marker = "\n  test do\n"
+            abort "ERROR: Homebrew formula has no test block" unless source.include?(marker)
+            source.sub!(marker, "#{caveats}#{marker}")
+            File.write(path, source)
+          ' "$formula"
           if grep -Eq 'catclip-tree|CATCLIP_TREE' "$formula"; then
             echo "ERROR: generated Homebrew formula still references catclip-tree" >&2
             exit 1

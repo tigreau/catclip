@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/tigreau/catclip/internal/cli"
@@ -213,61 +214,40 @@ var startupExtrasChoices = []StartupModifierChoice{
 	},
 }
 
-var startupSnippetBoundaryChoices = []startupSnippetBoundaryChoice{
-	{
+// startupSnippetBoundaryChoices lists the smart block plus every legal fixed
+// context 0..200 (the CLI's snippetContextMax). Listing every value keeps the
+// picker's contract identical to the parser's and gives each value a live
+// preview; fzf filtering makes the long list instantly navigable (typing 42
+// narrows to it).
+var startupSnippetBoundaryChoices = buildStartupSnippetBoundaryChoices()
+
+func buildStartupSnippetBoundaryChoices() []startupSnippetBoundaryChoice {
+	const maxContext = 200 // mirrors cli snippetContextMax; parser rejects beyond it
+	choices := make([]startupSnippetBoundaryChoice, 0, maxContext+2)
+	choices = append(choices, startupSnippetBoundaryChoice{
 		Key:         "block",
-		Label:       "block",
-		Description: "blank-line bounded block",
-	},
-	{
-		Key:                 "0",
-		Label:               "0",
-		Description:         "matching lines only",
-		SnippetContextSet:   true,
-		SnippetContextLines: 0,
-	},
-	{
-		Key:                 "1",
-		Label:               "1",
-		Description:         "match +/- 1 line",
-		SnippetContextSet:   true,
-		SnippetContextLines: 1,
-	},
-	{
-		Key:                 "2",
-		Label:               "2",
-		Description:         "match +/- 2 lines",
-		SnippetContextSet:   true,
-		SnippetContextLines: 2,
-	},
-	{
-		Key:                 "3",
-		Label:               "3",
-		Description:         "match +/- 3 lines",
-		SnippetContextSet:   true,
-		SnippetContextLines: 3,
-	},
-	{
-		Key:                 "5",
-		Label:               "5",
-		Description:         "match +/- 5 lines",
-		SnippetContextSet:   true,
-		SnippetContextLines: 5,
-	},
-	{
-		Key:                 "10",
-		Label:               "10",
-		Description:         "match +/- 10 lines",
-		SnippetContextSet:   true,
-		SnippetContextLines: 10,
-	},
-	{
-		Key:                 "20",
-		Label:               "20",
-		Description:         "match +/- 20 lines",
-		SnippetContextSet:   true,
-		SnippetContextLines: 20,
-	},
+		Label:       "smart block",
+		Description: "the whole function, class, or element around the match",
+	})
+	for n := 0; n <= maxContext; n++ {
+		desc := fmt.Sprintf("match +/- %d lines", n)
+		switch {
+		case n == 0:
+			desc = "matching lines only"
+		case n == 1:
+			desc = "match +/- 1 line"
+		case n == maxContext:
+			desc = fmt.Sprintf("match +/- %d lines (max)", n)
+		}
+		choices = append(choices, startupSnippetBoundaryChoice{
+			Key:                 strconv.Itoa(n),
+			Label:               strconv.Itoa(n),
+			Description:         desc,
+			SnippetContextSet:   true,
+			SnippetContextLines: n,
+		})
+	}
+	return choices
 }
 
 func startupAvailableModifierChoices(currentArgs []string) []StartupModifierChoice {
@@ -493,7 +473,7 @@ func snippetBoundaryPickerHeader() string {
 func snippetBoundaryPickerHeaderWithEscHint(escHint string) string {
 	return discovery.PickerHeader(
 		"Choose snippet boundaries.",
-		"Default keeps blank-line blocks.",
+		"Smart block is the default; numbers give fixed context.",
 		fmt.Sprintf("[Up/Down] move  [Enter] confirm  %s", startupEscLabel(escHint)),
 	)
 }

@@ -1,5 +1,7 @@
 package command
 
+import "strings"
+
 // ExecutionScope is the post-parse, post-resolve view of a single scope:
 // the targets to walk, the filter/output stages to apply in order, and the
 // flags that pick output shape (lines / snippet / diff / paths). The
@@ -13,7 +15,8 @@ type ExecutionScope struct {
 	Contains        string
 	NotContains     []string
 	SnippetPattern  string
-	// SnippetContextSet=false is blank-line block mode (the default).
+	// SnippetContextSet=false is smallest-enclosing-unit mode with paragraph
+	// fallback (the default).
 	// SnippetContextSet=true is fixed-context mode: SnippetContextLines (0..200)
 	// lines before and after each match; 0 emits matching lines only.
 	SnippetContextSet   bool
@@ -101,6 +104,12 @@ func IsDirectModeEligible(invocation Invocation, scope ExecutionScope) bool {
 		return false
 	}
 	if len(scope.Targets) != 1 {
+		return false
+	}
+	// Positional glob targets are resolved by catclip discovery, not by rg as
+	// literal filesystem paths. Passing "*.go" directly to rg yields no walk,
+	// so glob scopes must use the checkpoint/chunked path.
+	if strings.ContainsAny(scope.Targets[0], "*?[") {
 		return false
 	}
 	if len(scope.IncludedTargets) > 0 {

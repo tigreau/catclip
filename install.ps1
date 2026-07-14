@@ -37,6 +37,25 @@ function Note {
     Write-Host "Note: $Message"
 }
 
+function Write-GettingStarted {
+    Write-Host ''
+    if (Test-Path Env:NO_COLOR) {
+        Write-Host 'Important: run catclip from inside the project you want to inspect.'
+        Write-Host ''
+        Write-Host '  cd /path/to/project'
+        Write-Host '  catclip --help'
+        Write-Host ''
+        return
+    }
+
+    Write-Host 'Important:' -ForegroundColor Yellow -NoNewline
+    Write-Host ' run catclip from inside the project you want to inspect.'
+    Write-Host ''
+    Write-Host '  cd /path/to/project' -ForegroundColor Cyan
+    Write-Host '  catclip --help' -ForegroundColor Cyan
+    Write-Host ''
+}
+
 function Get-DefaultInstallRoot {
     if ($env:LOCALAPPDATA) {
         return Join-Path $env:LOCALAPPDATA 'Programs\catclip'
@@ -577,6 +596,8 @@ try {
             }
         }
     }
+
+    Write-GettingStarted
 } finally {
     Remove-Item -LiteralPath $tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

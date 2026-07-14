@@ -309,6 +309,22 @@ func HighlightFilePreview(relPath, content string, opts RenderOptions) string {
 	return highlightFilePreview(relPath, content, opts)
 }
 
+// HighlightFilePreviewWithMatches applies syntax highlighting, then overlays
+// the same exact regex-match emphasis used by file previews. It is intended for
+// emit-shaped previews whose wrappers are rendered elsewhere: callers pass only
+// the raw file body, so structural delimiters remain unhighlighted.
+func HighlightFilePreviewWithMatches(relPath, content, pattern string, opts RenderOptions) string {
+	highlighted := highlightFilePreview(relPath, content, opts)
+	if strings.TrimSpace(pattern) == "" || content == "" {
+		return highlighted
+	}
+
+	rawLines := strings.Split(content, "\n")
+	highlightedLines := strings.Split(highlighted, "\n")
+	highlightedLines = overlayPreviewMatchHighlights(highlightedLines, rawLines, pattern)
+	return strings.Join(highlightedLines, "\n")
+}
+
 func highlightFilePreview(relPath, content string, opts RenderOptions) string {
 	if strings.TrimSpace(content) == "" {
 		return content

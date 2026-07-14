@@ -3576,6 +3576,39 @@ exit 91
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
+
+func TestResolveStartupArgsKeepsTargetRelativeSubtreeSelectorLiteral(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"internal/handler/a.go":   "package handler\n",
+		"internal/search/find.go": "package search\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+echo "fzf should not run for a trailing-slash subtree selector" >&2
+exit 91
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+
+	for _, flag := range []string{"--only", "--exclude"} {
+		t.Run(flag, func(t *testing.T) {
+			args, _, usedFzf, err := resolveStartupArgs(resolver, []string{"internal", flag, "handler/"})
+			if err != nil {
+				t.Fatalf("resolveStartupArgs returned error: %v", err)
+			}
+			if usedFzf {
+				t.Fatal("expected target-relative subtree selector to stay literal without fzf")
+			}
+			if got, want := strings.Join(args, "\n"), "internal\n"+flag+"\nhandler/"; got != want {
+				t.Fatalf("expected resolved args %q, got %q", want, got)
+			}
+		})
+	}
+}
+
 func TestResolveStartupArgsThenStartsFreshScopeForTargetResolution(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/a.ts":                  "export const a = true\n",

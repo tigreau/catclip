@@ -928,7 +928,8 @@ func startupFileSetValueShouldStayLiteral(currentArgs []string, flag, value stri
 }
 
 func startupLooksLikeLiteralFileSetPattern(value string) bool {
-	return strings.ContainsAny(value, "*?[")
+	normalized := strings.ReplaceAll(value, "\\", "/")
+	return strings.ContainsAny(normalized, "*?[") || strings.HasSuffix(normalized, "/")
 }
 
 func startupFileSetQueryMatchesExistingPath(currentArgs []string, value string) bool {

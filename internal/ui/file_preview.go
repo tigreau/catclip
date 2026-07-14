@@ -438,7 +438,6 @@ func buildInternalDiffPreviewDocument(relPath, absPath string, gitCtx git.Contex
 
 func buildInternalSnippetPreviewContent(ranges []output.SnippetRange, lines []string) (string, []int) {
 	previewLines := make([]string, 0, len(lines))
-	focusLines := make([]int, 0, len(lines))
 	for idx, r := range ranges {
 		if idx > 0 && len(previewLines) > 0 {
 			previewLines = append(previewLines, "")
@@ -446,8 +445,10 @@ func buildInternalSnippetPreviewContent(ranges []output.SnippetRange, lines []st
 		previewLines = append(previewLines, fmt.Sprintf("[lines %d-%d]", r.Start, r.End))
 		for i := r.Start - 1; i < r.End; i++ {
 			previewLines = append(previewLines, lines[i])
-			focusLines = append(focusLines, len(previewLines))
 		}
 	}
-	return strings.Join(previewLines, "\n"), focusLines
+	// The range headers make the selected snippet extent explicit. Returning no
+	// focus lines leaves the reverse-video emphasis exclusively on regex spans,
+	// matching the --contains preview instead of painting the whole snippet.
+	return strings.Join(previewLines, "\n"), nil
 }

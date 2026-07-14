@@ -599,6 +599,17 @@ func (r *Resolver) TargetPathExists(relTarget string) (bool, error) {
 	return false, err
 }
 
+func (r *Resolver) targetPathIsDirectory(relTarget string) (bool, error) {
+	info, err := os.Stat(filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(relTarget)))
+	if err == nil {
+		return info.IsDir(), nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 // CanResolveTargetWithoutPrompt mirrors the non-interactive resolver's
 // deterministic branches. It returns true only when a target can be handled
 // without opening fzf or prompting for ambiguity resolution.
@@ -1760,7 +1771,7 @@ func (r *Resolver) buildVisibleFileIndex() error {
 // visibleWithHiss layers the global .hiss on top. When --include '*' is
 // active the caller short-circuits without consulting either set.
 func (r *Resolver) resolveIgnoreSets() (map[string]struct{}, map[string]struct{}, error) {
-	visibleAll, err := search.ResolveVisibleFileSet(r.Cfg.WorkingDir, "")
+	visibleAll, err := search.ResolveVisibleFileSet(r.Cfg.WorkingDir, "", nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1770,7 +1781,7 @@ func (r *Resolver) resolveIgnoreSets() (map[string]struct{}, map[string]struct{}
 		return nil, nil, err
 	}
 	if hissPath != "" {
-		visibleWithHiss, err = search.ResolveVisibleFileSet(r.Cfg.WorkingDir, hissPath)
+		visibleWithHiss, err = search.ResolveVisibleFileSet(r.Cfg.WorkingDir, hissPath, nil)
 		if err != nil {
 			return nil, nil, err
 		}

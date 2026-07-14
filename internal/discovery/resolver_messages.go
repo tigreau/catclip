@@ -12,13 +12,10 @@ import (
 )
 
 // globZeroMatchWarning classifies why a glob-shaped target produced zero
-// matches and emits the right diagnostic. Three cases:
-//   - parent dir is ignored → existing --include hint with a correctly
-//     rewritten example;
-//   - parent dir is visible → explain glob anchoring + suggest the
-//     recursive form (`<prefix>/**/<pat>`) and the `--only` workaround;
-//   - parent missing / no literal prefix → fall through to
-//     targetNotFoundWarning unchanged.
+// matches and emits guidance in catclip's actual matcher grammar. Positional
+// globs use path.Match over files, so `**` is not recursive and a glob ending
+// in `/` can never match. Recursive recovery uses an exact directory target,
+// optionally followed by the legacy cwd-relative --only filter.
 //
 // Replaces the misleading unconditional "If the parent directory is
 // ignored, use --include" message that fired even when the parent was
@@ -33,32 +30,67 @@ func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors pl
 		// prefix did not consume any portion of pattern; treat as missing
 		return targetNotFoundWarning(pattern, scopeIndex, colors)
 	}
-	if block, _ := r.dirBlockedBy(prefix); block != nil && block.Source != "" {
-		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %sAuthorize it first, or use a recursive glob:%s\n    %scatclip %s/**/%s --include %s%s\n    %scatclip %s --only %s --include %s%s",
-			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), block.Source, colors.Reset, scopeIndex+1,
-			colors.Dim, colors.Reset,
-			colors.OK, prefix, suffix, SingleQuoted(prefix), colors.Reset,
-			colors.OK, SingleQuoted(prefix), SingleQuoted(suffix), SingleQuoted(prefix), colors.Reset)
-	}
-	exists, _ := r.TargetPathExists(prefix)
-	if !exists {
+	isDir, err := r.targetPathIsDirectory(prefix)
+	if err != nil || !isDir {
 		return targetNotFoundWarning(pattern, scopeIndex, colors)
 	}
-	return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %s%s is anchored — it matches %s directly in %s, not in subdirs.%s\n  %sFor recursive match:%s\n    %scatclip %s/**/%s%s\n    %scatclip %s --only %s%s",
+
+	directoryShaped := strings.HasSuffix(strings.ReplaceAll(pattern, "\\", "/"), "/")
+	block, _ := r.dirBlockedBy(prefix)
+	if block != nil && block.Source != "" {
+		return ignoredGlobZeroMatchWarning(pattern, prefix, suffix, block.Source, scopeIndex, directoryShaped, colors)
+	}
+	return visibleGlobZeroMatchWarning(pattern, prefix, suffix, scopeIndex, directoryShaped, colors)
+}
+
+func visibleGlobZeroMatchWarning(pattern, prefix, suffix string, scopeIndex int, directoryShaped bool, colors platform.Palette) string {
+	if directoryShaped {
+		return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sTarget globs match files, not directory names; file paths do not end in '/'.%s\n  %sTo include everything below %s:%s\n    %scatclip %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+			colors.Dim, colors.Reset,
+			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
+			colors.OK, ShellQuoteArg(prefix), colors.Reset)
+	}
+	filterPattern := recursiveGlobFilterPattern(pattern, suffix)
+
+	return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sTo search recursively below %s:%s\n    %scatclip %s --only %s%s",
 		colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
 		colors.Dim, SingleQuoted(pattern), SingleQuoted(suffix), SingleQuoted(prefix+"/"), colors.Reset,
+		colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
+		colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(filterPattern), colors.Reset)
+}
+
+func ignoredGlobZeroMatchWarning(pattern, prefix, suffix, source string, scopeIndex int, directoryShaped bool, colors platform.Palette) string {
+	if directoryShaped {
+		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %sTarget globs match files, not directory names; file paths do not end in '/'.%s\n  %sTo authorize and include everything below %s:%s\n    %scatclip %s --include %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, scopeIndex+1,
+			colors.Dim, colors.Reset,
+			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
+			colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(prefix), colors.Reset)
+	}
+	filterPattern := recursiveGlobFilterPattern(pattern, suffix)
+
+	return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sTo authorize it and search recursively:%s\n    %scatclip %s --include %s --only %s%s",
+		colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, scopeIndex+1,
+		colors.Dim, SingleQuoted(pattern), SingleQuoted(suffix), SingleQuoted(prefix+"/"), colors.Reset,
 		colors.Dim, colors.Reset,
-		colors.OK, prefix, suffix, colors.Reset,
-		colors.OK, prefix, SingleQuoted(suffix), colors.Reset)
+		colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(prefix), ShellQuoteArg(filterPattern), colors.Reset)
+}
+
+func recursiveGlobFilterPattern(pattern, suffix string) string {
+	if !strings.Contains(suffix, "/") {
+		return suffix
+	}
+	return pattern
 }
 
 func targetNotFoundWarning(target string, scopeIndex int, colors platform.Palette) string {
 	if strings.Contains(target, "/") {
-		return fmt.Sprintf("%sWarning:%s Target %s not found (scope %d).\n\n  %sIf the parent directory is ignored, use --include to allow it first.%s\n  %sExample:%s %scatclip --include %s --only %s%s",
+		return fmt.Sprintf("%sWarning:%s Target %s not found (scope %d).\n\n  %sIf the parent directory is ignored, use --include to allow it first.%s\n  %sExample:%s %scatclip %s --include %s --only %s%s",
 			colors.Warn, colors.Reset, SingleQuoted(target), scopeIndex+1,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset,
-			colors.OK, SingleQuoted(path.Dir(target)), SingleQuoted(path.Base(target)), colors.Reset)
+			colors.OK, SingleQuoted(path.Dir(target)), SingleQuoted(path.Dir(target)), SingleQuoted(path.Base(target)), colors.Reset)
 	}
 	if prefersDirectFileLookup(target) {
 		return fmt.Sprintf("%sWarning:%s No file named %s found (scope %d).\n\n  %sDirect file targets use exact basenames first. Non-exact file shorthand is resolved by fzf across safe directories.%s\n\n  %sIf an ignored rule is hiding it, use --include to allow that blocked file or directory first.%s",

@@ -100,8 +100,10 @@ func streamSnippetBoundaryPreview(source snippetBoundarySource, choice startupSn
 		}
 		if highlight {
 			// Each payload is complete <file>…</file> block(s), so the per-file
-			// highlight is identical to highlighting the whole buffer at once.
-			payload = highlightFileBlocksForSinkPreview(payload)
+			// syntax pass is identical to highlighting the whole buffer at once.
+			// Overlay only the regex spans; the wrappers already show the selected
+			// smart block or numeric context boundary.
+			payload = highlightFileBlocksForSinkPreviewMatches(payload, source.Pattern)
 		}
 		if _, werr := bw.Write(payload); werr != nil {
 			return nil // fzf closed the pipe (focus moved) — stop streaming

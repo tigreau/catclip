@@ -37,6 +37,7 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 
 	fmt.Fprintf(&b, "%scatclip v%s — Recursively copy code context for AI prompts%s\n\n", colors.Bold, version, colors.Reset)
 	b.WriteString("Usage:  catclip [target ...] [option ...] [filter ...]\n\n")
+	b.WriteString("Examples use one project: React TypeScript in src/, Go in cmd/ and internal/, and Markdown in docs/.\n\n")
 
 	fmt.Fprintf(&b, "%s\n", bold("Quick Start:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
@@ -44,10 +45,10 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 		{Left: "catclip src", Right: "Copy a folder"},
 		{Left: "catclip Button.tsx", Right: "Copy a file (finds it for you)"},
 		{Left: "catclip btn", Right: "Fuzzy match — finds Button.tsx for you"},
-		{Left: "catclip src lib docs", Right: "Copy multiple folders"},
-		{Left: `catclip "*.go"`, Right: "All .go files in the project (glob pattern)"},
-		{Left: `catclip src "*.go"`, Right: "Union: src/ files + all .go files"},
-		{Left: `catclip "internal/*.go"`, Right: "Only .go files directly inside internal/"},
+		{Left: "catclip src internal docs", Right: "Copy multiple folders"},
+		{Left: `catclip "*.go"`, Right: "All Go files in the project (glob pattern)"},
+		{Left: `catclip src "*.go"`, Right: "Union: src/ files + all Go files"},
+		{Left: `catclip "src/*.tsx"`, Right: "React entry files directly inside src/"},
 	})
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Interactive mode (build commands from menus):"))
@@ -59,72 +60,78 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Filtering:"))
 	fmt.Fprintf(&b, "  Filters run left to right. Changing the order changes the result.\n\n")
+	fmt.Fprintf(&b, "  When the result is the same, narrow by file name before searching file contents.\n\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: `catclip src --only "*.ts"`, Right: "Only TypeScript files"},
+		{Left: `catclip src --only "*.tsx"`, Right: "Only TSX files"},
 		{Left: `catclip src --exclude "*.css"`, Right: "Skip CSS files"},
+		{Left: `catclip internal --only "handler/"`, Right: "Only files under handler/ directories"},
+		{Left: `catclip internal --exclude "handler/"`, Right: "Skip files under handler/ directories"},
 		{Left: "catclip src --recent 3", Right: "Keep the 3 most recently modified files"},
 		{Left: "catclip src --size 0 100", Right: "Keep files up to 100 KiB, largest first"},
 		{Left: "catclip src --depth 1", Right: "Just the top level of src"},
 		{Left: "catclip . --depth 1", Right: "Copy only the files in the project root"},
 		{Left: "catclip src --paths", Right: "Emit bare relative paths, not file bodies"},
-		{Left: "catclip . --paths --then src", Right: "Show repo structure, then copy full files from src"},
+		{Left: "catclip . --paths --then src", Right: "Show project structure, then copy React files"},
 		{Left: "catclip src --contains TODO", Right: "Find files containing specific text"},
 		{Left: "catclip src --not-contains TODO", Right: "Drop files containing TODO; keep the rest"},
-		{Left: "catclip src --snippet TODO", Right: "Only the matching blocks, not full files"},
+		{Left: "catclip src --snippet TODO", Right: "Smart block around each match"},
 		{Left: "catclip src --snippet TODO 3", Right: "Matching lines plus 3 lines around each match"},
-		{Left: "catclip src --lines", Right: "Add line numbers to file output"},
-		{Left: "catclip src --lines 400 450", Right: "Read lines 400-450 with line numbers"},
+		{Left: "catclip internal/handler/user.go --lines", Right: "Add line numbers to one Go file"},
+		{Left: "catclip internal/handler/user.go --lines 40 80", Right: "Read lines 40-80 with line numbers"},
 	})
 
 	fmt.Fprintf(&b, "\n  You can give %s, %s, and %s more than one value.\n", flag("--only"), flag("--exclude"), flag("--include"))
 	fmt.Fprintf(&b, "  Examples: %s   %s\n", flag(`--only "*.ts" "*.tsx"`), flag(`--exclude "*.css" "*.scss"`))
+	fmt.Fprintf(&b, "  A trailing %s selects files beneath directories with that name.\n", flag("/"))
+	fmt.Fprintf(&b, "  In filter globs, %s also matches across folders (%s matches src/components/Button.tsx),\n", flag("*"), flag(`"src/*"`))
+	fmt.Fprintf(&b, "  and paths are written from the directory you run catclip in.\n")
 	fmt.Fprintf(&b, "\n  These two commands are different:\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: `catclip src --recent 10 --only "*.ts"`, Right: "Take the 10 newest files, then keep the .ts ones"},
-		{Left: `catclip src --only "*.ts" --recent 10`, Right: "Keep .ts first, then take the 10 newest of that set"},
+		{Left: `catclip src --recent 10 --only "*.tsx"`, Right: "Take the 10 newest files, then keep the .tsx ones"},
+		{Left: `catclip src --only "*.tsx" --recent 10`, Right: "Keep .tsx first, then take the 10 newest of that set"},
 	})
 	fmt.Fprintf(&b, "\n  One combined example:\n")
-	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --contains "Button" --only "*.tsx" --exclude "Header.tsx" "Login.tsx" --recent 5`))
+	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --only "*.tsx" --exclude "*.test.tsx" --contains "Button" --recent 3`))
 	fmt.Fprintf(&b, "    Start with files under src.\n")
-	fmt.Fprintf(&b, "    Keep only the ones that mention \"Button\".\n")
-	fmt.Fprintf(&b, "    From those, keep only .tsx files.\n")
-	fmt.Fprintf(&b, "    Then remove Header.tsx and Login.tsx.\n")
-	fmt.Fprintf(&b, "    Finally, take the 5 most recently modified files left.\n\n")
+	fmt.Fprintf(&b, "    Keep only .tsx files.\n")
+	fmt.Fprintf(&b, "    Remove test files.\n")
+	fmt.Fprintf(&b, "    Then keep only the ones that mention \"Button\".\n")
+	fmt.Fprintf(&b, "    Finally, take the 3 most recently modified files left.\n\n")
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Git Filters (requires a git repo):"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "catclip src --changed", Right: "Only files changed in git"},
+		{Left: "catclip src --changed", Right: "Only changed React files"},
 		{Left: "catclip --changed-diff", Right: "Show changes as patches instead of full files"},
 	})
 	fmt.Fprintf(&b, "  Other git filters: %s, %s, %s, %s, %s.\n", flag("--staged"), flag("--unstaged"), flag("--untracked"), flag("--staged-diff"), flag("--unstaged-diff"))
 
 	fmt.Fprintf(&b, "\n%s\n", bold("--then (chain another catclip command):"))
-	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --only "*.ts" --then docs --recent 5`))
-	fmt.Fprintf(&b, "    Keeps only the TS files from src, then adds the 5 most recent files from docs.\n")
+	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --only "*.tsx" --then docs --recent 5`))
+	fmt.Fprintf(&b, "    Keeps only TSX files from src, then adds the 5 most recent files from docs.\n")
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", cmd(`catclip . --paths --then src`))
-	fmt.Fprintf(&b, "    First emits the repo file structure as paths, then adds full file bodies from src.\n")
-	fmt.Fprintf(&b, "    Useful when an AI should see the whole structure but only read source files from src.\n")
+	fmt.Fprintf(&b, "    First emits the project structure as paths, then adds full files from src.\n")
+	fmt.Fprintf(&b, "    Useful when an AI should see the whole structure but only read the React app.\n")
 	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "  %s\n", bad(`catclip src docs --only "*.ts"`))
-	fmt.Fprintf(&b, "    Bad here because it would also throw away every non-TS file in docs.\n")
+	fmt.Fprintf(&b, "  %s\n", bad(`catclip src docs --only "*.tsx"`))
+	fmt.Fprintf(&b, "    Bad here because it would also throw away every non-TSX file in docs.\n")
 	fmt.Fprintf(&b, "    Use %s when the next target should use different filters or output shape.\n", flag("--then"))
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Ignored Files:"))
 	fmt.Fprintf(&b, "  catclip skips .gitignored paths and paths matched by %s (catclip's own ignore rules, on top of .gitignore).\n", flag(".hiss"))
 	fmt.Fprintf(&b, "\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "catclip tests --include tests", Right: "Allow an ignored folder for this run"},
+		{Left: "catclip dist --include dist", Right: "Allow the ignored React build output for this run"},
 		{Left: "catclip --hiss", Right: fmt.Sprintf("Edit catclip's ignore rules (%s)", flag(hissDisplayPath))},
 	})
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s authorizes gitignored paths within your walk scope.\n", flag("--include"))
 	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "  %s\n", cmd(`catclip . --include build --only src build`))
-	fmt.Fprintf(&b, "    Works — '.' covers the whole project, %s keeps just src and build.\n", flag("--only"))
+	fmt.Fprintf(&b, "  %s\n", cmd(`catclip . --include dist --only src dist`))
+	fmt.Fprintf(&b, "    Works — '.' covers the whole project, %s keeps src and dist.\n", flag("--only"))
 	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "  %s\n", bad(`catclip src --include build`))
-	fmt.Fprintf(&b, "    Doesn't find build/ because it's outside src/.\n")
+	fmt.Fprintf(&b, "  %s\n", bad(`catclip internal --include dist`))
+	fmt.Fprintf(&b, "    Doesn't find dist because it's outside internal/.\n")
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Piping:"))
 	fmt.Fprintf(&b, "  Use %s, %s, or %s to read exact relative paths from stdin.\n", flag("--only -"), flag("--exclude -"), flag("--include -"))
@@ -180,6 +187,26 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	fmt.Fprintf(&b, "to right, resetting at each %s. Not every flag is global — the Modifier\n", flag("--then"))
 	b.WriteString("Reference at the end lists which is which.\n\n")
 
+	head("EXAMPLE PROJECT")
+	b.WriteString("  Concrete examples use one React + Go project:\n\n")
+	b.WriteString("    src/main.tsx\n")
+	b.WriteString("    src/App.tsx\n")
+	b.WriteString("    src/components/Button.tsx\n")
+	b.WriteString("    src/components/Button.test.tsx\n")
+	b.WriteString("    src/components/Header.tsx\n")
+	b.WriteString("    src/pages/Login.tsx\n")
+	b.WriteString("    src/pages/Profile.tsx          (untracked)\n")
+	b.WriteString("    src/lib/api.ts\n")
+	b.WriteString("    src/styles/app.css\n")
+	b.WriteString("    cmd/api/main.go\n")
+	b.WriteString("    internal/handler/user.go\n")
+	b.WriteString("    internal/store/user.go\n")
+	b.WriteString("    docs/api.md\n")
+	b.WriteString("    .env.example                (ignored by .hiss)\n")
+	b.WriteString("    dist/app.js                 (gitignored)\n")
+	b.WriteString("    dist/assets/logo.svg        (gitignored)\n")
+	b.WriteString("    node_modules/react/index.js (gitignored)\n\n")
+
 	// ── Common tasks ────────────────────────────────────────────────────
 	head("COMMON TASKS")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
@@ -187,7 +214,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 		{Left: "catclip TARGET --include '*' --with-binaries --paths", Right: "List everything, ignored and binary included"},
 		{Left: "catclip TARGET --contains 'REGEX' --paths", Right: "Which files mention this?"},
 		{Left: "catclip TARGET --not-contains 'REGEX'", Right: "Everything except files mentioning this"},
-		{Left: "catclip TARGET --snippet 'REGEX'", Right: "Just the matching blocks"},
+		{Left: "catclip TARGET --snippet 'REGEX'", Right: "Smart block: smallest enclosing unit"},
 		{Left: "catclip TARGET --snippet 'REGEX' 3", Right: "Matches with 3 lines of context"},
 		{Left: "catclip TARGET", Right: "Read full files"},
 		{Left: "catclip FILE -r", Right: "One file, raw bytes"},
@@ -201,11 +228,13 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	fmt.Fprintf(&b, "  A workflow that scales: start with %s to see what's there,\n", flag("--paths"))
 	b.WriteString("  then narrow with content filters or read specific targets in full:\n\n")
 	fmt.Fprintf(&b, "    %s                   # see what's in the project\n", cmd("catclip . --paths"))
-	fmt.Fprintf(&b, "    %s         # top-level structure only\n\n", cmd("catclip . --depth 2 --paths"))
+	fmt.Fprintf(&b, "    %s         # files at the root and one directory below\n\n", cmd("catclip . --depth 2 --paths"))
 	fmt.Fprintf(&b, "  If you know ripgrep: %s is like rg --files-with-matches\n", flag("--contains --paths"))
 	fmt.Fprintf(&b, "  (which files match?), and %s is like rg with context (which blocks\n", flag("--snippet"))
-	b.WriteString("  match?). By default --snippet returns blank-line-bounded blocks; add N for\n")
-	b.WriteString("  fixed +/- N line windows. With neither, you get full file contents.\n\n")
+	b.WriteString("  match?). By default --snippet returns the smart block: the complete unit\n")
+	b.WriteString("  around each match, a whole function/class/method, an XML element, or a\n")
+	b.WriteString("  config section; add N for fixed +/- N line windows. With neither, you get\n")
+	b.WriteString("  full file contents.\n\n")
 	fmt.Fprintf(&b, "  %s sizes up files before you read them: a per-file table of size,\n", flag("--preview"))
 	b.WriteString("  tokens, git status, modified date, and shape — no contents, nothing copied.\n")
 	b.WriteString("  Read small files whole, snippet the large ones, skip the rest, instead of\n")
@@ -222,44 +251,44 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 		{Left: "catclip src", Right: "All text files under src/"},
 		{Left: "catclip src/components", Right: "Narrow to a subdirectory"},
 		{Left: "catclip src/components/Button.tsx", Right: "One specific file"},
-		{Left: "catclip src lib docs", Right: "Multiple targets in one scope"},
+		{Left: "catclip src internal docs", Right: "Multiple targets in one scope"},
 	})
 	b.WriteString("\n  Glob patterns are also valid targets:\n\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "catclip '*.go'", Right: "All .go files in the project"},
-		{Left: "catclip '*.go' '*.ts'", Right: "All .go and .ts files (union)"},
-		{Left: "catclip src '*.go'", Right: "src/ files + all .go files (union)"},
-		{Left: "catclip 'internal/*.go'", Right: "Only .go files directly inside internal/"},
+		{Left: "catclip '*.tsx'", Right: "All TSX files in the project"},
+		{Left: "catclip '*.go' '*.tsx'", Right: "All Go and TSX files (union)"},
+		{Left: "catclip src '*.go'", Right: "src/ files + all Go files (union)"},
+		{Left: "catclip 'src/*.tsx'", Right: "React entry files directly inside src/"},
 	})
 	b.WriteString("\n  Glob targets match against all visible files in the project, not scoped to\n")
 	b.WriteString("  sibling path targets. Modifiers apply to the full combined set:\n")
 	fmt.Fprintf(&b, "  %s\n\n", cmd("catclip src '*.go' --exclude '*_test.go' --recent 5"))
-	b.WriteString("  To narrow to a subdirectory, use it as the target.\n")
-	fmt.Fprintf(&b, "  Do not use %s with path prefixes for navigation.\n\n", flag("--only"))
+	b.WriteString("  Use targets to choose where catclip looks. Use --only and --exclude to\n")
+	b.WriteString("  filter the files found there.\n\n")
 	b.WriteString("  Absolute paths and paths above cwd (../) are not allowed.\n\n")
 
 	// ── Filtering ───────────────────────────────────────────────────────
-	head("FILTERING (what kind of files)")
-	fmt.Fprintf(&b, "  %s and %s filter by filename or path subtree.\n", flag("--only"), flag("--exclude"))
-	b.WriteString("  They are not for path navigation — use targets for that.\n\n")
-	fmt.Fprintf(&b, "  %s\n", bold("Globs match filenames:"))
+	head("FILTERING (which files)")
+	fmt.Fprintf(&b, "  %s and %s keep or remove files by name, path, subtree, or glob.\n", flag("--only"), flag("--exclude"))
+	b.WriteString("  Targets choose where catclip looks; these filters act on the files found there.\n\n")
+	fmt.Fprintf(&b, "  %s\n", bold("Glob values:"))
 	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
 		{Left: `--only "*.ts"`, Right: "Keep only .ts files"},
 		{Left: `--only "*.ts" "*.tsx"`, Right: "Keep .ts and .tsx (values OR together)"},
 		{Left: `--exclude "*.test.*"`, Right: "Remove test files"},
 		{Left: `--exclude "*.css" "*.svg"`, Right: "Remove CSS and SVG files"},
 	})
-	fmt.Fprintf(&b, "\n  %s\n", bold("Trailing slash matches path subtrees:"))
-	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
-		{Left: "--only docs/", Right: "Keep only files under docs/ directories"},
-		{Left: "--exclude build/", Right: "Remove files under build/ directories"},
+	fmt.Fprintf(&b, "\n  %s\n", bold("Trailing slash selects files beneath directories:"))
+	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
+		{Left: `catclip internal --only "handler/"`, Right: "Only files under handler/ directories"},
+		{Left: `catclip internal --exclude "handler/"`, Right: "Skip files under handler/ directories"},
 	})
 	fmt.Fprintf(&b, "\n  %s\n", bold("Bare names match directory segments:"))
 	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
-		{Left: "--exclude tests", Right: "Remove files in any tests/ directory"},
+		{Left: "--exclude handler", Right: "Remove a file named handler or files beneath handler/ directories"},
 	})
 	b.WriteString("\n")
-	fmt.Fprintf(&b, "  %s and %s use shell globs (*, ?, [...]).\n", flag("--only"), flag("--exclude"))
+	b.WriteString("  Filter globs support *, ?, and [...]; * can cross folder boundaries.\n")
 	fmt.Fprintf(&b, "  %s and %s use PCRE2 regex (supports lookaround,\n", flag("--contains"), flag("--snippet"))
 	b.WriteString("  backreferences, atomic groups, named captures).\n\n")
 	b.WriteString("  Patterns use smart-case matching. If your pattern is all lowercase,\n")
@@ -291,7 +320,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 		{Left: "--size MIN MAX", Right: "Keep files between MIN and MAX KiB inclusive"},
 		{Left: "--depth N", Right: "Keep files N levels or fewer below each target"},
 	})
-	b.WriteString("                         (README.md = 1, src/main.ts = 2, src/lib/util.ts = 3)\n\n")
+	b.WriteString("                         (README.md = 1, src/lib/api.ts = 3, internal/handler/user.go = 3)\n\n")
 
 	// ── Output shape ────────────────────────────────────────────────────
 	head("OUTPUT SHAPE (what to emit)")
@@ -299,7 +328,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 		{Left: "(default)", Right: "Full file contents in <file> wrappers"},
 		{Left: "--paths", Right: "Bare relative paths, one per line"},
 		{Left: "--preview", Right: "Per-file table (size, tokens, git, modified, shape); no contents"},
-		{Left: "--snippet 'REGEX'", Right: "Only blank-line-bounded blocks matching regex"},
+		{Left: "--snippet 'REGEX'", Right: "Smart block around each regex match"},
 		{Left: "--snippet 'REGEX' N", Right: "Matching lines plus N lines before and after"},
 		{Left: "--changed-diff", Right: "All changed files as unified diff patches"},
 		{Left: "--staged-diff", Right: "Staged changes as unified diff"},
@@ -316,7 +345,10 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("  but-unwrapped output is the worst of both modes: not parseable for edits\n")
 	b.WriteString("  (no file path) and not pipeable (numbers corrupt downstream tools). For\n")
 	b.WriteString("  numbered, edit-targetable output, drop -r and use the wrapped form.\n\n")
-	fmt.Fprintf(&b, "  %s returns blank-line-bounded blocks around regex matches by default.\n", flag("--snippet"))
+	fmt.Fprintf(&b, "  %s defaults to the smart block: the complete unit containing each match.\n", flag("--snippet"))
+	b.WriteString("  In code that is the whole function, class, or method; in XML/HTML the\n")
+	b.WriteString("  enclosing <tag> element; in INI/TOML the [section]. Unrecognized syntax\n")
+	b.WriteString("  falls back to the surrounding paragraph.\n")
 	b.WriteString("  Add a context number for fixed rg/grep-style line windows: N=0 emits only\n")
 	b.WriteString("  matching lines; N=3 emits each match plus three lines before and after.\n")
 	b.WriteString("  Already focused — head/tail piping is usually unnecessary.\n\n")
@@ -325,13 +357,15 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	fmt.Fprintf(&b, "    %s\n", bad("catclip FILE | head -450 | tail -50"))
 	b.WriteString("  The built-in slice is faster, numbered, and keeps file wrappers.\n\n")
 	b.WriteString("  Diff modifiers already filter to their change set — no need to double-filter:\n")
-	fmt.Fprintf(&b, "    %s             # correct\n", cmd("catclip . --only '*.go' --unstaged-diff"))
-	fmt.Fprintf(&b, "    %s  # redundant --unstaged\n\n", bad("catclip . --unstaged --only '*.go' --unstaged-diff"))
+	fmt.Fprintf(&b, "    %s             # correct\n", cmd("catclip . --only '*.tsx' --unstaged-diff"))
+	fmt.Fprintf(&b, "    %s  # redundant --unstaged\n\n", bad("catclip . --unstaged --only '*.tsx' --unstaged-diff"))
 
 	// ── Pipeline model ──────────────────────────────────────────────────
 	head("PIPELINE MODEL")
 	b.WriteString("  Stages run left to right. Each stage receives only what the previous stage kept.\n")
 	fmt.Fprintf(&b, "  The set can only shrink (except %s, which adds authorized ignored files).\n\n", flag("--include"))
+	b.WriteString("  When the result is the same, narrow by file name, path, or depth before\n")
+	b.WriteString("  searching file contents, so fewer files need to be read.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("[all discovered files under TARGET]"))
 	fmt.Fprintf(&b, "    → %s      adds authorized ignored files (must be first, once per scope)\n", flag("--include PATH"))
 	fmt.Fprintf(&b, "    → %s      keeps files matching PATTERN; discards rest\n", flag("--only PATTERN"))
@@ -346,12 +380,12 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	fmt.Fprintf(&b, "  %s must be the first modifier so that all filters apply to the full set.\n", flag("--include"))
 	b.WriteString("  The same modifier can appear multiple times (except --include). Each occurrence\n")
 	b.WriteString("  is a separate step.\n\n")
-	fmt.Fprintf(&b, "    %s\n", cmd(`catclip src --only "*.ts" --exclude "*test*" --recent 5`))
-	b.WriteString("    # 1. keep .ts files  2. remove *test*  3. keep 5 newest survivors\n\n")
+	fmt.Fprintf(&b, "    %s\n", cmd(`catclip src --only "*.tsx" --exclude "*.test.tsx" --recent 3`))
+	b.WriteString("    # 1. keep .tsx files  2. remove tests  3. keep 3 newest survivors\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("Order matters because the input set differs at each step:"))
 	writeAlignedHelpRows(&b, "    ", flag, []helpRow{
-		{Left: `--recent 10 --only "*.ts"`, Right: "take 10 newest, then keep .ts ones"},
-		{Left: `--only "*.ts" --recent 10`, Right: "keep .ts first, then take 10 newest of those"},
+		{Left: `--recent 10 --only "*.tsx"`, Right: "take 10 newest, then keep .tsx ones"},
+		{Left: `--only "*.tsx" --recent 10`, Right: "keep .tsx first, then take 10 newest of those"},
 	})
 	fmt.Fprintf(&b, "\n  %s\n\n", bold("Ordering constraints after output-shape modifiers:"))
 	writeAlignedHelpRows(&b, "    ", flag, []helpRow{
@@ -365,8 +399,8 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	head("SCOPES (--then)")
 	fmt.Fprintf(&b, "  %s starts a fresh scope with independent targets and modifiers.\n", flag("--then"))
 	b.WriteString("  Like running two catclip commands and unioning the results.\n\n")
-	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --only "*.ts" --then docs --recent 5`))
-	b.WriteString("  # Scope 1: .ts files under src  |  Scope 2: 5 newest under docs\n\n")
+	fmt.Fprintf(&b, "  %s\n", cmd(`catclip src --only "*.tsx" --then docs --recent 5`))
+	b.WriteString("  # Scope 1: .tsx files under src  |  Scope 2: 5 newest under docs\n\n")
 	fmt.Fprintf(&b, "  %s\n", cmd("catclip . --paths --then src"))
 	b.WriteString("  # Scope 1: full repo listing as paths  |  Scope 2: full file bodies from src\n\n")
 	fmt.Fprintf(&b, "  Without %s, all targets share the same modifiers.\n", flag("--then"))
@@ -381,7 +415,7 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("                    Names an ignored directory or file relative to cwd.\n")
 	b.WriteString("                    Including a directory authorizes all descendants under it.\n")
 	b.WriteString("                    Including a parent authorizes descendant targets:\n")
-	fmt.Fprintf(&b, "                      %s    (parent authorizes child)\n\n", cmd("catclip blocked/sub --include blocked"))
+	fmt.Fprintf(&b, "                      %s    (parent authorizes child)\n\n", cmd("catclip dist/assets --include dist"))
 	fmt.Fprintf(&b, "  %s     Disable all ignore rules — discover everything.\n", flag("--include '*'"))
 	b.WriteString("                    Equivalent to ripgrep's --no-ignore.\n")
 	b.WriteString("                    Authorizes any target, even if gitignored.\n")
@@ -395,12 +429,12 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	fmt.Fprintf(&b, "    2. Only one %s per scope — use %s for additional includes\n", flag("--include"), flag("--then"))
 	fmt.Fprintf(&b, "    3. %s is scoped to the target paths (not the whole project)\n\n", flag("--include"))
 	fmt.Fprintf(&b, "  %s\n", bold("Examples:"))
-	fmt.Fprintf(&b, "  %s\n", cmd("catclip blocked-dir --include blocked-dir --paths"))
-	fmt.Fprintf(&b, "  %s\n", cmd("catclip blocked-dir/src --include blocked-dir --paths"))
-	fmt.Fprintf(&b, "  %s\n", cmd("catclip .env.local --include .env.local -r"))
+	fmt.Fprintf(&b, "  %s\n", cmd("catclip dist --include dist --paths"))
+	fmt.Fprintf(&b, "  %s\n", cmd("catclip dist/assets --include dist --paths"))
+	fmt.Fprintf(&b, "  %s\n", cmd("catclip .env.example --include .env.example -r"))
 	fmt.Fprintf(&b, "  %s    # all files under src/, nothing ignored\n\n", cmd("catclip src --include '*' --paths"))
 	fmt.Fprintf(&b, "  Cross-scope includes use %s:\n", flag("--then"))
-	fmt.Fprintf(&b, "    %s\n\n", cmd("catclip src --then node_modules --include node_modules --paths"))
+	fmt.Fprintf(&b, "    %s\n\n", cmd("catclip src --then node_modules/react --include node_modules --paths"))
 	fmt.Fprintf(&b, "  catclip's own ignore rules: %s (%s to edit; applied on top of .gitignore)\n\n", flag(hissDisplayPath), flag("--hiss"))
 
 	// ── Pipelines ───────────────────────────────────────────────────────
@@ -410,15 +444,15 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("  Combined, catclip plugs into either side of a shell pipeline.\n\n")
 	fmt.Fprintf(&b, "  %s\n\n", bold("Catclip as input source (stdout → tool):"))
 	b.WriteString("    # Line counts per file, biggest first:\n")
-	fmt.Fprintf(&b, "    %s\n\n", cmd("catclip src --only '*.go' --paths --headless | xargs wc -l | sort -rn"))
+	fmt.Fprintf(&b, "    %s\n\n", cmd("catclip src --only '*.tsx' --paths --headless | xargs wc -l | sort -rn"))
 	b.WriteString("    # Bulk find-and-replace (macOS sed -i '' syntax):\n")
-	fmt.Fprintf(&b, "    %s\n", cmd("catclip src --only '*.ts' --contains 'oldName' --paths --headless \\"))
+	fmt.Fprintf(&b, "    %s\n", cmd("catclip src --only '*.tsx' --contains 'oldName' --paths --headless \\"))
 	fmt.Fprintf(&b, "      %s\n\n", cmd("| xargs sed -i '' 's/oldName/newName/g'"))
 	b.WriteString("    # Open matched files in vim:\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("vim $(catclip src --contains TODO --paths --headless)"))
 	b.WriteString("    # File count and payload size of your current selection:\n")
-	fmt.Fprintf(&b, "    %s\n", cmd("catclip src --only '*.go' --paths --headless | wc -l"))
-	fmt.Fprintf(&b, "    %s\n\n", cmd("catclip src --only '*.go' --headless | wc -c"))
+	fmt.Fprintf(&b, "    %s\n", cmd("catclip src --only '*.tsx' --paths --headless | wc -l"))
+	fmt.Fprintf(&b, "    %s\n\n", cmd("catclip src --only '*.tsx' --headless | wc -c"))
 	fmt.Fprintf(&b, "  %s\n\n", bold("Catclip as filter sink (tool → stdin):"))
 	fmt.Fprintf(&b, "    # Copy files changed against an arbitrary git ref (%s is HEAD-only;\n", flag("--changed"))
 	b.WriteString("    # this is the canonical way to scope a PR review or fork-diff copy):\n")
@@ -437,36 +471,36 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	// ── Output format ───────────────────────────────────────────────────
 	head("OUTPUT FORMAT")
 	fmt.Fprintf(&b, "  %s (default):\n", bold("Full files"))
-	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/main.ts\">"))
+	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/lib/api.ts\">"))
 	b.WriteString("    ...file contents...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
 	fmt.Fprintf(&b, "  %s (%s):\n", bold("Snippets"), flag("--snippet REGEX [N]"))
-	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/main.ts\" lines=\"42-57\">"))
+	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/components/Button.tsx\" lines=\"42-57\">"))
 	b.WriteString("    ...matched block...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
 	b.WriteString("    With N set, lines=\"...\" is the fixed context window around the match.\n\n")
 	fmt.Fprintf(&b, "  %s (%s):\n", bold("Lines"), flag("--lines"))
-	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/main.ts\">"))
-	b.WriteString("         1\timport express from 'express';\n")
+	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"cmd/api/main.go\">"))
+	b.WriteString("         1\tpackage main\n")
 	b.WriteString("         2\t...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
 	fmt.Fprintf(&b, "  %s (%s):\n", bold("Lines range"), flag("--lines 42 57"))
-	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/main.ts\" lines=\"42-57\">"))
-	b.WriteString("        42\t  const app = express();\n")
+	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"internal/handler/user.go\" lines=\"42-57\">"))
+	b.WriteString("        42\tfunc main() {\n")
 	b.WriteString("        43\t  ...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
 	fmt.Fprintf(&b, "    %s output terminates each emitted line with a newline, even if the\n", flag("--lines"))
 	b.WriteString("    source file's final line has none.\n\n")
 	fmt.Fprintf(&b, "  %s (%s, %s, %s):\n", bold("Diff"), flag("--changed-diff"), flag("--staged-diff"), flag("--unstaged-diff"))
-	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/main.ts\" type=\"diff\">"))
+	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/lib/api.ts\" type=\"diff\">"))
 	b.WriteString("    ...unified diff...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
-	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"new-file.ts\" type=\"untracked\">"))
+	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/pages/Profile.tsx\" type=\"untracked\">"))
 	b.WriteString("    ...full content for untracked files in changed-diff...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
 	fmt.Fprintf(&b, "  %s (%s):\n", bold("Paths"), flag("--paths"))
-	b.WriteString("    src/main.ts\n")
-	b.WriteString("    src/utils.ts\n")
+	b.WriteString("    src/components/Button.tsx\n")
+	b.WriteString("    src/components/Header.tsx\n")
 	b.WriteString("    (bare relative paths, one per line)\n\n")
 	fmt.Fprintf(&b, "  %s (%s with %s):\n", bold("Raw"), flag("-r"), flag("-p"))
 	b.WriteString("    ...file body without any wrapper tags...\n")
@@ -476,9 +510,9 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("    # line 2: size, tokens, git, modified, shape\n")
 	b.WriteString("    #   git:   M=modified S=staged SM=staged+modified ?=untracked -=none\n")
 	b.WriteString("    #   shape: full | snippet | lines | diff | path-only\n")
-	b.WriteString("    src/main.ts\n")
+	b.WriteString("    src/components/Button.tsx\n")
 	b.WriteString("      2.14KB    ~547    [M]  Today at 2:58 AM  full\n")
-	b.WriteString("    src/utils.ts\n")
+	b.WriteString("    src/components/Header.tsx\n")
 	b.WriteString("      1.05KB    ~256    [-]  Jun 3, 2026        full\n")
 	b.WriteString("    (two lines per file — path, then metrics; no file contents; column-aligned)\n\n")
 	fmt.Fprintf(&b, "  Diff type attributes: %s, %s, %s, %s\n\n",
@@ -549,14 +583,14 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	fmt.Fprintf(&b, "  %s\n", bold("Scope modifiers (per-scope, left to right):"))
 	writeAlignedHelpRows(&b, "    ", flag, []helpRow{
 		{Left: "--include VALUE...", Right: "Authorize ignored paths (must be first, once per scope)"},
-		{Left: "--only VALUE...", Right: "Filename filter — keep matches (shell globs)"},
-		{Left: "--exclude VALUE...", Right: "Filename filter — remove matches (shell globs)"},
+		{Left: "--only VALUE...", Right: "Keep matches by name, path, subtree, or glob"},
+		{Left: "--exclude VALUE...", Right: "Remove matches by name, path, subtree, or glob"},
 		{Left: "--recent [N]", Right: "Sort by mtime; optional top-N"},
 		{Left: "--size [MIN [MAX]]", Right: "Sort/filter by file size in KiB"},
 		{Left: "--depth N", Right: "Max path depth"},
 		{Left: "--contains REGEX", Right: "Content filter — keep files matching REGEX"},
 		{Left: "--not-contains REGEX", Right: "Content filter — drop files matching REGEX (repeatable)"},
-		{Left: "--snippet REGEX [N]", Right: "Extract matching blocks, or +/- N line context"},
+		{Left: "--snippet REGEX [N]", Right: "Smart block around matches, or +/- N line context"},
 		{Left: "--lines [START [END]]", Right: "Line numbers; optional range slice"},
 		{Left: "--paths", Right: "Emit bare paths instead of file bodies"},
 		{Left: "--changed", Right: "Git-modified files"},

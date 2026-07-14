@@ -122,6 +122,21 @@ func TestFilterEntriesByStagePatternsMatchesBareTrailingSlashDirectorySegments(t
 	}
 }
 
+func TestFilterEntriesByStagePatternsGlobbedTrailingSlashMatchesNoFiles(t *testing.T) {
+	entries := testStageEntries(
+		"internal/cli/main.go",
+		"internal/output/emit.go",
+	)
+
+	filtered, err := filterEntriesByStagePatterns(entries, []string{"*/"}, true)
+	if err != nil {
+		t.Fatalf("filterEntriesByStagePatterns returned error: %v", err)
+	}
+	if len(filtered) != 0 {
+		t.Fatalf("globbed trailing slash must not use literal subtree semantics: %#v", filtered)
+	}
+}
+
 func TestFilterEntriesByStagePatternsMatchesAnchoredPathsAsExactOrSubtree(t *testing.T) {
 	entries := testStageEntries(
 		"src/features/authentication/index.ts",

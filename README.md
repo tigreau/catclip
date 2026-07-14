@@ -25,23 +25,28 @@ Every flag, filter, and output mode is reachable through the menus. The resolved
 
 ## Direct commands (when you know what you want)
 
+These examples use one project with a React app in `src/`, Go code in `cmd/`
+and `internal/`, and documentation in `docs/`.
+
 ```bash
 # Targets
 catclip src                          # a folder
 catclip Button.tsx                   # a file (finds it anywhere)
 catclip btn                          # fuzzy match
-catclip src lib docs                 # multiple targets
-catclip "*.go"                       # glob pattern — all .go files
-catclip src "*.go"                   # union: src/ + all .go files
+catclip src internal docs            # multiple targets
+catclip "*.go"                       # glob pattern — all Go files
+catclip src "*.go"                   # union: src/ + all Go files
 
 # Filtering
-catclip src --only "*.ts"            # keep only .ts files
+catclip src --only "*.tsx"           # keep only TSX files
 catclip src --exclude "*.css"        # skip CSS files
+catclip internal --only "handler/"    # keep files under handler/ directories
+catclip internal --exclude "handler/" # skip files under handler/ directories
 catclip src --recent 5               # 5 most recently modified
 catclip src --size 0 100             # files up to 100 KiB, largest first
 catclip src --depth 1                # just the top level of src
 catclip src --contains TODO          # files mentioning TODO
-catclip src --snippet TODO           # blank-line-bounded blocks around matches
+catclip src --snippet TODO           # smallest enclosing unit around matches
 catclip src --snippet TODO 3         # each match plus 3 lines of context
 
 # Git
@@ -52,18 +57,18 @@ catclip . --staged-diff              # staged changes as patches
 # Output
 catclip src --paths                  # bare file paths, one per line
 catclip src -p                       # print to stdout instead of clipboard
-catclip src/main.go -r               # raw file body, no wrappers
+catclip cmd/api/main.go -r           # raw file body, no wrappers
 
 # Scopes — like running two catclip commands and combining results
 catclip . --paths --then src         # repo structure + full files from src
-catclip src --only "*.ts" --then docs --recent 5  # .ts files from src/, plus 5 newest from docs/
+catclip src --only "*.tsx" --then docs --recent 5 # TSX from src/, plus 5 newest docs
 ```
 
 Filters run left to right. Order matters:
 
 ```bash
-catclip src --recent 10 --only "*.ts"   # 10 newest, then keep .ts
-catclip src --only "*.ts" --recent 10   # .ts first, then 10 newest of those
+catclip src --recent 10 --only "*.tsx"  # 10 newest, then keep TSX
+catclip src --only "*.tsx" --recent 10  # TSX first, then 10 newest of those
 ```
 
 For the full reference: `catclip --help` or `catclip --help-all`.
@@ -175,7 +180,7 @@ catclip skips `.gitignored` paths and paths matched by `.hiss` (the ignore confi
 ```bash
 catclip --hiss             # edit ignore rules
 catclip --hiss-reset       # restore defaults
-catclip tests --include tests   # allow an ignored folder for this run
+catclip dist --include dist # allow the ignored React build for this run
 ```
 
 ---

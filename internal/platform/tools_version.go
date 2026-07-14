@@ -11,12 +11,12 @@ import (
 
 // ProbeToolVersionTimeout caps how long ProbeToolVersion waits for
 // a bundled tool to print its --version output. A tool worth running
-// prints in a few milliseconds warm; the 1500 ms budget covers cold
-// starts on Windows CI (process spawn floor + antivirus scan) and
-// concurrent test runs where /bin/sh startup can queue. Longer than
-// this is a broken binary and the caller (renderVersionOutput)
-// already has a fallback line for the "probe failed / timed out"
-// case.
+// prints in a few milliseconds warm; the 3 s budget covers cold
+// starts on Windows CI (process spawn floor + antivirus scan), macOS
+// Gatekeeper first-exec assessment, and concurrent test runs where
+// /bin/sh startup can queue. Longer than this is a broken binary and
+// the caller (renderVersionOutput) already has a fallback line for
+// the "probe failed / timed out" case.
 const ProbeToolVersionTimeout = 3 * time.Second
 
 // ErrProbeTimeout is returned when a `<binary> --version` invocation
@@ -34,11 +34,20 @@ var ErrProbeTimeout = errors.New("version probe timed out")
 // fzf format: `0.44.1 (26f37b8)` — first token before the space.
 // rg format:  `ripgrep 14.1.0`  — last token on the first line.
 func ProbeToolVersion(path string) (string, error) {
+	return probeToolVersion(path, ProbeToolVersionTimeout)
+}
+
+// probeToolVersion is ProbeToolVersion with an explicit timeout. Tests use it to
+// stay independent of the production budget: fast-path probes pass a generous
+// timeout so full-suite parallel load (process-spawn queueing, macOS first-exec
+// assessment) cannot flake them, and the timeout case passes a short one so it
+// is fast and deterministic instead of waiting the full production budget.
+func probeToolVersion(path string, timeout time.Duration) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", errors.New("empty tool path")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), ProbeToolVersionTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, path, "--version")

@@ -473,17 +473,17 @@ var (
 // gitignore-syntax file at hissPath. Pass hissPath="" to get the
 // gitignore-only view.
 //
-// This cache is intentionally **not** scope-narrowed: rg's positional-path
-// walk does not respect ancestor ignore patterns, so passing targets as
-// positionals would silently change ignore semantics. The text-file set
-// (ResolveTextFileSet) uses --no-ignore and can safely be scope-narrowed;
-// the visible set cannot, without a Go-side filter step that does not yet
-// exist. Follow-up:
-// docs/versions/v0.6.6/reports/ACTIVE_PLAN_target_oriented_catclip.md
-// Slice 1 — its Pin #1 is the empirical matrix that must confirm or
-// refute this ancestor-pattern claim per rg call shape before any
-// narrowing here.
-func ResolveVisibleFileSet(workingDir, hissPath string) (map[string]struct{}, error) {
+// Pass nil/empty targets for the project-wide set; pass a non-empty list to
+// scope the enumeration to those paths only (Slice 1 narrowing). Pin #1/#2
+// (v0.6.7) empirically confirmed that rg, run from workingDir with the target
+// as a positional path and catclip's flag mix, still applies ancestor
+// .gitignore rules (via its add_parents traversal) and anchors --ignore-file
+// (.hiss) patterns at workingDir, so positional narrowing yields the same
+// visible set for the target subtree with no Go-side filter. The one flag
+// catclip must never add here is --no-ignore-parent, which disables that
+// ancestor traversal. Mirrors ResolveTextFileSet's narrowing; globs, "."/root,
+// and missing targets fall back to project-wide via scopedCacheTargets.
+func ResolveVisibleFileSet(workingDir, hissPath string, targets []string) (map[string]struct{}, error) {
 	dirKey, err := filepath.Abs(workingDir)
 	if err != nil {
 		dirKey = workingDir
@@ -496,7 +496,8 @@ func ResolveVisibleFileSet(workingDir, hissPath string) (map[string]struct{}, er
 			hissKey = filepath.Clean(abs)
 		}
 	}
-	cacheKey := dirKey + "\x00" + hissKey
+	normTargets := scopedCacheTargets(workingDir, targets)
+	cacheKey := dirKey + "\x00" + hissKey + "\x00" + joinScopedCacheTargets(normTargets)
 
 	visibleFileSetCacheMu.Lock()
 	if cached, ok := visibleFileSetCache[cacheKey]; ok {
@@ -505,7 +506,7 @@ func ResolveVisibleFileSet(workingDir, hissPath string) (map[string]struct{}, er
 	}
 	visibleFileSetCacheMu.Unlock()
 
-	set, err := runRipgrepVisibleFiles(workingDir, hissPath)
+	set, err := runRipgrepVisibleFiles(workingDir, hissPath, normTargets)
 	if err != nil {
 		return nil, err
 	}
@@ -524,9 +525,10 @@ func ResolveVisibleFileSet(workingDir, hissPath string) (map[string]struct{}, er
 // (catclip's previous Go matcher applied root .gitignore unconditionally).
 // When hissPath is non-empty, rg also applies it as a gitignore-syntax
 // overlay.
-func runRipgrepVisibleFiles(workingDir, hissPath string) (map[string]struct{}, error) {
+func runRipgrepVisibleFiles(workingDir, hissPath string, targets []string) (map[string]struct{}, error) {
 	finishBench := platform.InternalBenchSpan("search.rg.visible_files",
 		"has_hiss", strconv.FormatBool(strings.TrimSpace(hissPath) != ""),
+		"targets", platform.InternalBenchInt(len(targets)),
 	)
 	bin, ok := RipgrepBinary()
 	if !ok {
@@ -543,6 +545,12 @@ func runRipgrepVisibleFiles(workingDir, hissPath string) (map[string]struct{}, e
 	}
 	if hissPath != "" {
 		args = append(args, "--ignore-file", hissPath)
+	}
+	// Positional narrowing: rg still applies ancestor .gitignore and .hiss
+	// anchored at workingDir (Pin #1/#2). Never add --no-ignore-parent.
+	if len(targets) > 0 {
+		args = append(args, "--")
+		args = append(args, targets...)
 	}
 
 	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
@@ -1333,7 +1341,7 @@ func HasScopedIgnoredTargetsStreaming(ctx context.Context, workingDir string, sc
 		return false, nil
 	}
 
-	visible, err := ResolveVisibleFileSet(workingDir, hissPath)
+	visible, err := ResolveVisibleFileSet(workingDir, hissPath, nil)
 	if err != nil {
 		return false, err
 	}

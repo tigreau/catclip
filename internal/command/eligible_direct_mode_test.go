@@ -59,6 +59,18 @@ func TestIsDirectModeIneligibleMultiTarget(t *testing.T) {
 	}
 }
 
+func TestIsDirectModeIneligibleWithPositionalGlobTarget(t *testing.T) {
+	scope := ExecutionScope{
+		Targets:        []string{"*.go"},
+		Snippet:        true,
+		SnippetPattern: "func",
+		Stages:         []Stage{{Kind: StageSnippet, Values: []string{"func"}}},
+	}
+	if IsDirectModeEligible(Invocation{}, scope) {
+		t.Fatal("positional glob target must use discovered entries, not direct rg")
+	}
+}
+
 func TestIsDirectModeIneligibleWithInclude(t *testing.T) {
 	inv := Invocation{}
 	scope := ExecutionScope{
