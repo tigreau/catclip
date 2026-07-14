@@ -22,6 +22,10 @@ jobs:
         with:
           go-version: '1.26'
 
+      - name: Validate GitHub Actions workflows
+        if: runner.os == 'Linux'
+        run: make workflow-check
+
       - name: Install bundled tools (rg, fzf)
         shell: bash
         run: |

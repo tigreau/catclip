@@ -1,4 +1,4 @@
-.PHONY: dev test run clean release-local release-clean catclip
+.PHONY: dev test workflow-check run clean release-local release-clean catclip
 
 BIN_DIR := bin
 DIST_DIR := dist
@@ -10,6 +10,8 @@ UNAME_M := $(shell uname -m)
 RG_V := 14.1.1
 FZF_V := 0.71.0
 FZF_TAG := v$(FZF_V)
+ACTIONLINT_V := v1.7.12
+ACTIONLINT ?= go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_V)
 
 # Platform-specific asset URLs for manual install hints.
 ifeq ($(UNAME_S),Darwin)
@@ -114,6 +116,12 @@ endef
 
 test: dev
 	go test ./...
+
+# Validate workflow YAML, GitHub expressions, matrices, and action inputs.
+# Existing embedded-shell warnings are tracked separately, so disable the
+# optional shellcheck integration and keep this gate focused on Actions syntax.
+workflow-check:
+	@$(ACTIONLINT) -shellcheck= .github/workflows/*.yml
 
 run: dev
 	go run ./cmd/catclip $(ARGS)
