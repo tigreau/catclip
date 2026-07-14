@@ -3390,6 +3390,43 @@ func TestRunGlobZeroMatchSuggestionQuotesLiteralPrefix(t *testing.T) {
 	}
 }
 
+func TestRunGlobZeroMatchMissingPrefixUsesFuzzyTargetGuidanceWithoutInclude(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/vs/base/common/root.ts":        "export const root = true\n",
+		"src/vs/base/common/deep/value.ts":  "export const deep = true\n",
+		"src/vs/editor/common/editor.ts":    "export const editor = true\n",
+		"src/vs/workbench/common/worker.ts": "export const worker = true\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "common/*"})
+	var stdout, stderr bytes.Buffer
+	_ = run(cfg, &stdout, &stderr)
+	message := stderr.String()
+
+	if !strings.Contains(message, "target globs do not fuzzy-match directory segments") {
+		t.Fatalf("expected cwd-relative glob explanation, got:\n%s", message)
+	}
+	if !strings.Contains(message, "catclip common\n") || !strings.Contains(message, "catclip common --depth 1") {
+		t.Fatalf("expected navigation-first recovery commands, got:\n%s", message)
+	}
+	if strings.Contains(message, "catclip common --include common") {
+		t.Fatalf("missing glob prefix must not be misdiagnosed as ignored, got:\n%s", message)
+	}
+
+	cfg = parseInProject(t, project, []string{"--print", "common/*.ts"})
+	stdout.Reset()
+	stderr.Reset()
+	_ = run(cfg, &stdout, &stderr)
+	message = stderr.String()
+	if !strings.Contains(message, `catclip common --only "*.ts"`) ||
+		!strings.Contains(message, `catclip common --depth 1 --only "*.ts"`) {
+		t.Fatalf("expected typed navigation-first recovery commands, got:\n%s", message)
+	}
+	if strings.Contains(message, "catclip common --include common") {
+		t.Fatalf("typed missing glob prefix must not be misdiagnosed as ignored, got:\n%s", message)
+	}
+}
+
 func TestRunTargetDoublestarHasNoRecursiveSemantics(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"cmd/root.go":         "package cmd\n",

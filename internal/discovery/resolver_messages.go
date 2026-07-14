@@ -32,7 +32,7 @@ func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors pl
 	}
 	isDir, err := r.targetPathIsDirectory(prefix)
 	if err != nil || !isDir {
-		return targetNotFoundWarning(pattern, scopeIndex, colors)
+		return unresolvedGlobPrefixWarning(pattern, prefix, suffix, scopeIndex, colors)
 	}
 
 	directoryShaped := strings.HasSuffix(strings.ReplaceAll(pattern, "\\", "/"), "/")
@@ -41,6 +41,30 @@ func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors pl
 		return ignoredGlobZeroMatchWarning(pattern, prefix, suffix, block.Source, scopeIndex, directoryShaped, colors)
 	}
 	return visibleGlobZeroMatchWarning(pattern, prefix, suffix, scopeIndex, directoryShaped, colors)
+}
+
+func unresolvedGlobPrefixWarning(pattern, prefix, suffix string, scopeIndex int, colors platform.Palette) string {
+	commandPrefix := ShellQuoteArg(prefix)
+	normalizedSuffix := strings.TrimSuffix(strings.ReplaceAll(suffix, "\\", "/"), "/")
+	allStars := normalizedSuffix != "" && strings.Trim(normalizedSuffix, "*") == ""
+	if !allStars && !strings.Contains(normalizedSuffix, "/") {
+		filter := ShellQuoteArg(normalizedSuffix)
+		return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sNo cwd-relative directory %s exists; target globs do not fuzzy-match directory segments.%s\n  %sTo choose a directory matching %s and search recursively:%s\n    %scatclip %s --only %s%s\n  %sTo keep only direct matches:%s\n    %scatclip %s --depth 1 --only %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
+			colors.Dim, SingleQuoted(prefix), colors.Reset,
+			colors.OK, commandPrefix, filter, colors.Reset,
+			colors.Dim, colors.Reset,
+			colors.OK, commandPrefix, filter, colors.Reset)
+	}
+
+	return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sNo cwd-relative directory %s exists; target globs do not fuzzy-match directory segments.%s\n  %sTo choose a directory matching %s and include everything below it:%s\n    %scatclip %s%s\n  %sTo keep only its direct files:%s\n    %scatclip %s --depth 1%s",
+		colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+		colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
+		colors.Dim, SingleQuoted(prefix), colors.Reset,
+		colors.OK, commandPrefix, colors.Reset,
+		colors.Dim, colors.Reset,
+		colors.OK, commandPrefix, colors.Reset)
 }
 
 func visibleGlobZeroMatchWarning(pattern, prefix, suffix string, scopeIndex int, directoryShaped bool, colors platform.Palette) string {
