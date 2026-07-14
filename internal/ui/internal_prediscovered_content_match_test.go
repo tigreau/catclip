@@ -2,7 +2,6 @@ package ui
 
 import (
 	"bytes"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,15 +24,6 @@ func TestPrediscoveredContentMatchListUsesCheckpointForGlobTarget(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-
-	originalDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(project); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chdir(originalDir)
 
 	cfg := parseInProject(t, project, []string{
 		"--internal-content-match-list",
