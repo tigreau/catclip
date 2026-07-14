@@ -281,16 +281,18 @@ jobs:
             path = ARGV.fetch(0)
             source = File.read(path)
             source.sub!(/\n  def caveats\n.*?\n  end\n(?=\n  (?:test|def) )/m, "")
-            caveats = %q{
-  def caveats
-    <<~EOS
-      Important: run catclip from inside the project you want to inspect.
-
-        cd /path/to/project
-        catclip --help
-    EOS
-  end
-}
+            caveats = [
+              "",
+              "  def caveats",
+              "    <<~EOS",
+              "      Important: run catclip from inside the project you want to inspect.",
+              "",
+              "        cd /path/to/project",
+              "        catclip --help",
+              "    EOS",
+              "  end",
+              "",
+            ].join("\n")
             marker = "\n  test do\n"
             abort "ERROR: Homebrew formula has no test block" unless source.include?(marker)
             source.sub!(marker, "#{caveats}#{marker}")
