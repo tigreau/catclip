@@ -299,16 +299,6 @@ func stylePreviewLineNumber(text string, lineNo int, highlighted map[int]struct{
 	return styled
 }
 
-// HighlightFilePreview is the exported entry point for applying the same
-// chroma syntax highlighting to a string that the file-mode tree renderer
-// uses for previewable text. It is used by the sink picker to color file
-// bodies inside the emit-shape preview ("show exact bytes the sink will
-// emit, but with syntax highlighting on the body"). For internal callers
-// inside this package the lowercase shim below stays as the name.
-func HighlightFilePreview(relPath, content string, opts RenderOptions) string {
-	return highlightFilePreview(relPath, content, opts)
-}
-
 // HighlightFilePreviewWithMatches applies syntax highlighting, then overlays
 // the same exact regex-match emphasis used by file previews. It is intended for
 // emit-shaped previews whose wrappers are rendered elsewhere: callers pass only
