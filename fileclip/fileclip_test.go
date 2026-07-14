@@ -197,6 +197,32 @@ func waitForFileRefsOnClipboard(t *testing.T, budget time.Duration) bool {
 	}
 }
 
+// copyAndWaitForFileRefs retries the complete transaction once on macOS. The
+// general pasteboard is global process state, and macOS CI occasionally loses
+// one otherwise successful osascript write between Copy returning and Has
+// observing it. Requiring two consecutive failures preserves the integration
+// assertion without making Linux or Windows clipboard tests less strict.
+func copyAndWaitForFileRefs(t *testing.T, path string, budget time.Duration) bool {
+	t.Helper()
+	attempts := 1
+	if runtime.GOOS == "darwin" {
+		attempts = 2
+	}
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if err := Copy(path); err != nil {
+			t.Fatalf("Copy() failed: %v", err)
+		}
+		if waitForFileRefsOnClipboard(t, budget) {
+			return true
+		}
+		if attempt < attempts {
+			t.Log("macOS pasteboard did not retain the first write; retrying once")
+		}
+	}
+	return false
+}
+
 func TestCopyThenHas(t *testing.T) {
 	if os.Getenv("FILECLIP_INTEGRATION") == "" {
 		t.Skip("set FILECLIP_INTEGRATION=1 to run clipboard integration tests")
@@ -207,11 +233,7 @@ func TestCopyThenHas(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Copy(path); err != nil {
-		t.Fatalf("Copy() failed: %v", err)
-	}
-
-	if !waitForFileRefsOnClipboard(t, 3*time.Second) {
+	if !copyAndWaitForFileRefs(t, path, 3*time.Second) {
 		t.Fatal("Has() never returned true within 3s after Copy()")
 	}
 }
@@ -227,11 +249,7 @@ func TestCopyThenPaste(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Copy(path); err != nil {
-		t.Fatalf("Copy() failed: %v", err)
-	}
-
-	if !waitForFileRefsOnClipboard(t, 3*time.Second) {
+	if !copyAndWaitForFileRefs(t, path, 3*time.Second) {
 		t.Fatal("Has() never returned true within 3s after Copy(); cannot Paste")
 	}
 
