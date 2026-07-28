@@ -452,7 +452,44 @@ function Install-File {
     if ($destDir) {
         New-Item -ItemType Directory -Force -Path $destDir | Out-Null
     }
-    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        Fail "install source file not found: $Source"
+    }
+
+    $isExecutable = [System.IO.Path]::GetExtension($Destination) -ieq '.exe'
+    $maxAttempts = $(if ($isExecutable) { 20 } else { 1 })
+    for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+        try {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
+            return
+        } catch {
+            if ($attempt -lt $maxAttempts) {
+                Start-Sleep -Milliseconds 250
+                continue
+            }
+
+            if ($isExecutable) {
+                $leaf = Split-Path -Leaf $Destination
+                Fail @"
+could not replace '$Destination' after waiting for Windows to release it.
+
+'$leaf' is still in use or access was denied. Close any running catclip
+picker or command, then check for leftover processes:
+
+  Get-Process catclip, fzf, rg -ErrorAction SilentlyContinue
+
+If a catclip process is stuck, stop it and run the installer again:
+
+  Get-Process catclip -ErrorAction SilentlyContinue | Stop-Process -Force
+  irm https://raw.githubusercontent.com/tigreau/catclip/main/install.ps1 | iex
+
+If no related process is running, security software may still be scanning the
+file. Wait a few seconds and retry.
+"@
+            }
+            throw
+        }
+    }
 }
 
 function Remove-FileIfExists {
