@@ -144,7 +144,7 @@ func maybeResolveStartupInteractiveArgs(args []string, includeSink bool) (Startu
 		return StartupPickerResult{}, true, err
 	}
 
-	resolver, err := newStartupPickerResolver()
+	resolver, err := newStartupPickerResolverForArgs(args)
 	if err != nil {
 		return StartupPickerResult{}, true, err
 	}
@@ -190,6 +190,22 @@ func newStartupPickerResolver() (*discovery.Resolver, error) {
 	}, nil
 }
 
+func newStartupPickerResolverForArgs(args []string) (*discovery.Resolver, error) {
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		return nil, err
+	}
+	for _, arg := range args {
+		if arg != "--with-binaries" {
+			continue
+		}
+		resolver.WithBinaries = true
+		resolver.Cfg.WithBinaries = true
+		break
+	}
+	return resolver, nil
+}
+
 func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (bool, error) {
 	if len(args) == 0 {
 		return false, nil
@@ -204,24 +220,31 @@ func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (
 	if err != nil {
 		return false, nil
 	}
-	// Reachability pre-check: if any scope target is blocked by an ignore
-	// rule without an --include covering it, skip the startup picker so the
-	// normal resolution flow surfaces the ignored-target error. Otherwise the
-	// filter-value picker for --only / --exclude / --include would open
-	// before the resolver gets a chance to error — see
-	// docs/versions/v0.5.7/reports/ACTIVE_BUG_filter_picker_fires_before_target_check.md.
-	for _, scopeSpec := range cfg.Command.Scopes() {
+	// Probe every target once before resolving modifier values. Missing targets
+	// bypass startup pickers immediately because no modifier can make an absent
+	// path selectable. Blocked targets are decided after include resolution:
+	// an unresolved --include query may open the ignored-target picker and
+	// authorize an existing blocked target. Ambiguous targets retain the mixed
+	// ranked matches that require a picker. The complete inventory built by a
+	// scope copy is safe to publish back to the base resolver for the eventual
+	// picker.
+	scopeSpecs := cfg.Command.Scopes()
+	probesByScope := make([][]discovery.StartupTargetProbe, len(scopeSpecs))
+	for scopeIndex, scopeSpec := range scopeSpecs {
 		scopeResolverCopy := *resolver
 		scopeTargets := scopeSpec.Targets()
 		if len(scopeSpec.IncludedTargets()) > 0 {
 			scopeResolverCopy.IncludedTargets = discovery.BuildIncludedTargetSet(scopeResolverCopy.Cfg.WorkingDir, scopeSpec.IncludedTargets())
 		}
 		for _, target := range scopeTargets {
-			reachable, err := scopeResolverCopy.TargetIsReachable(target)
+			probe, err := scopeResolverCopy.ProbeStartupTarget(target)
 			if err != nil {
 				return false, err
 			}
-			if !reachable {
+			resolver.AdoptVisibleTargetInventoryFrom(&scopeResolverCopy)
+			probesByScope[scopeIndex] = append(probesByScope[scopeIndex], probe)
+			if probe.Outcome == discovery.StartupTargetMissing ||
+				(probe.Outcome == discovery.StartupTargetBlocked && len(scopeSpec.IncludedTargets()) == 0) {
 				return true, nil
 			}
 		}
@@ -233,100 +256,51 @@ func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (
 	if needsFileSetResolution {
 		return false, nil
 	}
-	for _, scopeSpec := range cfg.Command.Scopes() {
+	for scopeIndex, scopeSpec := range scopeSpecs {
 		scopeResolverCopy := *resolver
 		scopeTargets := scopeSpec.Targets()
-		if len(scopeSpec.IncludedTargets()) > 0 {
+		if len(scopeSpec.IncludedTargets()) > 0 && !discovery.IncludeTargetsContainWildcard(scopeSpec.IncludedTargets()) {
 			includeTargets := scopeSpec.IncludedTargets()
-			if discovery.IncludeTargetsContainWildcard(includeTargets) {
-				scopeResolverCopy.IncludedTargets = discovery.BuildIncludedTargetSet(scopeResolverCopy.Cfg.WorkingDir, includeTargets)
-			} else {
-				exactIncludedTargets, unresolvedIncludeQueries, err := scopeResolverCopy.ResolveExactIgnoredIncludeTargets(includeTargets, scopeTargets)
-				if err != nil {
-					return false, err
-				}
-				// Salvage unresolved queries that are concrete on-disk paths.
-				// `ResolveExactIgnoredIncludeTargets`'s scope-target filter
-				// drops include values unrelated to the scope target — it
-				// assumes the include lives inside (or is an ancestor of)
-				// the scope. For the basename + `--include` case, the include
-				// names a *separate* ignored dir that *authorizes* finding
-				// the basename elsewhere — the filter rejects it as
-				// "unrelated" and the picker would open even though the
-				// include is concrete. A query that exists on disk as a
-				// regular file or directory is concrete enough to treat as
-				// an exact ignored target; queries that don't exist at the
-				// working-dir level (the truly ambiguous, picker-needs-help
-				// case) stay unresolved and continue to route through the
-				// picker.
-				stillUnresolved := unresolvedIncludeQueries[:0]
-				for _, q := range unresolvedIncludeQueries {
-					normalized := normalizeRelPath(q)
-					if normalized == "" {
-						stillUnresolved = append(stillUnresolved, q)
-						continue
-					}
-					abs := filepath.Join(scopeResolverCopy.Cfg.WorkingDir, filepath.FromSlash(normalized))
-					if info, err := os.Stat(abs); err == nil && (info.IsDir() || info.Mode().IsRegular()) {
-						exactIncludedTargets = append(exactIncludedTargets, normalized)
-						continue
-					}
+			_, unresolvedIncludeQueries, err := scopeResolverCopy.ResolveExactIgnoredIncludeTargets(includeTargets, scopeTargets)
+			if err != nil {
+				return false, err
+			}
+			// Salvage unresolved queries that are concrete on-disk paths.
+			// `ResolveExactIgnoredIncludeTargets`'s scope-target filter
+			// drops include values unrelated to the scope target — it
+			// assumes the include lives inside (or is an ancestor of)
+			// the scope. For the basename + `--include` case, the include
+			// names a *separate* ignored dir that *authorizes* finding
+			// the basename elsewhere — the filter rejects it as
+			// "unrelated" and the picker would open even though the
+			// include is concrete. A query that exists on disk as a
+			// regular file or directory is concrete enough to treat as
+			// an exact ignored target; queries that don't exist at the
+			// working-dir level (the truly ambiguous, picker-needs-help
+			// case) stay unresolved and continue to route through the
+			// picker.
+			stillUnresolved := unresolvedIncludeQueries[:0]
+			for _, q := range unresolvedIncludeQueries {
+				normalized := normalizeRelPath(q)
+				if normalized == "" {
 					stillUnresolved = append(stillUnresolved, q)
+					continue
 				}
-				if len(stillUnresolved) > 0 {
-					return false, nil
+				abs := filepath.Join(scopeResolverCopy.Cfg.WorkingDir, filepath.FromSlash(normalized))
+				if info, err := os.Stat(abs); err == nil && (info.IsDir() || info.Mode().IsRegular()) {
+					continue
 				}
-				scopeResolverCopy.IncludedTargets = discovery.BuildIncludedTargetSet(scopeResolverCopy.Cfg.WorkingDir, exactIncludedTargets)
+				stillUnresolved = append(stillUnresolved, q)
+			}
+			if len(stillUnresolved) > 0 {
+				return false, nil
 			}
 		}
-		for _, target := range scopeTargets {
-			canResolve, err := scopeResolverCopy.CanResolveTargetWithoutPrompt(target)
-			if err != nil {
-				return false, err
+		for _, probe := range probesByScope[scopeIndex] {
+			if probe.BypassesPicker() {
+				return true, nil
 			}
-			if canResolve {
-				continue
-			}
-			// CanResolveTargetWithoutPrompt returned false. That conflates
-			// two cases:
-			//   - the target has many visible matches → genuine ambiguity, the
-			//     picker is the right response;
-			//   - the target has zero matches anywhere → the picker can't
-			//     help, the not-found warning is the right response.
-			// Gate the picker on which case this is, plus the --include
-			// subtree count for the v0.5.7 basename+include fix. See
-			// docs/versions/v0.5.7/reports/ACTIVE_PLAN_startup_picker_gated_on_ambiguity.md.
-			normalized := normalizeRelPath(target)
-			if normalized == "" || normalized == "." || cli.HasGlobChars(normalized) || strings.Contains(normalized, "/") {
-				// Slash-paths use a different resolution branch — leave the
-				// existing behavior alone.
-				return false, nil
-			}
-			hasVisible, err := scopeResolverCopy.HasAnyVisibleMatch(normalized)
-			if err != nil {
-				return false, err
-			}
-			if hasVisible {
-				// Multi-hit visible (e.g. `catclip main`) — keep the picker.
-				return false, nil
-			}
-			// Zero visible matches. Count --include'd subtree hits.
-			includeHits, err := scopeResolverCopy.FindBasenameInIncludedSubtrees(normalized)
-			if err != nil {
-				return false, err
-			}
-			switch len(includeHits) {
-			case 0:
-				// Truly absent — skip the picker; let the "No file or
-				// directory found" warning fire from normal resolution.
-				continue
-			case 1:
-				// Uniquely resolvable via --include — skip the picker; the
-				// v0.5.7 basename+include fix bundles it from normal flow.
-				continue
-			default:
-				// Genuine multi-hit inside the authorized subtrees — keep
-				// the picker so the user can disambiguate.
+			if probe.RequiresPicker() {
 				return false, nil
 			}
 		}
@@ -715,6 +689,7 @@ func resolveStartupScopeInputs(resolver *discovery.Resolver, targetTokens, inclu
 
 func resolveStartupScopeInputsWithPrompt(resolver *discovery.Resolver, targetTokens, includeQueries, alreadySelected, explicitTargets []string, prompt string) ([]string, []string, []string, bool, error) {
 	selectedPaths := append([]string(nil), alreadySelected...)
+	previouslyIncluded := selectionPathsExcludingExplicitTargets(alreadySelected, explicitTargets)
 	resolvedArgs := make([]string, 0, len(targetTokens)+len(includeQueries)*2)
 	resolvedTargets := make([]string, 0, len(targetTokens)+len(includeQueries))
 	resolvedExplicitTargets := make([]string, 0, len(targetTokens))
@@ -753,28 +728,85 @@ func resolveStartupScopeInputsWithPrompt(resolver *discovery.Resolver, targetTok
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
-	includedTargets := append([]string(nil), exactIncludedTargets...)
-
-	if len(includedTargets) > 0 {
-		resolvedTargets = append(resolvedTargets, includedTargets...)
-		selectedPaths = append(selectedPaths, includedTargets...)
-	}
-	for _, query := range unresolvedIncludeQueries {
-		resolved, err := resolver.ResolveInteractiveIncludeTargets(query, selectedPaths, selectedExplicitTargets, scopeTargetsForInclude)
-		if err != nil {
-			return nil, nil, nil, true, err
+	resolvedGroups := make([][]string, len(unresolvedIncludeQueries))
+	resolveFrom := 0
+	var includedTargets []string
+resolveIncludes:
+	for {
+		includedTargets = append([]string(nil), exactIncludedTargets...)
+		selectedIncludes := append(append([]string(nil), previouslyIncluded...), exactIncludedTargets...)
+		for i := 0; i < resolveFrom; i++ {
+			includedTargets = append(includedTargets, resolvedGroups[i]...)
+			selectedIncludes = append(selectedIncludes, resolvedGroups[i]...)
 		}
-		includedTargets = append(includedTargets, resolved...)
-		resolvedTargets = append(resolvedTargets, resolved...)
-		selectedPaths = append(selectedPaths, resolved...)
-		usedPicker = true
+		for resolveFrom < len(unresolvedIncludeQueries) {
+			query := unresolvedIncludeQueries[resolveFrom]
+			covered, err := resolver.InteractiveIgnoredQueryCoveredBySelection(query, selectedIncludes, selectedExplicitTargets, scopeTargetsForInclude)
+			if err != nil {
+				return nil, nil, nil, usedPicker, err
+			}
+			if covered {
+				resolvedGroups[resolveFrom] = nil
+				resolveFrom++
+				continue
+			}
+			resolved, err := resolver.ResolveInteractiveIncludeTargets(query, selectedIncludes, selectedExplicitTargets, scopeTargetsForInclude)
+			if err != nil {
+				if errors.Is(err, discovery.ErrSelectionCancelled) {
+					back := previousResolvedIncludeGroup(resolvedGroups, resolveFrom)
+					if back >= 0 {
+						clearResolvedIncludeGroupsFrom(resolvedGroups, back)
+						resolveFrom = back
+						continue resolveIncludes
+					}
+				}
+				return nil, nil, nil, true, err
+			}
+			if len(resolved) == 0 {
+				back := previousResolvedIncludeGroup(resolvedGroups, resolveFrom)
+				if back >= 0 {
+					clearResolvedIncludeGroupsFrom(resolvedGroups, back)
+					resolveFrom = back
+					continue resolveIncludes
+				}
+				return nil, nil, nil, true, discovery.ErrSelectionCancelled
+			}
+			resolvedGroups[resolveFrom] = append([]string(nil), resolved...)
+			includedTargets = append(includedTargets, resolved...)
+			selectedIncludes = append(selectedIncludes, resolved...)
+			usedPicker = true
+			resolveFrom++
+		}
+		break
 	}
+	resolvedTargets = append(resolvedTargets, includedTargets...)
 	if len(includedTargets) > 0 {
 		resolvedArgs = append(resolvedArgs, "--include")
 		resolvedArgs = append(resolvedArgs, includedTargets...)
 	}
 
 	return resolvedArgs, resolvedTargets, resolvedExplicitTargets, usedPicker, nil
+}
+
+// selectionPathsExcludingExplicitTargets keeps prior include selections while
+// removing one occurrence of each positional target. The startup frame stores
+// both in one ordered list; include pickers must not hide a blocked positional
+// target that the current include query is supposed to authorize.
+func selectionPathsExcludingExplicitTargets(selected, explicit []string) []string {
+	remainingExplicit := make(map[string]int, len(explicit))
+	for _, value := range explicit {
+		remainingExplicit[normalizeRelPath(value)]++
+	}
+	includes := make([]string, 0, len(selected))
+	for _, value := range selected {
+		normalized := normalizeRelPath(value)
+		if remainingExplicit[normalized] > 0 {
+			remainingExplicit[normalized]--
+			continue
+		}
+		includes = append(includes, value)
+	}
+	return includes
 }
 
 func resolveStartupInitialTargets(resolver *discovery.Resolver, args []string, alreadySelected []string, prompt string) ([]string, bool, error) {

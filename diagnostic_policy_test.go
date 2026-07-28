@@ -12,6 +12,7 @@ func TestSummarizeDiagnostics(t *testing.T) {
 		{Message: "error", IsError: true},
 		{Message: "missing", IsTargetNotFound: true},
 		{Message: "unsatisfiable", IsScopeUnsatisfiable: true},
+		{Message: "explained", ExplainsEmptyResult: true, ScopeIndex: 0},
 	}, true)
 
 	if !summary.HasError {
@@ -25,5 +26,11 @@ func TestSummarizeDiagnostics(t *testing.T) {
 	}
 	if !summary.HadSelectionCancel {
 		t.Fatal("expected HadSelectionCancel")
+	}
+	if _, ok := summary.ExplainedEmptyScopes[0]; !ok {
+		t.Fatal("expected scope 0 to be recorded as explained")
+	}
+	if !summary.AllEmptyScopesExplained(1) {
+		t.Fatal("expected one explained scope to suppress the generic footer")
 	}
 }

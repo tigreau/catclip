@@ -68,6 +68,16 @@ func TestParseMatchesFallsBackToFirstFieldWhenSecondFieldIsEmpty(t *testing.T) {
 	}
 }
 
+func TestFilterArgsUseRequestedSearchFields(t *testing.T) {
+	args := filterArgs("doc", "2")
+	if !containsArgPair(args, "--nth", "2") {
+		t.Fatalf("expected path-only --nth field, got %#v", args)
+	}
+	if !containsArgPair(args, "--filter", "doc") {
+		t.Fatalf("expected filter query, got %#v", args)
+	}
+}
+
 func containsArgPair(args []string, key, value string) bool {
 	for i := 0; i+1 < len(args); i++ {
 		if args[i] == key && args[i+1] == value {

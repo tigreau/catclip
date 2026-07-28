@@ -44,7 +44,7 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 		{Left: "catclip", Right: "Pick files or folders from a menu"},
 		{Left: "catclip src", Right: "Copy a folder"},
 		{Left: "catclip Button.tsx", Right: "Copy a file (finds it for you)"},
-		{Left: "catclip btn", Right: "Fuzzy match — finds Button.tsx for you"},
+		{Left: "catclip btn", Right: "Fuzzy picker (Button.tsx ranks first)"},
 		{Left: "catclip src internal docs", Right: "Copy multiple folders"},
 		{Left: `catclip "*.go"`, Right: "All Go files in the project (glob pattern)"},
 		{Left: `catclip src "*.go"`, Right: "Union: src/ files + all Go files"},
@@ -59,6 +59,7 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 	})
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Filtering:"))
+	fmt.Fprintf(&b, "  Targets choose where catclip looks; filters narrow the files found there.\n")
 	fmt.Fprintf(&b, "  Filters run left to right. Changing the order changes the result.\n\n")
 	fmt.Fprintf(&b, "  When the result is the same, narrow by file name before searching file contents.\n\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
@@ -74,17 +75,19 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 		{Left: "catclip . --paths --then src", Right: "Show project structure, then copy React files"},
 		{Left: "catclip src --contains TODO", Right: "Find files containing specific text"},
 		{Left: "catclip src --not-contains TODO", Right: "Drop files containing TODO; keep the rest"},
-		{Left: "catclip src --snippet TODO", Right: "Smart block around each match"},
-		{Left: "catclip src --snippet TODO 3", Right: "Matching lines plus 3 lines around each match"},
+		{Left: "catclip src --snippet useAuth", Right: "Smart block around each match"},
+		{Left: "catclip src --snippet useAuth 3", Right: "Matching lines plus 3 lines around each match"},
 		{Left: "catclip internal/handler/user.go --lines", Right: "Add line numbers to one Go file"},
 		{Left: "catclip internal/handler/user.go --lines 40 80", Right: "Read lines 40-80 with line numbers"},
 	})
 
 	fmt.Fprintf(&b, "\n  You can give %s, %s, and %s more than one value.\n", flag("--only"), flag("--exclude"), flag("--include"))
 	fmt.Fprintf(&b, "  Examples: %s   %s\n", flag(`--only "*.ts" "*.tsx"`), flag(`--exclude "*.css" "*.scss"`))
-	fmt.Fprintf(&b, "  A trailing %s selects files beneath directories with that name.\n", flag("/"))
-	fmt.Fprintf(&b, "  In filter globs, %s also matches across folders (%s matches src/components/Button.tsx),\n", flag("*"), flag(`"src/*"`))
-	fmt.Fprintf(&b, "  and paths are written from the directory you run catclip in.\n")
+	fmt.Fprintf(&b, "  In %s and %s, filename patterns and single directory names match anywhere below the targets:\n", flag("--only"), flag("--exclude"))
+	fmt.Fprintf(&b, "    %s keeps TSX files in nested folders too.\n", flag(`--only "*.tsx"`))
+	fmt.Fprintf(&b, "    %s keeps files below every directory named handler.\n", flag(`--only "handler/"`))
+	fmt.Fprintf(&b, "  A value containing a folder path starts from the directory where you run catclip:\n")
+	fmt.Fprintf(&b, "    %s, not %s\n", cmd(`catclip src --only "src/components/*"`), flag(`--only "components/*"`))
 	fmt.Fprintf(&b, "\n  These two commands are different:\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: `catclip src --recent 10 --only "*.tsx"`, Right: "Take the 10 newest files, then keep the .tsx ones"},
@@ -126,6 +129,7 @@ func ShortHelpText(version, hissDisplayPath string, colors platform.Palette) str
 	})
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s authorizes gitignored paths within your walk scope.\n", flag("--include"))
+	b.WriteString("  Write specific include paths from the directory where you run catclip; targets do not shorten them.\n")
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", cmd(`catclip . --include dist --only src dist`))
 	fmt.Fprintf(&b, "    Works — '.' covers the whole project, %s keeps src and dist.\n", flag("--only"))
@@ -197,14 +201,15 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("    src/pages/Login.tsx\n")
 	b.WriteString("    src/pages/Profile.tsx          (untracked)\n")
 	b.WriteString("    src/lib/api.ts\n")
-	b.WriteString("    src/styles/app.css\n")
+	b.WriteString("    src/hooks/useAuth.ts\n")
+	b.WriteString("    src/styles/globals.css\n")
 	b.WriteString("    cmd/api/main.go\n")
 	b.WriteString("    internal/handler/user.go\n")
-	b.WriteString("    internal/store/user.go\n")
+	b.WriteString("    internal/store/store.go\n")
 	b.WriteString("    docs/api.md\n")
 	b.WriteString("    .env.example                (ignored by .hiss)\n")
-	b.WriteString("    dist/app.js                 (gitignored)\n")
-	b.WriteString("    dist/assets/logo.svg        (gitignored)\n")
+	b.WriteString("    dist/index.html             (gitignored)\n")
+	b.WriteString("    dist/assets/index.js        (gitignored)\n")
 	b.WriteString("    node_modules/react/index.js (gitignored)\n\n")
 
 	// ── Common tasks ────────────────────────────────────────────────────
@@ -253,6 +258,12 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 		{Left: "catclip src/components/Button.tsx", Right: "One specific file"},
 		{Left: "catclip src internal docs", Right: "Multiple targets in one scope"},
 	})
+	b.WriteString("\n  Plain non-exact targets use the fuzzy file/folder picker. A target containing\n")
+	b.WriteString("  *, ?, or [ is a deterministic file glob and never opens that picker:\n\n")
+	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
+		{Left: "catclip Button", Right: "Fuzzy file/folder navigation"},
+		{Left: "catclip '*Button*'", Right: "Every visible file matching *Button*"},
+	})
 	b.WriteString("\n  Glob patterns are also valid targets:\n\n")
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: "catclip '*.tsx'", Right: "All TSX files in the project"},
@@ -260,6 +271,10 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 		{Left: "catclip src '*.go'", Right: "src/ files + all Go files (union)"},
 		{Left: "catclip 'src/*.tsx'", Right: "React entry files directly inside src/"},
 	})
+	b.WriteString("\n  Keep glob targets quoted so the shell passes the pattern to catclip.\n")
+	b.WriteString("  CLI patterns do not support **. Since filter * already crosses folders,\n")
+	b.WriteString("  use a directory target plus a single-star recursive filter:\n")
+	fmt.Fprintf(&b, "  %s\n", cmd("catclip src --only '*.tsx'"))
 	b.WriteString("\n  Glob targets match against all visible files in the project, not scoped to\n")
 	b.WriteString("  sibling path targets. Modifiers apply to the full combined set:\n")
 	fmt.Fprintf(&b, "  %s\n\n", cmd("catclip src '*.go' --exclude '*_test.go' --recent 5"))
@@ -278,17 +293,19 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 		{Left: `--exclude "*.test.*"`, Right: "Remove test files"},
 		{Left: `--exclude "*.css" "*.svg"`, Right: "Remove CSS and SVG files"},
 	})
-	fmt.Fprintf(&b, "\n  %s\n", bold("Trailing slash selects files beneath directories:"))
+	fmt.Fprintf(&b, "\n  %s\n", bold("A literal directory name ending in / selects its subtree:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
 		{Left: `catclip internal --only "handler/"`, Right: "Only files under handler/ directories"},
 		{Left: `catclip internal --exclude "handler/"`, Right: "Skip files under handler/ directories"},
 	})
+	b.WriteString("  A glob ending in / (such as \"*/\") cannot match file paths.\n")
 	fmt.Fprintf(&b, "\n  %s\n", bold("Bare names match directory segments:"))
 	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
 		{Left: "--exclude handler", Right: "Remove a file named handler or files beneath handler/ directories"},
 	})
 	b.WriteString("\n")
 	b.WriteString("  Filter globs support *, ?, and [...]; * can cross folder boundaries.\n")
+	b.WriteString("  ** is rejected in CLI targets and filters; it remains valid in ignore files.\n")
 	fmt.Fprintf(&b, "  %s and %s use PCRE2 regex (supports lookaround,\n", flag("--contains"), flag("--snippet"))
 	b.WriteString("  backreferences, atomic groups, named captures).\n\n")
 	b.WriteString("  Patterns use smart-case matching. If your pattern is all lowercase,\n")
@@ -416,9 +433,10 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	b.WriteString("                    Including a directory authorizes all descendants under it.\n")
 	b.WriteString("                    Including a parent authorizes descendant targets:\n")
 	fmt.Fprintf(&b, "                      %s    (parent authorizes child)\n\n", cmd("catclip dist/assets --include dist"))
-	fmt.Fprintf(&b, "  %s     Disable all ignore rules — discover everything.\n", flag("--include '*'"))
-	b.WriteString("                    Equivalent to ripgrep's --no-ignore.\n")
-	b.WriteString("                    Authorizes any target, even if gitignored.\n")
+	fmt.Fprintf(&b, "  %s     Disable ignore rules within the selected targets.\n", flag("--include '*'"))
+	b.WriteString("                    Uses target-bounded no-ignore discovery.\n")
+	b.WriteString("                    Text/binary filtering still applies unless --with-binaries is set.\n")
+	b.WriteString("                    Authorizes any selected target, even if gitignored.\n")
 	fmt.Fprintf(&b, "                    Pair with %s for inventory; avoid combining with\n", flag("--paths"))
 	b.WriteString("                    body emit on uncurated repos. On a project with a full\n")
 	b.WriteString("                    node_modules/build tree this can mean megabytes of\n")
@@ -427,12 +445,16 @@ func FullHelpText(version, hissDisplayPath string, colors platform.Palette) stri
 	fmt.Fprintf(&b, "  %s\n", bold("Rules:"))
 	fmt.Fprintf(&b, "    1. %s must be the first modifier in a scope (before --only, --exclude, etc.)\n", flag("--include"))
 	fmt.Fprintf(&b, "    2. Only one %s per scope — use %s for additional includes\n", flag("--include"), flag("--then"))
-	fmt.Fprintf(&b, "    3. %s is scoped to the target paths (not the whole project)\n\n", flag("--include"))
+	fmt.Fprintf(&b, "    3. %s is scoped to the target paths (not the whole project)\n", flag("--include"))
+	b.WriteString("    4. Specific paths are written from cwd; targets never rebase them\n")
+	fmt.Fprintf(&b, "    5. %s is the broad form; %s is not a target-root alias\n\n", flag("--include '*'"), bad("--include ."))
 	fmt.Fprintf(&b, "  %s\n", bold("Examples:"))
 	fmt.Fprintf(&b, "  %s\n", cmd("catclip dist --include dist --paths"))
 	fmt.Fprintf(&b, "  %s\n", cmd("catclip dist/assets --include dist --paths"))
 	fmt.Fprintf(&b, "  %s\n", cmd("catclip .env.example --include .env.example -r"))
-	fmt.Fprintf(&b, "  %s    # all files under src/, nothing ignored\n\n", cmd("catclip src --include '*' --paths"))
+	fmt.Fprintf(&b, "  %s    # all text files under src/, ignore rules disabled\n\n", cmd("catclip src --include '*' --paths"))
+	b.WriteString("  In a TTY, an unresolved include query may open the ignored-path picker.\n")
+	b.WriteString("  Headless runs keep it exact and may suggest complete paths without choosing one.\n\n")
 	fmt.Fprintf(&b, "  Cross-scope includes use %s:\n", flag("--then"))
 	fmt.Fprintf(&b, "    %s\n\n", cmd("catclip src --then node_modules/react --include node_modules --paths"))
 	fmt.Fprintf(&b, "  catclip's own ignore rules: %s (%s to edit; applied on top of .gitignore)\n\n", flag(hissDisplayPath), flag("--hiss"))

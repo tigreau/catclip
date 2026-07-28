@@ -16,22 +16,26 @@ import (
 // FzfPreviewCommand is used by target-selection pickers before a parent scope
 // has settled entries. SCC does not apply there; modifier previews use the
 // checkpoint wrappers in startup_picker.go / fzfCheckpointContentMatchListCommand.
-func FzfPreviewCommand(includeTarget bool) string {
+func FzfPreviewCommand(includeTarget bool, withBinaries ...bool) string {
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
 		return ""
 	}
 
 	selfQ := ShellQuoteArg(self)
+	binaryFlag := ""
+	if len(withBinaries) > 0 && withBinaries[0] {
+		binaryFlag = " --with-binaries"
+	}
 
 	// {+2} passes all selected targets (falls back to focused when none selected).
 	// {2}/{3}/{4} are the focused entry's metadata for tree highlight.
 	if includeTarget {
-		return selfQ + ` --quiet {+2} --internal-tree-preview` +
+		return selfQ + ` --quiet` + binaryFlag + ` {+2} --internal-tree-preview` +
 			` --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4}` +
 			` --include {+2}`
 	}
-	return selfQ + ` --quiet --internal-tree-preview` +
+	return selfQ + ` --quiet` + binaryFlag + ` --internal-tree-preview` +
 		` --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4}` +
 		` {+2}`
 }
@@ -277,23 +281,43 @@ func formatFzfCandidates(candidates []string, kind, state string) []string {
 	return lines
 }
 
-func rankTargetMatches(query string, dirs, files []string) ([]TargetMatch, error) {
-	matches := make([]TargetMatch, 0, len(dirs)+len(files))
-	for _, dir := range dirs {
-		matches = append(matches, TargetMatch{Path: dir, Kind: "dir"})
-	}
-	for _, file := range files {
-		matches = append(matches, TargetMatch{Path: file, Kind: "file"})
-	}
-	if len(matches) == 0 {
-		return nil, nil
-	}
-	path, err := FuzzyResolverBinary()
+// fuzzySearchTargetMatches runs the same mixed file-and-directory rows used by
+// the interactive target picker through fzf's non-interactive filter mode.
+// Keeping one input shape makes headless ambiguity the picker result without
+// the prompt, rather than a second fuzzy language assembled from per-kind
+// searches.
+func (r *Resolver) fuzzySearchTargetMatches(baseRel, query string) ([]TargetMatch, error) {
+	allTargets, err := r.allVisibleTargets()
 	if err != nil {
 		return nil, err
 	}
-	labels, index := TargetMatchLabels(matches)
-	filtered, err := runFzfFilterLines(path, query, labels)
+
+	baseRel = normalizeRelPath(baseRel)
+	if baseRel == "" {
+		baseRel = "."
+	}
+	prefix := ""
+	if baseRel != "." {
+		prefix = baseRel + "/"
+	}
+
+	candidates := make([]TargetMatch, 0, len(allTargets))
+	for _, match := range allTargets {
+		if prefix != "" && !strings.HasPrefix(match.Path, prefix) {
+			continue
+		}
+		candidates = append(candidates, match)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	bin, err := FuzzyResolverBinary()
+	if err != nil {
+		return nil, err
+	}
+	labels, index := TargetMatchLabels(candidates)
+	filtered, err := runFzfTargetFilterLines(bin, query, labels)
 	if err != nil {
 		return nil, err
 	}

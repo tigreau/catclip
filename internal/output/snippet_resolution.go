@@ -63,11 +63,12 @@ const (
 // language syntax; git userdiff is a coverage reference only (MIT vs GPLv2). See
 // docs/versions/v0.6.7/reports/ACTIVE_PLAN_snippet_language_profiles.md.
 type languageProfile struct {
-	lineComments []string
-	extent       extentStrategy
-	unitStart    *regexp.Regexp // per-language declaration-start; nil = agnostic only
-	htmlLike     bool           // extentTag: apply HTML void/raw-text/implied-close rules
-	caseFold     bool           // extentTag: fold tag-name case (native HTML only, not frameworks)
+	lineComments    []string
+	extent          extentStrategy
+	unitStart       *regexp.Regexp // per-language declaration-start; nil = agnostic only
+	literalBindings bool           // extentCode: named JS/TS object/array assignments
+	htmlLike        bool           // extentTag: apply HTML void/raw-text/implied-close rules
+	caseFold        bool           // extentTag: fold tag-name case (native HTML only, not frameworks)
 }
 
 // defaultProfile is the fallback for unknown/unmapped or extensionless files:
@@ -150,6 +151,11 @@ func buildExtProfiles() map[string]languageProfile {
 	setStart(declScala, ".scala", ".sc")
 	setStart(declCxx, ".c", ".h", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx")
 	setStart(declTS, ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs")
+	for _, e := range []string{".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"} {
+		p := m[e]
+		p.literalBindings = true
+		m[e] = p
+	}
 	setStart(declRuby, ".rb", ".rake", ".gemspec")
 	setStart(declElixir, ".ex", ".exs")
 	return m
@@ -279,12 +285,159 @@ func unitCandidates(lines []string, profile languageProfile) []SnippetRange {
 		return nil // no structural units; the fallback handles these
 	default: // extentCode
 		decls := buildDeclarationRanges(lines, profile.lineComments, profile.unitStart)
-		out := make([]SnippetRange, len(decls))
-		for i, d := range decls {
-			out[i] = d.SnippetRange
+		capacity := len(decls)
+		var bindings []SnippetRange
+		if profile.literalBindings {
+			bindings = literalBindingCandidates(lines)
+			capacity += len(bindings)
 		}
+		out := make([]SnippetRange, 0, capacity)
+		for _, d := range decls {
+			out = append(out, d.SnippetRange)
+		}
+		out = append(out, bindings...)
 		return out
 	}
+}
+
+type literalDelimiterFrame struct {
+	open      rune
+	line      int
+	candidate bool
+}
+
+// literalBindingCandidates returns multi-line object and array values assigned
+// directly to a named JS/TS const/let/var binding. Candidate authorization is
+// deliberately narrow; the delimiter scan itself is one pass over the file.
+func literalBindingCandidates(lines []string) []SnippetRange {
+	var stack []literalDelimiterFrame
+	var out []SnippetRange
+	quote := rune(0)
+	escaped := false
+	inBlockComment := false
+
+	for lineIndex, line := range lines {
+		runes := []rune(line)
+		candidateIndex, candidateOpen, hasCandidate := namedLiteralBindingOpener(runes)
+		inLineComment := false
+		for i := 0; i < len(runes); i++ {
+			r := runes[i]
+			switch {
+			case inBlockComment:
+				if r == '*' && i+1 < len(runes) && runes[i+1] == '/' {
+					inBlockComment = false
+					i++
+				}
+			case inLineComment:
+				i = len(runes)
+			case quote != 0:
+				if escaped {
+					escaped = false
+				} else if r == '\\' {
+					escaped = true
+				} else if r == quote {
+					quote = 0
+				}
+			case r == '\'' || r == '"' || r == '`':
+				quote = r
+			case r == '/' && i+1 < len(runes) && runes[i+1] == '/':
+				inLineComment = true
+			case r == '/' && i+1 < len(runes) && runes[i+1] == '*':
+				inBlockComment = true
+				i++
+			case r == '{' || r == '[':
+				stack = append(stack, literalDelimiterFrame{
+					open:      r,
+					line:      lineIndex + 1,
+					candidate: hasCandidate && i == candidateIndex && r == candidateOpen,
+				})
+			case r == '}' || r == ']':
+				if len(stack) == 0 {
+					continue
+				}
+				top := stack[len(stack)-1]
+				stack = stack[:len(stack)-1]
+				want := '{'
+				if r == ']' {
+					want = '['
+				}
+				if top.open != want || !top.candidate || top.line == lineIndex+1 {
+					continue
+				}
+				end := lineIndex + 1
+				if end < len(lines) && strings.TrimSpace(lines[end]) == ";" {
+					end++
+				}
+				start := attachedDeclarationStart(lines, top.line-1, []string{"//"}) + 1
+				out = append(out, SnippetRange{Start: start, End: end})
+			}
+		}
+	}
+	return out
+}
+
+func namedLiteralBindingOpener(line []rune) (int, rune, bool) {
+	i := skipRuneSpace(line, 0)
+	if next, ok := consumeRuneWord(line, i, "export"); ok {
+		i = skipRuneSpace(line, next)
+	}
+	next, binding := consumeAnyRuneWord(line, i, "const", "let", "var")
+	if !binding {
+		return 0, 0, false
+	}
+	i = skipRuneSpace(line, next)
+	if i >= len(line) || !isJSIdentifierStart(line[i]) {
+		return 0, 0, false
+	}
+	i++
+	for i < len(line) && isJSIdentifierPart(line[i]) {
+		i++
+	}
+	i = skipRuneSpace(line, i)
+	if i >= len(line) || line[i] != '=' || i+1 < len(line) && (line[i+1] == '=' || line[i+1] == '>') {
+		return 0, 0, false
+	}
+	i = skipRuneSpace(line, i+1)
+	if i >= len(line) || line[i] != '{' && line[i] != '[' {
+		return 0, 0, false
+	}
+	return i, line[i], true
+}
+
+func skipRuneSpace(line []rune, start int) int {
+	for start < len(line) && unicode.IsSpace(line[start]) {
+		start++
+	}
+	return start
+}
+
+func consumeAnyRuneWord(line []rune, start int, words ...string) (int, bool) {
+	for _, word := range words {
+		if end, ok := consumeRuneWord(line, start, word); ok {
+			return end, true
+		}
+	}
+	return start, false
+}
+
+func consumeRuneWord(line []rune, start int, word string) (int, bool) {
+	want := []rune(word)
+	if start+len(want) > len(line) || string(line[start:start+len(want)]) != word {
+		return start, false
+	}
+	end := start + len(want)
+	if end < len(line) && isJSIdentifierPart(line[end]) {
+		return start, false
+	}
+	return end, true
+}
+
+func isJSIdentifierStart(r rune) bool {
+	return unicode.IsLetter(r) || r == '_' || r == '$'
+}
+
+func isJSIdentifierPart(r rune) bool {
+	return isJSIdentifierStart(r) || unicode.IsDigit(r)
 }
 
 // fallbackRange handles a match not inside any unit: a small fixed context for
@@ -330,14 +483,24 @@ func smallContextRange(lines []string, matchLine int) SnippetRange {
 
 func blankLineSnippetRange(lines []string, matchLine int) SnippetRange {
 	start := matchLine
-	for start > 1 && lines[start-2] != "" {
+	for start > 1 && !isBlankSnippetLine(lines[start-2]) {
 		start--
 	}
 	end := matchLine
-	for end < len(lines) && lines[end] != "" {
+	for end < len(lines) && !isBlankSnippetLine(lines[end]) {
 		end++
 	}
 	return SnippetRange{Start: start, End: end}
+}
+
+// isBlankSnippetLine reports a paragraph-boundary blank line. Snippet lines
+// come from SplitLogicalLines, which splits raw bytes on '\n' only, so a blank
+// line in a CRLF file arrives as "\r"; without this check, CRLF files never
+// hit a paragraph boundary and the fallback silently widens to the whole file.
+// Deliberately NOT TrimSpace: whitespace-only lines stay non-boundaries,
+// matching the historical behavior for LF files.
+func isBlankSnippetLine(line string) bool {
+	return line == "" || line == "\r"
 }
 
 type declarationKind uint8
@@ -350,7 +513,8 @@ const (
 
 type declarationCandidate struct {
 	SnippetRange
-	kind declarationKind
+	kind      declarationKind
+	headerEnd int
 }
 
 func buildDeclarationRanges(lines []string, comments []string, unitStart *regexp.Regexp) []declarationCandidate {
@@ -364,13 +528,50 @@ func buildDeclarationRanges(lines []string, comments []string, unitStart *regexp
 			declarations = append(declarations, declaration)
 		}
 	}
-	return declarations
+	filtered := declarations[:0]
+	for i, candidate := range declarations {
+		insideBindingHeader := false
+		for j, outer := range declarations {
+			if i == j || outer.kind != declarationArrow {
+				continue
+			}
+			if outer.Start < candidate.Start && candidate.Start <= outer.headerEnd && candidate.End <= outer.End {
+				insideBindingHeader = true
+				break
+			}
+		}
+		if !insideBindingHeader {
+			filtered = append(filtered, candidate)
+		}
+	}
+	return filtered
 }
 
 func declarationStartKind(line string, comments []string, unitStart *regexp.Regexp) (declarationKind, bool) {
 	trimmed := strings.TrimSpace(stripLineComment(line, comments))
-	if trimmed == "" || isDeclarationPrefixLine(trimmed) {
+	if trimmed == "" {
 		return 0, false
+	}
+	if declarationText, annotated := textAfterLeadingAnnotations(trimmed); unitStart == declJava && annotated {
+		if declarationText == "" {
+			return 0, false
+		}
+		trimmed = declarationText
+	} else if isDeclarationPrefixLine(trimmed) {
+		return 0, false
+	}
+	lower := strings.ToLower(trimmed)
+	callableLower := lower
+	if strings.HasPrefix(callableLower, "export ") {
+		callableLower = strings.TrimSpace(strings.TrimPrefix(callableLower, "export "))
+		if strings.HasPrefix(callableLower, "default ") {
+			callableLower = strings.TrimSpace(strings.TrimPrefix(callableLower, "default "))
+		}
+	}
+	if strings.HasPrefix(callableLower, "def ") || strings.HasPrefix(callableLower, "async def ") ||
+		strings.HasPrefix(callableLower, "func ") || strings.HasPrefix(callableLower, "function ") ||
+		strings.HasPrefix(callableLower, "async function ") {
+		return declarationCallable, true
 	}
 	// Per-language declaration starts (userdiff coverage) are recognized as a
 	// block declaration; the brace/indent extent then finds the opener. Arrow
@@ -378,7 +579,6 @@ func declarationStartKind(line string, comments []string, unitStart *regexp.Rege
 	if unitStart != nil && unitStart.MatchString(trimmed) {
 		return declarationType, true
 	}
-	lower := strings.ToLower(trimmed)
 	first := firstIdentifier(lower)
 	if declarationControlWords[first] {
 		return 0, false
@@ -386,18 +586,57 @@ func declarationStartKind(line string, comments []string, unitStart *regexp.Rege
 	if hasTypeDeclarationKeyword(lower) {
 		return declarationType, true
 	}
-	if strings.HasPrefix(lower, "def ") || strings.HasPrefix(lower, "async def ") ||
-		strings.HasPrefix(lower, "func ") || strings.HasPrefix(lower, "function ") ||
-		strings.HasPrefix(lower, "async function ") {
-		return declarationCallable, true
+	// Look past a leading `export` so `export const App = () => {`, the
+	// dominant React component shape, is recognized like `const App = ...`.
+	// Safe outside JS/TS: shell's `export PATH=$(...)` yields PATH here,
+	// which is not const/let/var.
+	declWord := first
+	if declWord == "export" {
+		declWord = firstIdentifier(strings.TrimSpace(lower[len("export"):]))
+	}
+	isBindingWord := declWord == "const" || declWord == "let" || declWord == "var"
+	if isBindingWord {
+		assignment := bindingAssignmentIndex(trimmed)
+		if assignment >= 0 && identifierIndexAfter(trimmed, "function", assignment+1) >= 0 {
+			// Named/anonymous function expression binding, including a generic
+			// header whose opening parenthesis arrives on a later line.
+			return declarationArrow, true
+		}
+		if assignment >= 0 && arrowIndexAfter(trimmed, assignment+1) >= 0 {
+			// Parentheses are optional for a single arrow parameter:
+			// `export const App = props => {` is still a block declaration.
+			return declarationArrow, true
+		}
+		if assignment >= 0 && strings.TrimSpace(string([]rune(trimmed)[assignment+1:])) == "<" {
+			// Generic arrow whose type parameters start on the next line:
+			// `const Schedule = <\n  T extends FieldValues, ...`.
+			return declarationArrow, true
+		}
+		if assignment >= 0 && isGenericCalleeStart(strings.TrimSpace(string([]rune(trimmed)[assignment+1:]))) {
+			// Generic wrapper call split before its type arguments:
+			// `const Input = React.forwardRef<\n  HTMLElement, Props\n>(...)`.
+			return declarationArrow, true
+		}
 	}
 	open := strings.Index(trimmed, "(")
 	if open < 1 {
+		// Multi-line generic header: `export const X: React.FC<` (or `...FC<{`)
+		// continues on later lines to `> = (props) => {`. Requiring no `=` on
+		// the line keeps object literals (`const x = {`) excluded. The `{`
+		// suffix additionally requires a `<` on the line (the generic marker):
+		// without it, a split typed-object declaration (`const options: {`)
+		// would become a false candidate whose later-arrow "opener" truncates
+		// the correctly recognized enclosing function.
+		if isBindingWord && !strings.Contains(trimmed, "=") &&
+			(strings.HasSuffix(trimmed, "<") ||
+				(strings.HasSuffix(trimmed, "{") && strings.Contains(trimmed, "<"))) {
+			return declarationArrow, true
+		}
 		return 0, false
 	}
 	before := strings.TrimSpace(trimmed[:open])
 	if strings.Contains(before, "=") {
-		if first == "const" || first == "let" || first == "var" {
+		if isBindingWord {
 			return declarationArrow, true
 		}
 		return 0, false
@@ -407,10 +646,86 @@ func declarationStartKind(line string, comments []string, unitStart *regexp.Rege
 		return 0, false
 	}
 	prefix := strings.TrimSpace(before[:nameStart])
-	if strings.HasSuffix(prefix, ".") || strings.HasSuffix(prefix, "]") || strings.HasSuffix(prefix, ")") {
+	// `]` rejects indexing calls (`arr[i](...)`), but an EMPTY `[]` is an array
+	// return type (`public String[] getBeanNames(...)`), which is a declaration.
+	if strings.HasSuffix(prefix, ".") || strings.HasSuffix(prefix, ")") ||
+		(strings.HasSuffix(prefix, "]") && !strings.HasSuffix(prefix, "[]")) {
 		return 0, false
 	}
 	return declarationCallable, true
+}
+
+// textAfterLeadingAnnotations separates same-line Java annotations from the
+// declaration that follows them. Annotation-only lines remain
+// adornments; `@Nullable Object method(...)` is classified from `Object
+// method(...)` while the emitted range still begins on the original line.
+func textAfterLeadingAnnotations(line string) (string, bool) {
+	rest := strings.TrimSpace(line)
+	if !strings.HasPrefix(rest, "@") {
+		return line, false
+	}
+	for strings.HasPrefix(rest, "@") {
+		runes := []rune(rest)
+		i := 1
+		for i < len(runes) && (unicode.IsLetter(runes[i]) || unicode.IsDigit(runes[i]) ||
+			runes[i] == '_' || runes[i] == '$' || runes[i] == '.') {
+			i++
+		}
+		if i == 1 {
+			return "", true
+		}
+		for i < len(runes) && unicode.IsSpace(runes[i]) {
+			i++
+		}
+		if i < len(runes) && runes[i] == '(' {
+			end, ok := balancedAnnotationEnd(runes, i)
+			if !ok {
+				return "", true
+			}
+			i = end
+		}
+		rest = strings.TrimSpace(string(runes[i:]))
+		if rest == "" {
+			return "", true
+		}
+		if !strings.HasPrefix(rest, "@") {
+			return rest, true
+		}
+	}
+	return rest, true
+}
+
+func balancedAnnotationEnd(runes []rune, open int) (int, bool) {
+	depth := 0
+	quote := rune(0)
+	escaped := false
+	for i := open; i < len(runes); i++ {
+		r := runes[i]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+			} else if r == '\\' {
+				escaped = true
+			} else if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' {
+			quote = r
+			continue
+		}
+		switch r {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return i + 1, true
+			}
+		}
+	}
+	return 0, false
 }
 
 var declarationControlWords = map[string]bool{
@@ -472,13 +787,31 @@ func declarationRange(lines []string, start int, kind declarationKind, comments 
 	baseIndent := indentationWidth(lines[start])
 	parenDepth, bracketDepth := 0, 0
 	headerClosed := false
+	seenAssignment := false
 	seenArrow := false
+	seenFunction := false
+	typeBraceDepth := 0
+	inBlockComment := false
 	opener := -1
 	limit := min(len(lines), start+maxHeaderLines)
 
 	for i := start; i < limit; i++ {
-		cleaned := strings.TrimSpace(stripLineComment(lines[i], comments))
+		cleaned := strings.TrimSpace(stripDeclarationHeaderComments(lines[i], comments, &inBlockComment))
 		if cleaned == "" {
+			// A comment-only line inside a multi-line header (a // TODO in a
+			// generic parameter list) is not a blank line; skip it. A truly
+			// blank line still ends the header.
+			if i > start && strings.TrimSpace(lines[i]) != "" {
+				continue
+			}
+			if i > start && (parenDepth > 0 || bracketDepth > 0) {
+				continue
+			}
+			// A generic binding type may intentionally group props with blank
+			// lines. The recognized `<`/`<{` start and 60-line cap bound this scan.
+			if i > start && kind == declarationArrow && !seenAssignment {
+				continue
+			}
 			return declarationCandidate{}, false
 		}
 		if i > start && indentationWidth(lines[i]) < baseIndent {
@@ -487,23 +820,66 @@ func declarationRange(lines []string, start int, kind declarationKind, comments 
 		if headerClosed && !isHeaderContinuation(cleaned) {
 			return declarationCandidate{}, false
 		}
+		priorParenDepth, priorBracketDepth := parenDepth, bracketDepth
 		parenDepth, bracketDepth = updateHeaderDepths(cleaned, parenDepth, bracketDepth)
-		seenArrow = seenArrow || strings.Contains(cleaned, "=>")
+		if kind == declarationArrow {
+			assignment := bindingAssignmentIndex(cleaned)
+			arrow := -1
+			if assignment >= 0 {
+				seenAssignment = true
+				arrow = arrowIndexAfter(cleaned, assignment+1)
+				seenFunction = seenFunction || identifierIndexAfter(cleaned, "function", assignment+1) >= 0
+			} else if seenAssignment {
+				arrow = arrowIndexAfter(cleaned, 0)
+				seenFunction = seenFunction || identifierIndexAfter(cleaned, "function", 0) >= 0
+			}
+			if typeBraceDepth > 0 {
+				prefixEnd := len([]rune(cleaned))
+				if arrow >= 0 {
+					prefixEnd = arrow
+				}
+				typeBraceDepth += curlyDeltaBefore(cleaned, prefixEnd)
+				if arrow >= 0 && typeBraceDepth == 0 {
+					seenArrow = true
+				}
+			} else if arrow >= 0 {
+				seenArrow = true
+			}
+		}
 		if parenDepth < 0 || bracketDepth < 0 {
 			return declarationCandidate{}, false
+		}
+		if kind == declarationArrow && seenAssignment && !seenArrow && typeBraceDepth == 0 &&
+			parenDepth == 0 && bracketDepth == 0 && strings.HasSuffix(cleaned, "{") &&
+			strings.Contains(cleaned, "):") {
+			typeBraceDepth = curlyDeltaBefore(cleaned, len([]rune(cleaned)))
+		}
+		// Wrappers such as `memo((props) => {` and `forwardRef(...)(` keep an
+		// outer call parenthesis open at the callback's body opener. Accept the
+		// direct arrow block without waiting for all wrapper parens to close.
+		if kind == declarationArrow && seenAssignment && seenArrow &&
+			isArrowBlockOpener(cleaned, priorParenDepth, priorBracketDepth) {
+			opener = i
+			break
+		}
+		if kind == declarationArrow && seenAssignment && seenFunction && isFunctionBlockOpener(cleaned) {
+			opener = i
+			break
 		}
 		if parenDepth == 0 && bracketDepth == 0 {
 			if isInlineDeclaration(cleaned, kind, seenArrow) {
 				return declarationCandidate{
 					SnippetRange: SnippetRange{Start: attachedDeclarationStart(lines, start, comments) + 1, End: i + 1},
 					kind:         kind,
+					headerEnd:    i + 1,
 				}, true
 			}
 			if isHeaderOpener(cleaned) && (kind != declarationArrow || seenArrow) {
 				opener = i
 				break
 			}
-			if strings.Contains(cleaned, ")") {
+			if strings.Contains(cleaned, ")") && typeBraceDepth == 0 &&
+				(kind != declarationArrow || seenAssignment) {
 				headerClosed = true
 			}
 		}
@@ -542,7 +918,286 @@ func declarationRange(lines []string, start int, kind declarationKind, comments 
 	return declarationCandidate{
 		SnippetRange: SnippetRange{Start: attachedDeclarationStart(lines, start, comments) + 1, End: end + 1},
 		kind:         kind,
+		headerEnd:    opener + 1,
 	}, true
+}
+
+// bindingAssignmentIndex finds the binding '=' in an arrow declaration while
+// ignoring strings, comparisons, compound assignments, and the '=' in '=>'.
+// Tracking this boundary keeps arrows in TypeScript prop types (`() => void`)
+// from being mistaken for the component implementation arrow.
+func bindingAssignmentIndex(line string) int {
+	quote := rune(0)
+	escaped := false
+	runes := []rune(line)
+	for i, r := range runes {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+			} else if r == '\\' {
+				escaped = true
+			} else if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' || r == '`' {
+			quote = r
+			continue
+		}
+		if r != '=' {
+			continue
+		}
+		var prev, next rune
+		if i > 0 {
+			prev = runes[i-1]
+		}
+		if i+1 < len(runes) {
+			next = runes[i+1]
+		}
+		if next == '>' || next == '=' || strings.ContainsRune("=!<>+-*/%&|^?", prev) {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func isGenericCalleeStart(afterAssignment string) bool {
+	if !strings.HasSuffix(afterAssignment, "<") {
+		return false
+	}
+	callee := strings.TrimSuffix(afterAssignment, "<")
+	if callee == "" {
+		return false
+	}
+	for _, r := range callee {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '$' && r != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+func curlyDeltaBefore(line string, end int) int {
+	quote := rune(0)
+	escaped := false
+	delta := 0
+	runes := []rune(line)
+	end = min(end, len(runes))
+	for _, r := range runes[:end] {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+			} else if r == '\\' {
+				escaped = true
+			} else if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' || r == '`' {
+			quote = r
+			continue
+		}
+		switch r {
+		case '{':
+			delta++
+		case '}':
+			delta--
+		}
+	}
+	return delta
+}
+
+func arrowIndexAfter(line string, start int) int {
+	quote := rune(0)
+	escaped := false
+	runes := []rune(line)
+	for i, r := range runes {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+			} else if r == '\\' {
+				escaped = true
+			} else if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' || r == '`' {
+			quote = r
+			continue
+		}
+		if i >= start && r == '=' && i+1 < len(runes) && runes[i+1] == '>' {
+			return i
+		}
+	}
+	return -1
+}
+
+func identifierIndexAfter(line, identifier string, start int) int {
+	quote := rune(0)
+	escaped := false
+	runes := []rune(line)
+	want := []rune(identifier)
+	for i, r := range runes {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+			} else if r == '\\' {
+				escaped = true
+			} else if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' || r == '`' {
+			quote = r
+			continue
+		}
+		if i < start || i+len(want) > len(runes) || string(runes[i:i+len(want)]) != identifier {
+			continue
+		}
+		if i > 0 && (unicode.IsLetter(runes[i-1]) || unicode.IsDigit(runes[i-1]) || runes[i-1] == '_') {
+			continue
+		}
+		end := i + len(want)
+		if end < len(runes) && (unicode.IsLetter(runes[end]) || unicode.IsDigit(runes[end]) || runes[end] == '_') {
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func isFunctionBlockOpener(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasSuffix(trimmed, "{") {
+		return false
+	}
+	openBrace := strings.LastIndex(trimmed, "{")
+	return strings.LastIndex(trimmed[:openBrace], ")") >= 0
+}
+
+func isArrowBlockOpener(line string, initialParenDepth, initialBracketDepth int) bool {
+	arrow := arrowIndexAfter(line, 0)
+	for arrow >= 0 {
+		next := arrowIndexAfter(line, arrow+2)
+		if next < 0 {
+			break
+		}
+		arrow = next
+	}
+	runes := []rune(line)
+	if arrow < 0 || strings.TrimSpace(string(runes[arrow+2:])) != "{" {
+		return false
+	}
+
+	// A top-level colon before the arrow identifies a TypeScript property
+	// signature such as `onBuild: () => {`, not an implementation callback.
+	// Colons inside callback parameters (`({ value }: Props) => {`) are safe.
+	parenDepth, bracketDepth := initialParenDepth, initialBracketDepth
+	quote := rune(0)
+	escaped := false
+	start := 0
+	if assignment := bindingAssignmentIndex(line); assignment >= 0 {
+		start = assignment + 1
+	}
+	for _, r := range runes[start:arrow] {
+		if quote != 0 {
+			if escaped {
+				escaped = false
+			} else if r == '\\' {
+				escaped = true
+			} else if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' || r == '`' {
+			quote = r
+			continue
+		}
+		switch r {
+		case '(':
+			parenDepth++
+		case ')':
+			parenDepth--
+		case '[':
+			bracketDepth++
+		case ']':
+			bracketDepth--
+		case ':':
+			if parenDepth == 0 && bracketDepth == 0 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// stripDeclarationHeaderComments removes line and block comments while
+// preserving quoted text. Unlike stripLineComment, it carries block-comment
+// state between lines because React prop types commonly contain doc comments.
+func stripDeclarationHeaderComments(line string, comments []string, inBlock *bool) string {
+	if len(comments) == 0 {
+		comments = defaultProfile.lineComments
+	}
+	blockAware := false
+	for _, tok := range comments {
+		if tok == "//" {
+			blockAware = true
+			break
+		}
+	}
+	quote := rune(0)
+	escaped := false
+	runes := []rune(line)
+	var kept strings.Builder
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if *inBlock {
+			if r == '*' && i+1 < len(runes) && runes[i+1] == '/' {
+				*inBlock = false
+				i++
+			}
+			continue
+		}
+		if quote != 0 {
+			kept.WriteRune(r)
+			if escaped {
+				escaped = false
+			} else if r == '\\' {
+				escaped = true
+			} else if r == quote {
+				quote = 0
+			}
+			continue
+		}
+		if r == '\'' || r == '"' || r == '`' {
+			quote = r
+			kept.WriteRune(r)
+			continue
+		}
+		if blockAware && r == '/' && i+1 < len(runes) && runes[i+1] == '*' {
+			*inBlock = true
+			i++
+			continue
+		}
+		commented := false
+		for _, tok := range comments {
+			if commentTokenAt(runes, i, tok) {
+				commented = true
+				break
+			}
+		}
+		if commented {
+			break
+		}
+		kept.WriteRune(r)
+	}
+	return kept.String()
 }
 
 func isInlineDeclaration(line string, kind declarationKind, seenArrow bool) bool {
@@ -698,6 +1353,15 @@ func attachedDeclarationStart(lines []string, start int, comments []string) int 
 	attached := start
 	const maxAdornmentLines = 40
 	for attached > 0 {
+		previous := strings.TrimSpace(lines[attached-1])
+		if strings.HasSuffix(previous, "*/") {
+			commentStart, ok := attachedBlockCommentStart(lines, attached, maxAdornmentLines)
+			if !ok {
+				break
+			}
+			attached = commentStart
+			continue
+		}
 		// Resolve one adornment above `attached`. Scan upward balancing brackets
 		// so a decorator/annotation whose argument list wraps across lines
 		// (@app.route(\n  methods=[...])) is absorbed as a unit instead of being
@@ -723,6 +1387,30 @@ func attachedDeclarationStart(lines []string, start int, comments []string) int 
 		attached = k
 	}
 	return attached
+}
+
+// attachedBlockCommentStart treats a contiguous /* ... */ comment immediately
+// above a declaration as one adornment. This avoids attaching only a dangling
+// closing line when punctuation inside earlier JSDoc rows confuses the generic
+// bracket balancer.
+func attachedBlockCommentStart(lines []string, declarationStart, limit int) (int, bool) {
+	if declarationStart <= 0 {
+		return 0, false
+	}
+	end := declarationStart - 1
+	if !strings.HasSuffix(strings.TrimSpace(lines[end]), "*/") {
+		return 0, false
+	}
+	for start := end; start >= 0 && declarationStart-start <= limit; start-- {
+		trimmed := strings.TrimSpace(lines[start])
+		if opener := strings.Index(trimmed, "/*"); opener >= 0 {
+			if strings.TrimSpace(trimmed[:opener]) != "" {
+				return 0, false
+			}
+			return start, true
+		}
+	}
+	return 0, false
 }
 
 // closerDelta reports the count of closing minus opening brackets (parens and

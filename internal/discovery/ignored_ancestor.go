@@ -3,6 +3,7 @@ package discovery
 import (
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 	"time"
 
@@ -101,6 +102,9 @@ func (r *Resolver) findIgnoredAncestors(target string) []ignoredAncestorCandidat
 		if candidatePath == "" || seen[candidatePath] {
 			continue
 		}
+		if r.targetIncluded(candidatePath) {
+			continue
+		}
 		seen[candidatePath] = true
 		block := r.findBlockerForPath(candidatePath, isDir)
 		if block == nil {
@@ -108,6 +112,37 @@ func (r *Resolver) findIgnoredAncestors(target string) []ignoredAncestorCandidat
 		}
 		out = append(out, *block)
 	}
+	return out
+}
+
+// ignoredExactFileCandidates turns the skipped side of the exact-basename
+// index into the same concrete candidates used by the ignored-ancestor
+// diagnostic. This avoids a second rg walk for file-shaped targets: the
+// no-ignore basename query already proved which exact files exist.
+func (r *Resolver) ignoredExactFileCandidates(matches []SkippedMatch) []ignoredAncestorCandidate {
+	if r.IncludedTargets.wildcard || len(matches) == 0 {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(matches))
+	out := make([]ignoredAncestorCandidate, 0, len(matches))
+	for _, match := range matches {
+		rel := normalizeRelPath(match.RelPath)
+		if rel == "" || r.targetIncluded(rel) {
+			continue
+		}
+		if _, ok := seen[rel]; ok {
+			continue
+		}
+		seen[rel] = struct{}{}
+
+		block := r.findBlockerForPath(rel, false)
+		if block == nil {
+			continue
+		}
+		out = append(out, *block)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
 }
 

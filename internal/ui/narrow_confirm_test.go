@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/tigreau/catclip/internal/discovery"
@@ -11,11 +12,11 @@ import (
 
 // TestAppendOnlyForNarrow_SingleScope guards the v0.6.4 additive form:
 // `catclip cmd docs --include docs` → narrow → original argv UNCHANGED
-// plus appended `--only "docs/**"`. No target replacement, no token drop.
+// plus appended `--only "docs/*"`. No target replacement, no token drop.
 func TestAppendOnlyForNarrow_SingleScope(t *testing.T) {
 	args := []string{"cmd", "docs", "--include", "docs"}
-	got := appendOnlyForNarrow(args, []string{"docs/**"})
-	want := []string{"cmd", "docs", "--include", "docs", "--only", "docs/**"}
+	got := appendOnlyForNarrow(args, []string{"docs/*"})
+	want := []string{"cmd", "docs", "--include", "docs", "--only", "docs/*"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -23,8 +24,8 @@ func TestAppendOnlyForNarrow_SingleScope(t *testing.T) {
 
 func TestAppendOnlyForNarrow_PreservesEarlierScopes(t *testing.T) {
 	args := []string{"src", "--then", ".", "--include", "docs", "--depth", "2"}
-	got := appendOnlyForNarrow(args, []string{"docs/**"})
-	want := []string{"src", "--then", ".", "--include", "docs", "--depth", "2", "--only", "docs/**"}
+	got := appendOnlyForNarrow(args, []string{"docs/*"})
+	want := []string{"src", "--then", ".", "--include", "docs", "--depth", "2", "--only", "docs/*"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -39,12 +40,12 @@ func TestAppendOnlyForNarrow_PreservesEarlierScopes(t *testing.T) {
 // This was the reverse invariant pre-2026-07-02; the flip fixed the
 // user-reported bug where selecting docs/policy + docs/versions in
 // the include picker and choosing "Keep only ignored" produced empty
-// output — the two `docs/policy/**` and `docs/versions/**` patterns
+// output — the two `docs/policy/*` and `docs/versions/*` patterns
 // AND-intersected to nothing.
 func TestAppendOnlyForNarrow_MultiValueNotSeparateFlags(t *testing.T) {
 	args := []string{".", "--include", "docs/policy", "docs/versions"}
-	got := appendOnlyForNarrow(args, []string{"docs/policy/**", "docs/versions/**"})
-	want := []string{".", "--include", "docs/policy", "docs/versions", "--only", "docs/policy/**", "docs/versions/**"}
+	got := appendOnlyForNarrow(args, []string{"docs/policy/*", "docs/versions/*"})
+	want := []string{".", "--include", "docs/policy", "docs/versions", "--only", "docs/policy/*", "docs/versions/*"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v\n  intent: multi-value --only is OR-union; separate flags would AND-intersect and drop everything for disjoint subtrees", got, want)
 	}
@@ -52,8 +53,8 @@ func TestAppendOnlyForNarrow_MultiValueNotSeparateFlags(t *testing.T) {
 
 func TestAppendOnlyForNarrow_WildcardEnumeratesRoots(t *testing.T) {
 	args := []string{".", "--include", "*"}
-	got := appendOnlyForNarrow(args, []string{"docs/**", "vendor/**", "build/**"})
-	want := []string{".", "--include", "*", "--only", "docs/**", "vendor/**", "build/**"}
+	got := appendOnlyForNarrow(args, []string{"docs/*", "vendor/*", "build/*"})
+	want := []string{".", "--include", "*", "--only", "docs/*", "vendor/*", "build/*"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v\n  intent: three ignored roots → one --only with three values (OR-union across roots)", got, want)
 	}
@@ -72,8 +73,8 @@ func TestOnlyPatternsForIncludes_Directory(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tmp, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got := onlyPatternsForIncludes(tmp, []string{"docs"}, nil)
-	want := []string{"docs/**"}
+	got := onlyPatternsForIncludes(tmp, []string{"docs"}, nil, nil)
+	want := []string{"docs/*"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("dir include should emit recursive glob; got %v want %v", got, want)
 	}
@@ -87,10 +88,10 @@ func TestOnlyPatternsForIncludes_File(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, "docs", "readme.md"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := onlyPatternsForIncludes(tmp, []string{"docs/readme.md"}, nil)
+	got := onlyPatternsForIncludes(tmp, []string{"docs/readme.md"}, nil, nil)
 	want := []string{"docs/readme.md"}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("file include should emit literal path (no /**); got %v want %v", got, want)
+		t.Fatalf("file include should emit a literal path; got %v want %v", got, want)
 	}
 }
 
@@ -101,25 +102,94 @@ func TestOnlyPatternsForIncludes_MultiInclude(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got := onlyPatternsForIncludes(tmp, []string{"docs", "vendor"}, nil)
-	want := []string{"docs/**", "vendor/**"}
+	got := onlyPatternsForIncludes(tmp, []string{"docs", "vendor"}, nil, nil)
+	want := []string{"docs/*", "vendor/*"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 }
 
 func TestOnlyPatternsForIncludes_Wildcard(t *testing.T) {
-	// Wildcard ignores the include paths and uses topLevelRootsForNarrow.
-	entries := []discovery.Entry{
+	ignored := []discovery.Entry{
 		{RelPath: "docs/a.md"},
 		{RelPath: "vendor/sdk/x.go"},
 		{RelPath: "docs/sub/b.md"},
 		{RelPath: "build/output.txt"},
 	}
-	got := onlyPatternsForIncludes("/nonexistent", []string{"*"}, entries)
-	want := []string{"docs/**", "vendor/**", "build/**"}
+	got := onlyPatternsForIncludes("/nonexistent", []string{"*"}, ignored, ignored)
+	want := []string{"docs/*", "vendor/*", "build/*"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestOnlyPatternsForIncludes_WildcardDoesNotReincludeVisibleSiblings(t *testing.T) {
+	all := []discovery.Entry{
+		{RelPath: "src/main.ts"},
+		{RelPath: "src/debug.log", AllowedByInclude: true},
+		{RelPath: "docs/generated.md", AllowedByInclude: true},
+	}
+	ignored := []discovery.Entry{all[1], all[2]}
+	got := onlyPatternsForIncludes("/nonexistent", []string{"*"}, all, ignored)
+	want := []string{"src/debug.log", "docs/*"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestOnlyPatternsForIncludes_WildcardRejectsLiteralGlobMetacharacters(t *testing.T) {
+	entries := []discovery.Entry{{RelPath: "[draft].txt", AllowedByInclude: true}}
+	if got := onlyPatternsForIncludes("/nonexistent", []string{"*"}, entries, entries); got != nil {
+		t.Fatalf("lossless replay is impossible for a literal glob metacharacter; got %v", got)
+	}
+}
+
+func TestOnlyPatternsForIncludes_WildcardRejectsFloatingBareCollision(t *testing.T) {
+	all := []discovery.Entry{
+		{RelPath: "debug.log", AllowedByInclude: true},
+		{RelPath: "src/debug.log"},
+	}
+	ignored := []discovery.Entry{all[0]}
+	if got := onlyPatternsForIncludes("/nonexistent", []string{"*"}, all, ignored); got != nil {
+		t.Fatalf("bare debug.log would float to visible src/debug.log; got %v", got)
+	}
+}
+
+func TestOnlyPatternsReplayExactlyIgnoredRejectsRootFileBasenameCollision(t *testing.T) {
+	workingDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workingDir, "debug.log"), []byte("ignored\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	all := []discovery.Entry{
+		{RelPath: "debug.log", AllowedByInclude: true},
+		{RelPath: "src/debug.log"},
+	}
+	ignored := []discovery.Entry{all[0]}
+	patterns := onlyPatternsForIncludes(workingDir, []string{"debug.log"}, all, ignored)
+	if got, want := patterns, []string{"debug.log"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("patterns = %v, want %v", got, want)
+	}
+	if onlyPatternsReplayExactlyIgnored(all, ignored, patterns) {
+		t.Fatal("root-level basename replay must not retain a visible nested collision")
+	}
+}
+
+func TestOnlyPatternsReplayExactlyIgnoredAcceptsAnchoredFile(t *testing.T) {
+	all := []discovery.Entry{
+		{RelPath: "ignored/debug.log", AllowedByInclude: true},
+		{RelPath: "src/debug.log"},
+	}
+	ignored := []discovery.Entry{all[0]}
+	patterns := []string{"ignored/debug.log"}
+	if !onlyPatternsReplayExactlyIgnored(all, ignored, patterns) {
+		t.Fatal("anchored file replay should reproduce the ignored set")
+	}
+}
+
+func TestNarrowReplayCommandBytesIncludesExistingArgs(t *testing.T) {
+	args := []string{strings.Repeat("a", maxNarrowReplayCommandBytes)}
+	if got := narrowReplayCommandBytes(args, []string{"--only", "docs/*"}); got <= maxNarrowReplayCommandBytes {
+		t.Fatalf("existing command must count toward replay cap; got %d", got)
 	}
 }
 
@@ -134,11 +204,11 @@ func TestOnlyPatternsForIncludes_Wildcard(t *testing.T) {
 // semantic that replaced this.
 
 func TestOnlyPatternsForIncludes_StatErrorDefaultsToRecursive(t *testing.T) {
-	// Path doesn't exist → stat fails → default to /** recursive form
+	// Path doesn't exist → stat fails → default to /* recursive form
 	// (conservative: wider than the file form, never silently drops
 	// descendants if the path is later created as a directory).
-	got := onlyPatternsForIncludes(t.TempDir(), []string{"docs"}, nil)
-	want := []string{"docs/**"}
+	got := onlyPatternsForIncludes(t.TempDir(), []string{"docs"}, nil, nil)
+	want := []string{"docs/*"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
@@ -180,30 +250,15 @@ func TestAllIncludesAreSubsetOfTargets_NotSubset(t *testing.T) {
 // TestAllIncludesAreSubsetOfTargets_WildcardIsSubsetByConstruction
 // guards the v0.6.4 fix: the include picker filters its candidate set
 // through filterIgnoredTargetsByScopeTargets before ever returning the
-// wildcard sentinel, so `*` is subset-of-targets regardless of which
-// target the user picked. The narrow-confirm screen must fire for it
-// even when the target is a non-root path like "docs".
+// wildcard sentinel, and direct wildcard execution is target-bounded too. The
+// narrow-confirm screen must fire for a picker-produced wildcard even when the
+// target is a non-root path like "docs".
 func TestAllIncludesAreSubsetOfTargets_WildcardIsSubsetByConstruction(t *testing.T) {
 	if !allIncludesAreSubsetOfTargets([]string{"*"}, []string{"docs"}) {
 		t.Fatal("`*` must be treated as subset of any scope target (picker already scope-filtered)")
 	}
 	if !allIncludesAreSubsetOfTargets([]string{"*"}, []string{"docs", "src"}) {
 		t.Fatal("`*` must be subset of multi-target scopes too")
-	}
-}
-
-func TestTopLevelRootsForNarrow_StableUniqueOrder(t *testing.T) {
-	entries := []discovery.Entry{
-		{RelPath: "docs/a.md"},
-		{RelPath: "docs/sub/b.md"},
-		{RelPath: "vendor/x.go"},
-		{RelPath: "docs/c.md"},
-		{RelPath: "build/output.txt"},
-	}
-	got := topLevelRootsForNarrow(entries)
-	want := []string{"docs", "vendor", "build"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("got %v want %v", got, want)
 	}
 }
 

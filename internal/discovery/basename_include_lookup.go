@@ -61,15 +61,20 @@ func (r *Resolver) FindBasenameInIncludedSubtrees(target string) ([]includedBase
 		out = append(out, includedBasenameHit{Path: rel, Dir: isDir})
 	}
 
-	statIsDir := func(rel string) bool {
+	statKind := func(rel string) (bool, bool) {
 		info, err := os.Stat(filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(rel)))
-		return err == nil && info.IsDir()
+		if err != nil || (!info.IsDir() && !info.Mode().IsRegular()) {
+			return false, false
+		}
+		return info.IsDir(), true
 	}
 
 	// 1. Exact --include paths whose basename matches the target.
 	for ex := range r.IncludedTargets.exact {
 		if path.Base(ex) == target {
-			add(ex, statIsDir(ex))
+			if isDir, exists := statKind(ex); exists {
+				add(ex, isDir)
+			}
 		}
 	}
 

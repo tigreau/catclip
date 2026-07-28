@@ -26,3 +26,26 @@ func TestLongestLiteralPathPrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestOuterStarFuzzyCore(t *testing.T) {
+	for _, tc := range []struct {
+		pattern string
+		want    string
+		ok      bool
+	}{
+		{pattern: "*util*", want: "util", ok: true},
+		{pattern: "**auth**", want: "auth", ok: true},
+		{pattern: "*layout/Footer*", want: "layout/Footer", ok: true},
+		{pattern: "*/utils/*"},
+		{pattern: "*../secret*"},
+		{pattern: "*C:/secret*"},
+		{pattern: "*foo?bar*"},
+		{pattern: "***"},
+		{pattern: "util*"},
+	} {
+		got, ok := outerStarFuzzyCore(tc.pattern)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("outerStarFuzzyCore(%q) = (%q, %t), want (%q, %t)", tc.pattern, got, ok, tc.want, tc.ok)
+		}
+	}
+}

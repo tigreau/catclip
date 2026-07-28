@@ -27,7 +27,8 @@ const (
 	ReasonTerminalBoundaryOrder          Reason = "terminal_boundary_order"
 	ReasonIncludeAfterModifier           Reason = "include_after_modifier"
 	ReasonRepeatedInclude                Reason = "repeated_include"
-	ReasonBareIncludeMissingTarget       Reason = "bare_include_missing_target"
+	ReasonIncludeMissingPositionalTarget Reason = "include_missing_positional_target"
+	ReasonUnsupportedDoubleStar          Reason = "unsupported_double_star"
 )
 
 // ValidationFailure is the structured error the parser returns on rule
@@ -39,6 +40,7 @@ type ValidationFailure struct {
 	BoundaryFlag string
 	NextFlag     string
 	Suggestion   string
+	Value        string
 }
 
 func (e ValidationFailure) Error() string {
@@ -88,7 +90,7 @@ func renderValidationFailure(e ValidationFailure) string {
 		return "Error: --include must come before other modifiers in the same scope.\n  --include adds files, so it must appear before filters that narrow them.\n  Move --include before other modifiers, or start a new scope with --then."
 	case ReasonRepeatedInclude:
 		return "Error: --include can only appear once per scope.\n  Combine targets in a single --include, or start a new scope with --then."
-	case ReasonBareIncludeMissingTarget:
+	case ReasonIncludeMissingPositionalTarget:
 		if e.Flag == "*" {
 			return "Error: --include '*' requires a positional target.\n\n" +
 				"  --include '*' authorizes every gitignored descendant within a walk\n" +
@@ -106,6 +108,8 @@ func renderValidationFailure(e ValidationFailure) string {
 			"  Interactive tip: bare `catclip` (no args) opens the target picker;\n"+
 			"  selecting an ignored entry writes the target+include pair for you.",
 			singleQuoted(e.Flag), e.Flag, e.Flag)
+	case ReasonUnsupportedDoubleStar:
+		return renderUnsupportedDoubleStarValidationFailure(e.Flag, e.Value)
 	default:
 		return "Error: invalid command."
 	}
@@ -142,14 +146,22 @@ func RequiredStageValueError(flag string) error {
 	return ValidationFailure{Reason: ReasonRequiredValue, Flag: flag}
 }
 
-// BareIncludeMissingTargetError fires for effect 5 of the
-// include-as-authorization design: `--include <path>` with no
-// positional target. sampleInclude carries the first --include value
+// IncludeMissingPositionalTargetError fires for effect 5 of the
+// include-as-authorization design: `--include <path>` with no positional
+// target. sampleInclude carries the first --include value
 // so the message can show the canonical double-syntax fix. Wildcard
 // (`*`) gets its own suggestion set. See
 // ACTIVE_NOTE_include_double_syntax_rationale.md, effect 5.
-func BareIncludeMissingTargetError(sampleInclude string) error {
-	return ValidationFailure{Reason: ReasonBareIncludeMissingTarget, Flag: sampleInclude}
+func IncludeMissingPositionalTargetError(sampleInclude string) error {
+	return ValidationFailure{Reason: ReasonIncludeMissingPositionalTarget, Flag: sampleInclude}
+}
+
+func UnsupportedDoubleStarError(surface, value string) error {
+	return ValidationFailure{
+		Reason: ReasonUnsupportedDoubleStar,
+		Flag:   surface,
+		Value:  value,
+	}
 }
 
 // RegexModifierExtraValueError fires when a bare token follows a regex

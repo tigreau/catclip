@@ -108,3 +108,19 @@ func TestPartitionIgnoredByIncludes_MultipleIncludesUnion(t *testing.T) {
 		t.Fatalf("expected union of both include subtrees, got %d: %v", len(ignored), ignored)
 	}
 }
+
+func TestPartitionIgnoredByIncludes_WildcardSelectsAllAuthorizedEntries(t *testing.T) {
+	entries := []Entry{
+		{RelPath: "src/main.ts"},
+		{RelPath: "src/debug.log", AllowedByInclude: true},
+		{RelPath: "docs/generated.md", AllowedByInclude: true},
+	}
+	all, ignored := PartitionIgnoredByIncludes(entries, []string{"*"})
+	if !reflect.DeepEqual(all, entries) {
+		t.Fatalf("all should pass through, got %v", all)
+	}
+	want := []Entry{entries[1], entries[2]}
+	if !reflect.DeepEqual(ignored, want) {
+		t.Fatalf("got %v want %v", ignored, want)
+	}
+}

@@ -21,18 +21,27 @@ func PartitionIgnoredByIncludes(entries []Entry, includePaths []string) (allEntr
 		return entries, nil
 	}
 	normalizedIncludes := make([]string, 0, len(includePaths))
+	wildcard := false
 	for _, p := range includePaths {
 		n := normalizeRelPath(p)
 		if n == "" || n == "." {
 			continue
 		}
+		if n == "*" {
+			wildcard = true
+			continue
+		}
 		normalizedIncludes = append(normalizedIncludes, n)
 	}
-	if len(normalizedIncludes) == 0 {
+	if len(normalizedIncludes) == 0 && !wildcard {
 		return entries, nil
 	}
 	for _, e := range entries {
 		if !e.AllowedByInclude {
+			continue
+		}
+		if wildcard {
+			ignoredEntries = append(ignoredEntries, e)
 			continue
 		}
 		rel := normalizeRelPath(e.RelPath)

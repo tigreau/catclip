@@ -644,7 +644,7 @@ func TestResolveStartupArgsRejectsInvalidIncludeValue(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected invalid startup include value to fail")
 	}
-	if !strings.Contains(err.Error(), "--include cannot traverse above the current target scope") {
+	if !strings.Contains(err.Error(), "--include cannot traverse above the current directory") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -824,7 +824,7 @@ printf '%s\n' "$input" | grep -F "$value" || exit 1
 		t.Fatalf("expected resolved targets %q, got %q", want, got)
 	}
 }
-func TestResolveStartupScopeInputsBareIncludeOpensIgnoredPicker(t *testing.T) {
+func TestResolveStartupScopeInputsEmptyIncludeQueryOpensIgnoredPicker(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"node_modules/pkg/index.js": "export const x = 1\n",
 		"src/main.ts":               "console.log('ok')\n",
@@ -887,7 +887,7 @@ printf '%s\n' "$input" | head -n 1
 		t.Fatalf("resolveStartupScopeInputs returned error: %v", err)
 	}
 	if !usedPicker {
-		t.Fatal("expected bare --include to use the ignored picker")
+		t.Fatal("expected the synthetic empty include query to use the ignored picker")
 	}
 	if got, want := strings.Join(args, "\n"), "--include\nnode_modules"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
@@ -985,8 +985,13 @@ func TestResolveStartupScopeInputsBatchesAdjacentIncludeSelections(t *testing.T)
 	installScriptFzf(t, `#!/bin/sh
 query=""
 prompt=""
+filter=""
 while [ "$#" -gt 0 ]; do
 	case "$1" in
+		--filter)
+			filter="$2"
+			shift 2
+			;;
 		--query)
 			query="$2"
 			shift 2
@@ -1002,6 +1007,11 @@ while [ "$#" -gt 0 ]; do
 done
 
 input="$(cat)"
+
+if [ -n "$filter" ]; then
+	printf '%s\n' "$input" | grep -i -F "$filter"
+	exit 0
+fi
 
 if [ "$prompt" = "include> " ]; then
 	case "$query" in
@@ -1128,7 +1138,7 @@ func TestResolveStartupArgsIncludeErrorsWhenNoScopedIgnoredTargets(t *testing.T)
 		t.Fatalf("expected error to mention scope target, got: %v", err)
 	}
 }
-func TestResolveBareStartupModifierArgsIncludeReusesIgnoredPicker(t *testing.T) {
+func TestResolveModifierMenuIncludeReusesIgnoredPicker(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"node_modules/pkg/index.js": "export const x = 1\n",
 		"src/main.ts":               "console.log('ok')\n",
@@ -4902,6 +4912,57 @@ exit 91
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
+
+func TestResolveInteractiveStartupArgsIncludeWildcardContinuesToModifierMenu(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('main')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--prompt)
+		prompt="$2"
+		shift 2
+		;;
+	*)
+		shift
+		;;
+	esac
+done
+
+case "$prompt" in
+"filter> ")
+	printf '%s\n' 'paths'
+	;;
+"include> ")
+	echo "resolved --include '*' unexpectedly opened the include picker" >&2
+	exit 91
+	;;
+*)
+	echo "unexpected prompt: $prompt" >&2
+	exit 91
+	;;
+esac
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{".", "--include", "*", "--"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected trailing placeholder to open the modifier menu")
+	}
+	if got, want := strings.Join(args, "\n"), ".\n--include\n*\n--paths"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
 func TestResolveStartupArgsPlaceholderIncludeOnlyOnlyKeepsDotScope(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":               "console.log('main')\n",

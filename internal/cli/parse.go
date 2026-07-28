@@ -129,7 +129,7 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			// includes a positional, so the error surfaces to
 			// strict-runtime entry only).
 			if len(s.IncludedTargets) > 0 && !allowImplicitDotScope {
-				return BareIncludeMissingTargetError(s.IncludedTargets[0])
+				return IncludeMissingPositionalTargetError(s.IncludedTargets[0])
 			}
 			if cfg.Headless {
 				return newUsageError("Error: --headless requires explicit targets.\n  Pass a path, --include, or another scope-defining flag.\n  Example: catclip . --headless")
@@ -399,6 +399,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			if len(values) == 0 {
 				return command.Parsed{}, RequiredStageValueError("--only")
 			}
+			if err := validateDirectPathPatterns("--only", values, exactValues); err != nil {
+				return command.Parsed{}, err
+			}
 			current.Only = append(current.Only, values...)
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageOnly, Values: append([]string(nil), values...), ExactValues: exactValues})
 			i = next - 1
@@ -427,6 +430,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			}
 			if len(values) == 0 {
 				return command.Parsed{}, RequiredStageValueError("--exclude")
+			}
+			if err := validateDirectPathPatterns("--exclude", values, exactValues); err != nil {
+				return command.Parsed{}, err
 			}
 			current.Exclude = append(current.Exclude, values...)
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageExclude, Values: append([]string(nil), values...), ExactValues: exactValues})
@@ -514,6 +520,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 					}
 					return command.Parsed{}, PositionalAfterModifierError()
 				}
+				if err := validateDirectPathPatterns("target", []string{arg}, false); err != nil {
+					return command.Parsed{}, err
+				}
 				current.Targets = append(current.Targets, arg)
 				current.explicitTargets++
 				lastNoValueModifier = ""
@@ -579,13 +588,16 @@ func ValidateIncludeValues(values []string) error {
 			continue
 		}
 		if isAbsolutePathForValidation(value) {
-			return newUsageError("Error: --include does not accept absolute paths: %s\n  Use a relative path inside the current target scope.", singleQuoted(value))
+			return newUsageError("Error: --include does not accept absolute paths: %s\n  Use a path relative to the current directory.", singleQuoted(value))
 		}
 		if containsParentTraversal(value) {
-			return newUsageError("Error: --include cannot traverse above the current target scope: %s\n  Use a relative path inside the current target scope.", singleQuoted(value))
+			return newUsageError("Error: --include cannot traverse above the current directory: %s\n  Use a path relative to the current directory.", singleQuoted(value))
 		}
 		if hasGlobChars(value) {
 			return newUsageError("Error: --include does not accept glob patterns. Use literal paths or '*' to include all.")
+		}
+		if normalizeRelPath(value) == "." {
+			return newUsageError("Error: --include '.' is not supported.\n  Use --include '*' to authorize ignored paths below the selected targets, or name a specific path from the current directory.")
 		}
 	}
 	return nil
@@ -760,8 +772,12 @@ func FormatResolvedStartupCommand(args []string) string {
 	}
 	parts := make([]string, 0, len(args)+1)
 	parts = append(parts, "catclip")
+	quoteArg := shellQuoteArg
+	if platform.Detect() == "windows" {
+		quoteArg = powershellQuoteArg
+	}
 	for _, arg := range args {
-		parts = append(parts, shellQuoteArg(arg))
+		parts = append(parts, quoteArg(arg))
 	}
 	return strings.Join(parts, " ")
 }

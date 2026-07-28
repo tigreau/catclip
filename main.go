@@ -99,7 +99,7 @@ func Main() {
 	finishToolsBench("err", "false")
 
 	finishNormalizeBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "normalize_positional_globs")
-	normResult, err := normalizePositionalGlobArgs(args, positionalGlobArgsQuiet(args))
+	normResult, err := normalizePositionalGlobArgs(args)
 	finishNormalizeBench("err", platform.InternalBenchError(err))
 	if err != nil {
 		exitWithError(err, os.Stderr)
@@ -130,14 +130,6 @@ func Main() {
 	if err != nil {
 		exitWithError(err, os.Stderr)
 		return
-	}
-	if !cfg.Quiet {
-		for _, hint := range normResult.Hints {
-			if _, err := fmt.Fprintln(os.Stderr, hint); err != nil {
-				exitWithError(err, os.Stderr)
-				return
-			}
-		}
 	}
 	if shouldWriteResolvedStartupCommand(startupResult, cfg.Quiet) {
 		if err := writeResolvedStartupCommand(os.Stderr, args); err != nil {

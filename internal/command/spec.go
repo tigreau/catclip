@@ -88,13 +88,11 @@ func ExecutionScopeFromScopeSpec(s ScopeSpec) ExecutionScope {
 	if s.OutputMode() == EntryModeDiff {
 		out.Diff = true
 	}
-	// v0.6.4 include-as-authorization: the walker's per-entry
-	// targetIncluded check + walkAuthorizedByInclude ancestor-authorization
-	// (see internal/discovery/resolver.go) now do the narrowing that
-	// RewriteDeepIncludeScope's --only synthesis was hacking in.
-	// Rewriting the include set to add auto-ancestors would poison the
-	// per-entry filter (broader include values pass more paths), so the
-	// rewrite is skipped entirely. See
+	// Include narrowing belongs to the discovery walker: targetIncluded plus
+	// walkAuthorizedByInclude (see internal/discovery/resolver.go) distinguish
+	// permission to descend from permission to emit. Do not synthesize --only
+	// stages or add automatic include ancestors here; broader include values
+	// would admit more paths through the per-entry filter. See
 	// docs/architecture/ACTIVE_NOTE_include_double_syntax_rationale.md
 	// for the walker semantic that replaced this.
 	return out
@@ -182,24 +180,24 @@ func (s ScopeSpec) OnlyPatterns() []string    { return cloneStringSlice(s.only) 
 func (s ScopeSpec) ExcludePatterns() []string { return cloneStringSlice(s.exclude) }
 func (s ScopeSpec) Stages() []Stage           { return cloneStages(s.stages) }
 
-func (s ScopeSpec) HasContainsFilter() bool      { return s.hasContainsFilter }
-func (s ScopeSpec) ContainsPattern() string      { return s.containsPattern }
+func (s ScopeSpec) HasContainsFilter() bool       { return s.hasContainsFilter }
+func (s ScopeSpec) ContainsPattern() string       { return s.containsPattern }
 func (s ScopeSpec) NotContainsPatterns() []string { return cloneStringSlice(s.notContainsPatterns) }
 func (s ScopeSpec) HasNotContainsFilter() bool    { return len(s.notContainsPatterns) > 0 }
-func (s ScopeSpec) HasPathsOutput() bool     { return s.hasPathsOutput }
-func (s ScopeSpec) HasSnippetOutput() bool   { return s.hasSnippetOutput }
-func (s ScopeSpec) SnippetPattern() string   { return s.snippetPattern }
-func (s ScopeSpec) SnippetContextSet() bool  { return s.snippetContextSet }
-func (s ScopeSpec) SnippetContextLines() int { return s.snippetContextLines }
-func (s ScopeSpec) HasLinesOutput() bool     { return s.hasLinesOutput }
-func (s ScopeSpec) LinesStart() int          { return s.linesStart }
-func (s ScopeSpec) LinesEnd() int            { return s.linesEnd }
-func (s ScopeSpec) OutputMode() EntryMode    { return s.outputMode }
-func (s ScopeSpec) Changed() bool            { return s.changed }
-func (s ScopeSpec) Staged() bool             { return s.staged }
-func (s ScopeSpec) Unstaged() bool           { return s.unstaged }
-func (s ScopeSpec) Untracked() bool          { return s.untracked }
-func (s ScopeSpec) HasGitSelection() bool    { return s.hasGitSelection }
+func (s ScopeSpec) HasPathsOutput() bool          { return s.hasPathsOutput }
+func (s ScopeSpec) HasSnippetOutput() bool        { return s.hasSnippetOutput }
+func (s ScopeSpec) SnippetPattern() string        { return s.snippetPattern }
+func (s ScopeSpec) SnippetContextSet() bool       { return s.snippetContextSet }
+func (s ScopeSpec) SnippetContextLines() int      { return s.snippetContextLines }
+func (s ScopeSpec) HasLinesOutput() bool          { return s.hasLinesOutput }
+func (s ScopeSpec) LinesStart() int               { return s.linesStart }
+func (s ScopeSpec) LinesEnd() int                 { return s.linesEnd }
+func (s ScopeSpec) OutputMode() EntryMode         { return s.outputMode }
+func (s ScopeSpec) Changed() bool                 { return s.changed }
+func (s ScopeSpec) Staged() bool                  { return s.staged }
+func (s ScopeSpec) Unstaged() bool                { return s.unstaged }
+func (s ScopeSpec) Untracked() bool               { return s.untracked }
+func (s ScopeSpec) HasGitSelection() bool         { return s.hasGitSelection }
 
 func (s ScopeSpec) clone() ScopeSpec {
 	s.targets = cloneStringSlice(s.targets)

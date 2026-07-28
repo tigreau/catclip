@@ -54,7 +54,14 @@ const DefaultPreviewWindow = defaultPreviewWindow
 // Filter runs fzf in --filter mode and returns the matched keys from the
 // provided tab-delimited lines without opening an interactive picker.
 func Filter(bin, query string, lines []string) ([]string, error) {
-	cmd := exec.Command(bin, "--delimiter", "\t", "--nth", "1,2", "--filter", query)
+	return FilterByNth(bin, query, lines, "1,2")
+}
+
+// FilterByNth runs fzf in filter mode while restricting matching to the
+// requested tab-delimited fields. The complete input row is still returned so
+// callers can recover its stable key.
+func FilterByNth(bin, query string, lines []string, nth string) ([]string, error) {
+	cmd := exec.Command(bin, filterArgs(query, nth)...)
 	cmd.Stdin = strings.NewReader(strings.Join(lines, "\n") + "\n")
 	out, err := cmd.Output()
 	if err != nil {
@@ -68,6 +75,13 @@ func Filter(bin, query string, lines []string) ([]string, error) {
 		return nil, nil
 	}
 	return parseMatches(text), nil
+}
+
+func filterArgs(query, nth string) []string {
+	if strings.TrimSpace(nth) == "" {
+		nth = "1,2"
+	}
+	return []string{"--delimiter", "\t", "--nth", nth, "--filter", query}
 }
 
 // Run executes an interactive fzf picker and returns the parsed selection.

@@ -13,9 +13,10 @@ import (
 
 // globZeroMatchWarning classifies why a glob-shaped target produced zero
 // matches and emits guidance in catclip's actual matcher grammar. Positional
-// globs use path.Match over files, so `**` is not recursive and a glob ending
-// in `/` can never match. Recursive recovery uses an exact directory target,
-// optionally followed by the legacy cwd-relative --only filter.
+// globs use path.Match over files, so a glob ending in `/` can never match.
+// Positional `**` is rejected before this formatter runs. Recursive recovery
+// uses an exact directory target, optionally followed by the legacy
+// cwd-relative --only filter.
 //
 // Replaces the misleading unconditional "If the parent directory is
 // ignored, use --include" message that fired even when the parent was
@@ -23,7 +24,7 @@ import (
 func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors platform.Palette) string {
 	prefix := longestLiteralPathPrefix(pattern)
 	if prefix == "" || prefix == "." {
-		return targetNotFoundWarning(pattern, scopeIndex, colors)
+		return globWithoutLiteralPrefixWarning(pattern, scopeIndex, colors)
 	}
 	suffix := strings.TrimPrefix(pattern, prefix+"/")
 	if suffix == pattern {
@@ -41,6 +42,20 @@ func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors pl
 		return ignoredGlobZeroMatchWarning(pattern, prefix, suffix, block.Source, scopeIndex, directoryShaped, colors)
 	}
 	return visibleGlobZeroMatchWarning(pattern, prefix, suffix, scopeIndex, directoryShaped, colors)
+}
+
+func globWithoutLiteralPrefixWarning(pattern string, scopeIndex int, colors platform.Palette) string {
+	if core, ok := outerStarFuzzyCore(pattern); ok {
+		return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sTarget globs select files and '*' does not cross folders.%s\n  %sFor fuzzy file and folder navigation:%s\n    %scatclip %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+			colors.Dim, colors.Reset,
+			colors.Dim, colors.Reset,
+			colors.OK, ShellQuoteArg(core), colors.Reset)
+	}
+
+	return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sTarget globs match complete filenames and cwd-relative file paths; they do not fall back to fuzzy navigation.%s",
+		colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+		colors.Dim, colors.Reset)
 }
 
 func unresolvedGlobPrefixWarning(pattern, prefix, suffix string, scopeIndex int, colors platform.Palette) string {
@@ -75,6 +90,13 @@ func visibleGlobZeroMatchWarning(pattern, prefix, suffix string, scopeIndex int,
 			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
 			colors.OK, ShellQuoteArg(prefix), colors.Reset)
 	}
+	if globSuffixIsOnlyStars(suffix) {
+		return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %s%s checks direct files in %s; target '*' does not cross folders.%s\n  %sTo include everything below %s:%s\n    %scatclip %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+			colors.Dim, SingleQuoted(pattern), SingleQuoted(prefix+"/"), colors.Reset,
+			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
+			colors.OK, ShellQuoteArg(prefix), colors.Reset)
+	}
 	filterPattern := recursiveGlobFilterPattern(pattern, suffix)
 
 	return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sTo search recursively below %s:%s\n    %scatclip %s --only %s%s",
@@ -92,6 +114,13 @@ func ignoredGlobZeroMatchWarning(pattern, prefix, suffix, source string, scopeIn
 			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
 			colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(prefix), colors.Reset)
 	}
+	if globSuffixIsOnlyStars(suffix) {
+		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %s%s checks direct files in %s; target '*' does not cross folders.%s\n  %sTo authorize and include everything below it:%s\n    %scatclip %s --include %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, scopeIndex+1,
+			colors.Dim, SingleQuoted(pattern), SingleQuoted(prefix+"/"), colors.Reset,
+			colors.Dim, colors.Reset,
+			colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(prefix), colors.Reset)
+	}
 	filterPattern := recursiveGlobFilterPattern(pattern, suffix)
 
 	return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sTo authorize it and search recursively:%s\n    %scatclip %s --include %s --only %s%s",
@@ -99,6 +128,69 @@ func ignoredGlobZeroMatchWarning(pattern, prefix, suffix, source string, scopeIn
 		colors.Dim, SingleQuoted(pattern), SingleQuoted(suffix), SingleQuoted(prefix+"/"), colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(prefix), ShellQuoteArg(filterPattern), colors.Reset)
+}
+
+func globSuffixIsOnlyStars(suffix string) bool {
+	normalized := strings.TrimSuffix(strings.ReplaceAll(suffix, "\\", "/"), "/")
+	return normalized != "" && strings.Trim(normalized, "*") == ""
+}
+
+func unsupportedTargetDoublestarMessage(pattern string) string {
+	if core, ok := outerStarFuzzyCore(pattern); ok {
+		deterministic := collapseRepeatedStars(pattern)
+		return fmt.Sprintf("Error: Positional target patterns do not support '**': %s.\n\n  For fuzzy file and folder navigation:\n    catclip %s\n\n  For a deterministic filename glob:\n    catclip %s",
+			SingleQuoted(pattern), ShellQuoteArg(core), ShellQuoteArg(deterministic))
+	}
+
+	prefix := longestLiteralPathPrefix(pattern)
+	if prefix == "" || prefix == "." {
+		prefix = "."
+	}
+	base := path.Base(strings.ReplaceAll(pattern, "\\", "/"))
+	if base == "**" || base == "." || base == "/" {
+		return fmt.Sprintf("Error: Positional target patterns do not support '**': %s.\n\n  Use a directory target for recursive traversal:\n    catclip %s",
+			SingleQuoted(pattern), ShellQuoteArg(prefix))
+	}
+	base = collapseRepeatedStars(base)
+	return fmt.Sprintf("Error: Positional target patterns do not support '**': %s.\n\n  Use a directory target plus --only for recursive file matching:\n    catclip %s --only %s",
+		SingleQuoted(pattern), ShellQuoteArg(prefix), ShellQuoteArg(base))
+}
+
+// outerStarFuzzyCore is diagnostic-only. It recognizes the old wrapper-star
+// spelling when removing its outer stars yields a valid relative plain target.
+// Execution never calls this helper to rewrite or resolve a target.
+func outerStarFuzzyCore(pattern string) (string, bool) {
+	if len(pattern) < 3 || pattern[0] != '*' || pattern[len(pattern)-1] != '*' {
+		return "", false
+	}
+	core := strings.Trim(pattern, "*")
+	if core == "" || hasGlobChars(core) || strings.Contains(core, "]") {
+		return "", false
+	}
+	normalized := strings.ReplaceAll(core, "\\", "/")
+	if strings.HasPrefix(normalized, "/") || strings.HasPrefix(normalized, "~/") || ContainsParentTraversal(normalized) {
+		return "", false
+	}
+	firstSegment := strings.SplitN(normalized, "/", 2)[0]
+	if strings.Contains(firstSegment, ":") {
+		return "", false
+	}
+	return core, true
+}
+
+func collapseRepeatedStars(pattern string) string {
+	for strings.Contains(pattern, "**") {
+		pattern = strings.ReplaceAll(pattern, "**", "*")
+	}
+	return pattern
+}
+
+func trailingSlashGlobStageWarning(kind command.StageKind, value string, scopeIndex int, colors platform.Palette) string {
+	flag := "--" + string(kind)
+	return fmt.Sprintf("%sWarning:%s %s pattern %s cannot match file paths (scope %d).\n\n  %sGlob patterns ending in '/' look for a file path ending in '/', but file paths do not have that ending.%s\n  %sTo select a directory subtree, use a literal directory name such as %s %s.%s",
+		colors.Warn, colors.Reset, flag, SingleQuoted(value), scopeIndex+1,
+		colors.Dim, colors.Reset,
+		colors.Dim, flag, SingleQuoted("output/"), colors.Reset)
 }
 
 func recursiveGlobFilterPattern(pattern, suffix string) string {
@@ -343,7 +435,7 @@ func WriteNoFilesMatchedMessage(scopes []command.ExecutionScope, stderr io.Write
 	}
 	// Hint form uses `<target> --include <path>` so users copy the
 	// canonical double-syntax shape ignoredDirMessage and effect-5
-	// both point at. Bare `catclip --include <path>` errors under
+	// both point at. `catclip --include <path>` without a positional target errors under
 	// effect-5 in strict mode; teaching users a form that fails is
 	// worse than showing the working shape.
 	if _, err := fmt.Fprintf(stderr, "\n  %sTry: catclip --all-ignore-rules             # list every active ignore rule (.hiss + .gitignore)%s\n", colors.Dim, colors.Reset); err != nil {

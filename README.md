@@ -30,38 +30,38 @@ and `internal/`, and documentation in `docs/`.
 
 ```bash
 # Targets
-catclip src                          # a folder
-catclip Button.tsx                   # a file (finds it anywhere)
-catclip btn                          # fuzzy match
-catclip src internal docs            # multiple targets
-catclip "*.go"                       # glob pattern — all Go files
-catclip src "*.go"                   # union: src/ + all Go files
+catclip src                            # a folder
+catclip Button.tsx                     # a file (finds it anywhere)
+catclip btn                            # fuzzy picker
+catclip src internal docs              # multiple targets
+catclip "*.go"                         # glob pattern — all Go files
+catclip src "*.go"                     # union: src/ + all Go files
 
 # Filtering
-catclip src --only "*.tsx"           # keep only TSX files
-catclip src --exclude "*.css"        # skip CSS files
-catclip internal --only "handler/"    # keep files under handler/ directories
-catclip internal --exclude "handler/" # skip files under handler/ directories
-catclip src --recent 5               # 5 most recently modified
-catclip src --size 0 100             # files up to 100 KiB, largest first
-catclip src --depth 1                # just the top level of src
-catclip src --contains TODO          # files mentioning TODO
-catclip src --snippet TODO           # smallest enclosing unit around matches
-catclip src --snippet TODO 3         # each match plus 3 lines of context
+catclip src --only "*.tsx"             # keep only TSX components
+catclip src --exclude "*.css"          # skip the styles
+catclip internal --only "handler/"     # keep files under handler/ directories
+catclip internal --exclude "handler/"  # skip files under handler/ directories
+catclip src --recent 5                 # 5 most recently modified
+catclip src --size 0 100               # files up to 100 KiB, largest first
+catclip src --depth 1                  # just the top level of src
+catclip src --contains TODO            # files mentioning TODO
+catclip src --snippet useAuth          # smart block: smallest enclosing unit
+catclip src --snippet useAuth 3        # each match plus 3 lines of context
 
 # Git
-catclip . --changed                  # all uncommitted files
-catclip . --changed-diff             # uncommitted changes as patches
-catclip . --staged-diff              # staged changes as patches
+catclip . --changed                    # all uncommitted files
+catclip . --changed-diff               # uncommitted changes as patches
+catclip . --staged-diff                # staged changes as patches
 
 # Output
-catclip src --paths                  # bare file paths, one per line
-catclip src -p                       # print to stdout instead of clipboard
-catclip cmd/api/main.go -r           # raw file body, no wrappers
+catclip src --paths                    # bare file paths, one per line
+catclip src -p                         # print to stdout instead of clipboard
+catclip cmd/api/main.go -r             # raw file body, no wrappers
 
-# Scopes — like running two catclip commands and combining results
-catclip . --paths --then src         # repo structure + full files from src
-catclip src --only "*.tsx" --then docs --recent 5 # TSX from src/, plus 5 newest docs
+# --then — like running two catclip commands and combining results
+catclip . --paths --then src           # project structure + full React files
+catclip src --only "*.tsx" --then docs --recent 5  # TSX components, plus 5 newest docs
 ```
 
 Filters run left to right. Order matters:
@@ -71,7 +71,9 @@ catclip src --recent 10 --only "*.tsx"  # 10 newest, then keep TSX
 catclip src --only "*.tsx" --recent 10  # TSX first, then 10 newest of those
 ```
 
-For the full reference: `catclip --help` or `catclip --help-all`.
+For the full command reference: `catclip --help` or `catclip --help-all`.
+For smart snippet boundaries, see
+[Snippet Smart Block Rules](SNIPPET_SMART_BLOCK_RULES.md).
 
 ---
 
@@ -99,6 +101,17 @@ irm https://raw.githubusercontent.com/tigreau/catclip/main/install.ps1 | iex
 ```
 
 Clipboard tool required: `pbcopy` (macOS, built-in), `clip.exe` (Windows, built-in), `wl-clipboard` (Linux — Wayland-only, install needed).
+
+<details><summary>X11 is unsupported</summary>
+
+catclip is Wayland-only on Linux: X11 sessions are refused at startup, which
+excludes Cinnamon, MATE, Xfce, and any GNOME/KDE session started in X11 mode.
+Verified working: GNOME 46+ (older GNOME warns), KDE Plasma on Wayland, and WSL.
+Other Wayland compositors such as Sway or Hyprland should work but are untested.
+
+</details>
+
+<br>
 
 catclip bundles its own `fzf` and `ripgrep` — no external dependencies needed.
 
@@ -181,7 +194,10 @@ catclip skips `.gitignored` paths and paths matched by `.hiss` (the ignore confi
 catclip --hiss             # edit ignore rules
 catclip --hiss-reset       # restore defaults
 catclip dist --include dist # allow the ignored React build for this run
+catclip src --include src/build # allow an ignored folder nested under src
 ```
+
+Named `--include` paths start from the folder where you run catclip.
 
 ---
 

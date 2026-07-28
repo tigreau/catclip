@@ -35,7 +35,7 @@ func TestParseStartupInputTokensRejectsInvalidIncludeValue(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected invalid startup include value to fail")
 	}
-	if !strings.Contains(err.Error(), "--include cannot traverse above the current target scope") {
+	if !strings.Contains(err.Error(), "--include cannot traverse above the current directory") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

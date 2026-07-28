@@ -184,6 +184,19 @@ func maybeResolveStartupSinkPickerArgs(rawArgs []string, result StartupPickerRes
 	if err != nil {
 		return StartupPickerResult{}, err
 	}
+	prepared := &StartupPreparedOutputState{
+		Git:       ctx.Git,
+		Discovery: ctx.Discovery,
+		Plan:      ctx.Plan,
+	}
+	// There is no meaningful destination or preview for an empty payload.
+	// Preserve the prepared discovery so normal execution prints its standard
+	// diagnostics and exit code without opening a blank sink picker.
+	if ctx.Plan.IsEmpty() {
+		out := result
+		out.PreparedOutput = prepared
+		return out, nil
+	}
 	measurement := measureOutputForSinkMenu(ctx.Plan, ctx.Emit)
 	sinkArgs, usedFzf, err := pickOutputSink(ctx, measurement)
 	if err != nil {
@@ -194,11 +207,7 @@ func maybeResolveStartupSinkPickerArgs(rawArgs []string, result StartupPickerRes
 	out.Args = append(append([]string(nil), result.Args...), sinkArgs...)
 	out.UsedFzf = out.UsedFzf || usedFzf
 	out.ForceResolvedCommand = out.ForceResolvedCommand || (argsContain(sinkArgs, "--headless") && !rawArgsRequestQuiet(rawArgs))
-	out.PreparedOutput = &StartupPreparedOutputState{
-		Git:       ctx.Git,
-		Discovery: ctx.Discovery,
-		Plan:      ctx.Plan,
-	}
+	out.PreparedOutput = prepared
 	return out, nil
 }
 

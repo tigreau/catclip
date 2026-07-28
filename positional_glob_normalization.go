@@ -10,8 +10,7 @@ import (
 )
 
 type positionalGlobNormalizationResult struct {
-	Args  []string
-	Hints []string
+	Args []string
 }
 
 type positionalGlobScope struct {
@@ -28,16 +27,14 @@ type positionalGlobToken struct {
 type positionalGlobTokenKind string
 
 const (
-	positionalGlobPlain       positionalGlobTokenKind = "plain"
-	positionalGlobWrapperStar positionalGlobTokenKind = "wrapper-star"
-	positionalGlobPattern     positionalGlobTokenKind = "pattern"
-	positionalGlobBareExt     positionalGlobTokenKind = "bare-ext"
+	positionalGlobPlain   positionalGlobTokenKind = "plain"
+	positionalGlobPattern positionalGlobTokenKind = "pattern"
+	positionalGlobBareExt positionalGlobTokenKind = "bare-ext"
 )
 
 type positionalGlobScopeNormalization struct {
 	rewritten          []string
 	rewrittenAsTargets []string
-	hints              []string
 	fixItKind          positionalGlobTokenKind
 	fixItRaw           string
 	ambiguous          bool
@@ -46,17 +43,15 @@ type positionalGlobScopeNormalization struct {
 	ambiguityOne       []string
 }
 
-func normalizePositionalGlobArgs(args []string, quiet bool) (positionalGlobNormalizationResult, error) {
+func normalizePositionalGlobArgs(args []string) (positionalGlobNormalizationResult, error) {
 	scopes := splitPositionalGlobScopes(args)
 	if len(scopes) == 0 {
 		return positionalGlobNormalizationResult{Args: append([]string(nil), args...)}, nil
 	}
 
 	normalizedScopes := make([][]string, 0, len(scopes))
-	hints := []string{}
-
 	for i, scope := range scopes {
-		norm := normalizePositionalGlobScope(scope, quiet)
+		norm := normalizePositionalGlobScope(scope)
 		if norm.ambiguous {
 			suffix := canonicalizePositionalGlobScopes(scopes[i+1:])
 			thenCommand := joinPositionalGlobCommand(normalizedScopes, norm.ambiguityThen, suffix)
@@ -104,12 +99,10 @@ func normalizePositionalGlobArgs(args []string, quiet bool) (positionalGlobNorma
 		}
 
 		normalizedScopes = append(normalizedScopes, norm.rewritten)
-		hints = append(hints, norm.hints...)
 	}
 
 	return positionalGlobNormalizationResult{
-		Args:  flattenPositionalGlobCommand(normalizedScopes),
-		Hints: hints,
+		Args: flattenPositionalGlobCommand(normalizedScopes),
 	}, nil
 }
 
@@ -171,7 +164,7 @@ func analyzePositionalGlobScopes(rawScopes [][]string) []positionalGlobScope {
 	return scopes
 }
 
-func normalizePositionalGlobScope(scope positionalGlobScope, quiet bool) positionalGlobScopeNormalization {
+func normalizePositionalGlobScope(scope positionalGlobScope) positionalGlobScopeNormalization {
 	if len(scope.positional) == 0 {
 		return positionalGlobScopeNormalization{rewritten: append([]string(nil), scope.raw...)}
 	}
@@ -188,10 +181,7 @@ func normalizePositionalGlobScope(scope positionalGlobScope, quiet bool) positio
 	}
 
 	if firstPattern == -1 {
-		return positionalGlobScopeNormalization{
-			rewritten: normalizeWrapperStarScope(scope),
-			hints:     wrapperStarHints(scope.positional, quiet),
-		}
+		return positionalGlobScopeNormalization{rewritten: append([]string(nil), scope.raw...)}
 	}
 
 	// Glob patterns in the target position are first-class targets.
@@ -230,53 +220,13 @@ func normalizePositionalGlobScope(scope positionalGlobScope, quiet bool) positio
 	}
 }
 
-func normalizeWrapperStarScope(scope positionalGlobScope) []string {
-	rewritten := make([]string, 0, len(scope.positional)+len(scope.tail))
-	for _, token := range scope.positional {
-		if token.kind == positionalGlobWrapperStar {
-			core := trimWrapperStars(token.raw)
-			if core != "" {
-				rewritten = append(rewritten, core)
-			}
-			continue
-		}
-		rewritten = append(rewritten, token.raw)
-	}
-	rewritten = append(rewritten, scope.tail...)
-	return rewritten
-}
-
-func wrapperStarHints(tokens []positionalGlobToken, quiet bool) []string {
-	if quiet {
-		return nil
-	}
-	hints := []string{}
-	for _, token := range tokens {
-		if token.kind != positionalGlobWrapperStar {
-			continue
-		}
-		core := trimWrapperStars(token.raw)
-		if core == "" {
-			continue
-		}
-		hints = append(hints, "Hint: target "+discovery.SingleQuoted(core)+" is fuzzy by default - no wildcards needed.\n  Searching for "+discovery.SingleQuoted(core)+"...")
-	}
-	return hints
-}
-
 func ambiguousThenScopes(scope positionalGlobScope) [][]string {
 	scopes := [][]string{}
 	i := 0
 	for i < len(scope.positional) {
 		targets := []string{}
 		for i < len(scope.positional) && !scope.positional[i].kind.isPatternLike() {
-			if scope.positional[i].kind == positionalGlobWrapperStar {
-				if core := trimWrapperStars(scope.positional[i].raw); core != "" {
-					targets = append(targets, core)
-				}
-			} else {
-				targets = append(targets, scope.positional[i].raw)
-			}
+			targets = append(targets, scope.positional[i].raw)
 			i++
 		}
 
@@ -321,10 +271,6 @@ func buildCanonicalPatternScope(scope positionalGlobScope) []string {
 		switch token.kind {
 		case positionalGlobPlain:
 			targets = append(targets, token.raw)
-		case positionalGlobWrapperStar:
-			if core := trimWrapperStars(token.raw); core != "" {
-				targets = append(targets, core)
-			}
 		default:
 			if canonicalPattern, ok := canonicalPatternForToken(token); ok {
 				patterns = append(patterns, canonicalPattern)
@@ -367,10 +313,6 @@ func buildCanonicalPatternScopeAsTargets(scope positionalGlobScope) []string {
 		switch token.kind {
 		case positionalGlobPlain:
 			targets = append(targets, token.raw)
-		case positionalGlobWrapperStar:
-			if core := trimWrapperStars(token.raw); core != "" {
-				targets = append(targets, core)
-			}
 		default:
 			if canonicalPattern, ok := canonicalPatternForToken(token); ok {
 				patterns = append(patterns, canonicalPattern)
@@ -415,9 +357,6 @@ func flattenPositionalGlobCommand(scopes [][]string) []string {
 }
 
 func classifyPositionalGlobToken(token string) positionalGlobTokenKind {
-	if isWrapperStarGlob(token) {
-		return positionalGlobWrapperStar
-	}
 	if isBareExtensionToken(token) {
 		return positionalGlobBareExt
 	}
@@ -425,21 +364,6 @@ func classifyPositionalGlobToken(token string) positionalGlobTokenKind {
 		return positionalGlobPattern
 	}
 	return positionalGlobPlain
-}
-
-func isWrapperStarGlob(token string) bool {
-	if len(token) < 2 || token[0] != '*' || token[len(token)-1] != '*' {
-		return false
-	}
-	core := trimWrapperStars(token)
-	if core == "" {
-		return false
-	}
-	return !cli.HasGlobChars(core) && !strings.Contains(core, "]")
-}
-
-func trimWrapperStars(token string) string {
-	return strings.Trim(token, "*")
 }
 
 func isBareExtensionToken(token string) bool {
@@ -496,13 +420,4 @@ func isPositionalGlobTailToken(token string) bool {
 
 func (k positionalGlobTokenKind) isPatternLike() bool {
 	return k == positionalGlobPattern || k == positionalGlobBareExt
-}
-
-func positionalGlobArgsQuiet(args []string) bool {
-	for _, arg := range args {
-		if arg == "-q" || arg == "--quiet" {
-			return true
-		}
-	}
-	return false
 }

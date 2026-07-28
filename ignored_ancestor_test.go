@@ -84,6 +84,99 @@ func TestRunSurfacesIgnoredAncestorForDirTarget(t *testing.T) {
 	}
 }
 
+func TestRunHiddenExactFileBeatsUnrelatedVisibleFuzzyMatch(t *testing.T) {
+	setupAncestorXDG(t)
+	project := setupTestProject(t, map[string]string{
+		".gitignore":                       "src/build/\n",
+		"src/build/nested.ts":              "hidden exact\n",
+		"src/components/layout/Header.tsx": "visible fuzzy\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"nested.ts", "--headless", "--quiet", "--print", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err == nil {
+		t.Fatal("expected hidden exact basename to require authorization")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("hidden exact basename must not fall through to fuzzy output:\n%s", stdout.String())
+	}
+	for _, want := range []string{
+		"hidden by an ignored ancestor",
+		"./src/build/nested.ts",
+		"--include 'src/build'",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("hidden exact diagnostic missing %q:\n%s", want, stderr.String())
+		}
+	}
+	if strings.Contains(stderr.String(), "Header.tsx") {
+		t.Fatalf("diagnostic must not suggest the unrelated fuzzy file:\n%s", stderr.String())
+	}
+}
+
+func TestRunHiddenExactDirectoryBeatsUnrelatedVisibleFuzzyMatch(t *testing.T) {
+	setupAncestorXDG(t)
+	project := setupTestProject(t, map[string]string{
+		".gitignore":              "blocked/\n",
+		"blocked/secret/value.ts": "hidden exact dir\n",
+		"src/SecretPanel.tsx":     "visible fuzzy\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"secret", "--headless", "--quiet", "--print", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err == nil {
+		t.Fatal("expected hidden exact directory basename to require authorization")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("hidden exact directory must not fall through to fuzzy output:\n%s", stdout.String())
+	}
+	for _, want := range []string{
+		"hidden by an ignored ancestor",
+		"./blocked/secret",
+		"--include 'blocked'",
+	} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("hidden exact directory diagnostic missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestRunVisibleExactBasenameStillBeatsHiddenDuplicate(t *testing.T) {
+	setupAncestorXDG(t)
+	project := setupTestProject(t, map[string]string{
+		".gitignore":        "blocked/\n",
+		"target.md":         "visible exact\n",
+		"blocked/target.md": "hidden duplicate\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"target.md", "--headless", "--quiet", "--print", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("visible exact basename should retain priority: %v\n%s", err, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "target.md" {
+		t.Fatalf("resolved paths = %q, want target.md", got)
+	}
+}
+
+func TestRunVisibleExactExtensionlessBasenameStillBeatsHiddenDuplicate(t *testing.T) {
+	setupAncestorXDG(t)
+	project := setupTestProject(t, map[string]string{
+		".gitignore":      "blocked/\n",
+		"LICENSE":         "visible exact\n",
+		"blocked/LICENSE": "hidden duplicate\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"LICENSE", "--headless", "--quiet", "--print", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("visible extensionless exact basename should retain priority: %v\n%s", err, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "LICENSE" {
+		t.Fatalf("resolved paths = %q, want LICENSE", got)
+	}
+}
+
 func TestRunSurfacesIgnoredAncestorMultiHit(t *testing.T) {
 	setupAncestorXDG(t)
 	project := setupTestProject(t, map[string]string{

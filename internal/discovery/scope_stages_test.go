@@ -471,100 +471,83 @@ func TestApplyScopeStagesKeepsDepthOrderingSemanticWithRecent(t *testing.T) {
 	}
 }
 
-// scopeIncludeTargetWorkingDir builds a temp workingDir containing every
-// listed scope-target *as a directory*, so the new bare-combine guard
-// (which only combines when the scope target stats as a dir) sees them.
-func scopeIncludeTargetWorkingDir(t *testing.T, dirs ...string) string {
-	t.Helper()
+func TestBuildIncludedTargetSetUsesExactCWDRelativeIdentity(t *testing.T) {
 	wd := t.TempDir()
-	for _, d := range dirs {
-		if d == "" || d == "." {
-			continue
-		}
-		if err := os.MkdirAll(filepath.Join(wd, filepath.FromSlash(d)), 0o755); err != nil {
-			t.Fatalf("mkdir %q: %v", d, err)
+	for _, dir := range []string{"build", "src/build"} {
+		if err := os.MkdirAll(filepath.Join(wd, filepath.FromSlash(dir)), 0o755); err != nil {
+			t.Fatalf("mkdir %q: %v", dir, err)
 		}
 	}
-	return wd
-}
 
-func TestScopeIncludeTargetWithRootScope(t *testing.T) {
-	wd := scopeIncludeTargetWorkingDir(t)
-	got := scopeIncludeTarget(wd, []string{"."}, "node_modules")
-	want := []string{"node_modules"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("scopeIncludeTarget(., node_modules) = %v, want %v", got, want)
+	set := BuildIncludedTargetSet(wd, []string{"build", "src/build"})
+	if got, want := set.paths, []string{"build", "src/build"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("concrete include paths = %v, want %v", got, want)
+	}
+	if got, want := set.dirs, []string{"build", "src/build"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("concrete include dirs = %v, want %v", got, want)
 	}
 }
 
-func TestScopeIncludeTargetBareWithNonRootScope(t *testing.T) {
-	wd := scopeIncludeTargetWorkingDir(t, "src")
-	got := scopeIncludeTarget(wd, []string{"src"}, "node_modules")
-	want := []string{"src/node_modules"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("scopeIncludeTarget(src, node_modules) = %v, want %v", got, want)
+func TestBuildIncludedTargetSetDoesNotAuthorizeMissingPath(t *testing.T) {
+	set := BuildIncludedTargetSet(t.TempDir(), []string{"generated"})
+	if len(set.exact) != 0 || len(set.paths) != 0 || len(set.dirs) != 0 {
+		t.Fatalf("missing include entered authorization set: %#v", set)
+	}
+	if got, want := set.unresolved, []string{"generated"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("unresolved includes = %v, want %v", got, want)
 	}
 }
 
-func TestScopeIncludeTargetBareWithMultipleScopes(t *testing.T) {
-	wd := scopeIncludeTargetWorkingDir(t, "src", "lib")
-	got := scopeIncludeTarget(wd, []string{"src", "lib"}, "vendor")
-	want := []string{"src/vendor", "lib/vendor"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("scopeIncludeTarget([src,lib], vendor) = %v, want %v", got, want)
-	}
-}
-
-func TestScopeIncludeTargetAnchoredInScope(t *testing.T) {
-	wd := scopeIncludeTargetWorkingDir(t, "src")
-	got := scopeIncludeTarget(wd, []string{"src"}, "src/vendor")
-	want := []string{"src/vendor"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("scopeIncludeTarget(src, src/vendor) = %v, want %v", got, want)
-	}
-}
-
-func TestScopeIncludeTargetAnchoredOutOfScope(t *testing.T) {
-	wd := scopeIncludeTargetWorkingDir(t, "src")
-	got := scopeIncludeTarget(wd, []string{"src"}, "lib/vendor")
-	if len(got) != 0 {
-		t.Fatalf("scopeIncludeTarget(src, lib/vendor) = %v, want empty", got)
-	}
-}
-
-func TestScopeIncludeTargetAnchoredAncestorOfScope(t *testing.T) {
-	wd := scopeIncludeTargetWorkingDir(t, "ignored/deep/path")
-	got := scopeIncludeTarget(wd, []string{"ignored/deep/path"}, "ignored/deep")
-	want := []string{"ignored/deep"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("scopeIncludeTarget(ignored/deep/path, ignored/deep) = %v, want %v", got, want)
-	}
-}
-
-func TestScopeIncludeTargetWildcardSkipped(t *testing.T) {
-	// "*" is handled before scopeIncludeTarget is called, but verify it
-	// doesn't produce nonsensical output if it were passed.
-	wd := scopeIncludeTargetWorkingDir(t, "src")
-	got := scopeIncludeTarget(wd, []string{"src"}, "*")
-	want := []string{"src/*"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("scopeIncludeTarget(src, *) = %v, want %v", got, want)
-	}
-}
-
-// New: a file-shaped scope target must NOT combine with a bare include —
-// the combined `agent.md/foo` is nonsense; the include still applies
-// globally via BuildIncludedTargetSet. This is the case the basename +
-// --include bug doc covers.
-func TestScopeIncludeTargetBareSkipsFileScopeTarget(t *testing.T) {
+func TestBuildIncludedTargetSetNormalizesPowerShellSeparators(t *testing.T) {
 	wd := t.TempDir()
-	// agent.md exists as a *file*, not a directory.
-	if err := os.WriteFile(filepath.Join(wd, "agent.md"), []byte("hi\n"), 0o644); err != nil {
-		t.Fatalf("write file: %v", err)
+	if err := os.MkdirAll(filepath.Join(wd, "src", "build"), 0o755); err != nil {
+		t.Fatalf("mkdir src/build: %v", err)
 	}
-	got := scopeIncludeTarget(wd, []string{"agent.md"}, "claude_code_cli-main")
-	if len(got) != 0 {
-		t.Errorf("expected no scoped combinations for a file scope target, got %v", got)
+	set := BuildIncludedTargetSet(wd, []string{`src\build`})
+	if got, want := set.paths, []string{"src/build"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("PowerShell-style include paths = %v, want %v", got, want)
+	}
+}
+
+func TestResolveExactIgnoredIncludeTargetsKeepsConcreteCWDPath(t *testing.T) {
+	wd := t.TempDir()
+	for _, dir := range []string{"src", "build", "src/build"} {
+		if err := os.MkdirAll(filepath.Join(wd, filepath.FromSlash(dir)), 0o755); err != nil {
+			t.Fatalf("mkdir %q: %v", dir, err)
+		}
+	}
+	resolver := Resolver{Cfg: command.Invocation{WorkingDir: wd}}
+	exact, unresolved, err := resolver.ResolveExactIgnoredIncludeTargets([]string{"build"}, []string{"src"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := exact, []string{"build"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("exact paths = %v, want %v", got, want)
+	}
+	if len(unresolved) != 0 {
+		t.Fatalf("concrete cwd path was incorrectly sent to picker: %v", unresolved)
+	}
+}
+
+func TestIncludePathRelatedToScopeTargets(t *testing.T) {
+	tests := []struct {
+		name    string
+		include string
+		targets []string
+		want    bool
+	}{
+		{name: "root scope", include: "build", targets: []string{"."}, want: true},
+		{name: "descendant", include: "src/build", targets: []string{"src"}, want: true},
+		{name: "ancestor", include: "src", targets: []string{"src/build"}, want: true},
+		{name: "unrelated root collision", include: "build", targets: []string{"src"}, want: false},
+		{name: "file target does not invent child", include: "blocked", targets: []string{"agent.md"}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := includePathRelatedToScopeTargets(tt.include, tt.targets); got != tt.want {
+				t.Fatalf("includePathRelatedToScopeTargets(%q, %v) = %v, want %v", tt.include, tt.targets, got, tt.want)
+			}
+		})
 	}
 }
 

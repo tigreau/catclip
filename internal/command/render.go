@@ -30,14 +30,20 @@ func CanonicalResolvedInvocationCommand(invocation Resolved, flags RenderFlags) 
 	globalArgs := CanonicalGlobalArgs(invocation.Config, flags)
 	parts := make([]string, 0, len(globalArgs)+len(invocation.Scopes)*4+1)
 	parts = append(parts, "catclip")
+	quoteArg := shellQuoteArg
+	quoteRegex := shellEnforceSingleQuote
+	if invocation.Config.Platform == "windows" {
+		quoteArg = powershellQuoteArg
+		quoteRegex = powershellEnforceSingleQuote
+	}
 	for _, arg := range globalArgs {
-		parts = append(parts, shellQuoteArg(arg))
+		parts = append(parts, quoteArg(arg))
 	}
 	for i, s := range invocation.Scopes {
 		if i > 0 {
 			parts = append(parts, "--then")
 		}
-		parts = append(parts, CanonicalScopeArgs(s)...)
+		parts = append(parts, canonicalScopeArgs(s, quoteArg, quoteRegex)...)
 	}
 	return strings.Join(parts, " ")
 }
@@ -80,8 +86,10 @@ func CanonicalGlobalArgs(invocationCfg Invocation, flags RenderFlags) []string {
 	return out
 }
 
-// CanonicalScopeArgs renders an ExecutionScope back into the argv form
-// that produces it. Used to build the "Resolved command:" header.
+// CanonicalScopeArgs renders an ExecutionScope for Catclip's internal
+// subprocess command strings. User-facing "Resolved command:" output goes
+// through CanonicalResolvedInvocationCommand so it can use the documented
+// POSIX or PowerShell quoting rules.
 //
 // Invariant: the resolved command must equal the executed command.
 // Anything catclip applies to a run must be representable here, and
@@ -91,9 +99,13 @@ func CanonicalGlobalArgs(invocationCfg Invocation, flags RenderFlags) []string {
 // values — TestCanonicalScopeArgsCoversAllStageKinds fails if a flag
 // from scopeModifierFlagSpecs doesn't round-trip.
 func CanonicalScopeArgs(s ExecutionScope) []string {
+	return canonicalScopeArgs(s, internalShellQuoteArg, shellEnforceSingleQuote)
+}
+
+func canonicalScopeArgs(s ExecutionScope, quoteArg, quoteRegex func(string) string) []string {
 	parts := make([]string, 0, len(s.Targets)+len(s.Stages)*2)
 	for _, target := range s.Targets {
-		parts = append(parts, shellQuoteArg(target))
+		parts = append(parts, quoteArg(target))
 	}
 	for _, stage := range s.Stages {
 		flag, ok := StageFlag(stage.Kind)
@@ -107,32 +119,32 @@ func CanonicalScopeArgs(s ExecutionScope) []string {
 		switch stage.Kind {
 		case StageInclude, StageOnly, StageExclude:
 			for _, value := range stage.Values {
-				parts = append(parts, shellQuoteArg(value))
+				parts = append(parts, quoteArg(value))
 			}
 		case StageRecent, StageDepth:
 			if stage.Limit != nil {
-				parts = append(parts, shellQuoteArg(strconv.Itoa(*stage.Limit)))
+				parts = append(parts, quoteArg(strconv.Itoa(*stage.Limit)))
 			}
 		case StageSize:
 			for _, n := range stage.Nums {
-				parts = append(parts, shellQuoteArg(strconv.Itoa(n)))
+				parts = append(parts, quoteArg(strconv.Itoa(n)))
 			}
 		case StageContains, StageNotContains:
 			for _, value := range stage.Values {
-				parts = append(parts, shellEnforceSingleQuote(value))
+				parts = append(parts, quoteRegex(value))
 			}
 		case StageSnippet:
 			for _, value := range stage.Values {
-				parts = append(parts, shellEnforceSingleQuote(value))
+				parts = append(parts, quoteRegex(value))
 			}
 			if s.SnippetContextSet {
 				parts = append(parts, strconv.Itoa(s.SnippetContextLines))
 			}
 		case StageLines:
 			if s.LinesStart > 0 {
-				parts = append(parts, shellQuoteArg(strconv.Itoa(s.LinesStart)))
+				parts = append(parts, quoteArg(strconv.Itoa(s.LinesStart)))
 				if s.LinesEnd > 0 {
-					parts = append(parts, shellQuoteArg(strconv.Itoa(s.LinesEnd)))
+					parts = append(parts, quoteArg(strconv.Itoa(s.LinesEnd)))
 				}
 			}
 		}

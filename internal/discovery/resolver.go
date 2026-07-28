@@ -24,15 +24,17 @@ type ErrNoScopedIgnoredTargets struct {
 
 func (e ErrNoScopedIgnoredTargets) Error() string {
 	if len(e.ScopeTargets) == 1 {
-		return fmt.Sprintf("--include: no ignored files or directories under '%s'\n\n  --include is scoped to the target paths. To include from elsewhere,\n  use --then to start a new scope:\n    catclip %s --then . --include <path>", e.ScopeTargets[0], e.ScopeTargets[0])
+		return fmt.Sprintf("--include: no ignored files or directories are available under '%s'.\n\n  --include only authorizes paths hidden by .gitignore or .hiss.\n  If the content is already visible, remove --include.\n  Otherwise, provide its exact path from the current directory.", e.ScopeTargets[0])
 	}
-	return "--include: no ignored files or directories under the current scope targets\n\n  --include is scoped to the target paths. To include from elsewhere,\n  use --then to start a new scope."
+	return "--include: no ignored files or directories are available under the selected targets.\n\n  --include only authorizes paths hidden by .gitignore or .hiss.\n  If the content is already visible, remove --include.\n  Otherwise, provide its exact path from the current directory."
 }
 
 type includedTargetSet struct {
-	exact    map[string]struct{}
-	dirs     []string
-	wildcard bool
+	exact      map[string]struct{}
+	dirs       []string
+	paths      []string
+	unresolved []string
+	wildcard   bool
 }
 
 // Resolver carries the per-scope discovery state — the invocation
@@ -62,16 +64,21 @@ type Resolver struct {
 	// scopeTargets is a per-call parameter (one resolver serves calls with
 	// different lists, including nil — see chooseIgnoredTargetMatches).
 	ignoredTargetsByScope map[string][]TargetMatch
-	VisibleDirs           VisibleDirIndex
-	visibleDirsReady      bool
-	visibleFiles          visibleFileIndex
-	visibleFilesReady     bool
-	VisibleFileList       []Entry
-	visibleFileListReady  bool
-	visibleAll            map[string]struct{}
-	visibleWithHiss       map[string]struct{}
-	visibleAllDirs        map[string]struct{}
-	visibleWithHissDirs   map[string]struct{}
+	// includeAwareTargetWalks records targets already enumerated with no-ignore
+	// plus per-entry include narrowing. Normal discovery uses it to avoid
+	// repeating the same work in the positional include stage; checkpoint tails
+	// start empty and therefore perform the required include expansion.
+	includeAwareTargetWalks map[string]struct{}
+	VisibleDirs             VisibleDirIndex
+	visibleDirsReady        bool
+	visibleFiles            visibleFileIndex
+	visibleFilesReady       bool
+	VisibleFileList         []Entry
+	visibleFileListReady    bool
+	visibleAll              map[string]struct{}
+	visibleWithHiss         map[string]struct{}
+	visibleAllDirs          map[string]struct{}
+	visibleWithHissDirs     map[string]struct{}
 	// Case-fold reverse indices populated alongside the visible-set maps.
 	// On case-insensitive filesystems (APFS, NTFS) a user-typed target like
 	// `Cli.go` resolves at the FS level to the canonical `cli.go`, but the
@@ -79,10 +86,11 @@ type Resolver struct {
 	// the resolver to falsely report ".gitignore" as the blocker. These maps
 	// give those helpers a case-fold fallback so they match rg's behavior:
 	// path arguments work regardless of casing on case-insensitive FS.
-	visibleAllFold          map[string]struct{}
-	visibleWithHissFold     map[string]struct{}
-	visibleAllDirsFold      map[string]struct{}
-	visibleWithHissDirsFold map[string]struct{}
+	visibleAllFold          map[string][]string
+	visibleWithHissFold     map[string][]string
+	visibleAllDirsFold      map[string][]string
+	visibleWithHissDirsFold map[string][]string
+	caseFoldIndexesReady    bool
 	ignoreSetsReady         bool
 }
 
@@ -118,43 +126,26 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	}
 	var err error
 
+	if len(resolver.IncludedTargets.unresolved) > 0 {
+		diagnostics, err := resolver.unresolvedIncludeDiagnostics(scopeIndex, s.Targets, s.IncludedTargets, colors)
+		if err != nil {
+			return result, err
+		}
+		result.Diagnostics = append(result.Diagnostics, diagnostics...)
+		result.Notices = DedupePreserveOrder(result.Notices)
+		return result, nil
+	}
+
 	// Emit a notice for each --include path that was already visible (no
 	// gitignore/hiss rule blocked it). The include then had no effect, and
 	// silently passing it through hides a real user mistake. Wildcard
 	// --include `*` is treated as a deliberate broadening and not classified.
 	// See RESOLVED_PLAN_rg_parity_sweep.md §1.
-	noopNotices, noopErr := classifyNoOpIncludeNotices(&resolver, s.IncludedTargets)
+	noopNotices, noopErr := classifyNoOpIncludeNotices(&resolver, s.Targets, s.IncludedTargets)
 	if noopErr != nil {
 		return result, noopErr
 	}
 	result.Notices = append(result.Notices, noopNotices...)
-
-	// Effect-4 gate (unrelated --include) is intentionally NOT wired in
-	// yet. The literal "is include related to any target?" check clashes
-	// with two v0.5.x features that overload --include with additional
-	// meanings:
-	//   1. Basename target + --include ancestor probe (v0.5.7): e.g.
-	//      `catclip target.md --include blocked` resolves target.md as a
-	//      basename inside blocked/. Literal target `target.md` isn't
-	//      related to include `blocked`, but the resolution is valid.
-	//   2. Scope-relative --include (v0.5.7): e.g.
-	//      `catclip src --include vendor` finds src/vendor, not root vendor.
-	//      Literal target `src` and include `vendor` aren't related, but
-	//      the scoped resolution is intentional.
-	// Firing effect-4 at scope entry breaks both. A correct implementation
-	// needs to run AFTER target resolution and know which include values
-	// were actually consumed by the walker; that's tracked in the
-	// include-as-authorization follow-up. For now, the walker's block
-	// checks (ignoredDirMessage / ignoredFileMessage) still surface the
-	// user-visible "--include does not cover this target" error, and the
-	// silent no-op case (visible target + orphaned include) stays as-is.
-	// A prototype classifier (classifyEffect4Diagnostics) lived here until
-	// the v0.6.5 dead-code sweep; it implemented exactly the scope-entry
-	// literal-relatedness check this comment rules out, so a future
-	// implementation should not resurrect it wholesale. The detection
-	// taxonomy and the curated error message text are preserved in
-	// docs/versions/v0.6.4/reports/RESOLVED_PLAN_include_as_authorization.md
-	// §D (effect 4); the code itself is in git history at the sweep commit.
 
 	var entries []Entry
 	selectedPaths := make([]string, 0, len(s.Targets))
@@ -209,6 +200,30 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	}
 
 	entries = DedupeEntriesByPath(entries)
+	unusedIncludes := resolver.unusedConcreteIncludes(s.Targets, entries)
+	if len(unusedIncludes) > 0 && !diagnosticsContainError(result.Diagnostics) {
+		diagnostics, err := resolver.unusedIncludeDiagnostics(scopeIndex, s.Targets, s.IncludedTargets, unusedIncludes, colors)
+		if err != nil {
+			return result, err
+		}
+		result.Diagnostics = append(result.Diagnostics, diagnostics...)
+	}
+	// A zero-match glob explains the scope only when every requested target in
+	// that scope was a conclusively empty glob. If any sibling target produced
+	// entries, a later stage can still empty the scope for an unrelated reason;
+	// if any sibling target was unresolved in another way, the generic footer
+	// still has useful work to do.
+	explainedTargetCount := 0
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.ExplainsEmptyResult {
+			explainedTargetCount++
+		}
+	}
+	if len(entries) > 0 || explainedTargetCount != len(s.Targets) {
+		for i := range result.Diagnostics {
+			result.Diagnostics[i].ExplainsEmptyResult = false
+		}
+	}
 
 	// If any per-target resolution produced an IsError diagnostic
 	// (ignored-dir / ignored-file guidance, include-not-covering
@@ -223,6 +238,7 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		for i := range result.Diagnostics {
 			if result.Diagnostics[i].IsError {
 				result.Diagnostics[i].IsScopeUnsatisfiable = true
+				result.Diagnostics[i].ExplainsEmptyResult = true
 			}
 		}
 	}
@@ -242,10 +258,12 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		return result, nil
 	}
 
-	entries, err = applyScopeStages(&resolver, gitCtx, s, entries)
+	var stageDiagnostics []Diagnostic
+	entries, stageDiagnostics, err = applyScopeStagesWithDiagnostics(&resolver, gitCtx, s, entries, scopeIndex, colors)
 	if err != nil {
 		return result, err
 	}
+	result.Diagnostics = append(result.Diagnostics, stageDiagnostics...)
 
 	StampEntriesWithScopeOutputMode(entries, mode, s)
 	result.Entries = EnsureEntryAbsPaths(entries, cfg.WorkingDir)
@@ -280,24 +298,48 @@ func IncludeTargetsContainWildcard(targets []string) bool {
 	return false
 }
 
+func resolveConcreteIncludePath(workingDir, target string) (string, bool, bool) {
+	target = normalizeRelPath(target)
+	if target == "" || target == "*" {
+		return "", false, false
+	}
+	info, err := os.Lstat(filepath.Join(workingDir, filepath.FromSlash(target)))
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || (!info.IsDir() && !info.Mode().IsRegular()) {
+		return "", false, false
+	}
+	return target, info.IsDir(), true
+}
+
 func BuildIncludedTargetSet(workingDir string, targets []string) includedTargetSet {
 	if len(targets) == 0 {
 		return includedTargetSet{}
 	}
 	set := includedTargetSet{
-		exact:    make(map[string]struct{}, len(targets)),
-		dirs:     make([]string, 0, len(targets)),
-		wildcard: IncludeTargetsContainWildcard(targets),
+		exact:      make(map[string]struct{}, len(targets)),
+		dirs:       make([]string, 0, len(targets)),
+		paths:      make([]string, 0, len(targets)),
+		unresolved: make([]string, 0, len(targets)),
+		wildcard:   IncludeTargetsContainWildcard(targets),
 	}
+	seen := make(map[string]struct{}, len(targets))
 	for _, target := range targets {
 		target = normalizeRelPath(target)
-		if target == "" {
+		if target == "" || target == "*" {
 			continue
 		}
-		set.exact[target] = struct{}{}
-		info, err := os.Stat(filepath.Join(workingDir, filepath.FromSlash(target)))
-		if err == nil && info.IsDir() {
-			set.dirs = append(set.dirs, target)
+		if _, duplicate := seen[target]; duplicate {
+			continue
+		}
+		seen[target] = struct{}{}
+		concrete, isDir, ok := resolveConcreteIncludePath(workingDir, target)
+		if !ok {
+			set.unresolved = append(set.unresolved, target)
+			continue
+		}
+		set.exact[concrete] = struct{}{}
+		set.paths = append(set.paths, concrete)
+		if isDir {
+			set.dirs = append(set.dirs, concrete)
 		}
 	}
 	return set
@@ -306,8 +348,8 @@ func BuildIncludedTargetSet(workingDir string, targets []string) includedTargetS
 // ensureIgnoreSets populates the cached rg-derived visible-file sets used
 // for ignore attribution. visibleAll respects .gitignore only; visibleWithHiss
 // layers the global .hiss on top. The dir maps are derived by walking the
-// path.Dir chain of each file. When --include '*' is active the caller
-// short-circuits without consulting either set.
+// path.Dir chain of each file. Wildcard includes still need these sets to
+// distinguish ordinary visible files from the ignored files they authorize.
 func (r *Resolver) ensureIgnoreSets() error {
 	if r.ignoreSetsReady {
 		return nil
@@ -320,10 +362,6 @@ func (r *Resolver) ensureIgnoreSets() error {
 	r.visibleWithHiss = visibleWithHiss
 	r.visibleAllDirs = search.DirsContainingFiles(visibleAll)
 	r.visibleWithHissDirs = search.DirsContainingFiles(visibleWithHiss)
-	r.visibleAllFold = lowercaseStringSet(visibleAll)
-	r.visibleWithHissFold = lowercaseStringSet(visibleWithHiss)
-	r.visibleAllDirsFold = lowercaseStringSet(r.visibleAllDirs)
-	r.visibleWithHissDirsFold = lowercaseStringSet(r.visibleWithHissDirs)
 	r.ignoreSetsReady = true
 	return nil
 }
@@ -332,16 +370,15 @@ func (r *Resolver) ensureIgnoreSets() error {
 // one per --include path that was already visible (no gitignore/hiss rule
 // blocked it). The classifier consults the resolver's visible-set maps
 // directly (with case-fold fallback) so it does not depend on the
-// IncludedTargets that were just built; that keeps the wildcard short-
-// circuit in fileBlockedBy / dirBlockedBy from masking what should be a
-// "no rule" answer.
+// IncludedTargets that were just built. This keeps directory authorization
+// shortcuts from masking what should be a "no rule" answer.
 //
 // Wildcard --include `*` is intentionally untouched: the user typed it to
 // authorize every gitignored path, so reporting individual elements as
 // no-ops would be noise. Stat errors and dotpath ("." / "") entries are
 // skipped: the user is allowed to be redundant; we only flag the case
 // where the include's only effect is empty.
-func classifyNoOpIncludeNotices(r *Resolver, includes []string) ([]string, error) {
+func classifyNoOpIncludeNotices(r *Resolver, scopeTargets, includes []string) ([]string, error) {
 	if r.IncludedTargets.wildcard || len(includes) == 0 {
 		return nil, nil
 	}
@@ -366,17 +403,19 @@ func classifyNoOpIncludeNotices(r *Resolver, includes []string) ([]string, error
 			continue
 		}
 		lowered := strings.ToLower(rel)
+		// A visible directory can still contain ignored descendants. Including
+		// it is therefore not a provable no-op; only visible regular files are.
+		if info.IsDir() || !includePathRelatedToScopeTargets(rel, scopeTargets) {
+			continue
+		}
 		var visible bool
-		if info.IsDir() {
-			if _, ok := r.visibleWithHissDirs[rel]; ok {
-				visible = true
-			} else if _, ok := r.visibleWithHissDirsFold[lowered]; ok {
-				visible = true
-			}
+		if _, ok := r.visibleWithHiss[rel]; ok {
+			visible = true
 		} else {
-			if _, ok := r.visibleWithHiss[rel]; ok {
-				visible = true
-			} else if _, ok := r.visibleWithHissFold[lowered]; ok {
+			if err := r.ensureCaseFoldIndexes(); err != nil {
+				return nil, err
+			}
+			if r.caseFoldCandidateIsSameFile(rel, r.visibleWithHissFold[lowered]) {
 				visible = true
 			}
 		}
@@ -404,18 +443,61 @@ func diagnosticsContainError(diags []Diagnostic) bool {
 	return false
 }
 
-// lowercaseStringSet builds a parallel set keyed by strings.ToLower so
-// case-sensitive lookups can fall back to case-fold on case-insensitive
-// filesystems. Cheap: one extra map per call site, populated once.
-func lowercaseStringSet(in map[string]struct{}) map[string]struct{} {
+// lowercaseStringIndex builds a reverse index keyed by strings.ToLower so
+// case-sensitive lookups can fall back to case-fold candidates. Retaining the
+// original paths matters on Linux: `Case.txt` and `case.txt` can be two
+// different files and must not be merged merely because their folded keys
+// collide.
+func lowercaseStringIndex(in map[string]struct{}) map[string][]string {
 	if len(in) == 0 {
 		return nil
 	}
-	out := make(map[string]struct{}, len(in))
+	out := make(map[string][]string, len(in))
 	for k := range in {
-		out[strings.ToLower(k)] = struct{}{}
+		folded := strings.ToLower(k)
+		out[folded] = append(out[folded], k)
 	}
 	return out
+}
+
+// ensureCaseFoldIndexes builds the expensive reverse maps only after a
+// canonical path lookup misses. Ordinary exact-cased targets use the direct
+// visible sets and should not pay one allocation per project path merely to
+// support the case-insensitive filesystem fallback.
+func (r *Resolver) ensureCaseFoldIndexes() error {
+	if r.caseFoldIndexesReady {
+		return nil
+	}
+	if err := r.ensureIgnoreSets(); err != nil {
+		return err
+	}
+	r.visibleAllFold = lowercaseStringIndex(r.visibleAll)
+	r.visibleWithHissFold = lowercaseStringIndex(r.visibleWithHiss)
+	r.visibleAllDirsFold = lowercaseStringIndex(r.visibleAllDirs)
+	r.visibleWithHissDirsFold = lowercaseStringIndex(r.visibleWithHissDirs)
+	r.caseFoldIndexesReady = true
+	return nil
+}
+
+// caseFoldCandidateIsSameFile asks the filesystem whether a folded candidate
+// is the same physical path as relPath. APFS/NTFS wrong-case lookups return the
+// same file and preserve Catclip's existing recovery; case-sensitive filesystems
+// can hold distinct case-colliding paths, which must remain distinct.
+func (r *Resolver) caseFoldCandidateIsSameFile(relPath string, candidates []string) bool {
+	if len(candidates) == 0 {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(relPath)))
+	if err != nil {
+		return false
+	}
+	for _, candidate := range candidates {
+		candidateInfo, err := os.Stat(filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(candidate)))
+		if err == nil && os.SameFile(info, candidateInfo) {
+			return true
+		}
+	}
+	return false
 }
 
 // dirBlockedBy reports the ignore source blocking a directory's contents,
@@ -444,11 +526,14 @@ func (r *Resolver) dirBlockedBy(relPath string) (*BlockInfo, error) {
 	// user-typed `Docs` resolves at the FS level to canonical `docs`. rg
 	// already accepts this transparently; mirror that behavior here so
 	// dirBlockedBy doesn't falsely attribute the miss to .gitignore.
+	if err := r.ensureCaseFoldIndexes(); err != nil {
+		return nil, err
+	}
 	lowered := strings.ToLower(relPath)
-	if _, ok := r.visibleWithHissDirsFold[lowered]; ok {
+	if r.caseFoldCandidateIsSameFile(relPath, r.visibleWithHissDirsFold[lowered]) {
 		return nil, nil
 	}
-	if _, ok := r.visibleAllDirsFold[lowered]; ok {
+	if r.caseFoldCandidateIsSameFile(relPath, r.visibleAllDirsFold[lowered]) {
 		return &BlockInfo{Source: ".hiss"}, nil
 	}
 	paths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{
@@ -465,14 +550,12 @@ func (r *Resolver) dirBlockedBy(relPath string) (*BlockInfo, error) {
 }
 
 // fileBlockedBy reports the ignore source blocking a specific file, or nil
-// if the file is visible. Wildcard --include synthesizes a block so callers
-// route the file through the bypass path uniformly with directories.
+// if the file is visible. Even wildcard --include must retain this attribution:
+// its no-ignore walk is broad, but ordinary visible files must not be marked or
+// rendered as newly admitted ignored files.
 func (r *Resolver) fileBlockedBy(relPath string) (*BlockInfo, error) {
 	if relPath == "." || relPath == "" {
 		return nil, nil
-	}
-	if r.IncludedTargets.wildcard {
-		return &BlockInfo{Source: ""}, nil
 	}
 	if err := r.ensureIgnoreSets(); err != nil {
 		return nil, err
@@ -487,22 +570,25 @@ func (r *Resolver) fileBlockedBy(relPath string) (*BlockInfo, error) {
 	// the user-typed `Cli.go` is the same physical file as the visible-set's
 	// canonical `cli.go`; without this fallback the missed lookup falsely
 	// resolves to ".gitignore" and the user sees a wrong-attribution error.
+	if err := r.ensureCaseFoldIndexes(); err != nil {
+		return nil, err
+	}
 	lowered := strings.ToLower(relPath)
-	if _, ok := r.visibleWithHissFold[lowered]; ok {
+	if r.caseFoldCandidateIsSameFile(relPath, r.visibleWithHissFold[lowered]) {
 		return nil, nil
 	}
-	if _, ok := r.visibleAllFold[lowered]; ok {
+	if r.caseFoldCandidateIsSameFile(relPath, r.visibleAllFold[lowered]) {
 		return &BlockInfo{Source: ".hiss"}, nil
 	}
 	return &BlockInfo{Source: ".gitignore"}, nil
 }
 
 func (r *Resolver) targetIncluded(target string) bool {
-	if len(r.IncludedTargets.exact) == 0 {
-		return false
-	}
 	if r.IncludedTargets.wildcard {
 		return true
+	}
+	if len(r.IncludedTargets.exact) == 0 {
+		return false
 	}
 	target = normalizeRelPath(target)
 	if _, ok := r.IncludedTargets.exact[target]; ok {
@@ -546,27 +632,6 @@ func (r *Resolver) walkAuthorizedByInclude(target string) bool {
 	return false
 }
 
-// filterByTargetIncluded returns the subset of entries that pass the
-// per-entry --include authorization check. Used after discoverFilesUnder
-// on an include-authorized ignored subtree: the walker was allowed to
-// enter because walkAuthorizedByInclude was true, and this filter narrows
-// the emitted set to entries whose own path matches an include value
-// (exact / dir-prefix). Wildcard --include short-circuits (every entry
-// passes). Called only from the ignored-content code paths — non-ignored
-// entries are outside --include's jurisdiction.
-func (r *Resolver) filterByTargetIncluded(entries []Entry) []Entry {
-	if r.IncludedTargets.wildcard || len(entries) == 0 {
-		return entries
-	}
-	kept := entries[:0]
-	for _, e := range entries {
-		if r.targetIncluded(e.RelPath) {
-			kept = append(kept, e)
-		}
-	}
-	return kept
-}
-
 // includedDescendantsOf returns the user-supplied include paths that are
 // strict descendants of target. Used by the ignored-target error path to
 // detect the "user pointed --include inside the target" mistake and
@@ -608,224 +673,6 @@ func (r *Resolver) targetPathIsDirectory(relTarget string) (bool, error) {
 		return false, nil
 	}
 	return false, err
-}
-
-// CanResolveTargetWithoutPrompt mirrors the non-interactive resolver's
-// deterministic branches. It returns true only when a target can be handled
-// without opening fzf or prompting for ambiguity resolution.
-// TargetIsReachable reports whether a typed target can be discovered by
-// catclip — visibly, by basename/fuzzy match, or via an authorized
-// --include subtree. Used by the startup-picker entrypoint to suppress
-// filter-value pickers (--only / --exclude / --include) when the target is
-// gitignored without --include coverage; surfacing the ignored-target error
-// is the right response, not a picker that can't help.
-// See docs/versions/v0.5.7/reports/ACTIVE_BUG_filter_picker_fires_before_target_check.md.
-func (r *Resolver) TargetIsReachable(target string) (bool, error) {
-	normalized := normalizeRelPath(target)
-	if normalized == "" || normalized == "." || hasGlobChars(normalized) {
-		return true, nil
-	}
-
-	abs := filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(normalized))
-	info, statErr := os.Stat(abs)
-	if statErr == nil {
-		var block *BlockInfo
-		var err error
-		if info.IsDir() {
-			block, err = r.dirBlockedBy(normalized)
-		} else {
-			block, err = r.fileBlockedBy(normalized)
-		}
-		if err != nil {
-			return false, err
-		}
-		if block == nil || block.Source == "" {
-			return true, nil
-		}
-		// Path exists but is blocked. Reachable only if --include
-		// authorizes it — either directly (targetIncluded) or as an
-		// ancestor of a deep include (walkAuthorizedByInclude).
-		if r.IncludedTargets.wildcard || r.walkAuthorizedByInclude(normalized) {
-			return true, nil
-		}
-		return false, nil
-	}
-
-	// Path doesn't exist directly. Try basename + fuzzy hits in the visible
-	// set, then --include'd subtrees.
-	discovered, _, err := r.resolveVisibleFilesByBasename(".", normalized)
-	if err != nil {
-		return false, err
-	}
-	if len(discovered) > 0 {
-		return true, nil
-	}
-	files, err := r.fuzzySearchFiles(".", normalized)
-	if err != nil {
-		return false, err
-	}
-	if len(files) > 0 {
-		return true, nil
-	}
-	dirs, err := r.fuzzySearchDirs(".", normalized)
-	if err != nil {
-		return false, err
-	}
-	if len(dirs) > 0 {
-		return true, nil
-	}
-	if r.hasAnyIncludeActive() {
-		hits, err := r.FindBasenameInIncludedSubtrees(normalized)
-		if err != nil {
-			return false, err
-		}
-		if len(hits) > 0 {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// HasAnyVisibleMatch reports whether the target resolves to *any* visible
-// candidate — an existing path, an exact-basename file, or a fuzzy file/dir
-// hit. Used by the startup-picker gate to distinguish "multi-hit visible
-// (genuine ambiguity, picker is the right response)" from "zero matches
-// anywhere (let the not-found warning fire instead)". A glob target is
-// trivially treated as "has matches" so the gate doesn't fire there.
-// See docs/versions/v0.5.7/reports/ACTIVE_PLAN_startup_picker_gated_on_ambiguity.md.
-func (r *Resolver) HasAnyVisibleMatch(target string) (bool, error) {
-	if target == "" || hasGlobChars(target) {
-		return true, nil
-	}
-	normalized := normalizeRelPath(target)
-	if normalized == "" || normalized == "." {
-		return true, nil
-	}
-	exists, err := r.TargetPathExists(normalized)
-	if err != nil {
-		return false, err
-	}
-	if exists {
-		return true, nil
-	}
-	discovered, _, err := r.resolveVisibleFilesByBasename(".", normalized)
-	if err != nil {
-		return false, err
-	}
-	if len(discovered) > 0 {
-		return true, nil
-	}
-	files, err := r.fuzzySearchFiles(".", normalized)
-	if err != nil {
-		return false, err
-	}
-	if len(files) > 0 {
-		return true, nil
-	}
-	dirs, err := r.fuzzySearchDirs(".", normalized)
-	if err != nil {
-		return false, err
-	}
-	return len(dirs) > 0, nil
-}
-
-func (r *Resolver) CanResolveTargetWithoutPrompt(target string) (bool, error) {
-	if hasGlobChars(target) {
-		return true, nil
-	}
-
-	normalizedTarget := normalizeRelPath(target)
-	if normalizedTarget == "" {
-		normalizedTarget = "."
-	}
-
-	exists, err := r.TargetPathExists(normalizedTarget)
-	if err != nil {
-		return false, err
-	}
-	if exists {
-		return true, nil
-	}
-
-	if strings.Contains(normalizedTarget, "/") {
-		return r.canResolveScopedTargetWithoutPrompt(normalizedTarget)
-	}
-
-	if resolvedDir, ok, err := r.resolveVisibleDirByExactBasename(".", normalizedTarget); err != nil {
-		return false, err
-	} else if ok && resolvedDir != "" {
-		conflict, err := r.hasVisibleFileBasenameConflict(".", normalizedTarget)
-		if err != nil {
-			return false, err
-		}
-		if !conflict {
-			return true, nil
-		}
-	}
-
-	searchedFiles := false
-	if prefersDirectFileLookup(normalizedTarget) {
-		searchedFiles = true
-		discovered, skipped, err := r.resolveVisibleFilesByBasename(".", normalizedTarget)
-		if err != nil {
-			return false, err
-		}
-		if len(discovered) > 0 || len(skipped) > 0 {
-			return true, nil
-		}
-		fuzzyFiles, err := r.fuzzySearchFiles(".", normalizedTarget)
-		if err != nil {
-			return false, err
-		}
-		switch len(fuzzyFiles) {
-		case 0:
-		case 1:
-			return true, nil
-		default:
-			return false, nil
-		}
-	}
-
-	matches, err := r.fuzzySearchDirs(".", normalizedTarget)
-	if err != nil {
-		return false, err
-	}
-	if !searchedFiles && len(matches) > 0 {
-		fuzzyFiles, err := r.fuzzySearchFiles(".", normalizedTarget)
-		if err != nil {
-			return false, err
-		}
-		if len(fuzzyFiles) > 0 {
-			combined, err := rankTargetMatches(normalizedTarget, matches, fuzzyFiles)
-			if err != nil {
-				return false, err
-			}
-			return len(combined) == 1, nil
-		}
-	}
-
-	switch len(matches) {
-	case 0:
-		if searchedFiles {
-			return false, nil
-		}
-		discovered, skipped, err := r.resolveVisibleFilesByBasename(".", normalizedTarget)
-		if err != nil {
-			return false, err
-		}
-		if len(discovered) > 0 || len(skipped) > 0 {
-			return true, nil
-		}
-		fuzzyFiles, err := r.fuzzySearchFiles(".", normalizedTarget)
-		if err != nil {
-			return false, err
-		}
-		return len(fuzzyFiles) == 1, nil
-	case 1:
-		return true, nil
-	default:
-		return false, nil
-	}
 }
 
 func (r *Resolver) canResolveScopedTargetWithoutPrompt(normalizedTarget string) (bool, error) {
@@ -1008,7 +855,6 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 		if err != nil {
 			return nil, Diagnostics, notices, false, err
 		}
-		notices = append(notices, formatSkippedMatchesWarning(skipped)...)
 		if len(discovered) > 0 {
 			return discovered, Diagnostics, notices, false, nil
 		}
@@ -1060,38 +906,14 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 			}
 			return incDiscovered, Diagnostics, notices, false, nil
 		}
-		fuzzyFiles, err := r.fuzzySearchFiles(".", normalizedTarget)
-		if err != nil {
-			return nil, Diagnostics, notices, false, err
+		if hidden := r.ignoredExactFileCandidates(skipped); len(hidden) > 0 {
+			Diagnostics = append(Diagnostics, Diagnostic{
+				Message:          ignoredAncestorMessage(target, scopeIndex, hidden, colors),
+				IsTargetNotFound: true,
+			})
+			return nil, Diagnostics, notices, false, nil
 		}
-		switch len(fuzzyFiles) {
-		case 0:
-		case 1:
-			discovered, handled, diag, err := r.resolveExactTarget(fuzzyFiles[0], false, colors)
-			if diag != nil {
-				Diagnostics = append(Diagnostics, *diag)
-			}
-			if handled {
-				return discovered, Diagnostics, notices, false, err
-			}
-		default:
-			selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", fuzzyFiles, false, stderr, colors)
-			if err != nil {
-				if errors.Is(err, ErrSelectionCancelled) {
-					return nil, Diagnostics, notices, true, nil
-				}
-				return nil, Diagnostics, notices, false, err
-			}
-			selectedMatches := make([]TargetMatch, 0, len(selected))
-			for _, path := range selected {
-				selectedMatches = append(selectedMatches, TargetMatch{Path: path, Kind: "file"})
-			}
-			discovered, err := r.resolveTargetMatches(selectedMatches, colors)
-			if err != nil {
-				return nil, Diagnostics, notices, false, err
-			}
-			return discovered, Diagnostics, notices, false, nil
-		}
+		notices = append(notices, formatSkippedMatchesWarning(skipped)...)
 	}
 
 	if resolvedDir, ok, err := r.resolveVisibleDirByExactBasename(".", normalizedTarget); err != nil {
@@ -1112,169 +934,124 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 		}
 	}
 
-	matches, err := r.fuzzySearchDirs(".", normalizedTarget)
+	targetMatches, err := r.fuzzySearchTargetMatches(".", normalizedTarget)
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
-	if !searchedFiles && len(matches) > 0 {
-		fuzzyFiles, err := r.fuzzySearchFiles(".", normalizedTarget)
-		if err != nil {
-			return nil, Diagnostics, notices, false, err
-		}
-		if len(fuzzyFiles) > 0 {
-			combined, err := rankTargetMatches(normalizedTarget, matches, fuzzyFiles)
-			if err != nil {
-				return nil, Diagnostics, notices, false, err
-			}
-			if len(combined) == 1 {
-				discovered, handled, diag, err := r.resolveTargetMatch(combined[0], colors)
-				if diag != nil {
-					Diagnostics = append(Diagnostics, *diag)
-				}
-				if handled {
-					return discovered, Diagnostics, notices, false, err
-				}
-			}
-			if canPromptForChoice(r.Cfg) {
-				selected, err := chooseTargetMatch(r.Cfg, normalizedTarget, combined, stderr, colors)
-				if err != nil {
-					if errors.Is(err, ErrSelectionCancelled) {
-						return nil, Diagnostics, notices, true, nil
-					}
-					return nil, Diagnostics, notices, false, err
-				}
-				discovered, err := r.resolveTargetMatches(selected, colors)
-				if err != nil {
-					return nil, Diagnostics, notices, false, err
-				}
-				return discovered, Diagnostics, notices, false, nil
-			}
-		}
-	}
-	switch len(matches) {
+	switch len(targetMatches) {
 	case 0:
-		if !searchedFiles {
-			var skipped []SkippedMatch
-			discovered, skipped, err := r.resolveVisibleFilesByBasename(".", normalizedTarget)
-			if err != nil {
-				return nil, Diagnostics, notices, false, err
-			}
-			notices = append(notices, formatSkippedMatchesWarning(skipped)...)
-			if len(discovered) > 0 {
-				return discovered, Diagnostics, notices, false, nil
-			}
-			// Same include-subtree probe as in the prefersDirectFileLookup
-			// branch: handles dir-shorthand targets (no extension, e.g. `docker`)
-			// when the user --include's the ancestor.
-			// ACTIVE_BUG_basename_target_ignores_include_subtree.md.
-			includedHits, err := r.FindBasenameInIncludedSubtrees(normalizedTarget)
-			if err != nil {
-				return nil, Diagnostics, notices, false, err
-			}
-			switch len(includedHits) {
-			case 0:
-				// fall through to fuzzy + not-found / probe
-			case 1:
-				incMatches := []TargetMatch{hitToTargetMatch(includedHits[0])}
-				incDiscovered, err := r.resolveTargetMatches(incMatches, colors)
-				if err != nil {
-					return nil, Diagnostics, notices, false, err
-				}
-				return incDiscovered, Diagnostics, notices, false, nil
-			default:
-				paths := make([]string, len(includedHits))
-				for i, h := range includedHits {
-					paths[i] = h.Path
-				}
-				selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", paths, false, stderr, colors)
-				if err != nil {
-					if errors.Is(err, ErrSelectionCancelled) {
-						return nil, Diagnostics, notices, true, nil
-					}
-					return nil, Diagnostics, notices, false, err
-				}
-				hitByPath := make(map[string]includedBasenameHit, len(includedHits))
-				for _, h := range includedHits {
-					hitByPath[h.Path] = h
-				}
-				selectedMatches := make([]TargetMatch, 0, len(selected))
-				for _, p := range selected {
-					h, ok := hitByPath[normalizeRelPath(p)]
-					if !ok {
-						h = includedBasenameHit{Path: p}
-					}
-					selectedMatches = append(selectedMatches, hitToTargetMatch(h))
-				}
-				incDiscovered, err := r.resolveTargetMatches(selectedMatches, colors)
-				if err != nil {
-					return nil, Diagnostics, notices, false, err
-				}
-				return incDiscovered, Diagnostics, notices, false, nil
-			}
-			fuzzyFiles, err := r.fuzzySearchFiles(".", normalizedTarget)
-			if err != nil {
-				return nil, Diagnostics, notices, false, err
-			}
-			switch len(fuzzyFiles) {
-			case 0:
-			case 1:
-				discovered, handled, diag, err := r.resolveExactTarget(fuzzyFiles[0], false, colors)
-				if diag != nil {
-					Diagnostics = append(Diagnostics, *diag)
-				}
-				if handled {
-					return discovered, Diagnostics, notices, false, err
-				}
-			default:
-				selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", fuzzyFiles, false, stderr, colors)
-				if err != nil {
-					if errors.Is(err, ErrSelectionCancelled) {
-						return nil, Diagnostics, notices, true, nil
-					}
-					return nil, Diagnostics, notices, false, err
-				}
-				selectedMatches := make([]TargetMatch, 0, len(selected))
-				for _, path := range selected {
-					selectedMatches = append(selectedMatches, TargetMatch{Path: path, Kind: "file"})
-				}
-				discovered, err := r.resolveTargetMatches(selectedMatches, colors)
-				if err != nil {
-					return nil, Diagnostics, notices, false, err
-				}
-				return discovered, Diagnostics, notices, false, nil
-			}
-		}
-		if len(notices) == 0 {
-			Diagnostics = append(Diagnostics, Diagnostic{Message: targetNotFoundOrIgnoredAncestorMessage(r, target, scopeIndex, colors), IsTargetNotFound: true})
-		}
-		return nil, Diagnostics, notices, false, nil
 	case 1:
-		files, err := r.discoverVisibleFilesUnder(matches[0])
-		return withTargetRoot(files, matches[0]), Diagnostics, notices, false, err
+		// A visible exact basename retains priority over hidden duplicates.
+		// For an extensionless non-exact result, check hidden exact identity
+		// before accepting the lower-quality fuzzy match. Zero-match execution
+		// already probes through targetNotFoundOrIgnoredAncestorMessage, while
+		// multi-match execution is safely ambiguity-gated.
+		if !searchedFiles && path.Base(targetMatches[0].Path) != normalizedTarget {
+			if hidden := r.findIgnoredAncestors(normalizedTarget); len(hidden) > 0 {
+				Diagnostics = append(Diagnostics, Diagnostic{
+					Message:          ignoredAncestorMessage(target, scopeIndex, hidden, colors),
+					IsTargetNotFound: true,
+				})
+				return nil, Diagnostics, notices, false, nil
+			}
+		}
+		discovered, handled, diag, err := r.resolveTargetMatch(targetMatches[0], colors)
+		if diag != nil {
+			Diagnostics = append(Diagnostics, *diag)
+		}
+		if handled {
+			return discovered, Diagnostics, notices, false, err
+		}
 	default:
-		selected, err := chooseDirectoryMatch(r.Cfg, target, ".", matches, stderr, colors)
+		selected, err := chooseFuzzyTargetMatches(r.Cfg, normalizedTarget, targetMatches, stderr, colors)
 		if err != nil {
 			if errors.Is(err, ErrSelectionCancelled) {
 				return nil, Diagnostics, notices, true, nil
 			}
-			return nil, nil, nil, false, err
+			return nil, Diagnostics, notices, false, err
 		}
-		selectedMatches := make([]TargetMatch, 0, len(selected))
-		for _, path := range selected {
-			selectedMatches = append(selectedMatches, TargetMatch{Path: path, Kind: "dir"})
-		}
-		files, err := r.resolveTargetMatches(selectedMatches, colors)
+		discovered, err := r.resolveTargetMatches(selected, colors)
 		if err != nil {
 			return nil, Diagnostics, notices, false, err
 		}
-		return files, Diagnostics, notices, false, nil
+		return discovered, Diagnostics, notices, false, nil
 	}
+
+	// The complete mixed fzf pass found nothing. For extensionless shorthand,
+	// retain the exact-basename and authorized-include diagnostics that are not
+	// part of the visible picker inventory.
+	if !searchedFiles {
+		var skipped []SkippedMatch
+		discovered, skipped, err := r.resolveVisibleFilesByBasename(".", normalizedTarget)
+		if err != nil {
+			return nil, Diagnostics, notices, false, err
+		}
+		notices = append(notices, formatSkippedMatchesWarning(skipped)...)
+		if len(discovered) > 0 {
+			return discovered, Diagnostics, notices, false, nil
+		}
+
+		includedHits, err := r.FindBasenameInIncludedSubtrees(normalizedTarget)
+		if err != nil {
+			return nil, Diagnostics, notices, false, err
+		}
+		switch len(includedHits) {
+		case 0:
+		case 1:
+			incMatches := []TargetMatch{hitToTargetMatch(includedHits[0])}
+			incDiscovered, err := r.resolveTargetMatches(incMatches, colors)
+			if err != nil {
+				return nil, Diagnostics, notices, false, err
+			}
+			return incDiscovered, Diagnostics, notices, false, nil
+		default:
+			paths := make([]string, len(includedHits))
+			for i, h := range includedHits {
+				paths[i] = h.Path
+			}
+			selected, err := chooseFileMatch(r.Cfg, normalizedTarget, ".", paths, false, stderr, colors)
+			if err != nil {
+				if errors.Is(err, ErrSelectionCancelled) {
+					return nil, Diagnostics, notices, true, nil
+				}
+				return nil, Diagnostics, notices, false, err
+			}
+			hitByPath := make(map[string]includedBasenameHit, len(includedHits))
+			for _, h := range includedHits {
+				hitByPath[h.Path] = h
+			}
+			selectedMatches := make([]TargetMatch, 0, len(selected))
+			for _, p := range selected {
+				h, ok := hitByPath[normalizeRelPath(p)]
+				if !ok {
+					h = includedBasenameHit{Path: p}
+				}
+				selectedMatches = append(selectedMatches, hitToTargetMatch(h))
+			}
+			incDiscovered, err := r.resolveTargetMatches(selectedMatches, colors)
+			if err != nil {
+				return nil, Diagnostics, notices, false, err
+			}
+			return incDiscovered, Diagnostics, notices, false, nil
+		}
+	}
+
+	if len(notices) == 0 {
+		Diagnostics = append(Diagnostics, Diagnostic{Message: targetNotFoundOrIgnoredAncestorMessage(r, target, scopeIndex, colors), IsTargetNotFound: true})
+	}
+	return nil, Diagnostics, notices, false, nil
 }
 
 func (r *Resolver) resolveGlobTarget(scopeIndex int, pattern string, colors platform.Palette) ([]Entry, []Diagnostic, []string, bool, error) {
-	allFiles, err := r.discoverVisibleFilesUnder(".")
+	if strings.Contains(pattern, "**") {
+		return nil, nil, nil, false, newUsageError("%s", unsupportedTargetDoublestarMessage(pattern))
+	}
+	allFiles, err := r.discoverGlobCandidateFiles()
 	if err != nil {
 		return nil, nil, nil, false, err
+	}
+	if r.IncludedTargets.wildcard {
+		r.markIncludeAwareTargetWalk(pattern)
 	}
 	var matched []Entry
 	for _, entry := range allFiles {
@@ -1291,12 +1068,32 @@ func (r *Resolver) resolveGlobTarget(scopeIndex int, pattern string, colors plat
 	}
 	if len(matched) == 0 {
 		diag := Diagnostic{
-			Message:          globZeroMatchWarning(r, pattern, scopeIndex, colors),
-			IsTargetNotFound: true,
+			Message:             globZeroMatchWarning(r, pattern, scopeIndex, colors),
+			IsTargetNotFound:    true,
+			ExplainsEmptyResult: true,
+			ScopeIndex:          scopeIndex,
 		}
 		return nil, []Diagnostic{diag}, nil, false, nil
 	}
 	return withTargetRoot(matched, "."), nil, nil, false, nil
+}
+
+func (r *Resolver) discoverGlobCandidateFiles() ([]Entry, error) {
+	if r.IncludedTargets.wildcard {
+		return r.discoverFilesUnderWithIncludes(".")
+	}
+	entries, err := r.discoverVisibleFilesUnder(".")
+	if err != nil {
+		return nil, err
+	}
+	for _, includePath := range r.IncludedTargets.paths {
+		included, err := resolveExactIncludeStageTarget(r, includePath)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, included...)
+	}
+	return DedupeEntriesByPath(entries), nil
 }
 
 func (r *Resolver) resolveTargetMatch(match TargetMatch, colors platform.Palette) ([]Entry, bool, *Diagnostic, error) {
@@ -1367,12 +1164,12 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 		if err != nil {
 			return nil, true, nil, err
 		}
-		if block != nil {
-			if !r.walkAuthorizedByInclude(relTarget) {
-				return nil, true, &Diagnostic{Message: ignoredDirMessage(relTarget, block.Source, hasIncludes, r.includedDescendantsOf(relTarget), r.ScopeTargets, colors), IsError: true}, nil
-			}
-			files, err := discoverFilesUnder(r.Cfg.WorkingDir, relTarget, "", r.classifyTextFile, block)
-			files = r.filterByTargetIncluded(files)
+		if block != nil && !r.walkAuthorizedByInclude(relTarget) {
+			return nil, true, &Diagnostic{Message: ignoredDirMessage(relTarget, block.Source, hasIncludes, r.includedDescendantsOf(relTarget), r.ScopeTargets, colors), IsError: true}, nil
+		}
+		if r.walkAuthorizedByInclude(relTarget) {
+			files, err := r.discoverFilesUnderWithIncludes(relTarget)
+			r.markIncludeAwareTargetWalk(relTarget)
 			return withTargetRoot(files, relTarget), true, nil, err
 		}
 		files, err := r.discoverVisibleFilesUnder(relTarget)
@@ -1417,6 +1214,9 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 			return nil, true, &Diagnostic{Message: ignoredFileMessage(relTarget, block.Source, fromChained, hasIncludes, r.ScopeTargets, colors), IsError: true}, nil
 		}
 		entry = withAllowedByInclude(entry, *block)
+	}
+	if r.IncludedTargets.wildcard {
+		r.markIncludeAwareTargetWalk(relTarget)
 	}
 	return []Entry{entry}, true, nil, nil
 }
@@ -1768,8 +1568,8 @@ func (r *Resolver) buildVisibleFileIndex() error {
 
 // resolveIgnoreSets fetches the cached visible-file sets used for
 // rg-driven ignore attribution: visibleAll respects .gitignore only;
-// visibleWithHiss layers the global .hiss on top. When --include '*' is
-// active the caller short-circuits without consulting either set.
+// visibleWithHiss layers the global .hiss on top. Wildcard includes still use
+// these sets to distinguish ordinary visible files from admitted ignored ones.
 func (r *Resolver) resolveIgnoreSets() (map[string]struct{}, map[string]struct{}, error) {
 	visibleAll, err := search.ResolveVisibleFileSet(r.Cfg.WorkingDir, "", nil)
 	if err != nil {

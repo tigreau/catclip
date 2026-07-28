@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/tigreau/catclip/internal/cli"
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
@@ -161,6 +163,7 @@ printf '%s\n' "$input" | grep -F $'\tstdout\t' | head -n 1
 	if result.PreparedOutput.Plan.Len() != 1 {
 		t.Fatalf("expected prepared plan with 1 item, got %d", result.PreparedOutput.Plan.Len())
 	}
+	assertPreparedOutputReplays(t, result)
 }
 
 func TestMaybeResolveStartupSinkPickerArgsSelectsHeadlessAndForcesResolvedCommand(t *testing.T) {
@@ -295,6 +298,53 @@ exit 91
 	}
 }
 
+func TestStartupSinkPickerSkipsEmptyPreparedOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake-fzf cannot run on Windows")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"src/main.go": "package main\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+echo "fzf must not run for an empty prepared output" >&2
+exit 91
+`)
+
+	args := []string{"src", "--only", "*.ts"}
+	result, err := maybeResolveStartupSinkPickerArgs(nil, StartupPickerResult{
+		Args:    args,
+		UsedFzf: true,
+	})
+	if err != nil {
+		t.Fatalf("legacy sink gate returned error: %v", err)
+	}
+	if got, want := strings.Join(result.Args, "\n"), strings.Join(args, "\n"); got != want {
+		t.Fatalf("empty sink gate changed args\nwant: %q\ngot:  %q", want, got)
+	}
+	if result.PreparedOutput == nil || !result.PreparedOutput.Plan.IsEmpty() {
+		t.Fatalf("expected carried empty prepared output, got %#v", result.PreparedOutput)
+	}
+
+	frameResult, err := runStartupSinkFrame(startupInteractiveFrame{
+		Kind:      startupInteractiveFrameSink,
+		StartArgs: args,
+	}, nil)
+	if err != nil {
+		t.Fatalf("undo-aware sink gate returned error: %v", err)
+	}
+	if !frameResult.SinkResolved {
+		t.Fatal("empty sink frame must resolve without opening another picker")
+	}
+	if frameResult.UsedFzf {
+		t.Fatal("empty sink frame must not invoke fzf")
+	}
+	if frameResult.PreparedOutput == nil || !frameResult.PreparedOutput.Plan.IsEmpty() {
+		t.Fatalf("expected carried empty frame output, got %#v", frameResult.PreparedOutput)
+	}
+}
+
 func TestStartupUndoEscFromSinkReturnsToPreviousPicker(t *testing.T) {
 	if !platform.CanPromptInteractively() {
 		t.Skip("interactive terminal not available")
@@ -388,6 +438,24 @@ esac
 	}
 	if got, want := strings.Join(result.Args, "\n"), "shared\n-p"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+	assertPreparedOutputReplays(t, result)
+}
+
+func assertPreparedOutputReplays(t *testing.T, result StartupPickerResult) {
+	t.Helper()
+	if result.PreparedOutput == nil {
+		t.Fatal("expected prepared output")
+	}
+	if _, err := cli.ParseArgs(result.Args); err != nil {
+		t.Fatalf("resolved command must parse without interactive state: %v", err)
+	}
+	replayed, err := buildStartupSinkPickerContext(result.Args)
+	if err != nil {
+		t.Fatalf("rebuilding output from resolved command: %v", err)
+	}
+	if got, want := replayed.Plan.DistinctRelPaths(), result.PreparedOutput.Plan.DistinctRelPaths(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("resolved command changed prepared file set: got %v, want %v", got, want)
 	}
 }
 

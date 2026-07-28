@@ -77,6 +77,41 @@ type TargetMatch struct {
 	IgnoreSource string
 }
 
+// StartupTargetOutcome describes the routing decision established by the
+// startup target probe. The startup UI consumes this once instead of asking
+// separate reachability, determinism, and non-empty questions that each run
+// fuzzy matching over the same project inventory.
+type StartupTargetOutcome uint8
+
+const (
+	StartupTargetDirect StartupTargetOutcome = iota
+	StartupTargetBlocked
+	StartupTargetMissing
+	StartupTargetUniqueFuzzy
+	StartupTargetAmbiguousFuzzy
+	StartupTargetIncludedUnique
+	StartupTargetIncludedAmbiguous
+)
+
+// StartupTargetProbe is the structured result of probing one startup target.
+// Matches is populated for fuzzy and include-subtree outcomes so diagnostics
+// and future callers can retain the evidence behind the routing decision.
+type StartupTargetProbe struct {
+	Outcome StartupTargetOutcome
+	Matches []TargetMatch
+}
+
+// BypassesPicker reports whether fzf cannot help with this target. Normal
+// discovery must run so it can emit the precise ignored or not-found message.
+func (p StartupTargetProbe) BypassesPicker() bool {
+	return p.Outcome == StartupTargetBlocked || p.Outcome == StartupTargetMissing
+}
+
+// RequiresPicker reports whether the target has more than one valid answer.
+func (p StartupTargetProbe) RequiresPicker() bool {
+	return p.Outcome == StartupTargetAmbiguousFuzzy || p.Outcome == StartupTargetIncludedAmbiguous
+}
+
 // Diagnostic is a single user-facing message produced during
 // discovery (or, occasionally, by the parser). Field shapes are
 // exported so root can construct parser warnings before discovery
@@ -86,6 +121,8 @@ type Diagnostic struct {
 	IsError              bool
 	IsTargetNotFound     bool
 	IsScopeUnsatisfiable bool
+	ExplainsEmptyResult  bool
+	ScopeIndex           int
 }
 
 // compiledGlob caches a raw glob pattern alongside its regexp.

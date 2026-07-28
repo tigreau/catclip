@@ -75,8 +75,10 @@ func executeEmptyOutput(ctx outputExecutionContext, state outputExecutionState) 
 			fmt.Fprintln(ctx.Stderr, notice)
 		}
 	}
-	if err := discovery.WriteNoFilesMatchedMessage(state.Scopes, ctx.Stderr, ctx.Colors, state.Summary.HadSelectionCancel); err != nil {
-		return err
+	if !state.Summary.AllEmptyScopesExplained(len(state.Scopes)) {
+		if err := discovery.WriteNoFilesMatchedMessage(state.Scopes, ctx.Stderr, ctx.Colors, state.Summary.HadSelectionCancel); err != nil {
+			return err
+		}
 	}
 	if state.Summary.HasScopeUnsatisfiable {
 		return newExitError(2, "")

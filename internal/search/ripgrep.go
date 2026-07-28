@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,6 +32,28 @@ var (
 	benchRgMatchesCalls atomic.Int64
 	benchRgVisibleCalls atomic.Int64
 )
+
+const (
+	execPathChunkMaxCount     = 256
+	execPathChunkMaxBytes     = 60 * 1024
+	windowsExecPathChunkBytes = 24 * 1024
+)
+
+// execPathChunkByteLimit keeps explicit path arguments below the platform's
+// process-spawn limit. Windows CreateProcess caps the complete command line at
+// 32,767 UTF-16 code units, so reserve about 8 KiB for the executable, fixed
+// rg flags, quoting, and the terminating NUL. Unix keeps the existing 60 KiB
+// budget, which is comfortably below its usual ARG_MAX.
+func execPathChunkByteLimit(goos string) int {
+	if goos == "windows" {
+		return windowsExecPathChunkBytes
+	}
+	return execPathChunkMaxBytes
+}
+
+func currentExecPathChunkByteLimit() int {
+	return execPathChunkByteLimit(runtime.GOOS)
+}
 
 func benchEnabled() bool {
 	return os.Getenv("CATCLIP_BENCH_RG") != ""
@@ -348,7 +371,7 @@ func runRipgrepNulScanFiles(workingDir string, relPaths []string) (map[string]st
 		return nil, errRipgrepUnavailable
 	}
 	out := make(map[string]struct{}, len(relPaths))
-	for _, chunk := range chunkExecArgs(relPaths, 256, 60*1024) {
+	for _, chunk := range chunkExecArgs(relPaths, execPathChunkMaxCount, currentExecPathChunkByteLimit()) {
 		args := []string{
 			"--files-without-match",
 			"--text",
@@ -630,7 +653,7 @@ func RunRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 
 	matches := make(map[string][]int, len(absPaths))
 	chunks := 0
-	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+	for _, chunk := range chunkExecArgs(absPaths, execPathChunkMaxCount, currentExecPathChunkByteLimit()) {
 		chunks++
 		args := []string{
 			"--color=never",
@@ -752,7 +775,7 @@ func FirstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 	}
 	out := make(map[string]int, len(absPaths))
 	chunks := 0
-	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+	for _, chunk := range chunkExecArgs(absPaths, execPathChunkMaxCount, currentExecPathChunkByteLimit()) {
 		chunks++
 		args := []string{
 			"--color=never",
@@ -866,7 +889,7 @@ func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[s
 
 	matches := make(map[string]struct{}, len(absPaths))
 	chunks := 0
-	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+	for _, chunk := range chunkExecArgs(absPaths, execPathChunkMaxCount, currentExecPathChunkByteLimit()) {
 		chunks++
 		args := []string{
 			"--color=never",
@@ -1430,7 +1453,7 @@ func MaxLinesForFiles(absPaths []string) (int, error) {
 	}
 	maxLines := 0
 	chunks := 0
-	for _, chunk := range chunkExecArgs(absPaths, 256, 60*1024) {
+	for _, chunk := range chunkExecArgs(absPaths, execPathChunkMaxCount, currentExecPathChunkByteLimit()) {
 		chunks++
 		chunkMax, err := maxLinesForFileChunk(bin, chunk)
 		if err != nil {
@@ -1526,7 +1549,7 @@ func MaxLinesForSizedFiles(files []SizedFile) (int, error) {
 			)
 			return maxLines, nil
 		}
-		chunk, next := sizedLineCountCandidateChunk(candidates, start, 256, 60*1024)
+		chunk, next := sizedLineCountCandidateChunk(candidates, start, execPathChunkMaxCount, currentExecPathChunkByteLimit())
 		chunks++
 		chunkMax, err := maxLinesForFileChunk(bin, chunk)
 		if err != nil {

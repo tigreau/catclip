@@ -127,22 +127,53 @@ func ValidateSizeBounds(nums []int) error {
 	return nil
 }
 
-// shellQuoteArg / shellEnforceSingleQuote dup the resolver.go helpers
-// used by canonical render and parser error messages. See
-// internal/command/helpers.go for the same pattern.
+// shellQuoteArg / shellEnforceSingleQuote mirror the POSIX user-facing
+// canonical render helpers. The parse-failure fallback switches to the
+// PowerShell variants on Windows.
 
 func shellQuoteArg(arg string) string {
+	if isPlainShellArg(arg) {
+		return arg
+	}
 	if arg == "" {
 		return `""`
 	}
-	if !strings.ContainsAny(arg, " \t\n\"'\\*?[]{}()$&;|<>") {
-		return arg
+	if !strings.ContainsAny(arg, "$`\\\"!\n\r") {
+		return `"` + arg + `"`
 	}
-	return strconv.Quote(arg)
+	return shellEnforceSingleQuote(arg)
 }
 
 func shellEnforceSingleQuote(arg string) string {
 	return "'" + strings.ReplaceAll(arg, "'", `'\''`) + "'"
+}
+
+func powershellQuoteArg(arg string) string {
+	if isPlainShellArg(arg) {
+		return arg
+	}
+	return powershellEnforceSingleQuote(arg)
+}
+
+func powershellEnforceSingleQuote(arg string) string {
+	return "'" + strings.ReplaceAll(arg, "'", "''") + "'"
+}
+
+func isPlainShellArg(arg string) bool {
+	if arg == "" {
+		return false
+	}
+	for _, r := range arg {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case strings.ContainsRune("_./:-", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // singleQuoted unconditionally wraps arg in single quotes (no

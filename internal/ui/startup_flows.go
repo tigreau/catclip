@@ -37,21 +37,22 @@ func resolveStartupModifierChoice(resolver *discovery.Resolver, finalArgs, curre
 	case startupModifierModeThen:
 		return append(finalArgs, "--then"), true, nil
 	case startupModifierModeInclude:
-		currentIncludedTargets, err := startupCurrentScopeIncludedTargetPaths(finalArgs)
-		if err != nil {
-			return nil, false, err
+		for {
+			args, _, _, includeUsedFzf, err := resolveStartupScopeInputs(resolver, nil, []string{""}, currentScopeTargets, currentScopeExplicitTargets)
+			if err != nil {
+				return nil, true, err
+			}
+			candidate := append(finalArgs, args...)
+			includePaths := extractIncludePathsFromPickerArgs(args)
+			resolved, narrowUsedFzf, narrowErr := maybeNarrowConfirmForResolver(resolver, candidate, includePaths, currentScopeExplicitTargets)
+			if errors.Is(narrowErr, errNarrowConfirmBack) {
+				continue
+			}
+			if narrowErr != nil {
+				return nil, true, narrowErr
+			}
+			return resolved, true || includeUsedFzf || narrowUsedFzf, nil
 		}
-		args, _, _, includeUsedFzf, err := resolveStartupScopeInputs(resolver, nil, []string{""}, currentIncludedTargets, currentScopeExplicitTargets)
-		if err != nil {
-			return nil, true, err
-		}
-		candidate := append(finalArgs, args...)
-		includePaths := extractIncludePathsFromPickerArgs(args)
-		final, narrowUsedFzf, narrowErr := maybeNarrowConfirm(candidate, includePaths, currentScopeExplicitTargets)
-		if narrowErr != nil {
-			return nil, true, narrowErr
-		}
-		return final, true || includeUsedFzf || narrowUsedFzf, nil
 	case startupModifierModeOnly:
 		args, onlyUsedFzf, err := resolveStartupScopeFileSetArgs(finalArgs, "--only", "only> ")
 		return args, true || onlyUsedFzf, err
@@ -497,19 +498,24 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 			if !allowInteractiveCompletion {
 				return nil, nil, false, 0, cli.RequiredStageValueError(flag)
 			}
-			resolvedArgs, resolvedTargets, _, usedFzf, err := resolveStartupScopeInputs(resolver, nil, []string{""}, currentIncludedTargets, currentScopeExplicitTargets)
-			if err != nil {
-				return nil, nil, false, 0, err
+			for {
+				resolvedArgs, resolvedTargets, _, usedFzf, err := resolveStartupScopeInputs(resolver, nil, []string{""}, currentScopeTargets, currentScopeExplicitTargets)
+				if err != nil {
+					return nil, nil, false, 0, err
+				}
+				finalArgs := append(append([]string(nil), currentArgs...), resolvedArgs...)
+				// v0.6.4 narrow-confirm: if the just-resolved include is subset of
+				// the scope target, offer "keep / narrow" before returning.
+				includePaths := extractIncludePathsFromPickerArgs(resolvedArgs)
+				narrowed, narrowUsedFzf, narrowErr := maybeNarrowConfirmForResolver(resolver, finalArgs, includePaths, currentScopeExplicitTargets)
+				if errors.Is(narrowErr, errNarrowConfirmBack) {
+					continue
+				}
+				if narrowErr != nil {
+					return nil, nil, false, 0, narrowErr
+				}
+				return narrowed, append(append([]string(nil), currentScopeTargets...), resolvedTargets...), usedFzf || narrowUsedFzf, 0, nil
 			}
-			finalArgs := append(append([]string(nil), currentArgs...), resolvedArgs...)
-			// v0.6.4 narrow-confirm: if the just-resolved include is subset of
-			// the scope target, offer "keep / narrow" before returning.
-			includePaths := extractIncludePathsFromPickerArgs(resolvedArgs)
-			narrowed, narrowUsedFzf, narrowErr := maybeNarrowConfirm(finalArgs, includePaths, currentScopeExplicitTargets)
-			if narrowErr != nil {
-				return nil, nil, false, 0, narrowErr
-			}
-			return narrowed, append(append([]string(nil), currentScopeTargets...), resolvedTargets...), usedFzf || narrowUsedFzf, 0, nil
 		}
 		if err := cli.ValidateIncludeValues(values); err != nil {
 			return nil, nil, false, 0, err
@@ -518,24 +524,75 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 		if err != nil {
 			return nil, nil, false, 0, err
 		}
-		stageValues := append([]string(nil), exactStageValues...)
-		usedFzf := false
-		selectedPaths := append(append([]string(nil), currentIncludedTargets...), exactStageValues...)
-		for _, value := range unresolvedValues {
-			resolved, err := resolver.ResolveInteractiveIncludeTargets(value, selectedPaths, currentScopeExplicitTargets, currentScopeExplicitTargets)
-			if err != nil {
-				return nil, nil, false, 0, err
+		resolvedGroups := make([][]string, len(unresolvedValues))
+		resolveFrom := 0
+		stageUsedFzf := false
+	resolveIncludes:
+		for {
+			stageValues := append([]string(nil), exactStageValues...)
+			selectedPaths := append(append([]string(nil), currentIncludedTargets...), exactStageValues...)
+			for i := 0; i < resolveFrom; i++ {
+				stageValues = append(stageValues, resolvedGroups[i]...)
+				selectedPaths = append(selectedPaths, resolvedGroups[i]...)
 			}
-			if len(resolved) == 0 {
-				return nil, nil, false, 0, discovery.ErrSelectionCancelled
+			for resolveFrom < len(unresolvedValues) {
+				value := unresolvedValues[resolveFrom]
+				covered, err := resolver.InteractiveIgnoredQueryCoveredBySelection(value, selectedPaths, currentScopeExplicitTargets, currentScopeExplicitTargets)
+				if err != nil {
+					return nil, nil, false, 0, err
+				}
+				if covered {
+					resolvedGroups[resolveFrom] = nil
+					resolveFrom++
+					continue
+				}
+				resolved, err := resolver.ResolveInteractiveIncludeTargets(value, selectedPaths, currentScopeExplicitTargets, currentScopeExplicitTargets)
+				if err != nil {
+					if errors.Is(err, discovery.ErrSelectionCancelled) {
+						back := previousResolvedIncludeGroup(resolvedGroups, resolveFrom)
+						if back >= 0 {
+							clearResolvedIncludeGroupsFrom(resolvedGroups, back)
+							resolveFrom = back
+							continue resolveIncludes
+						}
+					}
+					return nil, nil, false, 0, err
+				}
+				if len(resolved) == 0 {
+					back := previousResolvedIncludeGroup(resolvedGroups, resolveFrom)
+					if back >= 0 {
+						clearResolvedIncludeGroupsFrom(resolvedGroups, back)
+						resolveFrom = back
+						continue resolveIncludes
+					}
+					return nil, nil, false, 0, discovery.ErrSelectionCancelled
+				}
+				resolvedGroups[resolveFrom] = append([]string(nil), resolved...)
+				stageValues = append(stageValues, resolved...)
+				selectedPaths = append(selectedPaths, resolved...)
+				stageUsedFzf = true
+				resolveFrom++
 			}
-			stageValues = append(stageValues, resolved...)
-			selectedPaths = append(selectedPaths, resolved...)
-			usedFzf = true
+			finalArgs := append(append([]string(nil), currentArgs...), flag)
+			finalArgs = append(finalArgs, stageValues...)
+			if stageUsedFzf {
+				narrowed, _, narrowErr := maybeNarrowConfirmForResolver(resolver, finalArgs, stageValues, currentScopeExplicitTargets)
+				if errors.Is(narrowErr, errNarrowConfirmBack) {
+					back := previousResolvedIncludeGroup(resolvedGroups, len(resolvedGroups))
+					if back < 0 {
+						return nil, nil, false, 0, narrowErr
+					}
+					clearResolvedIncludeGroupsFrom(resolvedGroups, back)
+					resolveFrom = back
+					continue
+				}
+				if narrowErr != nil {
+					return nil, nil, false, 0, narrowErr
+				}
+				return narrowed, append(append([]string(nil), currentScopeTargets...), stageValues...), true, consumed, nil
+			}
+			return finalArgs, append(append([]string(nil), currentScopeTargets...), stageValues...), stageUsedFzf, consumed, nil
 		}
-		finalArgs := append(append([]string(nil), currentArgs...), flag)
-		finalArgs = append(finalArgs, stageValues...)
-		return finalArgs, append(append([]string(nil), currentScopeTargets...), stageValues...), usedFzf, consumed, nil
 	case "--only", "--exclude":
 		values, consumed := startupStageValues(remaining)
 		if len(values) == 0 && !allowInteractiveCompletion {
@@ -720,6 +777,24 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 		return argsAfterStage, append([]string(nil), currentScopeTargets...), usedFzf, 0, nil
 	default:
 		return nil, nil, false, 0, discovery.ErrSelectionCancelled
+	}
+}
+
+func previousResolvedIncludeGroup(groups [][]string, before int) int {
+	if before > len(groups) {
+		before = len(groups)
+	}
+	for i := before - 1; i >= 0; i-- {
+		if len(groups[i]) > 0 {
+			return i
+		}
+	}
+	return -1
+}
+
+func clearResolvedIncludeGroupsFrom(groups [][]string, start int) {
+	for i := start; i < len(groups); i++ {
+		groups[i] = nil
 	}
 }
 

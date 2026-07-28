@@ -35,6 +35,36 @@ func (r *Resolver) allVisibleTargets() ([]TargetMatch, error) {
 	return append([]TargetMatch(nil), targets...), nil
 }
 
+// AdoptVisibleTargetInventoryFrom publishes a complete target inventory built
+// by a compatible resolver copy. Startup probing uses shallow per-scope copies
+// to isolate include state; adopting only this immutable base inventory lets
+// the eventual interactive picker avoid rebuilding it without sharing any
+// mutable include or scope state.
+func (r *Resolver) AdoptVisibleTargetInventoryFrom(source *Resolver) bool {
+	if source == nil || !source.interactiveTargetsOk ||
+		r.Cfg.WorkingDir != source.Cfg.WorkingDir ||
+		r.WithBinaries != source.WithBinaries ||
+		r.AllowFileSymlinks != source.AllowFileSymlinks ||
+		!sameStrings(r.ScopeTargets, source.ScopeTargets) {
+		return false
+	}
+	r.interactiveTargets = append([]TargetMatch(nil), source.interactiveTargets...)
+	r.interactiveTargetsOk = true
+	return true
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // ignoredTargetsCacheKey mirrors search's scoped cache keying: the
 // narrowed target list joined with NUL, "" for the wide universe.
 func ignoredTargetsCacheKey(narrowed []string) string {
@@ -108,9 +138,12 @@ func (r *Resolver) AllIgnoredTargets(scopeTargets []string) ([]TargetMatch, erro
 	// The text set narrows with the SAME list so the walked universe and
 	// the classification universe agree (ResolveTextFileSet re-applies the
 	// identical literal-targets rule internally; nil = wide for both).
-	projectTextSet, err := search.ResolveTextFileSet(r.Cfg.WorkingDir, narrowed)
-	if err != nil {
-		return nil, err
+	var projectTextSet map[string]struct{}
+	if !r.WithBinaries {
+		projectTextSet, err = search.ResolveTextFileSet(r.Cfg.WorkingDir, narrowed)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	filePaths := make([]string, 0, len(rgPaths))

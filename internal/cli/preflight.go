@@ -58,7 +58,7 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		// check in parse.go for the rationale (ambiguity between
 		// "just <include>" and "everything + <include>").
 		if len(s.Targets) == 0 && len(s.IncludedTargets) > 0 {
-			return BareIncludeMissingTargetError(s.IncludedTargets[0])
+			return IncludeMissingPositionalTargetError(s.IncludedTargets[0])
 		}
 		if len(s.Targets) == 0 {
 			s.Targets = []string{"."}
@@ -132,6 +132,9 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 				return command.Spec{}, err
 			}
 			values := cloneSliceStrings(args[i+1 : next])
+			if err := validateDirectPathPatterns("--only", values, false); err != nil {
+				return command.Spec{}, err
+			}
 			current.Only = append(current.Only, values...)
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageOnly, Values: values})
 			i = next - 1
@@ -146,6 +149,9 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 				return command.Spec{}, err
 			}
 			values := cloneSliceStrings(args[i+1 : next])
+			if err := validateDirectPathPatterns("--exclude", values, false); err != nil {
+				return command.Spec{}, err
+			}
 			current.Exclude = append(current.Exclude, values...)
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageExclude, Values: values})
 			i = next - 1
@@ -383,6 +389,9 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		default:
 			if inModifierMode {
 				return command.Spec{}, PositionalAfterModifierError()
+			}
+			if err := validateDirectPathPatterns("target", []string{arg}, false); err != nil {
+				return command.Spec{}, err
 			}
 			current.Targets = append(current.Targets, arg)
 			current.explicitTargets++

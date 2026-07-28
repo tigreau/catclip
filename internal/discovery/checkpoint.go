@@ -317,6 +317,17 @@ func ApplyPrediscoveredScopeTail(cfg command.Invocation, gitCtx git.Context, sco
 
 	entries = append([]Entry(nil), entries...)
 	var err error
+	// Normal evaluation may clear entries after a hard diagnostic; its stage
+	// runner must not let a later additive include resurrect a partial result.
+	// A checkpoint has no such diagnostic state: an empty base can legitimately
+	// mean the selected target contains only ignored files. Expand its leading
+	// include once before the shared stage runner's empty-input guard.
+	if len(entries) == 0 && len(scope.Stages) > 0 && scope.Stages[0].Kind == command.StageInclude {
+		entries, err = applyIncludeStage(&resolver, scope, entries, scope.Stages[0].Values, scope.Stages[0].ExactValues)
+		if err != nil {
+			return nil, err
+		}
+	}
 	entries, err = applyScopeStages(&resolver, gitCtx, scope, entries)
 	if err != nil {
 		return nil, err

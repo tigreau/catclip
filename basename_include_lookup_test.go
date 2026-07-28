@@ -132,8 +132,9 @@ func TestBasenameTargetWithoutIncludeStillProbes(t *testing.T) {
 	}
 }
 
-// Control: filter zero-match must NOT trigger include-subtree search.
-func TestFilterZeroMatchWithIncludeDoesNotResolveBasename(t *testing.T) {
+// An unrelated concrete include is rejected before a later filter can turn the
+// command into a generic zero-match. It must never widen the visible target.
+func TestFilterZeroMatchRejectsUnrelatedConcreteInclude(t *testing.T) {
 	setupBasenameIncludeXDG(t)
 	project := setupTestProject(t, map[string]string{
 		".gitignore":        "blocked/\n",
@@ -141,9 +142,7 @@ func TestFilterZeroMatchWithIncludeDoesNotResolveBasename(t *testing.T) {
 		"visible/keepit.go": "ok\n",
 	})
 
-	// Target is `visible/` (resolves fine), --only narrows to zero. Even
-	// though `--include blocked` is active, the filter-miss path must keep the
-	// generic "No text files found" message — not bundle the blocked file.
+	// Target is `visible/` and cwd-relative include `blocked` is unrelated.
 	stdout, stderr, err := captureRun(t, project, []string{"--headless", "visible", "--include", "blocked", "--only", "target.md"})
 	if err == nil {
 		t.Fatal("expected no-match exit")
@@ -151,8 +150,11 @@ func TestFilterZeroMatchWithIncludeDoesNotResolveBasename(t *testing.T) {
 	if strings.Contains(stdout, "blocked/target.md") {
 		t.Errorf("filter zero-match should NOT have bundled the ignored target:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "No text files found matching your criteria.") {
-		t.Errorf("expected the generic filter-miss message, got:\n%s", stderr)
+	if !strings.Contains(stderr, "outside the selected target") {
+		t.Errorf("expected the precise unrelated-include message, got:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "No text files found matching your criteria.") {
+		t.Errorf("precise include error should suppress the generic footer:\n%s", stderr)
 	}
 }
 

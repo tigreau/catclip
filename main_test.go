@@ -418,7 +418,7 @@ func TestParseArgsTreatsIncludeAsAllowedTargetSelection(t *testing.T) {
 	}
 }
 
-func TestParseArgsBareIncludeAugmentsExplicitDotScope(t *testing.T) {
+func TestParseArgsExplicitIncludeAugmentsDotTarget(t *testing.T) {
 	cfg, err := cli.ParseArgs([]string{".", "--include", "node_modules", "coverage"})
 	if err != nil {
 		t.Fatalf("parseArgs returned error: %v", err)
@@ -476,8 +476,8 @@ func TestParseArgsRejectsInvalidTypedIncludeValues(t *testing.T) {
 	}{
 		{name: "absolute", value: "/vendor", wantErr: "--include does not accept absolute paths"},
 		{name: "windows absolute", value: `C:\vendor`, wantErr: "--include does not accept absolute paths"},
-		{name: "parent traversal", value: "../vendor", wantErr: "--include cannot traverse above the current target scope"},
-		{name: "normalizing parent traversal", value: "src/../vendor", wantErr: "--include cannot traverse above the current target scope"},
+		{name: "parent traversal", value: "../vendor", wantErr: "--include cannot traverse above the current directory"},
+		{name: "normalizing parent traversal", value: "src/../vendor", wantErr: "--include cannot traverse above the current directory"},
 		{name: "glob", value: "*.js", wantErr: "--include does not accept glob patterns"},
 	}
 
@@ -514,8 +514,8 @@ func TestParseArgsRejectsInvalidStdinIncludeValues(t *testing.T) {
 		{name: "absolute", stdin: "/vendor\n", wantErr: "--include does not accept absolute paths"},
 		{name: "absolute normalized to dot", stdin: "/tmp/..\n", wantErr: "--include does not accept absolute paths"},
 		{name: "windows absolute", stdin: "C:\\vendor\n", wantErr: "--include does not accept absolute paths"},
-		{name: "parent traversal", stdin: "../vendor\n", wantErr: "--include cannot traverse above the current target scope"},
-		{name: "normalizing parent traversal", stdin: "src/../vendor\n", wantErr: "--include cannot traverse above the current target scope"},
+		{name: "parent traversal", stdin: "../vendor\n", wantErr: "--include cannot traverse above the current directory"},
+		{name: "normalizing parent traversal", stdin: "src/../vendor\n", wantErr: "--include cannot traverse above the current directory"},
 		{name: "glob", stdin: "*.js\n", wantErr: "--include does not accept glob patterns"},
 	}
 
@@ -2054,16 +2054,18 @@ func TestRunIncludeWildcardBypassesAllIgnoreRules(t *testing.T) {
 	}
 }
 
-func TestRunIncludeScopedToTargetsSkipsOutOfScopeDir(t *testing.T) {
+func TestRunExactIncludePathDoesNotSelectSameNamedRootDir(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
+		".gitignore":               "vendor/\n",
 		"src/main.ts":              "console.log('ok')\n",
 		"lib/util.ts":              "export const x = 1\n",
 		"vendor/lodash/index.js":   "module.exports = {}\n",
 		"src/vendor/local/util.js": "module.exports = {}\n",
 	})
 
-	// "vendor" with target "src" should resolve to "src/vendor", not root "vendor"
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "--include", "vendor", "--paths"})
+	// Specific include paths are cwd-relative. Naming src/vendor authorizes
+	// that exact subtree and never selects the same-named root vendor.
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "--include", "src/vendor", "--paths"})
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
@@ -2071,10 +2073,25 @@ func TestRunIncludeScopedToTargetsSkipsOutOfScopeDir(t *testing.T) {
 
 	out := stdout.String()
 	if !strings.Contains(out, "src/vendor/local/util.js") {
-		t.Fatalf("expected scoped --include to find src/vendor/, got:\n%s", out)
+		t.Fatalf("expected exact --include to find src/vendor/, got:\n%s", out)
 	}
 	if strings.Contains(out, "vendor/lodash") {
 		t.Fatalf("expected scoped --include to NOT find root vendor/, got:\n%s", out)
+	}
+
+	// The bare spelling has one different identity: cwd vendor. It must not
+	// silently switch to src/vendor just because that path exists too.
+	bareCfg := parseInProject(t, project, []string{"--headless", "--print", "src", "--include", "vendor", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(bareCfg, &stdout, &stderr); err == nil {
+		t.Fatal("unrelated root vendor include should fail for target src")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("root collision must not emit partial output:\n%s", stdout.String())
+	}
+	if got := stderr.String(); !strings.Contains(got, "outside the selected target") || !strings.Contains(got, "src/vendor") {
+		t.Fatalf("expected precise root-collision guidance, got:\n%s", got)
 	}
 }
 
@@ -2674,6 +2691,17 @@ func TestFzfPreviewCommandIncludesIgnoredTargetAuthorization(t *testing.T) {
 	}
 }
 
+func TestFzfPreviewCommandIncludesBinaryPolicy(t *testing.T) {
+	command := discovery.FzfPreviewCommand(true, true)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable returned error: %v", err)
+	}
+	if !strings.Contains(command, discovery.ShellQuoteArg(self)+" --quiet --with-binaries {+2} --internal-tree-preview") {
+		t.Fatalf("expected target preview to preserve --with-binaries, got %q", command)
+	}
+}
+
 func TestFzfContentPreviewCommandUsesFilePreviewRenderer(t *testing.T) {
 	command := discovery.FzfContentPreviewCommand("--contains", "")
 	self, err := os.Executable()
@@ -3146,6 +3174,37 @@ func TestRunIncludeWildcardSkipsNoOpClassification(t *testing.T) {
 	_ = stdout
 }
 
+func TestRunIncludeNoOpCaseFoldRequiresSameFile(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore": "Case.txt\n",
+		"Case.txt":   "ignored uppercase\n",
+		"case.txt":   "visible lowercase\n",
+	})
+	upperInfo, err := os.Stat(filepath.Join(project, "Case.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lowerInfo, err := os.Stat(filepath.Join(project, "case.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(upperInfo, lowerInfo) {
+		t.Skip("filesystem does not support distinct case-colliding paths")
+	}
+
+	cfg := parseInProject(t, project, []string{"--print", ".", "--include", "Case.txt"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if strings.Contains(stderr.String(), "Notice: --include 'Case.txt' was already visible") {
+		t.Fatalf("distinct ignored path must not inherit a visible case-fold collision:\n%s", stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ignored uppercase") || !strings.Contains(stdout.String(), "visible lowercase") {
+		t.Fatalf("expected ignored and visible case-colliding files, got:\n%s", stdout.String())
+	}
+}
+
 // TestRunCaseInsensitiveTargetResolvesOnCaseFoldFS asserts the
 // v0.6.4 fix: on case-insensitive filesystems (APFS, NTFS) a user-
 // typed target like `Cli.go` no longer surfaces the wrong-attribution
@@ -3315,6 +3374,9 @@ func TestRunDirectoryShapedGlobZeroMatchSuggestsExactDirectory(t *testing.T) {
 	if strings.Contains(message, "**") || strings.Contains(message, "--only '*/'") || strings.Contains(message, `--only "*/"`) {
 		t.Fatalf("must not print an impossible directory glob suggestion, got:\n%s", message)
 	}
+	if strings.Contains(message, "Possible causes:") || strings.Contains(message, "No text files found matching your criteria") {
+		t.Fatalf("conclusive glob explanation must suppress the generic no-files footer, got:\n%s", message)
+	}
 
 	suggested := parseInProject(t, project, []string{"--quiet", "--print", "internal", "--paths"})
 	stdout.Reset()
@@ -3412,6 +3474,9 @@ func TestRunGlobZeroMatchMissingPrefixUsesFuzzyTargetGuidanceWithoutInclude(t *t
 	if strings.Contains(message, "catclip common --include common") {
 		t.Fatalf("missing glob prefix must not be misdiagnosed as ignored, got:\n%s", message)
 	}
+	if strings.Contains(message, "Possible causes:") || strings.Contains(message, "No text files found matching your criteria") {
+		t.Fatalf("conclusive missing-prefix explanation must suppress the generic no-files footer, got:\n%s", message)
+	}
 
 	cfg = parseInProject(t, project, []string{"--print", "common/*.ts"})
 	stdout.Reset()
@@ -3427,20 +3492,205 @@ func TestRunGlobZeroMatchMissingPrefixUsesFuzzyTargetGuidanceWithoutInclude(t *t
 	}
 }
 
-func TestRunTargetDoublestarHasNoRecursiveSemantics(t *testing.T) {
+func TestRunRejectsPositionalTargetDoublestar(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"cmd/root.go":         "package cmd\n",
 		"cmd/one/one.go":      "package one\n",
 		"cmd/two/deep/two.go": "package deep\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "cmd/**/*.go", "--paths"})
-	var stdout, stderr bytes.Buffer
-	if err := run(cfg, &stdout, &stderr); err != nil {
-		t.Fatalf("one-level target doublestar command failed: %v\nstderr:\n%s", err, stderr.String())
+	for _, tc := range []struct {
+		target string
+		hint   string
+		forbid string
+	}{
+		{target: "cmd/**/*.go", hint: `catclip cmd --only '*.go'`},
+		{target: "cmd/**", hint: "catclip cmd", forbid: "--only"},
+		{target: "**", hint: "catclip .", forbid: "--only"},
+		{target: "common/**.ts", hint: `catclip common --only '*.ts'`},
+	} {
+		err := parseErrorInProject(t, project, []string{"--print", tc.target})
+		if err == nil {
+			t.Fatalf("expected positional target %q to reject doublestar", tc.target)
+		}
+		if !strings.Contains(err.Error(), "Positional target patterns do not support '**'") {
+			t.Fatalf("expected positional doublestar error for %q, got: %v", tc.target, err)
+		}
+		if !strings.Contains(err.Error(), tc.hint) {
+			t.Fatalf("expected recovery %q for %q, got: %v", tc.hint, tc.target, err)
+		}
+		if tc.forbid != "" && strings.Contains(err.Error(), tc.forbid) {
+			t.Fatalf("recovery for %q contains redundant %q: %v", tc.target, tc.forbid, err)
+		}
 	}
-	if got, want := stdout.String(), "cmd/one/one.go\n"; got != want {
-		t.Fatalf("target doublestar must behave as one path component\nwant:\n%s\ngot:\n%s", want, got)
+}
+
+func TestParseRejectsFilterDoublestar(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"cmd/root.go":    "package cmd\n",
+		"cmd/one/one.go": "package one\n",
+	})
+
+	tests := []struct {
+		args    []string
+		flag    string
+		pattern string
+	}{
+		{args: []string{"cmd", "--only", "**"}, flag: "--only", pattern: "**"},
+		{args: []string{"cmd", "--only", "src/**"}, flag: "--only", pattern: "src/**"},
+		{args: []string{"cmd", "--only", "*.go", "src/**/*.go"}, flag: "--only", pattern: "src/**/*.go"},
+		{args: []string{"cmd", "--exclude", "**/*.map"}, flag: "--exclude", pattern: "**/*.map"},
+		{args: []string{"cmd", "--exclude", "***"}, flag: "--exclude", pattern: "***"},
+		{args: []string{"cmd", "--only", "*.go", "--then", ".", "--exclude", "build/**"}, flag: "--exclude", pattern: "build/**"},
+	}
+	for _, tt := range tests {
+		err := parseErrorInProject(t, project, tt.args)
+		if err == nil {
+			t.Fatalf("expected %v to reject doublestar", tt.args)
+		}
+		for _, want := range []string{
+			tt.flag + " patterns do not support '**'",
+			"'" + tt.pattern + "'",
+			"'*' already matches across folders",
+		} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("%v error missing %q:\n%s", tt.args, want, err)
+			}
+		}
+	}
+}
+
+func TestRunAllStarTargetRecoveryUsesDirectoryWithoutRedundantFilter(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"internal/output/emit.go": "package output\n",
+		"internal/cli/main.go":    "package cli\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "internal/*"})
+	var stdout, stderr bytes.Buffer
+	_ = run(cfg, &stdout, &stderr)
+	message := stderr.String()
+	if !strings.Contains(message, "catclip internal") {
+		t.Fatalf("expected exact-directory recovery, got:\n%s", message)
+	}
+	if strings.Contains(message, "--only") {
+		t.Fatalf("all-star recovery must not add a redundant filter, got:\n%s", message)
+	}
+	if strings.Contains(message, "Possible causes:") {
+		t.Fatalf("conclusive all-star explanation must suppress the generic footer, got:\n%s", message)
+	}
+}
+
+func TestRunIgnoredAllStarTargetRecoveryUsesAuthorizedDirectoryWithoutFilter(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":                "generated/\n",
+		"generated/client/types.go": "package client\n",
+		"src/app.go":                "package src\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--print", "generated/*"})
+	var stdout, stderr bytes.Buffer
+	_ = run(cfg, &stdout, &stderr)
+	message := stderr.String()
+	if !strings.Contains(message, "catclip generated --include generated") {
+		t.Fatalf("expected authorized directory recovery, got:\n%s", message)
+	}
+	if strings.Contains(message, "--only") {
+		t.Fatalf("ignored all-star recovery must not add a redundant filter, got:\n%s", message)
+	}
+	if strings.Contains(message, "Possible causes:") {
+		t.Fatalf("conclusive ignored all-star explanation must suppress the generic footer, got:\n%s", message)
+	}
+}
+
+func TestRunWarnsForDeadTrailingSlashFilterGlobs(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"internal/output/emit.go": "package output\n",
+		"internal/cli/main.go":    "package cli\n",
+	})
+
+	onlyCfg := parseInProject(t, project, []string{"--print", "internal", "--only", "*/", "--paths"})
+	var stdout, stderr bytes.Buffer
+	err := run(onlyCfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected dead --only glob to produce an empty result")
+	}
+	message := stderr.String()
+	if !strings.Contains(message, "--only pattern '*/' cannot match file paths") || !strings.Contains(message, "--only 'output/'") {
+		t.Fatalf("expected dead --only glob guidance, got:\n%s", message)
+	}
+	if strings.Contains(message, "Possible causes:") || strings.Contains(message, "No text files found matching your criteria") {
+		t.Fatalf("dead --only glob must own the empty result, got:\n%s", message)
+	}
+
+	excludeCfg := parseInProject(t, project, []string{"--print", "internal", "--exclude", "*/", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(excludeCfg, &stdout, &stderr); err != nil {
+		t.Fatalf("dead --exclude glob must leave the file set unchanged: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--exclude pattern '*/' cannot match file paths") || !strings.Contains(stderr.String(), "--exclude 'output/'") {
+		t.Fatalf("expected dead --exclude glob guidance, got:\n%s", stderr.String())
+	}
+	for _, want := range []string{"internal/output/emit.go\n", "internal/cli/main.go\n"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("dead --exclude glob changed selection; missing %q:\n%s", want, stdout.String())
+		}
+	}
+
+	literalCfg := parseInProject(t, project, []string{"--print", "internal", "--only", "output/", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(literalCfg, &stdout, &stderr); err != nil {
+		t.Fatalf("literal trailing-slash subtree must remain valid: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if strings.Contains(stderr.String(), "cannot match file paths") {
+		t.Fatalf("literal subtree selector must not trigger glob warning:\n%s", stderr.String())
+	}
+	if got, want := stdout.String(), "internal/output/emit.go\n"; got != want {
+		t.Fatalf("literal subtree selection changed\nwant: %q\ngot:  %q", want, got)
+	}
+
+	unreachedCfg := parseInProject(t, project, []string{"--print", "internal", "--only", "*.rs", "--exclude", "*/", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	_ = run(unreachedCfg, &stdout, &stderr)
+	if strings.Contains(stderr.String(), "--exclude pattern '*/'") {
+		t.Fatalf("a stage after an empty result was not reached and must not warn:\n%s", stderr.String())
+	}
+}
+
+func TestRunSuppressesGenericFooterOnlyWhenEveryEmptyScopeIsExplained(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/app.go": "package src\n",
+	})
+
+	allExplained := parseInProject(t, project, []string{"--print", "missing/*.go", "--then", "absent/*.ts", "--paths"})
+	var stdout, stderr bytes.Buffer
+	_ = run(allExplained, &stdout, &stderr)
+	if strings.Contains(stderr.String(), "Possible causes:") {
+		t.Fatalf("all conclusively explained scopes must suppress the generic footer:\n%s", stderr.String())
+	}
+	for _, want := range []string{"(scope 1)", "(scope 2)"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("expected retained scope numbering %q:\n%s", want, stderr.String())
+		}
+	}
+
+	mixed := parseInProject(t, project, []string{"--print", "missing/*.go", "--then", ".", "--only", "*.rs", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	_ = run(mixed, &stdout, &stderr)
+	if !strings.Contains(stderr.String(), "Possible causes:") {
+		t.Fatalf("an unexplained empty scope must retain the generic footer:\n%s", stderr.String())
+	}
+
+	mixedTargets := parseInProject(t, project, []string{"--print", "missing/*.go", "src", "--only", "*.rs", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	_ = run(mixedTargets, &stdout, &stderr)
+	if !strings.Contains(stderr.String(), "Possible causes:") {
+		t.Fatalf("a glob warning must not explain a sibling target emptied by a later stage:\n%s", stderr.String())
 	}
 }
 
@@ -3511,7 +3761,7 @@ func TestRunNoMatchShowsShellStyleFooter(t *testing.T) {
 	}
 	if first := strings.Index(errOut, "Warning: No file or directory 'include' found"); first == -1 {
 		t.Fatalf("expected missing-target warning, got:\n%s", errOut)
-	} else if second := strings.Index(errOut, "1 match skipped by ignore rules"); second == -1 || first > second {
+	} else if second := strings.Index(errOut, "'index.js' is hidden by an ignored ancestor"); second == -1 || first > second {
 		t.Fatalf("expected diagnostics in target order, got:\n%s", errOut)
 	}
 }
@@ -3589,8 +3839,11 @@ func TestRunDirectTargetSkipsShellBlockedTextEncodedFormats(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Fatalf("expected blocked direct target to produce no preview output, got:\n%s", stdout.String())
 	}
-	if !strings.Contains(stderr.String(), "No text files found matching your criteria.") {
-		t.Fatalf("expected no-match footer, got:\n%s", stderr.String())
+	if !strings.Contains(stderr.String(), "is ignored by") {
+		t.Fatalf("expected precise ignore diagnostic, got:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "No text files found matching your criteria.") {
+		t.Fatalf("precise ignore diagnostic should suppress generic footer:\n%s", stderr.String())
 	}
 }
 
@@ -3640,13 +3893,13 @@ func TestRunHeadlessAmbiguousTargetFailsWithGuidance(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ambiguous target error")
 	}
-	if !strings.Contains(err.Error(), `Multiple directories match 'common'`) {
+	if !strings.Contains(err.Error(), `Multiple files and directories match 'common'`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(err.Error(), "Matches:") || !strings.Contains(err.Error(), "src/common") || !strings.Contains(err.Error(), "lib/common") {
 		t.Fatalf("expected capped candidate list guidance, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Use a more specific path segment") {
+	if !strings.Contains(err.Error(), "Use a more specific name or path") {
 		t.Fatalf("expected disambiguation guidance, got: %v", err)
 	}
 }
@@ -3700,6 +3953,128 @@ func TestRunIncludeDirectoryAuthorizesDescendantTarget(t *testing.T) {
 	}
 	if got := stderr.String(); got != "" {
 		t.Fatalf("expected quiet run to keep stderr empty, got:\n%s", got)
+	}
+}
+
+func TestRunIncludedVisibleDirectoryExposesIgnoredDescendants(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	project := setupTestProject(t, map[string]string{
+		".gitignore":                    "src/build/\n",
+		"src/main.ts":                   "export const main = true\n",
+		"src/build/generated/client.ts": "export const generated = true\n",
+	})
+	initGitRepo(t, project)
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "--include", "src"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("visible included directory should expose ignored descendants: %v\nstderr:\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, `<file path="src/main.ts">`) || !strings.Contains(out, `<file path="src/build/generated/client.ts">`) {
+		t.Fatalf("expected visible and include-authorized files, got:\n%s", out)
+	}
+	if got := stderr.String(); got != "" {
+		t.Fatalf("quiet successful run should keep stderr empty, got:\n%s", got)
+	}
+}
+
+func TestRunMissingIncludeSuggestsQualifiedIgnoredPathWithoutSelectingIt(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	project := setupTestProject(t, map[string]string{
+		".gitignore":                            "src/features/auth/generated/\n",
+		"src/main.ts":                           "export const main = true\n",
+		"src/features/auth/generated/client.ts": "export const generated = true\n",
+	})
+	initGitRepo(t, project)
+
+	cfg := parseInProject(t, project, []string{"--headless", "--print", "src", "--include", "generated"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err == nil {
+		t.Fatal("missing exact include should fail")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("diagnostic suggestion must not select or emit a candidate:\n%s", stdout.String())
+	}
+	errText := stderr.String()
+	for _, want := range []string{
+		"--include path 'generated' was not found from the current directory",
+		"src/features/auth/generated",
+		"catclip 'src' --include 'src/features/auth/generated'",
+	} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("missing include diagnostic lacks %q:\n%s", want, errText)
+		}
+	}
+	if strings.Contains(errText, "No text files found matching your criteria.") {
+		t.Fatalf("precise include diagnostic should suppress generic footer:\n%s", errText)
+	}
+}
+
+func TestRunMissingIncludeCapsAndSortsQualifiedSuggestions(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	files := map[string]string{
+		"src/main.ts": "export const main = true\n",
+	}
+	var ignoreRules strings.Builder
+	for i := 0; i < 7; i++ {
+		dir := fmt.Sprintf("src/features/feature-%d/generated", i)
+		ignoreRules.WriteString(dir + "/\n")
+		files[dir+"/client.ts"] = "export const generated = true\n"
+	}
+	files[".gitignore"] = ignoreRules.String()
+	project := setupTestProject(t, files)
+	initGitRepo(t, project)
+
+	cfg := parseInProject(t, project, []string{"--headless", "--print", "src", "--include", "generated"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err == nil {
+		t.Fatal("missing exact include should fail")
+	}
+	errText := stderr.String()
+	for i := 0; i < 5; i++ {
+		want := fmt.Sprintf("src/features/feature-%d/generated", i)
+		if !strings.Contains(errText, want) {
+			t.Fatalf("sorted capped suggestions lack %q:\n%s", want, errText)
+		}
+	}
+	if strings.Contains(errText, "src/features/feature-5/generated") {
+		t.Fatalf("suggestions exceeded cap:\n%s", errText)
+	}
+	if !strings.Contains(errText, "... and 2 more") {
+		t.Fatalf("truncated suggestion count missing:\n%s", errText)
+	}
+}
+
+func TestRunGlobTargetMatchesFilesFromExactIncludedSubtree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	project := setupTestProject(t, map[string]string{
+		".gitignore":               "src/build/\n",
+		"src/main.ts":              "export const main = true\n",
+		"src/build/generated.ts":   "export const generated = true\n",
+		"src/build/generated.json": "{}\n",
+	})
+	initGitRepo(t, project)
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "*.ts", "--include", "src/build", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("glob target with exact include failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "src/main.ts") || !strings.Contains(out, "src/build/generated.ts") {
+		t.Fatalf("expected visible and authorized TS files, got:\n%s", out)
+	}
+	if strings.Contains(out, "generated.json") {
+		t.Fatalf("include authorization widened the positional glob:\n%s", out)
 	}
 }
 
@@ -3806,23 +4181,10 @@ func TestRunDeepIncludeDirectoryNarrowsToSubtree(t *testing.T) {
 	}
 }
 
-// v0.6.4 include-as-authorization update (was
-// TestRunDeepIncludeUncoveredValueStillErrors):
-//
-// Under the walker's per-entry check (Section B of the
-// include-as-authorization plan), the covered include value authorizes
-// walking docs and per-entry filters emit to that path; the uncovered
-// (already-visible) include value becomes a classifyNoOpIncludeNotices
-// notice, not a hard error. This is the additive-authorization semantic:
-// an orphan include on a visible path silently no-ops with a notice
-// rather than poisoning the whole scope.
-//
-// The effect-4 gate (unrelated --include as a hard error) is out of
-// scope for this test — see the effect-4 gate comment in EvaluateScope
-// (resolver.go) for why literal-relatedness checks clash with basename
-// and scope-relative include resolution and are deferred to a
-// follow-up.
-func TestRunMixedCoveredAndOrphanIncludeEmitsCoveredAndNoticesOrphan(t *testing.T) {
+// A concrete include that cannot affect the selected walk is a hard error.
+// The scope must not silently emit the covered subset when another include is
+// unrelated; doing so would hide a mistyped authorization path in scripts.
+func TestRunMixedCoveredAndUnrelatedIncludeRejectsPartialOutput(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -3833,21 +4195,19 @@ func TestRunMixedCoveredAndOrphanIncludeEmitsCoveredAndNoticesOrphan(t *testing.
 	})
 	initGitRepo(t, project)
 
-	// Run without --quiet so the classifyNoOpIncludeNotices notice
-	// (already-visible src/main.go include) is visible on stderr.
 	cfg := parseInProject(t, project, []string{"--print", "docs", "--include", "docs/a/keep.md", "src/main.go"})
 	var stdout, stderr bytes.Buffer
-	if err := run(cfg, &stdout, &stderr); err != nil {
-		t.Fatalf("expected mixed-include shape to succeed under additive-authorization, got err: %v\nstderr:\n%s", err, stderr.String())
+	if err := run(cfg, &stdout, &stderr); err == nil {
+		t.Fatalf("expected unrelated include to make the scope unsatisfiable\nstderr:\n%s", stderr.String())
 	}
-	if !strings.Contains(stdout.String(), `<file path="docs/a/keep.md">`) {
-		t.Fatalf("expected docs/a/keep.md in output (walker per-entry check), got:\n%s", stdout.String())
+	if stdout.Len() != 0 {
+		t.Fatalf("unsatisfiable include scope must not emit a partial result:\n%s", stdout.String())
 	}
-	if strings.Contains(stdout.String(), "src/main.go") {
-		t.Fatalf("src/main.go was a --include value, NOT a positional target; it should not appear in the emit set:\n%s", stdout.String())
+	if !strings.Contains(stderr.String(), "src/main.go") || !strings.Contains(stderr.String(), "outside the selected target") {
+		t.Fatalf("expected precise unrelated-include error, got:\n%s", stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "src/main.go") {
-		t.Fatalf("expected no-op notice for orphan include 'src/main.go' on stderr, got:\n%s", stderr.String())
+	if strings.Contains(stderr.String(), "No text files found matching your criteria.") {
+		t.Fatalf("precise include error should suppress generic footer:\n%s", stderr.String())
 	}
 }
 
@@ -3917,10 +4277,10 @@ func TestIncludeWildcardBypassesEffect4Check(t *testing.T) {
 	}
 }
 
-// TestEffect5_BareIncludeErrors — --include with no positional target
+// TestEffect5_IncludeWithoutPositionalTargetErrors — --include with no positional target
 // must error at parse time with the effect-5 canonical-form hint. This
 // is the "no walk scope to authorize" case from the rationale note.
-func TestEffect5_BareIncludeErrors(t *testing.T) {
+func TestEffect5_IncludeWithoutPositionalTargetErrors(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"cmd/main.go": "package main\n",
 	})
@@ -3938,7 +4298,7 @@ func TestEffect5_BareIncludeErrors(t *testing.T) {
 	_, err := cli.ParseArgs([]string{"--include", "cmd", "--headless"})
 	_ = project
 	if err == nil {
-		t.Fatal("expected effect-5 error for bare --include, got nil")
+		t.Fatal("expected effect-5 error for --include without a positional target, got nil")
 	}
 	if !strings.Contains(err.Error(), "requires a positional target") {
 		t.Fatalf("expected 'requires a positional target' in error, got: %v", err)
@@ -3948,13 +4308,13 @@ func TestEffect5_BareIncludeErrors(t *testing.T) {
 	}
 }
 
-// TestEffect5_BareIncludeWildcardVariant — --include '*' with no
+// TestEffect5_WildcardIncludeWithoutPositionalTarget — --include '*' with no
 // positional target gets its own message with the "define the scope"
 // suggestion set (`catclip . --include '*'` or `catclip docs --include '*'`).
-func TestEffect5_BareIncludeWildcardVariant(t *testing.T) {
+func TestEffect5_WildcardIncludeWithoutPositionalTarget(t *testing.T) {
 	_, err := cli.ParseArgs([]string{"--include", "*", "--headless"})
 	if err == nil {
-		t.Fatal("expected effect-5 wildcard error for bare --include '*', got nil")
+		t.Fatal("expected effect-5 wildcard error without a positional target, got nil")
 	}
 	if !strings.Contains(err.Error(), "--include '*' requires a positional target") {
 		t.Fatalf("expected wildcard-variant error text, got: %v", err)
@@ -4059,10 +4419,10 @@ func TestRunInternalTreePreviewAmbiguousTargetFailsWithGuidance(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ambiguous target error")
 	}
-	if !strings.Contains(err.Error(), `Multiple directories match 'common'`) {
+	if !strings.Contains(err.Error(), `Multiple files and directories match 'common'`) {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "Use a more specific path segment") {
+	if !strings.Contains(err.Error(), "Use a more specific name or path") {
 		t.Fatalf("expected disambiguation guidance, got: %v", err)
 	}
 }
@@ -5632,10 +5992,67 @@ func TestFormatHeadlessCandidateListTruncatesAfterLimit(t *testing.T) {
 func TestFormatResolvedStartupCommandShellQuotesArgs(t *testing.T) {
 	got := cli.FormatResolvedStartupCommand([]string{"src", "--contains", "TODO items", "--only", "src/a test.ts"})
 	// --contains is a regex modifier: always single-quoted. --only is a glob
-	// pattern: conditionally quoted (double quotes only when it has spaces).
+	// pattern: conditionally quoted (double quotes when that is shell-safe).
 	want := `catclip src --contains 'TODO items' --only "src/a test.ts"`
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestFormatResolvedStartupCommandRoundTripsEveryUserStageShape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell replay test")
+	}
+	if _, err := exec.LookPath("sh"); err != nil {
+		t.Skip("sh not available")
+	}
+
+	args := []string{
+		"--verbose", "--no-tree", "--no-bundle",
+		".",
+		"--include", "README.md",
+		"--only", "*.go", "*.md",
+		"--exclude", "*_test.go",
+		"--recent", "5",
+		"--size", "1", "200",
+		"--depth", "3",
+		"--contains", `func \$name`,
+		"--not-contains", "generated",
+		"--lines", "1", "5",
+		"--then", "docs",
+		"--only", "*.md",
+		"--snippet", `can't TODO`, "3",
+		"--then", ".",
+		"--changed-diff",
+		"--then", ".",
+		"--paths",
+	}
+	before, err := cli.ParseArgs(args)
+	if err != nil {
+		t.Fatalf("initial parse: %v", err)
+	}
+
+	rendered := cli.FormatResolvedStartupCommand(args)
+	script := "set -- " + strings.TrimPrefix(rendered, "catclip ") + `; printf '%s\0' "$@"`
+	out, err := exec.Command("sh", "-c", script).Output()
+	if err != nil {
+		t.Fatalf("shell replay: %v\ncommand: %s", err, rendered)
+	}
+	raw := bytes.Split(bytes.TrimSuffix(out, []byte{0}), []byte{0})
+	replayedArgs := make([]string, len(raw))
+	for i := range raw {
+		replayedArgs[i] = string(raw[i])
+	}
+	after, err := cli.ParseArgs(replayedArgs)
+	if err != nil {
+		t.Fatalf("replayed command did not parse: %v\ncommand: %s\nargv: %q", err, rendered, replayedArgs)
+	}
+
+	if got, want := command.ExecutionScopesFromSpec(after.Command), command.ExecutionScopesFromSpec(before.Command); !reflect.DeepEqual(got, want) {
+		t.Fatalf("scope model changed across replay\ncommand: %s\n got: %#v\nwant: %#v", rendered, got, want)
+	}
+	if after.Verbose != before.Verbose || after.NoTree != before.NoTree || after.NoBundle != before.NoBundle {
+		t.Fatalf("global flags changed across replay\ncommand: %s\nbefore: %#v\nafter: %#v", rendered, before, after)
 	}
 }
 
@@ -6282,6 +6699,24 @@ func parseInProject(t *testing.T, project string, args []string) command.Parsed 
 		t.Fatalf("parseArgs returned error: %v", err)
 	}
 	return cfg
+}
+
+func parseErrorInProject(t *testing.T, project string, args []string) error {
+	t.Helper()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	if err := os.Chdir(project); err != nil {
+		t.Fatalf("Chdir failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	_, err = cli.ParseArgs(args)
+	return err
 }
 
 func initGitRepo(t *testing.T, dir string) {

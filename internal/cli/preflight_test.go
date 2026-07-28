@@ -15,11 +15,6 @@ func TestValidateStartupPreflightArgsExamples(t *testing.T) {
 		{name: "target then bare modifier menu", args: []string{"a", "--"}},
 		{name: "double bare modifier menu chain", args: []string{"--", "--"}},
 		{name: "bare modifier menu cannot take args", args: []string{"a", "--", "a"}, wantErr: "bare -- can only be followed by another bare -- in the same scope"},
-		{name: "bare include", args: []string{"--include"}, wantErr: "--include requires a target query"},
-		{name: "include with value (effect-5: bare --include requires positional)", args: []string{"--include", "node_modules"}, wantErr: "--include 'node_modules' requires a positional target"},
-		{name: "include with target and value", args: []string{".", "--include", "node_modules"}},
-		{name: "include rejects parent traversal", args: []string{"--include", "src/../vendor"}, wantErr: "--include cannot traverse above the current target scope"},
-		{name: "include rejects glob", args: []string{"--include", "*.js"}, wantErr: "--include does not accept glob patterns"},
 		{name: "bare only", args: []string{"--only"}, wantErr: "--only requires a pattern"},
 		{name: "only with value", args: []string{"--only", "a"}},
 		{name: "only recovery prefix", args: []string{"--only", "--", "--"}, wantErr: "--only requires a pattern"},
@@ -75,6 +70,50 @@ func TestValidateStartupPreflightArgsExamples(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestIncludePublicCommandShapeContract is the executable owner for the
+// public --include entry grammar documented in INCLUDE_REFERENCE.md. It keeps
+// missing values, modifier-menu placeholders, concrete/query-shaped values,
+// wildcard authorization, and fresh --then scopes from being conflated by
+// higher-level picker helpers.
+func TestIncludePublicCommandShapeContract(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "missing value is not an unseeded picker", args: []string{"src", "--include"}, wantErr: "--include requires a target query"},
+		{name: "modifier menu is the unseeded interactive entry", args: []string{"src", "--"}},
+		{name: "concrete or unresolved value is valid startup syntax", args: []string{"src", "--include", "src/build"}},
+		{name: "reserved wildcard is valid", args: []string{"src", "--include", "*"}},
+		{name: "stdin sentinel is valid startup syntax", args: []string{"src", "--include", "-"}},
+		{name: "value still requires a positional target", args: []string{"--include", "node_modules"}, wantErr: "--include 'node_modules' requires a positional target"},
+		{name: "wildcard still requires a positional target", args: []string{"--include", "*"}, wantErr: "--include '*' requires a positional target"},
+		{name: "parent traversal is rejected", args: []string{"src", "--include", "src/../vendor"}, wantErr: "--include cannot traverse above the current directory"},
+		{name: "dot is not a target-root alias", args: []string{"src", "--include", "."}, wantErr: "--include '.' is not supported"},
+		{name: "ordinary globs are rejected", args: []string{"src", "--include", "*.js"}, wantErr: "--include does not accept glob patterns"},
+		{name: "include must lead its scope", args: []string{"src", "--only", "*.ts", "--include", "src/build"}, wantErr: "--include must come before other modifiers"},
+		{name: "then starts a fresh include scope", args: []string{"src", "--only", "*.ts", "--then", "docs", "--include", "docs"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateStartupPreflightArgs(tt.args)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("ValidateStartupPreflightArgs(%q) returned error: %v", tt.args, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ValidateStartupPreflightArgs(%q) succeeded; want error containing %q", tt.args, tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateStartupPreflightArgs(%q) error = %v; want text %q", tt.args, err, tt.wantErr)
 			}
 		})
 	}

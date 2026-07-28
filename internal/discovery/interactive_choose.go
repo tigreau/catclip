@@ -63,7 +63,7 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	}
 
 	labels, index := TargetMatchLabels(options)
-	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, TargetPickerHeaderWithEscHint(prompt, r.StartupEscHint), labels, false)
+	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, TargetPickerHeaderWithEscHint(prompt, r.StartupEscHint), labels, false, r.WithBinaries)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +114,7 @@ func (r *Resolver) chooseIgnoredTargetMatches(query, prompt string, selectedPath
 		return nil, 0, err
 	}
 	labels, index := TargetMatchLabels(options)
-	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, IgnoredTargetPickerHeaderWithEscHint(r.StartupEscHint), labels, true)
+	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, IgnoredTargetPickerHeaderWithEscHint(r.StartupEscHint), labels, true, r.WithBinaries)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -148,10 +148,67 @@ func (r *Resolver) ResolveInteractiveIncludeTargets(query string, selectedPaths,
 	if err != nil {
 		return nil, err
 	}
-	if totalOptions > 0 && len(matches) == totalOptions {
+	// Compressing a singleton picker to `*` saves no argv and turns one exact
+	// human-confirmed path into authorization for future ignored paths. Reserve
+	// the wildcard representation for a genuine multi-row select-all result.
+	if totalOptions > 1 && len(matches) == totalOptions {
 		return []string{"*"}, nil
 	}
 	return TargetMatchPaths(matches), nil
+}
+
+// InteractiveIgnoredQueryCoveredBySelection reports whether an include query
+// has nothing new to select because every candidate it resolves to is already
+// covered. It uses the same exact-path priority and fzf filter semantics as
+// the picker; treating an exhausted query as picker cancellation would make a
+// repeated value look like the user pressed Esc.
+func (r *Resolver) InteractiveIgnoredQueryCoveredBySelection(query string, selectedPaths, explicitTargets, scopeTargets []string) (bool, error) {
+	selectedPaths = SelectionPathsForIgnoredTargets(selectedPaths)
+	if len(selectedPaths) == 0 {
+		return false, nil
+	}
+	for _, selected := range selectedPaths {
+		if normalizeRelPath(selected) == "*" {
+			return true, nil
+		}
+	}
+
+	allTargets, err := r.AllIgnoredTargets(scopeTargets)
+	if err != nil {
+		return false, err
+	}
+	allTargets = filterIgnoredTargetsByScopeTargets(allTargets, scopeTargets)
+	allTargets = filterAuthorizationOnlyIncludeMatches(allTargets, explicitTargets)
+	if len(allTargets) == 0 {
+		return false, nil
+	}
+	if len(FilterRedundantTargetMatches(allTargets, selectedPaths)) == 0 {
+		return true, nil
+	}
+
+	query = NormalizeInteractivePickerQuery(query)
+	if match, ok := exactTargetPathMatch(allTargets, query); ok {
+		return CoveredBySelection(match.Path, selectedPaths), nil
+	}
+	bin, err := FuzzyResolverBinary()
+	if err != nil {
+		return false, err
+	}
+	labels, index := TargetMatchLabels(allTargets)
+	filtered, err := runFzfTargetFilterLines(bin, query, labels)
+	if err != nil || len(filtered) == 0 {
+		return false, err
+	}
+	for _, key := range filtered {
+		match, ok := index[key]
+		if !ok {
+			return false, nil
+		}
+		if !CoveredBySelection(match.Path, selectedPaths) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (r *Resolver) resolveExactIgnoredIncludeTarget(query string, scopeTargets []string) (string, bool, error) {
@@ -171,6 +228,14 @@ func (r *Resolver) ResolveExactIgnoredIncludeTargets(queries []string, scopeTarg
 	exact := make([]string, 0, len(queries))
 	remaining := make([]string, 0, len(queries))
 	for _, query := range queries {
+		if normalizeRelPath(query) == "*" {
+			exact = append(exact, "*")
+			continue
+		}
+		if concrete, _, ok := resolveConcreteIncludePath(r.Cfg.WorkingDir, query); ok {
+			exact = append(exact, concrete)
+			continue
+		}
 		path, ok, err := r.resolveExactIgnoredIncludeTarget(query, scopeTargets)
 		if err != nil {
 			return nil, nil, err
@@ -408,7 +473,7 @@ func chooseDirectoryMatch(cfg command.Invocation, needle, currentRel string, mat
 	if err != nil {
 		return nil, err
 	}
-	return chooseManyWithTypedFzf(path, needle, "dir> ", matches, treeTargetKindDir, treeTargetStateOK, false)
+	return chooseManyWithTypedFzf(path, needle, "dir> ", matches, treeTargetKindDir, treeTargetStateOK, false, cfg.WithBinaries)
 }
 
 func chooseFileMatch(cfg command.Invocation, needle, currentRel string, matches []string, includeTarget bool, stderr io.Writer, colors platform.Palette) ([]string, error) {
@@ -420,7 +485,7 @@ func chooseFileMatch(cfg command.Invocation, needle, currentRel string, matches 
 	if err != nil {
 		return nil, err
 	}
-	return chooseManyWithTypedFzf(path, needle, "file> ", matches, treeTargetKindFile, treeTargetStateText, includeTarget)
+	return chooseManyWithTypedFzf(path, needle, "file> ", matches, treeTargetKindFile, treeTargetStateText, includeTarget, cfg.WithBinaries)
 }
 
 func chooseTargetMatch(cfg command.Invocation, needle string, matches []TargetMatch, stderr io.Writer, colors platform.Palette) ([]TargetMatch, error) {
@@ -433,7 +498,7 @@ func chooseTargetMatch(cfg command.Invocation, needle string, matches []TargetMa
 		return nil, err
 	}
 	labels, index := TargetMatchLabels(matches)
-	selectedKeys, err := chooseManyTargetMatchesWithFzf(path, needle, "select> ", labels, false)
+	selectedKeys, err := chooseManyTargetMatchesWithFzf(path, needle, "select> ", labels, false, cfg.WithBinaries)
 	if err != nil {
 		return nil, err
 	}
@@ -448,6 +513,44 @@ func chooseTargetMatch(cfg command.Invocation, needle string, matches []TargetMa
 		return nil, ErrSelectionCancelled
 	}
 	return selected, nil
+}
+
+func chooseFuzzyTargetMatches(cfg command.Invocation, needle string, matches []TargetMatch, stderr io.Writer, colors platform.Palette) ([]TargetMatch, error) {
+	dirs := make([]string, 0, len(matches))
+	files := make([]string, 0, len(matches))
+	for _, match := range matches {
+		switch match.Kind {
+		case treeTargetKindDir:
+			dirs = append(dirs, match.Path)
+		case treeTargetKindFile:
+			files = append(files, match.Path)
+		}
+	}
+
+	switch {
+	case len(files) == 0:
+		selected, err := chooseDirectoryMatch(cfg, needle, ".", dirs, stderr, colors)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]TargetMatch, 0, len(selected))
+		for _, path := range selected {
+			out = append(out, TargetMatch{Path: path, Kind: treeTargetKindDir})
+		}
+		return out, nil
+	case len(dirs) == 0:
+		selected, err := chooseFileMatch(cfg, needle, ".", files, false, stderr, colors)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]TargetMatch, 0, len(selected))
+		for _, path := range selected {
+			out = append(out, TargetMatch{Path: path, Kind: treeTargetKindFile})
+		}
+		return out, nil
+	default:
+		return chooseTargetMatch(cfg, needle, matches, stderr, colors)
+	}
 }
 
 const HeadlessCandidateListLimit = 10
@@ -536,6 +639,14 @@ func runFzfFilter(bin, query string, candidates []string) ([]string, error) {
 
 func runFzfFilterLines(bin, query string, lines []string) ([]string, error) {
 	return picker.Filter(bin, query, lines)
+}
+
+// TargetMatchLabels keeps presentation metadata in column 1 and the actual
+// cwd-relative path in column 2. Search only the path: words such as
+// "ignored", "file", and ".gitignore" describe a row but are not target
+// names and must not make an unrelated query match.
+func runFzfTargetFilterLines(bin, query string, lines []string) ([]string, error) {
+	return picker.FilterByNth(bin, query, lines, "2")
 }
 
 // FzfFileSetPreviewCommand is the legacy fallback command for free-form
@@ -629,16 +740,16 @@ func contentMatchReloadBindings(reloadCommand, searchingPreviewCommand string) [
 	}
 }
 
-func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind, state string, includeTarget bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", FzfPreviewCommand(includeTarget), formatFzfCandidates(candidates, kind, state))
+func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind, state string, includeTarget, withBinaries bool) ([]string, error) {
+	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", FzfPreviewCommand(includeTarget, withBinaries), formatFzfCandidates(candidates, kind, state))
 }
 
-func chooseManyTargetMatchesWithFzfHeader(bin, query, prompt, header string, candidates []string, includeTarget bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1", header, FzfPreviewCommand(includeTarget), candidates)
+func chooseManyTargetMatchesWithFzfHeader(bin, query, prompt, header string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
+	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1", header, FzfPreviewCommand(includeTarget, withBinaries), candidates)
 }
 
-func chooseManyTargetMatchesWithFzf(bin, query, prompt string, candidates []string, includeTarget bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1", "", FzfPreviewCommand(includeTarget), candidates)
+func chooseManyTargetMatchesWithFzf(bin, query, prompt string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
+	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1", "", FzfPreviewCommand(includeTarget, withBinaries), candidates)
 }
 
 type fzfChooseResult struct {

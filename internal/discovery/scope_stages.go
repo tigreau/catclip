@@ -1,10 +1,7 @@
 package discovery
 
 import (
-	"io"
-	"os"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/tigreau/catclip/internal/command"
@@ -82,9 +79,15 @@ var stageApplierTable = map[command.StageKind]stageApplier{
 }
 
 func applyScopeStages(resolver *Resolver, gitCtx git.Context, s command.ExecutionScope, entries []Entry) ([]Entry, error) {
+	entries, _, err := applyScopeStagesWithDiagnostics(resolver, gitCtx, s, entries, -1, platform.Palette{})
+	return entries, err
+}
+
+func applyScopeStagesWithDiagnostics(resolver *Resolver, gitCtx git.Context, s command.ExecutionScope, entries []Entry, scopeIndex int, colors platform.Palette) ([]Entry, []Diagnostic, error) {
 	if len(entries) == 0 {
-		return entries, nil
+		return entries, nil, nil
 	}
+	var diagnostics []Diagnostic
 	for _, stage := range s.Stages {
 		applier, ok := stageApplierTable[stage.Kind]
 		if !ok {
@@ -93,17 +96,43 @@ func applyScopeStages(resolver *Resolver, gitCtx git.Context, s command.Executio
 			// without breaking older runs.
 			continue
 		}
+		deadValues := deadTrailingSlashGlobStageValues(stage)
+		if scopeIndex >= 0 {
+			for _, value := range deadValues {
+				diagnostics = append(diagnostics, Diagnostic{
+					Message:    trailingSlashGlobStageWarning(stage.Kind, value, scopeIndex, colors),
+					ScopeIndex: scopeIndex,
+				})
+			}
+		}
 		ctx := stageContext{Resolver: resolver, GitCtx: gitCtx, Scope: s, Stage: stage}
 		next, err := applier(ctx, entries)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		entries = next
 		if len(entries) == 0 {
-			return entries, nil
+			if stage.Kind == command.StageOnly && len(deadValues) > 0 && len(deadValues) == len(stage.Values) && len(diagnostics) > 0 {
+				diagnostics[len(diagnostics)-len(deadValues)].ExplainsEmptyResult = true
+			}
+			return entries, diagnostics, nil
 		}
 	}
-	return entries, nil
+	return entries, diagnostics, nil
+}
+
+func deadTrailingSlashGlobStageValues(stage command.Stage) []string {
+	if stage.ExactValues || (stage.Kind != command.StageOnly && stage.Kind != command.StageExclude) {
+		return nil
+	}
+	var dead []string
+	for _, value := range stage.Values {
+		normalized := strings.ReplaceAll(value, "\\", "/")
+		if hasGlobChars(normalized) && strings.HasSuffix(normalized, "/") {
+			dead = append(dead, value)
+		}
+	}
+	return dead
 }
 
 func applyIncludeStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
@@ -215,99 +244,73 @@ func applyLinesStageCase(_ stageContext, entries []Entry) ([]Entry, error) {
 	return entries, nil
 }
 
-func applyIncludeStage(resolver *Resolver, s command.ExecutionScope, entries []Entry, targets []string, exactValues bool) ([]Entry, error) {
-	if len(targets) == 0 {
+func applyIncludeStage(resolver *Resolver, s command.ExecutionScope, entries []Entry, _ []string, _ bool) ([]Entry, error) {
+	if len(resolver.IncludedTargets.paths) == 0 && !resolver.IncludedTargets.wildcard {
 		return entries, nil
+	}
+	if resolver.IncludedTargets.wildcard {
+		return applyWildcardIncludeStage(resolver, s, entries)
 	}
 
 	out := append([]Entry(nil), entries...)
-	for _, target := range targets {
-		if target == "*" || includeTargetActsAsAuthorizationOnly(s, target) {
+	for _, target := range resolver.IncludedTargets.paths {
+		if includeTargetActsAsAuthorizationOnly(s, target) || !includePathRelatedToScopeTargets(target, s.Targets) {
 			continue
 		}
-		scopedTargets := scopeIncludeTarget(resolver.Cfg.WorkingDir, s.Targets, target)
-		for _, scopedTarget := range scopedTargets {
-			if exactValues {
-				included, err := resolveExactIncludeStageTarget(resolver, scopedTarget)
-				if err != nil {
-					return nil, err
-				}
-				out = append(out, included...)
-				continue
-			}
-			included, _, _, _, err := resolver.resolveAndDiscoverTarget(0, scopedTarget, io.Discard, platform.Palette{})
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, included...)
+		if resolver.includeAwareTargetWalked(target) {
+			continue
 		}
+		included, err := resolveExactIncludeStageTarget(resolver, target)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, included...)
 	}
 	return DedupeEntriesByPathPreserveOrder(out), nil
 }
 
-// scopeIncludeTarget resolves an include target relative to the scope targets.
-// Returns the list of concrete paths to resolve (one per scope target that
-// could contain the include target). When any scope target is "." (root), the
-// include target is returned as-is since the entire project is in scope.
-//
-// For the bare-include-target branch (no slash), the result is `target/include`
-// only when `target` is actually a directory on disk. If the scope target is a
-// file (e.g. `agent.md`), combining yields a nonsense path; in that case the
-// include's authorization still applies globally (via BuildIncludedTargetSet)
-// and the basename-include lookup picks it up — see
-// ACTIVE_BUG_basename_target_ignores_include_subtree.md.
-func scopeIncludeTarget(workingDir string, scopeTargets []string, includeTarget string) []string {
-	includeTarget = normalizeRelPath(includeTarget)
-	if includeTarget == "" || includeTarget == "." {
-		return nil
+// applyWildcardIncludeStage expands the already-resolved scope targets during
+// checkpoint replay. Initial discovery sees wildcard authorization before it
+// resolves targets, but a prediscovered checkpoint contains only the earlier
+// visible set and must recover ignored entries when the include stage is
+// replayed. Resolve each target independently so `src --include '*'` cannot
+// widen to ignored files elsewhere in cwd.
+func applyWildcardIncludeStage(resolver *Resolver, s command.ExecutionScope, entries []Entry) ([]Entry, error) {
+	targets := s.Targets
+	if len(targets) == 0 {
+		targets = []string{"."}
 	}
-
-	// If any scope target is root, the include target is in scope as-is.
-	for _, target := range scopeTargets {
-		target = normalizeRelPath(target)
-		if target == "" || target == "." {
-			return []string{includeTarget}
-		}
-	}
-
-	// Anchored include target (contains "/"): check if it falls under any
-	// scope target prefix, or is an ancestor of any scope target (authorizing
-	// discovery of the scope target itself).
-	if strings.Contains(includeTarget, "/") {
-		for _, target := range scopeTargets {
-			target = normalizeRelPath(target)
-			if target == "" {
-				continue
-			}
-			if includeTarget == target || strings.HasPrefix(includeTarget, target+"/") || strings.HasPrefix(target, includeTarget+"/") {
-				return []string{includeTarget}
-			}
-		}
-		return nil
-	}
-
-	// Bare include target (no "/"): combine `target/include` only when `target`
-	// stats as a directory. For file-shaped scope targets the combined path
-	// would be invalid; the include's global authorization still applies via
-	// BuildIncludedTargetSet and the basename-include probe finds the file
-	// inside the authorized subtree.
-	out := make([]string, 0, len(scopeTargets))
-	for _, target := range scopeTargets {
+	out := append([]Entry(nil), entries...)
+	for _, target := range targets {
 		target = normalizeRelPath(target)
 		if target == "" {
+			target = "."
+		}
+		if resolver.includeAwareTargetWalked(target) {
 			continue
 		}
-		if !scopeTargetIsDir(workingDir, target) {
-			continue
-		}
-		out = append(out, target+"/"+includeTarget)
-	}
-	return out
-}
 
-func scopeTargetIsDir(workingDir, relTarget string) bool {
-	info, err := os.Stat(filepath.Join(workingDir, filepath.FromSlash(relTarget)))
-	return err == nil && info.IsDir()
+		var included []Entry
+		if hasGlobChars(target) {
+			var err error
+			included, _, _, _, err = resolver.resolveGlobTarget(-1, target, platform.Palette{})
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			var handled bool
+			var err error
+			included, handled, _, err = resolver.resolveExactTarget(target, false, platform.Palette{})
+			if err != nil {
+				return nil, err
+			}
+			if !handled {
+				continue
+			}
+		}
+		out = append(out, included...)
+	}
+	return DedupeEntriesByPathPreserveOrder(out), nil
 }
 
 func includeTargetActsAsAuthorizationOnly(s command.ExecutionScope, includeTarget string) bool {
@@ -324,7 +327,7 @@ func includeTargetActsAsAuthorizationOnlyForTargets(targets []string, includeTar
 		if target == "" || target == "." {
 			continue
 		}
-		if target == includeTarget || strings.HasPrefix(target, includeTarget+"/") {
+		if strings.HasPrefix(target, includeTarget+"/") {
 			return true
 		}
 	}

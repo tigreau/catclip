@@ -270,6 +270,16 @@ func runStartupSinkFrame(frame startupInteractiveFrame, rawArgs []string) (start
 	if err != nil {
 		return startupInteractiveFrameResult{}, err
 	}
+	prepared := &StartupPreparedOutputState{Git: ctx.Git, Discovery: ctx.Discovery, Plan: ctx.Plan}
+	// Resolve this frame without fzf; normal execution owns empty-result
+	// diagnostics, and a sink menu cannot offer anything useful here.
+	if ctx.Plan.IsEmpty() {
+		return startupInteractiveFrameResult{
+			Args:           cloneStringSlice(frame.StartArgs),
+			PreparedOutput: prepared,
+			SinkResolved:   true,
+		}, nil
+	}
 	measurement := measureOutputForSinkMenu(ctx.Plan, ctx.Emit)
 	sinkArgs, usedFzf, err := pickOutputSinkWithEscHint(ctx, measurement, frame.EscHint)
 	if err != nil {
@@ -278,7 +288,7 @@ func runStartupSinkFrame(frame startupInteractiveFrame, rawArgs []string) (start
 	return startupInteractiveFrameResult{
 		Args:                 append(cloneStringSlice(frame.StartArgs), sinkArgs...),
 		UsedFzf:              usedFzf,
-		PreparedOutput:       &StartupPreparedOutputState{Git: ctx.Git, Discovery: ctx.Discovery, Plan: ctx.Plan},
+		PreparedOutput:       prepared,
 		ForceResolvedCommand: argsContain(sinkArgs, "--headless") && !rawArgsRequestQuiet(rawArgs),
 		SinkResolved:         true,
 	}, nil
