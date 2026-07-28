@@ -2,6 +2,7 @@ package catclip
 
 import (
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -45,10 +46,16 @@ func TestNormalizePositionalGlobArgsBareExtensionFixIt(t *testing.T) {
 	if !strings.Contains(err.Error(), "Error: '.tsx' is a bare extension, not a target.") {
 		t.Fatalf("expected bare-extension fix-it, got:\n%s", err)
 	}
-	if !strings.Contains(err.Error(), `catclip src --only "*.tsx" --changed`) {
+	onlySuggestion := `catclip src --only "*.tsx" --changed`
+	targetSuggestion := `catclip src "*.tsx" --changed`
+	if runtime.GOOS == "windows" {
+		onlySuggestion = `catclip src --only '*.tsx' --changed`
+		targetSuggestion = `catclip src '*.tsx' --changed`
+	}
+	if !strings.Contains(err.Error(), onlySuggestion) {
 		t.Fatalf("expected --only filter suggestion, got:\n%s", err)
 	}
-	if !strings.Contains(err.Error(), `catclip src "*.tsx" --changed`) {
+	if !strings.Contains(err.Error(), targetSuggestion) {
 		t.Fatalf("expected glob-as-target suggestion, got:\n%s", err)
 	}
 }

@@ -5991,9 +5991,12 @@ func TestFormatHeadlessCandidateListTruncatesAfterLimit(t *testing.T) {
 
 func TestFormatResolvedStartupCommandShellQuotesArgs(t *testing.T) {
 	got := cli.FormatResolvedStartupCommand([]string{"src", "--contains", "TODO items", "--only", "src/a test.ts"})
-	// --contains is a regex modifier: always single-quoted. --only is a glob
-	// pattern: conditionally quoted (double quotes when that is shell-safe).
+	// --contains is a regex modifier and stays single-quoted. Spaced ordinary
+	// values use the documented user-shell spelling.
 	want := `catclip src --contains 'TODO items' --only "src/a test.ts"`
+	if runtime.GOOS == "windows" {
+		want = `catclip src --contains 'TODO items' --only 'src/a test.ts'`
+	}
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
