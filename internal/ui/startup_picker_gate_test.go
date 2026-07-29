@@ -346,7 +346,7 @@ while [ "$#" -gt 0 ]; do
 done
 input="$(cat)"
 if [ "$prompt" = "include> " ] && [ "$query" = "doc" ]; then
-	printf '%s\n' "$input" | grep -F "[ignored dir .gitignore] docs" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "docs"' | head -n 1
 	exit 0
 fi
 echo "unexpected prompt/query: $prompt / $query" >&2

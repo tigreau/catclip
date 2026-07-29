@@ -335,7 +335,11 @@ func TargetMatchLabels(matches []TargetMatch) ([]string, map[string]TargetMatch)
 	labels := make([]string, 0, len(matches))
 	index := make(map[string]TargetMatch, len(matches))
 	for _, match := range matches {
-		label := fmt.Sprintf("[%s] %s", match.Kind, match.Path)
+		// fzf applies --nth after --with-nth. Keep the presentation prefix
+		// and path as two transformed fields so target pickers can display
+		// "[file] path" while matching only field 2. Collapsing presentation
+		// to field 1 makes --nth 2 an empty search domain.
+		label := fmt.Sprintf("[%s]", match.Kind)
 		if match.Kind == "all" {
 			plain := "[select all files]"
 			label = "\x1b[1m" + plain + "\x1b[0m"
@@ -344,7 +348,7 @@ func TargetMatchLabels(matches []TargetMatch) ([]string, map[string]TargetMatch)
 			if source == "" {
 				source = "ignored"
 			}
-			label = fmt.Sprintf("[ignored %s %s] %s", match.Kind, source, match.Path)
+			label = fmt.Sprintf("[ignored %s %s]", match.Kind, source)
 		}
 		labels = append(labels, strings.Join([]string{
 			label,

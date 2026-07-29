@@ -383,10 +383,10 @@ case "$prompt" in
 		printf '%%s' "$select_count" > %[1]q.select
 		case "$select_count" in
 			1)
-				printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+					printf '%%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 				;;
 			2)
-				printf '%%s\n' "$input" | grep -F "[dir] shared" | head -n 1
+					printf '%%s\n' "$input" | awk -F '\t' '$2 == "shared"' | head -n 1
 				;;
 			*)
 				echo "unexpected select count: $select_count" >&2

@@ -150,7 +150,7 @@ input="$(cat)"
 
 if [ "$prompt" = "select> " ] && [ "$query" = "sr" ]; then
 	printf '%s\n' "$query"
-	printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 	exit 0
 fi
 

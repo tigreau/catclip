@@ -49,7 +49,7 @@ case "$prompt" in
 		echo "binary include preview omitted --with-binaries: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$input" | grep -F '[ignored file .gitignore] ignored/image.png'
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "ignored/image.png"'
 	;;
 "narrow> ")
 	: > "$CATCLIP_TEST_NARROW_MARKER"
@@ -172,7 +172,7 @@ input="$(cat)"
 case "$prompt" in
 "include> ")
 	[ "$nth" = "2" ] || { echo "include picker must search only the path field, got --nth $nth" >&2; exit 91; }
-	printf '%s\n' "$input" | grep -F '[ignored file .gitignore] internal/ui/bench_modifier_menu_test.go'
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "internal/ui/bench_modifier_menu_test.go"'
 	;;
 "narrow> ") printf '%s\n' "$input" | grep -F 'Keep all current files' ;;
 *) echo "unexpected prompt: $prompt" >&2; exit 91 ;;
@@ -205,7 +205,7 @@ while [ "$#" -gt 0 ]; do
 done
 input="$(cat)"
 case "$prompt" in
-"include> ") printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] docs' ;;
+"include> ") printf '%s\n' "$input" | awk -F '\t' '$2 == "docs"' ;;
 "narrow> ") printf '%s\n' "$input" | grep -F 'Keep only ignored files' ;;
 *) echo "unexpected prompt: $prompt" >&2; exit 91 ;;
 esac
@@ -277,7 +277,7 @@ done
 input="$(cat)"
 case "$prompt" in
 "include> ")
-	printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] docs'
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "docs"'
 	;;
 "narrow> ")
 	if [ ! -f "$CATCLIP_TEST_NARROW_STATE" ]; then
@@ -337,8 +337,8 @@ case "$prompt" in
 "include> ")
 	printf '%s\n' "$query" >> "$CATCLIP_TEST_INCLUDE_LOG"
 	case "$query" in
-	doc) printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] docs' ;;
-	vend) printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] vendor' ;;
+	doc) printf '%s\n' "$input" | awk -F '\t' '$2 == "docs"' ;;
+	vend) printf '%s\n' "$input" | awk -F '\t' '$2 == "vendor"' ;;
 	*) echo "unexpected include query: $query" >&2; exit 91 ;;
 	esac
 	;;
@@ -405,8 +405,8 @@ case "$prompt" in
 		exit 130
 	fi
 	case "$query" in
-	doc) printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] docs' ;;
-	vend) printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] vendor' ;;
+	doc) printf '%s\n' "$input" | awk -F '\t' '$2 == "docs"' ;;
+	vend) printf '%s\n' "$input" | awk -F '\t' '$2 == "vendor"' ;;
 	*) echo "unexpected include query: $query" >&2; exit 91 ;;
 	esac
 	;;
@@ -460,7 +460,7 @@ fi
 case "$prompt" in
 "include> ")
 	printf '%s\n' "$query" >> "$CATCLIP_TEST_INCLUDE_LOG"
-	printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] docs'
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "docs"'
 	;;
 "narrow> ") printf '%s\n' "$input" | grep -F 'Keep all current files' ;;
 *) echo "unexpected prompt: $prompt" >&2; exit 91 ;;
@@ -514,7 +514,7 @@ fi
 case "$prompt" in
 "include> ")
 	printf '%s\n' "$query" >> "$CATCLIP_TEST_INCLUDE_LOG"
-	printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] docs'
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "docs"'
 	;;
 "narrow> ")
 	if [ ! -f "$CATCLIP_TEST_NARROW_STATE" ]; then
@@ -578,8 +578,8 @@ if [ "$query" = "vend" ] && [ ! -f "$CATCLIP_TEST_QUERY_BACK_STATE" ]; then
 	exit 130
 fi
 case "$query" in
-doc) printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] docs' ;;
-vend) printf '%s\n' "$input" | grep -F '[ignored dir .gitignore] vendor' ;;
+doc) printf '%s\n' "$input" | awk -F '\t' '$2 == "docs"' ;;
+vend) printf '%s\n' "$input" | awk -F '\t' '$2 == "vendor"' ;;
 *) echo "unexpected include query: $query" >&2; exit 91 ;;
 esac
 `)

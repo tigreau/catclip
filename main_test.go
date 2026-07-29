@@ -5787,23 +5787,23 @@ emit_query() {
 				;;
 			common)
 				emit_query
-				printf '%s\n' "$input" | grep -F "[dir] src/common"
-				printf '%s\n' "$input" | grep -F "[dir] lib/common"
-				printf '%s\n' "$input" | grep -F "[dir] shared/common"
-				printf '%s\n' "$input" | grep -F "[file] src/common.ts"
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "src/common"'
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "lib/common"'
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "shared/common"'
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "src/common.ts"'
 				exit 0
 				;;
 			src/)
 				emit_query
-				printf '%s\n' "$input" | grep -F "[dir] src"
-				printf '%s\n' "$input" | grep -F "[dir] docs/src"
-				printf '%s\n' "$input" | grep -F "[dir] tools/src"
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "src"'
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "docs/src"'
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "tools/src"'
 				exit 0
 				;;
 			src/vs/platform)
 				emit_query
-				printf '%s\n' "$input" | grep -F "[dir] src/vs/platform"
-				printf '%s\n' "$input" | grep -F "[dir] tools/src/vs/platform"
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "src/vs/platform"'
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "tools/src/vs/platform"'
 				exit 0
 				;;
 		esac
@@ -5820,7 +5820,7 @@ emit_query() {
 		case "$query" in
 			node)
 				emit_query
-				printf '%s\n' "$input" | grep -F "[ignored dir .hiss] node_modules" | head -n 1
+				printf '%s\n' "$input" | awk -F '\t' '$2 == "node_modules"' | head -n 1
 				exit 0
 				;;
 		esac

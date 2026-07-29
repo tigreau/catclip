@@ -86,9 +86,9 @@ func TestTargetMatchLabelsShowIgnoredSourceTemporarily(t *testing.T) {
 	})
 
 	want := []string{
-		"[dir] src/components\tsrc/components\tdir\tok",
-		"[ignored dir .hiss] node_modules\tnode_modules\tdir\tno_text_children",
-		"[ignored file .gitignore] coverage-final.json\tcoverage-final.json\tfile\ttext",
+		"[dir]\tsrc/components\tdir\tok",
+		"[ignored dir .hiss]\tnode_modules\tdir\tno_text_children",
+		"[ignored file .gitignore]\tcoverage-final.json\tfile\ttext",
 	}
 	if strings.Join(labels, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("expected labels %v, got %v", want, labels)
@@ -870,7 +870,7 @@ if [ "$prompt" = "include> " ] && [ -z "$query" ]; then
 		echo "missing include enter help" >&2
 		exit 91
 	}
-	printf '%s\n' "$input" | grep -F "[ignored dir .hiss] node_modules" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "node_modules"' | head -n 1
 	exit 0
 fi
 
@@ -937,7 +937,7 @@ emit_query() {
 
 if [ "$prompt" = "select> " ] && [ "$query" = "sr" ]; then
 	emit_query
-	printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 	exit 0
 fi
 
@@ -947,7 +947,7 @@ if [ "$prompt" = "select> " ] && [ "$query" = "s" ]; then
 		exit 91
 	fi
 	emit_query
-	printf '%s\n' "$input" | grep -F "[dir] shared" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "shared"' | head -n 1
 	exit 0
 fi
 
@@ -1016,11 +1016,11 @@ fi
 if [ "$prompt" = "include> " ]; then
 	case "$query" in
 		node)
-			printf '%s\n' "$input" | grep -F "[ignored dir .hiss] node_modules" | head -n 1
+			printf '%s\n' "$input" | awk -F '\t' '$2 == "node_modules"' | head -n 1
 			exit 0
 			;;
 		cov)
-			printf '%s\n' "$input" | grep -F "[ignored dir .hiss] coverage" | head -n 1
+			printf '%s\n' "$input" | awk -F '\t' '$2 == "coverage"' | head -n 1
 			exit 0
 			;;
 	esac
@@ -1177,7 +1177,7 @@ if [ "$prompt" = "filter> " ]; then
 fi
 
 if [ "$prompt" = "include> " ]; then
-	printf '%s\n' "$input" | grep -F "[ignored dir .hiss] node_modules" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "node_modules"' | head -n 1
 	exit 0
 fi
 
@@ -1989,15 +1989,15 @@ if [ "$prompt" = "filter> " ]; then
 fi
 
 if [ "$prompt" = "include> " ]; then
-	if printf '%s\n' "$input" | grep -F "[ignored dir .hiss] docs	docs	dir" >/dev/null; then
+	if printf '%s\n' "$input" | awk -F '\t' '$2 == "docs" && $3 == "dir"' | grep -q .; then
 		echo "ancestor docs unexpectedly shown in include picker" >&2
 		exit 91
 	fi
-	if printf '%s\n' "$input" | grep -F "[ignored dir .hiss] docs/versions	docs/versions	dir" >/dev/null; then
+	if printf '%s\n' "$input" | awk -F '\t' '$2 == "docs/versions" && $3 == "dir"' | grep -q .; then
 		echo "ancestor docs/versions unexpectedly shown in include picker" >&2
 		exit 91
 	fi
-	printf '%s\n' "$input" | grep -F "[ignored dir .hiss] docs/versions/v0.4.0" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "docs/versions/v0.4.0"' | head -n 1
 	exit 0
 fi
 
@@ -2311,7 +2311,7 @@ input="$(cat)"
 
 if [ "$prompt" = "select> " ]; then
 	printf 'pick\n' > %q
-	printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	printf '%%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 	exit 0
 fi
 
@@ -2523,7 +2523,7 @@ input="$(cat)"
 
 if [ "$prompt" = "select> " ]; then
 	printf 'pick\n' > %q
-	printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	printf '%%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 	exit 0
 fi
 
@@ -2585,7 +2585,7 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "select> " ]; then
-	printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 	exit 0
 fi
 
@@ -2663,7 +2663,7 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "select> " ]; then
-	printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 	exit 0
 fi
 
@@ -2722,12 +2722,12 @@ if [ "$prompt" = "select> " ]; then
 	case "$count" in
 		0)
 			printf '1' > %q
-			printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+			printf '%%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 			exit 0
 			;;
 		1)
 			printf '2' > %q
-			printf '%%s\n' "$input" | grep -F "[dir] shared" | head -n 1
+			printf '%%s\n' "$input" | awk -F '\t' '$2 == "shared"' | head -n 1
 			exit 0
 			;;
 		*)
@@ -2790,12 +2790,12 @@ if [ "$prompt" = "select> " ]; then
 	case "$count" in
 		0)
 			printf '1' > %q
-			printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+			printf '%%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 			exit 0
 			;;
 		1)
 			printf '2' > %q
-			printf '%%s\n' "$input" | grep -F "[dir] shared" | head -n 1
+			printf '%%s\n' "$input" | awk -F '\t' '$2 == "shared"' | head -n 1
 			exit 0
 			;;
 		*)
@@ -2850,7 +2850,7 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "select> " ]; then
-	printf '%s\n' "$input" | grep -F "[dir] shared" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "shared"' | head -n 1
 	exit 0
 fi
 
@@ -2905,7 +2905,7 @@ fi
 
 if [ "$prompt" = "select> " ]; then
 	printf '1' > %q
-	printf '%%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	printf '%%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 	exit 0
 fi
 
@@ -3422,7 +3422,7 @@ emit_query() {
 
 if [ "$prompt" = "select> " ] && [ "$query" = "sr" ]; then
 	emit_query
-	printf '%s\n' "$input" | grep -F "[dir] src" | head -n 1
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
 	exit 0
 fi
 
@@ -5026,7 +5026,7 @@ if [ "$prompt" = "only> " ]; then
 fi
 
 if [ "$prompt" = "include> " ]; then
-	printf '%%s\n' "$input" | grep -F "[ignored dir .hiss] node_modules" | head -n 1
+	printf '%%s\n' "$input" | awk -F '\t' '$2 == "node_modules"' | head -n 1
 	exit 0
 fi
 

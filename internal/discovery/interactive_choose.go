@@ -745,11 +745,11 @@ func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind
 }
 
 func chooseManyTargetMatchesWithFzfHeader(bin, query, prompt, header string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1", header, FzfPreviewCommand(includeTarget, withBinaries), candidates)
+	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", header, FzfPreviewCommand(includeTarget, withBinaries), candidates)
 }
 
 func chooseManyTargetMatchesWithFzf(bin, query, prompt string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1", "", FzfPreviewCommand(includeTarget, withBinaries), candidates)
+	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", "", FzfPreviewCommand(includeTarget, withBinaries), candidates)
 }
 
 type fzfChooseResult struct {
