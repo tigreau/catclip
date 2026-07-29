@@ -18,6 +18,7 @@ jobs:
           - runner: macos-latest
             goos: darwin
             goarch: amd64
+            run_tests: true
             artifact: catclip_darwin_amd64.tar.gz
             archive_kind: tar
             rg_triple: x86_64-apple-darwin
@@ -28,6 +29,7 @@ jobs:
           - runner: macos-latest
             goos: darwin
             goarch: arm64
+            run_tests: false
             artifact: catclip_darwin_arm64.tar.gz
             archive_kind: tar
             rg_triple: aarch64-apple-darwin
@@ -38,6 +40,7 @@ jobs:
           - runner: ubuntu-22.04
             goos: linux
             goarch: amd64
+            run_tests: true
             artifact: catclip_linux_amd64.tar.gz
             archive_kind: tar
             rg_triple: x86_64-unknown-linux-musl
@@ -48,6 +51,7 @@ jobs:
           - runner: ubuntu-22.04-arm
             goos: linux
             goarch: arm64
+            run_tests: false
             artifact: catclip_linux_arm64.tar.gz
             archive_kind: tar
             rg_triple: aarch64-unknown-linux-gnu
@@ -58,6 +62,7 @@ jobs:
           - runner: windows-latest
             goos: windows
             goarch: amd64
+            run_tests: true
             artifact: catclip_windows_amd64.zip
             archive_kind: zip
             rg_triple: x86_64-pc-windows-msvc
@@ -114,6 +119,16 @@ jobs:
             cp "fzf-extract/fzf" "stage/bin/fzf"
             chmod +x "stage/bin/fzf"
           fi
+
+      - name: Run full test suite
+        if: matrix.run_tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          CATCLIP_RG="$(pwd)/stage/bin/rg${{ matrix.bin_ext }}"
+          CATCLIP_FZF="$(pwd)/stage/bin/fzf${{ matrix.bin_ext }}"
+          export CATCLIP_RG CATCLIP_FZF
+          go test ./...
 
       - name: Write VERSION
         shell: bash
