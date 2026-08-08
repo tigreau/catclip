@@ -46,7 +46,7 @@ type executionScopeBuilder struct {
 }
 
 func (b executionScopeBuilder) hasContent() bool {
-	return len(b.Targets) > 0 || len(b.IncludedTargets) > 0 || len(b.Only) > 0 || len(b.Exclude) > 0 ||
+	return len(b.Targets) > 0 || b.NoIgnore || len(b.IncludedTargets) > 0 || len(b.Only) > 0 || len(b.Exclude) > 0 ||
 		len(b.Stages) > 0 ||
 		b.Contains != "" || b.Paths || b.SnippetPattern != "" || b.Snippet || b.Changed || b.Staged || b.Unstaged ||
 		b.Untracked || b.Diff
@@ -128,6 +128,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			// the "." default (the picker's resolved argv always
 			// includes a positional, so the error surfaces to
 			// strict-runtime entry only).
+			if s.NoIgnore && !allowImplicitDotScope {
+				return NoIgnoreMissingPositionalTargetError()
+			}
 			if len(s.IncludedTargets) > 0 && !allowImplicitDotScope {
 				return IncludeMissingPositionalTargetError(s.IncludedTargets[0])
 			}
@@ -406,6 +409,11 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageOnly, Values: append([]string(nil), values...), ExactValues: exactValues})
 			i = next - 1
 			lastNoValueModifier = ""
+		case "--no-ignore":
+			inModifierMode = true
+			current.NoIgnore = true
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageNoIgnore})
+			lastNoValueModifier = arg
 		case "--include":
 			inModifierMode = true
 			values, next, exactValues, err := consumePathModifierValues(args, i+1, "--include", &stdinCache)
@@ -585,7 +593,12 @@ func consumePathModifierValues(args []string, start int, flag string, cache *std
 func ValidateIncludeValues(values []string) error {
 	for _, value := range values {
 		if value == "*" {
-			continue
+			return newUsageError("Error: --include accepts specific ignored paths, not '*'.\n\n" +
+				"  To include every file hidden by ignore rules below the selected targets,\n" +
+				"  use --no-ignore:\n" +
+				"    catclip src --no-ignore\n\n" +
+				"  To include one ignored file or directory, name its path:\n" +
+				"    catclip src --include src/generated")
 		}
 		if isAbsolutePathForValidation(value) {
 			return newUsageError("Error: --include does not accept absolute paths: %s\n  Use a path relative to the current directory.", singleQuoted(value))
@@ -594,10 +607,10 @@ func ValidateIncludeValues(values []string) error {
 			return newUsageError("Error: --include cannot traverse above the current directory: %s\n  Use a path relative to the current directory.", singleQuoted(value))
 		}
 		if hasGlobChars(value) {
-			return newUsageError("Error: --include does not accept glob patterns. Use literal paths or '*' to include all.")
+			return newUsageError("Error: --include does not accept glob patterns. Name a specific ignored file or directory, or use --no-ignore to include everything hidden by ignore rules below the selected targets.")
 		}
 		if normalizeRelPath(value) == "." {
-			return newUsageError("Error: --include '.' is not supported.\n  Use --include '*' to authorize ignored paths below the selected targets, or name a specific path from the current directory.")
+			return newUsageError("Error: --include '.' is not supported.\n  Name a specific ignored path from the current directory, or use --no-ignore to include everything hidden by ignore rules below the selected targets.")
 		}
 	}
 	return nil
@@ -695,6 +708,7 @@ func looksLikeGlobConfusion(pattern string) bool {
 func FormatScopeSummary(s command.ExecutionScope) string {
 	parts := []string{
 		fmt.Sprintf("targets=%q", s.Targets),
+		fmt.Sprintf("no_ignore=%t", s.NoIgnore),
 		fmt.Sprintf("included=%q", s.IncludedTargets),
 		fmt.Sprintf("only=%q", s.Only),
 		fmt.Sprintf("exclude=%q", s.Exclude),

@@ -4976,7 +4976,7 @@ exit 91
 	}
 }
 
-func TestResolveInteractiveStartupArgsIncludeWildcardContinuesToModifierMenu(t *testing.T) {
+func TestResolveInteractiveStartupArgsNoIgnoreContinuesToModifierMenu(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('main')\n",
 	})
@@ -5000,7 +5000,7 @@ case "$prompt" in
 	printf '%s\n' 'paths'
 	;;
 "include> ")
-	echo "resolved --include '*' unexpectedly opened the include picker" >&2
+	echo "typed --no-ignore unexpectedly opened the include picker" >&2
 	exit 91
 	;;
 *)
@@ -5014,14 +5014,14 @@ esac
 	if err != nil {
 		t.Fatalf("newStartupPickerResolver returned error: %v", err)
 	}
-	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{".", "--include", "*", "--"})
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{".", "--no-ignore", "--"})
 	if err != nil {
 		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
 	}
 	if !usedFzf {
 		t.Fatal("expected trailing placeholder to open the modifier menu")
 	}
-	if got, want := strings.Join(args, "\n"), ".\n--include\n*\n--paths"; got != want {
+	if got, want := strings.Join(args, "\n"), ".\n--no-ignore\n--paths"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }

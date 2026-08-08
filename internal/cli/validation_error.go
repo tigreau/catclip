@@ -9,26 +9,30 @@ import "fmt"
 type Reason string
 
 const (
-	ReasonRequiredValue                  Reason = "required_value"
-	ReasonNoValueModifier                Reason = "no_value_modifier"
-	ReasonBarePlaceholderOrder           Reason = "bare_placeholder_order"
-	ReasonBarePlaceholderInteractiveOnly Reason = "bare_placeholder_interactive_only"
-	ReasonBarePlaceholderHeadlessMode    Reason = "bare_placeholder_headless_mode"
-	ReasonDiffStandalone                 Reason = "diff_standalone"
-	ReasonMissingDiffSelector            Reason = "missing_diff_selector"
-	ReasonUntrackedDiff                  Reason = "untracked_diff"
-	ReasonPositionalAfterModifier        Reason = "positional_after_modifier"
-	ReasonOutputModeConflict             Reason = "output_mode_conflict"
-	ReasonDiffSnippetConflict            Reason = "diff_snippet_conflict"
-	ReasonDiffContentFilterOrder         Reason = "diff_content_filter_order"
-	ReasonDiffGitFilterOrder             Reason = "diff_git_filter_order"
-	ReasonSnippetContentFilterOrder      Reason = "snippet_content_filter_order"
-	ReasonRepeatedOutputMode             Reason = "repeated_output_mode"
-	ReasonTerminalBoundaryOrder          Reason = "terminal_boundary_order"
-	ReasonIncludeAfterModifier           Reason = "include_after_modifier"
-	ReasonRepeatedInclude                Reason = "repeated_include"
-	ReasonIncludeMissingPositionalTarget Reason = "include_missing_positional_target"
-	ReasonUnsupportedDoubleStar          Reason = "unsupported_double_star"
+	ReasonRequiredValue                   Reason = "required_value"
+	ReasonNoValueModifier                 Reason = "no_value_modifier"
+	ReasonBarePlaceholderOrder            Reason = "bare_placeholder_order"
+	ReasonBarePlaceholderInteractiveOnly  Reason = "bare_placeholder_interactive_only"
+	ReasonBarePlaceholderHeadlessMode     Reason = "bare_placeholder_headless_mode"
+	ReasonDiffStandalone                  Reason = "diff_standalone"
+	ReasonMissingDiffSelector             Reason = "missing_diff_selector"
+	ReasonUntrackedDiff                   Reason = "untracked_diff"
+	ReasonPositionalAfterModifier         Reason = "positional_after_modifier"
+	ReasonOutputModeConflict              Reason = "output_mode_conflict"
+	ReasonDiffSnippetConflict             Reason = "diff_snippet_conflict"
+	ReasonDiffContentFilterOrder          Reason = "diff_content_filter_order"
+	ReasonDiffGitFilterOrder              Reason = "diff_git_filter_order"
+	ReasonSnippetContentFilterOrder       Reason = "snippet_content_filter_order"
+	ReasonRepeatedOutputMode              Reason = "repeated_output_mode"
+	ReasonTerminalBoundaryOrder           Reason = "terminal_boundary_order"
+	ReasonIncludeAfterModifier            Reason = "include_after_modifier"
+	ReasonRepeatedInclude                 Reason = "repeated_include"
+	ReasonIncludeMissingPositionalTarget  Reason = "include_missing_positional_target"
+	ReasonNoIgnoreAfterModifier           Reason = "no_ignore_after_modifier"
+	ReasonRepeatedNoIgnore                Reason = "repeated_no_ignore"
+	ReasonNoIgnoreMissingPositionalTarget Reason = "no_ignore_missing_positional_target"
+	ReasonIncludeNoIgnoreConflict         Reason = "include_no_ignore_conflict"
+	ReasonUnsupportedDoubleStar           Reason = "unsupported_double_star"
 )
 
 // ValidationFailure is the structured error the parser returns on rule
@@ -92,15 +96,6 @@ func renderValidationFailure(e ValidationFailure) string {
 	case ReasonRepeatedInclude:
 		return "Error: --include can only appear once per scope.\n  Combine targets in a single --include, or start a new scope with --then."
 	case ReasonIncludeMissingPositionalTarget:
-		if e.Flag == "*" {
-			return "Error: --include '*' requires a positional target.\n\n" +
-				"  --include '*' authorizes every gitignored descendant within a walk\n" +
-				"  scope. With no positional target, there's no walk scope to authorize.\n" +
-				"  Add a positional target to define the scope:\n\n" +
-				"    catclip . --include '*'      # authorize all ignored, repo-wide\n" +
-				"    catclip docs --include '*'   # authorize all ignored under docs\n\n" +
-				"  Interactive tip: bare `catclip` (no args) opens the target picker."
-		}
 		return fmt.Sprintf("Error: --include %s requires a positional target.\n\n"+
 			"  --include is authorization-only — it authorizes gitignored paths WITHIN a\n"+
 			"  walk scope. With no positional target, there's no walk scope for the\n"+
@@ -109,6 +104,14 @@ func renderValidationFailure(e ValidationFailure) string {
 			"  Interactive tip: bare `catclip` (no args) opens the target picker;\n"+
 			"  selecting an ignored entry writes the target+include pair for you.",
 			singleQuoted(e.Flag), e.Flag, e.Flag)
+	case ReasonNoIgnoreAfterModifier:
+		return "Error: --no-ignore must come before other modifiers in the same scope.\n  It changes which files enter the scope, so filters must come after it.\n  Move --no-ignore before other modifiers, or start a new scope with --then."
+	case ReasonRepeatedNoIgnore:
+		return "Error: --no-ignore can only appear once per scope.\n  Remove the duplicate, or start a new scope with --then."
+	case ReasonNoIgnoreMissingPositionalTarget:
+		return "Error: --no-ignore requires a positional target.\n\n  Add the folder whose ignored files should be included:\n    catclip . --no-ignore\n    catclip src --no-ignore"
+	case ReasonIncludeNoIgnoreConflict:
+		return "Error: --include and --no-ignore cannot be combined in the same scope.\n  Use --include for specific ignored paths, or --no-ignore for every ignored path below the selected targets."
 	case ReasonUnsupportedDoubleStar:
 		return renderUnsupportedDoubleStarValidationFailure(e.Flag, e.Value)
 	default:
@@ -172,12 +175,15 @@ func LinesInvalidValueError(value string) error {
 
 // IncludeMissingPositionalTargetError fires for effect 5 of the
 // include-as-authorization design: `--include <path>` with no positional
-// target. sampleInclude carries the first --include value
-// so the message can show the canonical double-syntax fix. Wildcard
-// (`*`) gets its own suggestion set. See
+// target. sampleInclude carries the first --include value so the message can
+// show the canonical double-syntax fix. See
 // ACTIVE_NOTE_include_double_syntax_rationale.md, effect 5.
 func IncludeMissingPositionalTargetError(sampleInclude string) error {
 	return ValidationFailure{Reason: ReasonIncludeMissingPositionalTarget, Flag: sampleInclude}
+}
+
+func NoIgnoreMissingPositionalTargetError() error {
+	return ValidationFailure{Reason: ReasonNoIgnoreMissingPositionalTarget, Flag: "--no-ignore"}
 }
 
 func UnsupportedDoubleStarError(surface, value string) error {

@@ -26,6 +26,7 @@ type Spec struct {
 // can't accidentally mutate the frozen snapshot.
 type ScopeSpec struct {
 	targets         []string
+	noIgnore        bool
 	includedTargets []string
 	only            []string
 	exclude         []string
@@ -58,6 +59,7 @@ type ScopeSpec struct {
 func ExecutionScopeFromScopeSpec(s ScopeSpec) ExecutionScope {
 	out := ExecutionScope{
 		Targets:         s.Targets(),
+		NoIgnore:        s.NoIgnore(),
 		IncludedTargets: s.IncludedTargets(),
 		Only:            s.OnlyPatterns(),
 		Exclude:         s.ExcludePatterns(),
@@ -134,6 +136,7 @@ func specFromExecutionScopes(scopes []ExecutionScope, state SpecState) Spec {
 func scopeSpecFromExecutionScope(s ExecutionScope) ScopeSpec {
 	return ScopeSpec{
 		targets:             cloneStringSlice(s.Targets),
+		noIgnore:            s.NoIgnore || s.HasStage(StageNoIgnore),
 		includedTargets:     cloneStringSlice(s.IncludedTargets),
 		only:                cloneStringSlice(s.Only),
 		exclude:             cloneStringSlice(s.Exclude),
@@ -175,6 +178,7 @@ func (s Spec) Scopes() []ScopeSpec {
 // --- ScopeSpec accessors ---
 
 func (s ScopeSpec) Targets() []string         { return cloneStringSlice(s.targets) }
+func (s ScopeSpec) NoIgnore() bool            { return s.noIgnore }
 func (s ScopeSpec) IncludedTargets() []string { return cloneStringSlice(s.includedTargets) }
 func (s ScopeSpec) OnlyPatterns() []string    { return cloneStringSlice(s.only) }
 func (s ScopeSpec) ExcludePatterns() []string { return cloneStringSlice(s.exclude) }

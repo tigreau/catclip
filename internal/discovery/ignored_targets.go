@@ -182,37 +182,36 @@ func (r *Resolver) AllIgnoredTargets(scopeTargets []string) ([]TargetMatch, erro
 	//   visibleWithHiss = excluded by .gitignore + .hiss overlay
 	// A path missing from visibleWithHiss but present in visibleAll is
 	// blocked by .hiss only. Missing from visibleAll → blocked by
-	// .gitignore (precedence). When --include '*', skip the diff: nothing
-	// counts as ignored.
+	// .gitignore (precedence). This inventory describes the configured ignore
+	// rules even when the current scope uses --no-ignore; broad traversal policy
+	// changes eligibility, not which paths those rules would normally hide.
 	ignoredFiles := map[string]string{}
 	ignoredDirs := map[string]string{}
-	if !r.IncludedTargets.wildcard {
-		visibleAll, visibleWithHiss, err := r.resolveIgnoreSets()
-		if err != nil {
-			return nil, err
-		}
-		visibleAllDirs := search.DirsContainingFiles(visibleAll)
-		visibleWithHissDirs := search.DirsContainingFiles(visibleWithHiss)
+	visibleAll, visibleWithHiss, err := r.resolveIgnoreSets()
+	if err != nil {
+		return nil, err
+	}
+	visibleAllDirs := search.DirsContainingFiles(visibleAll)
+	visibleWithHissDirs := search.DirsContainingFiles(visibleWithHiss)
 
-		for _, rel := range filePaths {
-			if _, ok := visibleWithHiss[rel]; ok {
-				continue
-			}
-			if _, ok := visibleAll[rel]; ok {
-				ignoredFiles[rel] = ".hiss"
-			} else {
-				ignoredFiles[rel] = ".gitignore"
-			}
+	for _, rel := range filePaths {
+		if _, ok := visibleWithHiss[rel]; ok {
+			continue
 		}
-		for _, rel := range dirPaths {
-			if _, ok := visibleWithHissDirs[rel]; ok {
-				continue
-			}
-			if _, ok := visibleAllDirs[rel]; ok {
-				ignoredDirs[rel] = ".hiss"
-			} else {
-				ignoredDirs[rel] = ".gitignore"
-			}
+		if _, ok := visibleAll[rel]; ok {
+			ignoredFiles[rel] = ".hiss"
+		} else {
+			ignoredFiles[rel] = ".gitignore"
+		}
+	}
+	for _, rel := range dirPaths {
+		if _, ok := visibleWithHissDirs[rel]; ok {
+			continue
+		}
+		if _, ok := visibleAllDirs[rel]; ok {
+			ignoredDirs[rel] = ".hiss"
+		} else {
+			ignoredDirs[rel] = ".gitignore"
 		}
 	}
 

@@ -57,6 +57,9 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		// Effect 5: --include with no positional target. See the twin
 		// check in parse.go for the rationale (ambiguity between
 		// "just <include>" and "everything + <include>").
+		if len(s.Targets) == 0 && s.NoIgnore {
+			return NoIgnoreMissingPositionalTargetError()
+		}
 		if len(s.Targets) == 0 && len(s.IncludedTargets) > 0 {
 			return IncludeMissingPositionalTargetError(s.IncludedTargets[0])
 		}
@@ -121,6 +124,17 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 			current.IncludedTargets = append(current.IncludedTargets, values...)
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageInclude, Values: values})
 			i = next - 1
+			continue
+		case "--no-ignore":
+			inModifierMode = true
+			if err := stageState.apply(command.StageNoIgnore); err != nil {
+				return command.Spec{}, err
+			}
+			current.NoIgnore = true
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageNoIgnore})
+			if i+1 < len(args) && !IsModifierBoundaryToken(args[i+1]) {
+				return command.Spec{}, NoValueModifierError(arg)
+			}
 			continue
 		case "--only":
 			inModifierMode = true

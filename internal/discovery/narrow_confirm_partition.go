@@ -15,32 +15,27 @@ import "strings"
 // Pure function. Stable order (inherits the input order). Lets the narrow-
 // confirm screen render both previews from a single EvaluateScope result
 // — see ACTIVE_PLAN_include_narrow_confirm.md "Avoiding re-discovery."
-func PartitionIgnoredByIncludes(entries []Entry, includePaths []string) (allEntries, ignoredEntries []Entry) {
+func PartitionIgnoredByIncludes(entries []Entry, includePaths []string, noIgnore bool) (allEntries, ignoredEntries []Entry) {
 	allEntries = entries
-	if len(entries) == 0 || len(includePaths) == 0 {
+	if len(entries) == 0 || (len(includePaths) == 0 && !noIgnore) {
 		return entries, nil
 	}
 	normalizedIncludes := make([]string, 0, len(includePaths))
-	wildcard := false
 	for _, p := range includePaths {
 		n := normalizeRelPath(p)
 		if n == "" || n == "." {
 			continue
 		}
-		if n == "*" {
-			wildcard = true
-			continue
-		}
 		normalizedIncludes = append(normalizedIncludes, n)
 	}
-	if len(normalizedIncludes) == 0 && !wildcard {
+	if len(normalizedIncludes) == 0 && !noIgnore {
 		return entries, nil
 	}
 	for _, e := range entries {
 		if !e.AllowedByInclude {
 			continue
 		}
-		if wildcard {
+		if noIgnore {
 			ignoredEntries = append(ignoredEntries, e)
 			continue
 		}

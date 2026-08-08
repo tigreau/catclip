@@ -134,17 +134,20 @@ func FzfContentMatchListCommand(currentArgs []string, flag string) string {
 // (the `[all current matches]` row's scope tree). Match-list reload and
 // preview share the same checkpoint file — one JSON write per picker
 // open.
-// currentArgsHaveInclude reports whether the parent scope's argv carries
-// any --include, meaning gitignored entries were authorized into the
-// discovered set. The picker's direct rg subprocess needs --no-ignore
-// for the walk to surface those same files.
-func currentArgsHaveInclude(args []string) bool {
+// currentScopeNeedsNoIgnoreCheckpoint reports whether the current scope can
+// contain ignored entries. The picker's direct rg subprocess needs
+// --no-ignore to walk the same universe represented by the checkpoint.
+func currentScopeNeedsNoIgnoreCheckpoint(args []string) bool {
+	needNoIgnore := false
 	for _, a := range args {
-		if a == "--include" {
-			return true
+		switch a {
+		case "--then":
+			needNoIgnore = false
+		case "--include", "--no-ignore":
+			needNoIgnore = true
 		}
 	}
-	return false
+	return needNoIgnore
 }
 
 func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (string, string, func()) {
@@ -186,7 +189,7 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,
-		NoIgnore:   currentArgsHaveInclude(currentArgs),
+		NoIgnore:   currentScopeNeedsNoIgnoreCheckpoint(currentArgs),
 	}); err != nil {
 		_ = os.RemoveAll(tmpdir)
 		return fallback(), "", noop
@@ -311,7 +314,13 @@ func (r *Resolver) fuzzySearchTargetMatches(baseRel, query string) ([]TargetMatc
 	if len(candidates) == 0 {
 		return nil, nil
 	}
+	return fuzzyFilterTargetMatches(query, candidates)
+}
 
+// fuzzyFilterTargetMatches applies the target picker's fzf query grammar to
+// an already-built candidate set. Visible and ignored fallback inventories use
+// the same row shape, search field, and ranking as the interactive picker.
+func fuzzyFilterTargetMatches(query string, candidates []TargetMatch) ([]TargetMatch, error) {
 	bin, err := FuzzyResolverBinary()
 	if err != nil {
 		return nil, err
@@ -329,6 +338,31 @@ func (r *Resolver) fuzzySearchTargetMatches(baseRel, query string) ([]TargetMatc
 		}
 	}
 	return ranked, nil
+}
+
+func exactBasenameTargetMatches(candidates []TargetMatch, basename string) []TargetMatch {
+	basename = normalizeRelPath(basename)
+	if basename == "" || strings.Contains(basename, "/") {
+		return nil
+	}
+	matches := make([]TargetMatch, 0, 1)
+	for _, candidate := range candidates {
+		if path.Base(normalizeRelPath(candidate.Path)) == basename {
+			matches = append(matches, candidate)
+		}
+	}
+	return matches
+}
+
+func eligibleTargetMatches(candidates []TargetMatch) []TargetMatch {
+	eligible := make([]TargetMatch, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.Kind == treeTargetKindDir && candidate.State == treeTargetStateNoTextChildren {
+			continue
+		}
+		eligible = append(eligible, candidate)
+	}
+	return eligible
 }
 
 func TargetMatchLabels(matches []TargetMatch) ([]string, map[string]TargetMatch) {

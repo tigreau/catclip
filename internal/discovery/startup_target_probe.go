@@ -24,7 +24,7 @@ func (r *Resolver) ProbeStartupTarget(target string) (StartupTargetProbe, error)
 		if err != nil {
 			return StartupTargetProbe{}, err
 		}
-		if block != nil && block.Source != "" && !r.IncludedTargets.wildcard && !r.walkAuthorizedByInclude(normalized) {
+		if block != nil && block.Source != "" && !r.NoIgnore && !r.walkAuthorizedByInclude(normalized) {
 			return StartupTargetProbe{Outcome: StartupTargetBlocked}, nil
 		}
 		return StartupTargetProbe{Outcome: StartupTargetDirect}, nil
@@ -85,6 +85,29 @@ func (r *Resolver) ProbeStartupTarget(target string) (StartupTargetProbe, error)
 	if err != nil {
 		return StartupTargetProbe{}, err
 	}
+	if r.NoIgnore {
+		var ignoredMatches []TargetMatch
+		if len(exactBasenameTargetMatches(matches, normalized)) == 0 {
+			ignoredMatches, err = r.ignoredExactBasenameTargetMatches(normalized)
+			if err != nil {
+				return StartupTargetProbe{}, err
+			}
+		}
+		if len(ignoredMatches) == 0 && len(matches) == 0 {
+			ignoredTargets, err := r.AllIgnoredTargets(nil)
+			if err != nil {
+				return StartupTargetProbe{}, err
+			}
+			ignoredTargets = eligibleTargetMatches(ignoredTargets)
+			ignoredMatches, err = fuzzyFilterTargetMatches(normalized, ignoredTargets)
+			if err != nil {
+				return StartupTargetProbe{}, err
+			}
+		}
+		if len(ignoredMatches) > 0 {
+			return includedStartupTargetProbe(ignoredMatches), nil
+		}
+	}
 	switch len(matches) {
 	case 1:
 		// A visible exact basename retains priority over hidden duplicates.
@@ -131,6 +154,13 @@ func (r *Resolver) ProbeStartupTarget(target string) (StartupTargetProbe, error)
 	default:
 		return StartupTargetProbe{Outcome: StartupTargetIncludedAmbiguous, Matches: includedMatches}, nil
 	}
+}
+
+func includedStartupTargetProbe(matches []TargetMatch) StartupTargetProbe {
+	if len(matches) == 1 {
+		return StartupTargetProbe{Outcome: StartupTargetIncludedUnique, Matches: matches}
+	}
+	return StartupTargetProbe{Outcome: StartupTargetIncludedAmbiguous, Matches: matches}
 }
 
 func (r *Resolver) startupTargetBlock(normalized string, isDir bool) (*BlockInfo, error) {

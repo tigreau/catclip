@@ -36,7 +36,7 @@ func hitToTargetMatch(h includedBasenameHit) TargetMatch {
 // Zero cost on the happy path.
 
 func (r *Resolver) hasAnyIncludeActive() bool {
-	return r.IncludedTargets.wildcard ||
+	return r.NoIgnore ||
 		len(r.IncludedTargets.exact) > 0 ||
 		len(r.IncludedTargets.dirs) > 0
 }
@@ -104,8 +104,8 @@ func (r *Resolver) FindBasenameInIncludedSubtrees(target string) ([]includedBase
 		return nil
 	}
 
-	// 2. Wildcard --include '*' — search anywhere under workingDir.
-	if r.IncludedTargets.wildcard {
+	// 2. --no-ignore — search anywhere under workingDir.
+	if r.NoIgnore {
 		if err := probeUnder("."); err != nil {
 			return nil, err
 		}
@@ -120,4 +120,40 @@ func (r *Resolver) FindBasenameInIncludedSubtrees(target string) ([]includedBase
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out, nil
+}
+
+// ignoredExactBasenameTargetMatches is the cheap tier-3 target probe used by
+// --no-ignore. It asks rg only for the requested basename, then keeps the hits
+// that the configured ignore rules would normally hide. A full ignored-target
+// inventory is reserved for the later fuzzy-fallback tier.
+func (r *Resolver) ignoredExactBasenameTargetMatches(target string) ([]TargetMatch, error) {
+	if !r.NoIgnore {
+		return nil, nil
+	}
+	hits, err := r.FindBasenameInIncludedSubtrees(target)
+	if err != nil {
+		return nil, err
+	}
+	policyResolver := *r
+	policyResolver.NoIgnore = false
+	matches := make([]TargetMatch, 0, len(hits))
+	for _, hit := range hits {
+		var block *BlockInfo
+		if hit.Dir {
+			block, err = policyResolver.dirBlockedBy(hit.Path)
+		} else {
+			block, err = policyResolver.fileBlockedBy(hit.Path)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if block == nil {
+			continue
+		}
+		match := hitToTargetMatch(hit)
+		match.Ignored = true
+		match.IgnoreSource = block.Source
+		matches = append(matches, match)
+	}
+	return matches, nil
 }

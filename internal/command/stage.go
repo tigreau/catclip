@@ -7,6 +7,7 @@ package command
 type StageKind string
 
 const (
+	StageNoIgnore     StageKind = "no-ignore"
 	StageInclude      StageKind = "include"
 	StageOnly         StageKind = "only"
 	StageExclude      StageKind = "exclude"

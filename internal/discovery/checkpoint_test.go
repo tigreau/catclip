@@ -16,7 +16,7 @@ func TestCheckpointNoIgnoreRoundtrip(t *testing.T) {
 		noIgnore bool
 	}{
 		{"noIgnore=false (default)", false},
-		{"noIgnore=true (parent had --include)", true},
+		{"noIgnore=true (parent bypassed ignore rules)", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -87,7 +87,7 @@ func TestApplyPrediscoveredScopeTailExpandsIncludedVisibleTarget(t *testing.T) {
 	}
 }
 
-func TestApplyPrediscoveredScopeTailWildcardPreservesIgnoreAttribution(t *testing.T) {
+func TestApplyPrediscoveredScopeTailNoIgnorePreservesIgnoreAttribution(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(project, "config"))
 	for rel, contents := range map[string]string{
@@ -109,9 +109,9 @@ func TestApplyPrediscoveredScopeTailWildcardPreservesIgnoreAttribution(t *testin
 	}
 
 	scope := command.ExecutionScope{
-		Targets:         []string{"src"},
-		IncludedTargets: []string{"*"},
-		Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"*"}}},
+		Targets:  []string{"src"},
+		NoIgnore: true,
+		Stages:   []command.Stage{{Kind: command.StageNoIgnore}},
 	}
 	entries, err := ApplyPrediscoveredScopeTail(
 		command.Invocation{WorkingDir: project},
@@ -135,11 +135,11 @@ func TestApplyPrediscoveredScopeTailWildcardPreservesIgnoreAttribution(t *testin
 		t.Fatalf("ignored checkpoint entry attribution = %+v", ignored)
 	}
 	if outside, ok := attribution["outside/secret.txt"]; ok {
-		t.Fatalf("wildcard checkpoint replay escaped src target: %+v", outside)
+		t.Fatalf("no-ignore checkpoint replay escaped src target: %+v", outside)
 	}
 }
 
-func TestApplyPrediscoveredScopeTailWildcardRecoversEmptyIgnoredTarget(t *testing.T) {
+func TestApplyPrediscoveredScopeTailNoIgnoreRecoversEmptyIgnoredTarget(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(project, "config"))
 	for rel, contents := range map[string]string{
@@ -159,23 +159,23 @@ func TestApplyPrediscoveredScopeTailWildcardRecoversEmptyIgnoredTarget(t *testin
 	}
 
 	scope := command.ExecutionScope{
-		Targets:         []string{"secret"},
-		IncludedTargets: []string{"*"},
-		Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"*"}}},
+		Targets:  []string{"secret"},
+		NoIgnore: true,
+		Stages:   []command.Stage{{Kind: command.StageNoIgnore}},
 	}
 	entries, err := ApplyPrediscoveredScopeTail(command.Invocation{WorkingDir: project}, git.Context{}, scope, nil)
 	if err != nil {
 		t.Fatalf("ApplyPrediscoveredScopeTail: %v", err)
 	}
 	if len(entries) != 1 || entries[0].RelPath != "secret/config.txt" {
-		t.Fatalf("empty checkpoint wildcard recovery = %+v", entries)
+		t.Fatalf("empty checkpoint no-ignore recovery = %+v", entries)
 	}
 	if !entries[0].AllowedByInclude || entries[0].BlockSource != ".gitignore" {
 		t.Fatalf("recovered ignored attribution = %+v", entries[0])
 	}
 }
 
-func TestApplyPrediscoveredScopeTailWildcardRespectsGlobTarget(t *testing.T) {
+func TestApplyPrediscoveredScopeTailNoIgnoreRespectsGlobTarget(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(project, "config"))
 	for rel, contents := range map[string]string{
@@ -197,9 +197,9 @@ func TestApplyPrediscoveredScopeTailWildcardRespectsGlobTarget(t *testing.T) {
 	}
 
 	scope := command.ExecutionScope{
-		Targets:         []string{"*.ts"},
-		IncludedTargets: []string{"*"},
-		Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"*"}}},
+		Targets:  []string{"*.ts"},
+		NoIgnore: true,
+		Stages:   []command.Stage{{Kind: command.StageNoIgnore}},
 	}
 	entries, err := ApplyPrediscoveredScopeTail(
 		command.Invocation{WorkingDir: project},
@@ -215,14 +215,14 @@ func TestApplyPrediscoveredScopeTailWildcardRespectsGlobTarget(t *testing.T) {
 		paths = append(paths, entry.RelPath)
 	}
 	if got, want := paths, []string{"src/main.ts", "generated/hidden.ts"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("wildcard glob checkpoint expansion = %v, want %v", got, want)
+		t.Fatalf("no-ignore glob checkpoint expansion = %v, want %v", got, want)
 	}
 	if !entries[1].AllowedByInclude || entries[1].BlockSource != ".gitignore" {
 		t.Fatalf("glob-recovered ignored attribution = %+v", entries[1])
 	}
 }
 
-func TestApplyPrediscoveredScopeTailWildcardAppliesLaterStagesFromEmptyCheckpoint(t *testing.T) {
+func TestApplyPrediscoveredScopeTailNoIgnoreAppliesLaterStagesFromEmptyCheckpoint(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(project, "config"))
 	for rel, contents := range map[string]string{
@@ -244,10 +244,10 @@ func TestApplyPrediscoveredScopeTailWildcardAppliesLaterStagesFromEmptyCheckpoin
 	}
 
 	scope := command.ExecutionScope{
-		Targets:         []string{"secret"},
-		IncludedTargets: []string{"*"},
+		Targets:  []string{"secret"},
+		NoIgnore: true,
 		Stages: []command.Stage{
-			{Kind: command.StageInclude, Values: []string{"*"}},
+			{Kind: command.StageNoIgnore},
 			{Kind: command.StageOnly, Values: []string{"*.md"}},
 			{Kind: command.StageExclude, Values: []string{"also-drop.md"}},
 		},
@@ -264,7 +264,7 @@ func TestApplyPrediscoveredScopeTailWildcardAppliesLaterStagesFromEmptyCheckpoin
 	}
 }
 
-func TestApplyPrediscoveredScopeTailWildcardKeepsMultipleTargetsBounded(t *testing.T) {
+func TestApplyPrediscoveredScopeTailNoIgnoreKeepsMultipleTargetsBounded(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(project, "config"))
 	for rel, contents := range map[string]string{
@@ -288,9 +288,9 @@ func TestApplyPrediscoveredScopeTailWildcardKeepsMultipleTargetsBounded(t *testi
 	}
 
 	scope := command.ExecutionScope{
-		Targets:         []string{"src", "docs"},
-		IncludedTargets: []string{"*"},
-		Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"*"}}},
+		Targets:  []string{"src", "docs"},
+		NoIgnore: true,
+		Stages:   []command.Stage{{Kind: command.StageNoIgnore}},
 	}
 	entries, err := ApplyPrediscoveredScopeTail(
 		command.Invocation{WorkingDir: project},
@@ -310,7 +310,7 @@ func TestApplyPrediscoveredScopeTailWildcardKeepsMultipleTargetsBounded(t *testi
 	}
 	want := []string{"src/main.ts", "docs/guide.md", "src/generated/a.ts", "docs/private/note.md"}
 	if !reflect.DeepEqual(paths, want) {
-		t.Fatalf("multi-target wildcard replay = %v, want %v", paths, want)
+		t.Fatalf("multi-target no-ignore replay = %v, want %v", paths, want)
 	}
 	for _, entry := range entries[2:] {
 		if !entry.AllowedByInclude || entry.BlockSource != ".gitignore" {
@@ -319,7 +319,7 @@ func TestApplyPrediscoveredScopeTailWildcardKeepsMultipleTargetsBounded(t *testi
 	}
 }
 
-func TestApplyPrediscoveredScopeTailWildcardSupportsIgnoredFileTarget(t *testing.T) {
+func TestApplyPrediscoveredScopeTailNoIgnoreSupportsIgnoredFileTarget(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(project, "config"))
 	for rel, contents := range map[string]string{
@@ -337,9 +337,9 @@ func TestApplyPrediscoveredScopeTailWildcardSupportsIgnoredFileTarget(t *testing
 	}
 
 	scope := command.ExecutionScope{
-		Targets:         []string{"secret.txt"},
-		IncludedTargets: []string{"*"},
-		Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"*"}}},
+		Targets:  []string{"secret.txt"},
+		NoIgnore: true,
+		Stages:   []command.Stage{{Kind: command.StageNoIgnore}},
 	}
 	entries, err := ApplyPrediscoveredScopeTail(command.Invocation{WorkingDir: project}, git.Context{}, scope, nil)
 	if err != nil {
@@ -353,7 +353,7 @@ func TestApplyPrediscoveredScopeTailWildcardSupportsIgnoredFileTarget(t *testing
 	}
 }
 
-func TestApplyPrediscoveredScopeTailWildcardKeepsCaseCollidingFilesDistinct(t *testing.T) {
+func TestApplyPrediscoveredScopeTailNoIgnoreKeepsCaseCollidingFilesDistinct(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(project, "config"))
 	if err := os.WriteFile(filepath.Join(project, ".gitignore"), []byte("Case.txt\n"), 0o644); err != nil {
@@ -381,9 +381,9 @@ func TestApplyPrediscoveredScopeTailWildcardKeepsCaseCollidingFilesDistinct(t *t
 	}
 
 	scope := command.ExecutionScope{
-		Targets:         []string{"."},
-		IncludedTargets: []string{"*"},
-		Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"*"}}},
+		Targets:  []string{"."},
+		NoIgnore: true,
+		Stages:   []command.Stage{{Kind: command.StageNoIgnore}},
 	}
 	entries, err := ApplyPrediscoveredScopeTail(
 		command.Invocation{WorkingDir: project},

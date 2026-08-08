@@ -267,7 +267,7 @@ func TestRunUnchangedForTrulyMissingTarget(t *testing.T) {
 	}
 }
 
-func TestRunSkipsAncestorProbeUnderIncludeWildcard(t *testing.T) {
+func TestRunSkipsAncestorProbeUnderNoIgnore(t *testing.T) {
 	setupAncestorXDG(t)
 	project := setupTestProject(t, map[string]string{
 		".gitignore":          "myblocked/\n",
@@ -275,14 +275,14 @@ func TestRunSkipsAncestorProbeUnderIncludeWildcard(t *testing.T) {
 		"visible/keepit.go":   "hi\n",
 	})
 
-	// --include '*' disables ignore entirely; target.md becomes visible. No
+	// --no-ignore disables ignore entirely; target.md becomes visible. No
 	// ancestor message should fire (and the file should actually be included).
-	cfg := parseInProject(t, project, []string{"--headless", "target.md", "--include", "*"})
+	cfg := parseInProject(t, project, []string{"--headless", "target.md", "--no-ignore"})
 	var stdout, stderr bytes.Buffer
 	err := run(cfg, &stdout, &stderr)
 	out := stderr.String() + stdout.String()
 	if strings.Contains(out, "hidden by an ignored ancestor") {
-		t.Errorf("--include '*' should disable the ancestor probe, got:\n%s", out)
+		t.Errorf("--no-ignore should disable the ancestor probe, got:\n%s", out)
 	}
 	_ = err // we don't care about the exit code here, just that the probe didn't fire
 }

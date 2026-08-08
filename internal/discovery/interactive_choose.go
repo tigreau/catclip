@@ -40,6 +40,32 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	if err != nil {
 		return nil, err
 	}
+	if r.NoIgnore && query != "" {
+		if len(exactBasenameTargetMatches(allTargets, query)) == 0 {
+			exactIgnored, err := r.ignoredExactBasenameTargetMatches(query)
+			if err != nil {
+				return nil, err
+			}
+			switch {
+			case len(exactIgnored) > 0:
+				// Exact ignored identity outranks lower-quality visible fuzzy
+				// candidates once --no-ignore explicitly authorizes it.
+				allTargets = exactIgnored
+			default:
+				visibleMatches, err := fuzzyFilterTargetMatches(query, allTargets)
+				if err != nil {
+					return nil, err
+				}
+				if len(visibleMatches) == 0 {
+					ignoredTargets, err := r.AllIgnoredTargets(nil)
+					if err != nil {
+						return nil, err
+					}
+					allTargets = eligibleTargetMatches(ignoredTargets)
+				}
+			}
+		}
+	}
 	options := make([]TargetMatch, 0, len(allTargets))
 	for _, target := range allTargets {
 		if CoveredBySelection(target.Path, selectedPaths) {
@@ -145,18 +171,22 @@ func SelectionPathsForIgnoredTargets(selectedPaths []string) []string {
 	return filtered
 }
 
-func (r *Resolver) ResolveInteractiveIncludeTargets(query string, selectedPaths, explicitTargets, scopeTargets []string) ([]string, error) {
+type InteractiveIncludeSelection struct {
+	Paths []string
+	All   bool
+}
+
+func (r *Resolver) ResolveInteractiveIncludeTargets(query string, selectedPaths, explicitTargets, scopeTargets []string) (InteractiveIncludeSelection, error) {
 	matches, totalOptions, err := r.chooseIgnoredTargetMatches(query, "include> ", selectedPaths, explicitTargets, scopeTargets)
 	if err != nil {
-		return nil, err
+		return InteractiveIncludeSelection{}, err
 	}
-	// Compressing a singleton picker to `*` saves no argv and turns one exact
-	// human-confirmed path into authorization for future ignored paths. Reserve
-	// the wildcard representation for a genuine multi-row select-all result.
+	// Selecting every available ignored path is the interactive form of
+	// --no-ignore. Keep that policy distinct from concrete --include paths.
 	if totalOptions > 1 && len(matches) == totalOptions {
-		return []string{"*"}, nil
+		return InteractiveIncludeSelection{All: true}, nil
 	}
-	return TargetMatchPaths(matches), nil
+	return InteractiveIncludeSelection{Paths: TargetMatchPaths(matches)}, nil
 }
 
 // InteractiveIgnoredQueryCoveredBySelection reports whether an include query
@@ -169,12 +199,6 @@ func (r *Resolver) InteractiveIgnoredQueryCoveredBySelection(query string, selec
 	if len(selectedPaths) == 0 {
 		return false, nil
 	}
-	for _, selected := range selectedPaths {
-		if normalizeRelPath(selected) == "*" {
-			return true, nil
-		}
-	}
-
 	allTargets, err := r.AllIgnoredTargets(scopeTargets)
 	if err != nil {
 		return false, err
@@ -230,10 +254,6 @@ func (r *Resolver) ResolveExactIgnoredIncludeTargets(queries []string, scopeTarg
 	exact := make([]string, 0, len(queries))
 	remaining := make([]string, 0, len(queries))
 	for _, query := range queries {
-		if normalizeRelPath(query) == "*" {
-			exact = append(exact, "*")
-			continue
-		}
 		if concrete, _, ok := resolveConcreteIncludePath(r.Cfg.WorkingDir, query); ok {
 			exact = append(exact, concrete)
 			continue
@@ -535,24 +555,30 @@ func chooseFuzzyTargetMatches(cfg command.Invocation, needle string, matches []T
 		if err != nil {
 			return nil, err
 		}
-		out := make([]TargetMatch, 0, len(selected))
-		for _, path := range selected {
-			out = append(out, TargetMatch{Path: path, Kind: treeTargetKindDir})
-		}
-		return out, nil
+		return selectedTargetMatches(selected, matches), nil
 	case len(dirs) == 0:
 		selected, err := chooseFileMatch(cfg, needle, ".", files, false, stderr, colors)
 		if err != nil {
 			return nil, err
 		}
-		out := make([]TargetMatch, 0, len(selected))
-		for _, path := range selected {
-			out = append(out, TargetMatch{Path: path, Kind: treeTargetKindFile})
-		}
-		return out, nil
+		return selectedTargetMatches(selected, matches), nil
 	default:
 		return chooseTargetMatch(cfg, needle, matches, stderr, colors)
 	}
+}
+
+func selectedTargetMatches(paths []string, candidates []TargetMatch) []TargetMatch {
+	byPath := make(map[string]TargetMatch, len(candidates))
+	for _, candidate := range candidates {
+		byPath[normalizeRelPath(candidate.Path)] = candidate
+	}
+	out := make([]TargetMatch, 0, len(paths))
+	for _, selected := range paths {
+		if candidate, ok := byPath[normalizeRelPath(selected)]; ok {
+			out = append(out, candidate)
+		}
+	}
+	return out
 }
 
 const HeadlessCandidateListLimit = 10

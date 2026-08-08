@@ -134,10 +134,11 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 	fmt.Fprintf(&b, "\n")
 	writeAlignedHelpRows(&b, "  ", example, []helpRow{
 		{Left: "catclip dist --include dist", Right: "Allow the ignored React build output for this run"},
+		{Left: "catclip src --no-ignore", Right: "Include every ignored text file below src"},
 		{Left: "catclip --hiss", Right: fmt.Sprintf("Edit catclip's ignore rules (%s)", flag(hissDisplayPath))},
 	})
 	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "  %s authorizes gitignored paths within your walk scope.\n", flag("--include"))
+	fmt.Fprintf(&b, "  %s allows named ignored paths; %s allows every ignored path below the targets.\n", flag("--include"), flag("--no-ignore"))
 	b.WriteString("  Write specific include paths from the directory where you run catclip; targets do not shorten them.\n")
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", example(`catclip . --include dist --only src dist`))
@@ -235,7 +236,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	head("COMMON TASKS")
 	writeAlignedHelpRows(&b, "  ", example, []helpRow{
 		{Left: "catclip TARGET --paths", Right: "List files"},
-		{Left: "catclip TARGET --include '*' --with-binaries --paths", Right: "List everything, ignored and binary included"},
+		{Left: "catclip TARGET --no-ignore --with-binaries --paths", Right: "List everything, ignored and binary included"},
 		{Left: "catclip TARGET --contains 'REGEX' --paths", Right: "Which files mention this?"},
 		{Left: "catclip TARGET --not-contains 'REGEX'", Right: "Everything except files mentioning this"},
 		{Left: "catclip TARGET --snippet 'REGEX'", Right: "Smart block: smallest enclosing unit"},
@@ -404,10 +405,11 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	// ── Pipeline model ──────────────────────────────────────────────────
 	head("PIPELINE MODEL")
 	b.WriteString("  Stages run left to right. Each stage receives only what the previous stage kept.\n")
-	fmt.Fprintf(&b, "  The set can only shrink (except %s, which adds authorized ignored files).\n\n", flag("--include"))
+	fmt.Fprintf(&b, "  The set can only shrink after %s or %s adds authorized ignored files.\n\n", flag("--include"), flag("--no-ignore"))
 	b.WriteString("  When the result is the same, narrow by file name, path, or depth before\n")
 	b.WriteString("  searching file contents, so fewer files need to be read.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("[all discovered files under TARGET]"))
+	fmt.Fprintf(&b, "    → %s          adds every ignored path below the targets (must be first)\n", flag("--no-ignore"))
 	fmt.Fprintf(&b, "    → %s      adds authorized ignored files (must be first, once per scope)\n", flag("--include PATH"))
 	fmt.Fprintf(&b, "    → %s      keeps files matching PATTERN; discards rest\n", flag("--only PATTERN"))
 	fmt.Fprintf(&b, "    → %s   removes files matching PATTERN; keeps rest\n", flag("--exclude PATTERN"))
@@ -418,8 +420,8 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	fmt.Fprintf(&b, "    → %s removes files whose contents DO match\n", flag("--not-contains REGEX"))
 	fmt.Fprintf(&b, "    → %s           removes files not changed in git\n", flag("--changed"))
 	fmt.Fprintf(&b, "    → output shape        %s | %s | %s\n\n", flag("--paths"), flag("--snippet REGEX"), flag("--*-diff"))
-	fmt.Fprintf(&b, "  %s must be the first modifier so that all filters apply to the full set.\n", flag("--include"))
-	b.WriteString("  The same modifier can appear multiple times (except --include). Each occurrence\n")
+	fmt.Fprintf(&b, "  %s and %s must be the first modifier; choose one per scope.\n", flag("--include"), flag("--no-ignore"))
+	b.WriteString("  Other modifiers can appear multiple times. Each occurrence\n")
 	b.WriteString("  is a separate step.\n\n")
 	fmt.Fprintf(&b, "    %s\n", example(`catclip src --only "*.tsx" --exclude "*.test.tsx" --recent 3`))
 	b.WriteString("    # 1. keep .tsx files  2. remove tests  3. keep 3 newest survivors\n\n")
@@ -456,16 +458,16 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("  Overlapping scopes are deduplicated by path in output.\n\n")
 
 	// ── Authorization ───────────────────────────────────────────────────
-	head("AUTHORIZATION (--include)")
+	head("AUTHORIZATION (--include, --no-ignore)")
 	b.WriteString("  catclip only discovers files visible to git (.gitignore) and its own .hiss config.\n")
-	fmt.Fprintf(&b, "  Ignored paths require explicit %s authorization.\n\n", flag("--include"))
-	fmt.Fprintf(&b, "  %s\n\n", bold("There are two modes:"))
+	fmt.Fprintf(&b, "  Ignored paths require %s or %s authorization.\n\n", flag("--include"), flag("--no-ignore"))
+	fmt.Fprintf(&b, "  %s\n\n", bold("There are two commands:"))
 	fmt.Fprintf(&b, "  %s    Authorize a specific ignored path.\n", flag("--include PATH"))
 	b.WriteString("                    Names an ignored directory or file relative to cwd.\n")
 	b.WriteString("                    Including a directory authorizes all descendants under it.\n")
 	b.WriteString("                    Including a parent authorizes descendant targets:\n")
 	fmt.Fprintf(&b, "                      %s    (parent authorizes child)\n\n", example("catclip dist/assets --include dist"))
-	fmt.Fprintf(&b, "  %s     Disable ignore rules within the selected targets.\n", flag("--include '*'"))
+	fmt.Fprintf(&b, "  %s          Disable ignore rules within the selected targets.\n", flag("--no-ignore"))
 	b.WriteString("                    Uses target-bounded no-ignore discovery.\n")
 	b.WriteString("                    Text/binary filtering still applies unless --with-binaries is set.\n")
 	b.WriteString("                    Authorizes any selected target, even if gitignored.\n")
@@ -475,16 +477,16 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("                    payload and thousands of files — far more than you want\n")
 	b.WriteString("                    on a clipboard or in a prompt.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("Rules:"))
-	fmt.Fprintf(&b, "    1. %s must be the first modifier in a scope (before --only, --exclude, etc.)\n", flag("--include"))
-	fmt.Fprintf(&b, "    2. Only one %s per scope — use %s for additional includes\n", flag("--include"), flag("--then"))
-	fmt.Fprintf(&b, "    3. %s is scoped to the target paths (not the whole project)\n", flag("--include"))
+	fmt.Fprintf(&b, "    1. %s or %s must be the first modifier in a scope\n", flag("--include"), flag("--no-ignore"))
+	fmt.Fprintf(&b, "    2. Choose one authorization command per scope; use %s for another\n", flag("--then"))
+	b.WriteString("    3. Both commands are scoped to the target paths (not the whole project)\n")
 	b.WriteString("    4. Specific paths are written from cwd; targets never rebase them\n")
-	fmt.Fprintf(&b, "    5. %s is the broad form; %s is not a target-root alias\n\n", flag("--include '*'"), bad("--include ."))
+	fmt.Fprintf(&b, "    5. %s is the broad form; %s accepts specific paths only\n\n", flag("--no-ignore"), flag("--include"))
 	fmt.Fprintf(&b, "  %s\n", bold("Examples:"))
 	fmt.Fprintf(&b, "  %s\n", example("catclip dist --include dist --paths"))
 	fmt.Fprintf(&b, "  %s\n", example("catclip dist/assets --include dist --paths"))
 	fmt.Fprintf(&b, "  %s\n", example("catclip .env.example --include .env.example -r"))
-	fmt.Fprintf(&b, "  %s    # all text files under src/, ignore rules disabled\n\n", example("catclip src --include '*' --paths"))
+	fmt.Fprintf(&b, "  %s    # all text files under src/, ignore rules disabled\n\n", example("catclip src --no-ignore --paths"))
 	b.WriteString("  In a TTY, an unresolved include query may open the ignored-path picker.\n")
 	b.WriteString("  Headless runs keep it exact and may suggest complete paths without choosing one.\n\n")
 	fmt.Fprintf(&b, "  Cross-scope includes use %s:\n", flag("--then"))
@@ -618,9 +620,9 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	// ── Limitations ────────────────────────────────────────────────────
 	head("LIMITATIONS")
 	b.WriteString("  By default catclip skips binary files and ignored paths.\n")
-	fmt.Fprintf(&b, "  Use %s to include binaries, %s to include ignored paths,\n", flag("--with-binaries"), flag("--include '*'"))
+	fmt.Fprintf(&b, "  Use %s to include binaries, %s to include ignored paths,\n", flag("--with-binaries"), flag("--no-ignore"))
 	b.WriteString("  or both for a complete inventory equivalent to find:\n\n")
-	fmt.Fprintf(&b, "    %s\n\n", example("catclip TARGET --include '*' --with-binaries --paths --headless"))
+	fmt.Fprintf(&b, "    %s\n\n", example("catclip TARGET --no-ignore --with-binaries --paths --headless"))
 	fmt.Fprintf(&b, "  %s\n", bold("Path semantics:"))
 	b.WriteString("    • Absolute paths are not accepted. Run catclip from the project root\n")
 	b.WriteString("      and pass relative paths.\n")
@@ -636,6 +638,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	head("MODIFIER REFERENCE")
 	fmt.Fprintf(&b, "  %s\n", bold("Scope modifiers (per-scope, left to right):"))
 	writeAlignedHelpRows(&b, "    ", flag, []helpRow{
+		{Left: "--no-ignore", Right: "Include every ignored path below targets (must be first)"},
 		{Left: "--include VALUE...", Right: "Authorize ignored paths (must be first, once per scope)"},
 		{Left: "--only VALUE...", Right: "Keep matches by name, path, subtree, or glob"},
 		{Left: "--exclude VALUE...", Right: "Remove matches by name, path, subtree, or glob"},

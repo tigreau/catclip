@@ -22,7 +22,7 @@ func TestAppendOnlyForNarrow(t *testing.T) {
 		{name: "single scope", args: []string{"cmd", "docs", "--include", "docs"}, patterns: []string{"docs/*"}, want: []string{"cmd", "docs", "--include", "docs", "--only", "docs/*"}},
 		{name: "preserves earlier scopes", args: []string{"src", "--then", ".", "--include", "docs", "--depth", "2"}, patterns: []string{"docs/*"}, want: []string{"src", "--then", ".", "--include", "docs", "--depth", "2", "--only", "docs/*"}},
 		{name: "multi-value OR union", args: []string{".", "--include", "docs/policy", "docs/versions"}, patterns: []string{"docs/policy/*", "docs/versions/*"}, want: []string{".", "--include", "docs/policy", "docs/versions", "--only", "docs/policy/*", "docs/versions/*"}},
-		{name: "wildcard roots", args: []string{".", "--include", "*"}, patterns: []string{"docs/*", "vendor/*", "build/*"}, want: []string{".", "--include", "*", "--only", "docs/*", "vendor/*", "build/*"}},
+		{name: "no ignore roots", args: []string{".", "--no-ignore"}, patterns: []string{"docs/*", "vendor/*", "build/*"}, want: []string{".", "--no-ignore", "--only", "docs/*", "vendor/*", "build/*"}},
 		{name: "empty patterns", args: []string{".", "--include", "docs"}, want: []string{".", "--include", "docs"}},
 	}
 	for _, tt := range tests {
@@ -84,14 +84,14 @@ func TestOnlyPatternsForFilesystemIncludes(t *testing.T) {
 			if tt.setup != nil {
 				tt.setup(t, root)
 			}
-			if got := onlyPatternsForIncludes(root, tt.includes, nil, nil); !reflect.DeepEqual(got, tt.want) {
+			if got := onlyPatternsForIncludes(root, tt.includes, false, nil, nil); !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("onlyPatternsForIncludes() = %v, want %v", got, tt.want)
 			}
 		})
 	}
 }
 
-func TestOnlyPatternsForWildcardInclude(t *testing.T) {
+func TestOnlyPatternsForNoIgnore(t *testing.T) {
 	allWithVisibleSibling := []discovery.Entry{
 		{RelPath: "src/main.ts"},
 		{RelPath: "src/debug.log", AllowedByInclude: true},
@@ -129,7 +129,7 @@ func TestOnlyPatternsForWildcardInclude(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := onlyPatternsForIncludes("/nonexistent", []string{"*"}, tt.all, tt.ignored); !reflect.DeepEqual(got, tt.want) {
+			if got := onlyPatternsForIncludes("/nonexistent", nil, true, tt.all, tt.ignored); !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("onlyPatternsForIncludes() = %v, want %v", got, tt.want)
 			}
 		})
@@ -146,7 +146,7 @@ func TestOnlyPatternsReplayExactlyIgnoredRejectsRootFileBasenameCollision(t *tes
 		{RelPath: "src/debug.log"},
 	}
 	ignored := []discovery.Entry{all[0]}
-	patterns := onlyPatternsForIncludes(workingDir, []string{"debug.log"}, all, ignored)
+	patterns := onlyPatternsForIncludes(workingDir, []string{"debug.log"}, false, all, ignored)
 	if got, want := patterns, []string{"debug.log"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("patterns = %v, want %v", got, want)
 	}
@@ -185,28 +185,29 @@ func TestNarrowReplayCommandBytesIncludesExistingArgs(t *testing.T) {
 // semantic that replaced this.
 
 func TestAllIncludesAreSubsetOfTargets(t *testing.T) {
-	// Wildcard includes are target-bounded before this helper is called, so
-	// they are subsets by construction even for non-root and multi-target scopes.
+	// --no-ignore is target-bounded before this helper is called, so it is a
+	// subset by construction even for non-root and multi-target scopes.
 	tests := []struct {
 		name     string
 		includes []string
 		targets  []string
+		noIgnore bool
 		want     bool
 	}{
 		{name: "directory under dot", includes: []string{"docs"}, targets: []string{"."}, want: true},
-		{name: "wildcard under dot", includes: []string{"*"}, targets: []string{"."}, want: true},
+		{name: "no ignore under dot", noIgnore: true, targets: []string{"."}, want: true},
 		{name: "nested paths under dot", includes: []string{"docs/generated", "vendor/sdk"}, targets: []string{"."}, want: true},
 		{name: "explicit descendant", includes: []string{"docs/generated"}, targets: []string{"docs"}, want: true},
 		{name: "equal path", includes: []string{"docs"}, targets: []string{"docs"}, want: true},
 		{name: "unrelated path", includes: []string{"docs"}, targets: []string{"src"}},
 		{name: "include is target parent", includes: []string{"docs"}, targets: []string{"docs/foo"}},
 		{name: "empty includes", targets: []string{"."}},
-		{name: "wildcard under directory", includes: []string{"*"}, targets: []string{"docs"}, want: true},
-		{name: "wildcard under multiple targets", includes: []string{"*"}, targets: []string{"docs", "src"}, want: true},
+		{name: "no ignore under directory", noIgnore: true, targets: []string{"docs"}, want: true},
+		{name: "no ignore under multiple targets", noIgnore: true, targets: []string{"docs", "src"}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := allIncludesAreSubsetOfTargets(tt.includes, tt.targets); got != tt.want {
+			if got := allIncludesAreSubsetOfTargets(tt.includes, tt.targets, tt.noIgnore); got != tt.want {
 				t.Fatalf("allIncludesAreSubsetOfTargets() = %v, want %v", got, tt.want)
 			}
 		})
@@ -221,7 +222,6 @@ func TestExtractIncludePathsFromPickerArgs(t *testing.T) {
 	}{
 		{"single value", []string{"--include", "docs"}, []string{"docs"}},
 		{"multi-value", []string{"--include", "docs", "vendor"}, []string{"docs", "vendor"}},
-		{"wildcard", []string{"--include", "*"}, []string{"*"}},
 		{"empty arg", nil, nil},
 		{"missing --include token", []string{"docs"}, nil},
 		{"drops blank entries", []string{"--include", "docs", "", "vendor"}, []string{"docs", "vendor"}},
@@ -266,17 +266,5 @@ func TestMaybeNarrowConfirmNoopCases(t *testing.T) {
 				t.Fatalf("args = %v, want %v", out, tt.args)
 			}
 		})
-	}
-}
-
-func TestIncludesContainWildcard(t *testing.T) {
-	if !includesContainWildcard([]string{"docs", "*"}) {
-		t.Fatal("expected wildcard detected")
-	}
-	if includesContainWildcard([]string{"docs", "vendor"}) {
-		t.Fatal("no wildcard present")
-	}
-	if includesContainWildcard(nil) {
-		t.Fatal("empty list")
 	}
 }

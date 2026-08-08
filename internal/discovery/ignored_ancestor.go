@@ -15,7 +15,7 @@ import (
 // the basename exists *anywhere* in the ignored set under (the parent of) the
 // typed path, and if so, attribute the highest-precedence ancestor (.gitignore
 // > .hiss). Triggers only on target-resolution miss — never for filters or for
-// `--include '*'` runs. See
+// `--no-ignore` runs. See
 // docs/versions/v0.5.7/reports/ACTIVE_PLAN_surface_ignored_ancestor.md.
 
 // ignoredAncestorCandidate is one file the probe found under the ignored set,
@@ -38,7 +38,7 @@ func targetNotFoundOrIgnoredAncestorMessage(r *Resolver, target string, scopeInd
 }
 
 // findIgnoredAncestors runs the lookup-miss probe. Returns nil when:
-//   - --include '*' is active (ignore is disabled, nothing to surface);
+//   - --no-ignore is active (ignore is disabled, nothing to surface);
 //   - the target itself looks glob-shaped (defensive — globs shouldn't reach
 //     this code, but if they did the probe would be meaningless);
 //   - rg unavailable, errored, or the 5s hung-process guard tripped;
@@ -48,7 +48,7 @@ func targetNotFoundOrIgnoredAncestorMessage(r *Resolver, target string, scopeInd
 //     came from --no-ignore, so they're either visible or blocked — but we
 //     guard rather than assert).
 func (r *Resolver) findIgnoredAncestors(target string) []ignoredAncestorCandidate {
-	if r.IncludedTargets.wildcard {
+	if r.NoIgnore {
 		return nil
 	}
 	target = normalizeRelPath(target)
@@ -120,7 +120,7 @@ func (r *Resolver) findIgnoredAncestors(target string) []ignoredAncestorCandidat
 // diagnostic. This avoids a second rg walk for file-shaped targets: the
 // no-ignore basename query already proved which exact files exist.
 func (r *Resolver) ignoredExactFileCandidates(matches []SkippedMatch) []ignoredAncestorCandidate {
-	if r.IncludedTargets.wildcard || len(matches) == 0 {
+	if r.NoIgnore || len(matches) == 0 {
 		return nil
 	}
 

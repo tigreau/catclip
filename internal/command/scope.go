@@ -9,6 +9,7 @@ import "strings"
 // inputs; nothing in this file knows about filesystem state.
 type ExecutionScope struct {
 	Targets         []string
+	NoIgnore        bool
 	IncludedTargets []string
 	Only            []string
 	Exclude         []string
@@ -101,6 +102,9 @@ func IsDirectModeEligible(invocation Invocation, scope ExecutionScope) bool {
 		return false
 	}
 	if invocation.WithBinaries {
+		return false
+	}
+	if scope.NoIgnore {
 		return false
 	}
 	if len(scope.Targets) != 1 {

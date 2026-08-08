@@ -100,6 +100,13 @@ var startupModifierChoices = []StartupModifierChoice{
 		Mode:        startupModifierModeLines,
 	},
 	{
+		Key:         "no-ignore",
+		Label:       "--no-ignore",
+		Description: "Include everything hidden by ignore rules",
+		Args:        []string{"--no-ignore"},
+		Mode:        startupModifierModeFlags,
+	},
+	{
 		Key:         "include",
 		Label:       "--include",
 		Description: "Allow ignored files or folders",
@@ -265,6 +272,13 @@ func startupAvailableModifierChoicesWithState(currentArgs []string, state startu
 		}
 		return []StartupModifierChoice{
 			{
+				Key:         "no-ignore",
+				Label:       "--no-ignore",
+				Description: "Include everything hidden by ignore rules",
+				Args:        []string{"--no-ignore"},
+				Mode:        startupModifierModeFlags,
+			},
+			{
 				Key:         "include",
 				Label:       "--include",
 				Description: "Allow ignored files or folders",
@@ -401,7 +415,7 @@ func startupModifierChoiceMeaningful(choice StartupModifierChoice, state startup
 			return false
 		}
 		return state.AnyUnstaged
-	case "--include":
+	case "--include", "--no-ignore":
 		return state.HasScopedIgnoredTargets
 	default:
 		return true

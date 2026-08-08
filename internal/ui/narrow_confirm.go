@@ -56,7 +56,7 @@ func appendOnlyForNarrow(args []string, onlyPatterns []string) []string {
 // rewrite. Per the v0.6.4 plan:
 //   - Literal directory include `--include docs` → "docs/*"
 //   - Literal file include `--include docs/x.md` → "docs/x.md"
-//   - Wildcard `--include *` → the broadest replay-safe directory patterns,
+//   - `--no-ignore` → the broadest replay-safe directory patterns,
 //     with exact file paths where a directory pattern would retain visible
 //     siblings
 //
@@ -64,9 +64,9 @@ func appendOnlyForNarrow(args []string, onlyPatterns []string) []string {
 // workingDir. Stat errors fall through to the "/*" recursive form,
 // which is conservatively wide (matches the file form's intent plus
 // any descendants if there happen to be some).
-func onlyPatternsForIncludes(workingDir string, includePaths []string, allEntries, ignoredEntries []discovery.Entry) []string {
-	if includesContainWildcard(includePaths) {
-		return onlyPatternsForWildcard(allEntries, ignoredEntries)
+func onlyPatternsForIncludes(workingDir string, includePaths []string, noIgnore bool, allEntries, ignoredEntries []discovery.Entry) []string {
+	if noIgnore {
+		return onlyPatternsForNoIgnore(allEntries, ignoredEntries)
 	}
 	patterns := make([]string, 0, len(includePaths))
 	for _, inc := range includePaths {
@@ -127,11 +127,11 @@ func onlyPatternsReplayExactlyIgnored(allEntries, ignoredEntries []discovery.Ent
 
 const maxNarrowReplayCommandBytes = 16 * 1024
 
-// onlyPatternsForWildcard builds replay-safe selectors for the ignored files
-// admitted by `--include *`. A broad root pattern is used only when that root
+// onlyPatternsForNoIgnore builds replay-safe selectors for the ignored files
+// admitted by `--no-ignore`. A broad root pattern is used only when that root
 // contains no visible file; otherwise exact file paths keep visible siblings
 // out of the "Keep only ignored" result.
-func onlyPatternsForWildcard(allEntries, ignoredEntries []discovery.Entry) []string {
+func onlyPatternsForNoIgnore(allEntries, ignoredEntries []discovery.Entry) []string {
 	ignoredSet := make(map[string]struct{}, len(ignoredEntries))
 	for _, entry := range ignoredEntries {
 		ignoredSet[normalizeRelPath(entry.RelPath)] = struct{}{}
@@ -227,11 +227,10 @@ func isFileInclude(workingDir, rel string) bool {
 // explicit target paths. This is the "includes ⊆ targets" invariant the
 // narrow-confirm screen requires before firing.
 //
-// Wildcard `*` is treated as subset-by-construction: execution bounds wildcard
-// authorization to the scope targets. Interactive selection also filters its
-// candidates through filterIgnoredTargetsByScopeTargets before returning `*`.
-func allIncludesAreSubsetOfTargets(includePaths, scopeTargets []string) bool {
-	if len(includePaths) == 0 || len(scopeTargets) == 0 {
+// `--no-ignore` is subset-by-construction because execution bounds it to the
+// current scope targets.
+func allIncludesAreSubsetOfTargets(includePaths, scopeTargets []string, noIgnore bool) bool {
+	if len(scopeTargets) == 0 || (len(includePaths) == 0 && !noIgnore) {
 		return false
 	}
 	normalizedTargets := make([]string, 0, len(scopeTargets))
@@ -245,9 +244,6 @@ func allIncludesAreSubsetOfTargets(includePaths, scopeTargets []string) bool {
 		normalizedTargets = append(normalizedTargets, n)
 	}
 	for _, inc := range includePaths {
-		if inc == "*" {
-			continue
-		}
 		n := normalizeRelPath(inc)
 		if n == "" || n == "." {
 			continue
@@ -267,17 +263,6 @@ func allIncludesAreSubsetOfTargets(includePaths, scopeTargets []string) bool {
 		}
 	}
 	return true
-}
-
-// includesContainWildcard reports whether `*` (the select-all sentinel
-// returned by the include picker) appears in the include list.
-func includesContainWildcard(includes []string) bool {
-	for _, inc := range includes {
-		if inc == "*" {
-			return true
-		}
-	}
-	return false
 }
 
 // extractIncludePathsFromPickerArgs pulls just the include values from the
@@ -351,10 +336,11 @@ func maybeNarrowConfirmForResolver(resolver *discovery.Resolver, candidate []str
 }
 
 func maybeNarrowConfirmForEvaluation(candidate, evaluationArgs []string, includePaths, scopeExplicitTargets []string) ([]string, bool, error) {
-	if len(includePaths) == 0 {
+	noIgnore := currentScopeHasFlag(candidate, "--no-ignore")
+	if len(includePaths) == 0 && !noIgnore {
 		return candidate, false, nil
 	}
-	if !allIncludesAreSubsetOfTargets(includePaths, scopeExplicitTargets) {
+	if !allIncludesAreSubsetOfTargets(includePaths, scopeExplicitTargets, noIgnore) {
 		return candidate, false, nil
 	}
 
@@ -364,7 +350,7 @@ func maybeNarrowConfirmForEvaluation(candidate, evaluationArgs []string, include
 		// firing the screen rather than block the include flow.
 		return candidate, false, nil
 	}
-	allEntries, ignoredEntries := discovery.PartitionIgnoredByIncludes(view.Entries, includePaths)
+	allEntries, ignoredEntries := discovery.PartitionIgnoredByIncludes(view.Entries, includePaths, noIgnore)
 	if len(ignoredEntries) == 0 || len(ignoredEntries) == len(allEntries) {
 		// Either the include authorized nothing new, or the entire scope
 		// is already only the include-authorized set → narrow row would be
@@ -372,7 +358,7 @@ func maybeNarrowConfirmForEvaluation(candidate, evaluationArgs []string, include
 		return candidate, false, nil
 	}
 
-	onlyPatterns := onlyPatternsForIncludes(view.Invocation.WorkingDir, includePaths, allEntries, ignoredEntries)
+	onlyPatterns := onlyPatternsForIncludes(view.Invocation.WorkingDir, includePaths, noIgnore, allEntries, ignoredEntries)
 	if len(onlyPatterns) == 0 {
 		return candidate, false, nil
 	}

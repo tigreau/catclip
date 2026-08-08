@@ -93,3 +93,15 @@ func TestParseStartupInputTokensRejectsInvalidIncludeValue(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestParseStartupInputTokensNamesMisorderedAuthorizationFlag(t *testing.T) {
+	for _, flag := range []string{"--include", "--no-ignore"} {
+		_, err := parseStartupInputTokens([]string{"src", "--only", "*.go", flag})
+		if err == nil {
+			t.Fatalf("%s after a narrowing modifier unexpectedly succeeded", flag)
+		}
+		if !strings.Contains(err.Error(), "Error: "+flag+" must come before modifiers.") {
+			t.Fatalf("%s error did not name the flag: %v", flag, err)
+		}
+	}
+}

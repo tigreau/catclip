@@ -488,6 +488,12 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 	flag := choiceArgs[0]
 
 	switch flag {
+	case "--no-ignore":
+		if err := cli.ValidateCurrentScopeFlagAddition(currentArgs, flag); err != nil {
+			return nil, append([]string(nil), currentScopeTargets...), false, 0, err
+		}
+		finalArgs := append(append([]string(nil), currentArgs...), flag)
+		return finalArgs, append([]string(nil), currentScopeTargets...), false, 0, nil
 	case "--include":
 		currentIncludedTargets, err := startupCurrentScopeIncludedTargetPaths(currentArgs)
 		if err != nil {
@@ -546,7 +552,7 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 					resolveFrom++
 					continue
 				}
-				resolved, err := resolver.ResolveInteractiveIncludeTargets(value, selectedPaths, currentScopeExplicitTargets, currentScopeExplicitTargets)
+				selection, err := resolver.ResolveInteractiveIncludeTargets(value, selectedPaths, currentScopeExplicitTargets, currentScopeExplicitTargets)
 				if err != nil {
 					if errors.Is(err, discovery.ErrSelectionCancelled) {
 						back := previousResolvedIncludeGroup(resolvedGroups, resolveFrom)
@@ -558,7 +564,18 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 					}
 					return nil, nil, false, 0, err
 				}
-				if len(resolved) == 0 {
+				if selection.All {
+					finalArgs := append(append([]string(nil), currentArgs...), "--no-ignore")
+					narrowed, _, narrowErr := maybeNarrowConfirmForResolver(resolver, finalArgs, nil, currentScopeExplicitTargets)
+					if errors.Is(narrowErr, errNarrowConfirmBack) {
+						continue resolveIncludes
+					}
+					if narrowErr != nil {
+						return nil, nil, false, 0, narrowErr
+					}
+					return narrowed, append([]string(nil), currentScopeTargets...), true, consumed, nil
+				}
+				if len(selection.Paths) == 0 {
 					back := previousResolvedIncludeGroup(resolvedGroups, resolveFrom)
 					if back >= 0 {
 						clearResolvedIncludeGroupsFrom(resolvedGroups, back)
@@ -567,9 +584,9 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 					}
 					return nil, nil, false, 0, discovery.ErrSelectionCancelled
 				}
-				resolvedGroups[resolveFrom] = append([]string(nil), resolved...)
-				stageValues = append(stageValues, resolved...)
-				selectedPaths = append(selectedPaths, resolved...)
+				resolvedGroups[resolveFrom] = append([]string(nil), selection.Paths...)
+				stageValues = append(stageValues, selection.Paths...)
+				selectedPaths = append(selectedPaths, selection.Paths...)
 				stageUsedFzf = true
 				resolveFrom++
 			}

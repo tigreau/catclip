@@ -27,7 +27,7 @@ func TestPartitionIgnoredByIncludes(t *testing.T) {
 		{RelPath: "vendor/b.go", AllowedByInclude: true},
 		{RelPath: "src/c.go"},
 	}
-	wildcard := []Entry{
+	noIgnore := []Entry{
 		{RelPath: "src/main.ts"},
 		{RelPath: "src/debug.log", AllowedByInclude: true},
 		{RelPath: "docs/generated.md", AllowedByInclude: true},
@@ -36,6 +36,7 @@ func TestPartitionIgnoredByIncludes(t *testing.T) {
 		name        string
 		entries     []Entry
 		includes    []string
+		noIgnore    bool
 		wantAll     []Entry
 		wantIgnored []Entry
 	}{
@@ -47,12 +48,12 @@ func TestPartitionIgnoredByIncludes(t *testing.T) {
 		{name: "path equal to include", entries: []Entry{{RelPath: "docs", AllowedByInclude: true}}, includes: []string{"docs"}, wantAll: []Entry{{RelPath: "docs", AllowedByInclude: true}}, wantIgnored: []Entry{{RelPath: "docs", AllowedByInclude: true}}},
 		{name: "stable input order", entries: stable, includes: []string{"docs"}, wantAll: stable, wantIgnored: stable},
 		{name: "multiple include union", entries: union, includes: []string{"docs", "vendor"}, wantAll: union, wantIgnored: union[:2]},
-		{name: "wildcard selects authorized", entries: wildcard, includes: []string{"*"}, wantAll: wildcard, wantIgnored: wildcard[1:]},
+		{name: "no ignore selects authorized", entries: noIgnore, noIgnore: true, wantAll: noIgnore, wantIgnored: noIgnore[1:]},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			all, ignored := PartitionIgnoredByIncludes(tt.entries, tt.includes)
+			all, ignored := PartitionIgnoredByIncludes(tt.entries, tt.includes, tt.noIgnore)
 			if !reflect.DeepEqual(all, tt.wantAll) {
 				t.Fatalf("all = %v, want %v", all, tt.wantAll)
 			}

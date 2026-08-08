@@ -7,6 +7,7 @@ package command
 // spelled one way in the parser and another way in the "Resolved
 // command:" header.
 var stageFlags = map[StageKind]string{
+	StageNoIgnore:     "--no-ignore",
 	StageInclude:      "--include",
 	StageOnly:         "--only",
 	StageExclude:      "--exclude",

@@ -234,6 +234,7 @@ func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (
 	for scopeIndex, scopeSpec := range scopeSpecs {
 		scopeResolverCopy := *resolver
 		scopeTargets := scopeSpec.Targets()
+		scopeResolverCopy.NoIgnore = scopeSpec.NoIgnore()
 		if len(scopeSpec.IncludedTargets()) > 0 {
 			scopeResolverCopy.IncludedTargets = discovery.BuildIncludedTargetSet(scopeResolverCopy.Cfg.WorkingDir, scopeSpec.IncludedTargets())
 		}
@@ -245,7 +246,7 @@ func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (
 			resolver.AdoptVisibleTargetInventoryFrom(&scopeResolverCopy)
 			probesByScope[scopeIndex] = append(probesByScope[scopeIndex], probe)
 			if probe.Outcome == discovery.StartupTargetMissing ||
-				(probe.Outcome == discovery.StartupTargetBlocked && len(scopeSpec.IncludedTargets()) == 0) {
+				(probe.Outcome == discovery.StartupTargetBlocked && !scopeSpec.NoIgnore() && len(scopeSpec.IncludedTargets()) == 0) {
 				return true, nil
 			}
 		}
@@ -260,7 +261,7 @@ func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (
 	for scopeIndex, scopeSpec := range scopeSpecs {
 		scopeResolverCopy := *resolver
 		scopeTargets := scopeSpec.Targets()
-		if len(scopeSpec.IncludedTargets()) > 0 && !discovery.IncludeTargetsContainWildcard(scopeSpec.IncludedTargets()) {
+		if len(scopeSpec.IncludedTargets()) > 0 {
 			includeTargets := scopeSpec.IncludedTargets()
 			_, unresolvedIncludeQueries, err := scopeResolverCopy.ResolveExactIgnoredIncludeTargets(includeTargets, scopeTargets)
 			if err != nil {
@@ -378,7 +379,7 @@ func startupHasUnresolvedScope(args []string) bool {
 				}
 			}
 			continue
-		case "--paths", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
+		case "--no-ignore", "--paths", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
 			if !scopeHasExplicitTarget {
 				return true
 			}
@@ -481,7 +482,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 				i++
 			}
 			continue
-		case "--paths":
+		case "--no-ignore", "--paths":
 			continue
 		case "--lines":
 			for i+1 < len(args) {
@@ -642,8 +643,8 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 			if err := cli.ValidateSizeBounds(nums); err != nil {
 				return startupInputParse{}, err
 			}
-		case "--include":
-			return startupInputParse{}, newUsageError("Error: --include must come before modifiers.\n  Use it while selecting targets for the current scope.")
+		case "--include", "--no-ignore":
+			return startupInputParse{}, newUsageError("Error: %s must come before modifiers.\n  Use it while selecting targets for the current scope.", tokens[i])
 		case "--then":
 			parsed.hasThen = true
 			parsed.nextScopeTargets = append(parsed.nextScopeTargets, tokens[i+1:]...)
@@ -748,7 +749,7 @@ resolveIncludes:
 				resolveFrom++
 				continue
 			}
-			resolved, err := resolver.ResolveInteractiveIncludeTargets(query, selectedIncludes, selectedExplicitTargets, scopeTargetsForInclude)
+			selection, err := resolver.ResolveInteractiveIncludeTargets(query, selectedIncludes, selectedExplicitTargets, scopeTargetsForInclude)
 			if err != nil {
 				if errors.Is(err, discovery.ErrSelectionCancelled) {
 					back := previousResolvedIncludeGroup(resolvedGroups, resolveFrom)
@@ -760,7 +761,11 @@ resolveIncludes:
 				}
 				return nil, nil, nil, true, err
 			}
-			if len(resolved) == 0 {
+			if selection.All {
+				resolvedArgs = append(resolvedArgs, "--no-ignore")
+				return resolvedArgs, resolvedTargets, resolvedExplicitTargets, true, nil
+			}
+			if len(selection.Paths) == 0 {
 				back := previousResolvedIncludeGroup(resolvedGroups, resolveFrom)
 				if back >= 0 {
 					clearResolvedIncludeGroupsFrom(resolvedGroups, back)
@@ -769,9 +774,9 @@ resolveIncludes:
 				}
 				return nil, nil, nil, true, discovery.ErrSelectionCancelled
 			}
-			resolvedGroups[resolveFrom] = append([]string(nil), resolved...)
-			includedTargets = append(includedTargets, resolved...)
-			selectedIncludes = append(selectedIncludes, resolved...)
+			resolvedGroups[resolveFrom] = append([]string(nil), selection.Paths...)
+			includedTargets = append(includedTargets, selection.Paths...)
+			selectedIncludes = append(selectedIncludes, selection.Paths...)
 			usedPicker = true
 			resolveFrom++
 		}
@@ -976,7 +981,10 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 		arg := args[i]
 
 		if !modifierMode && !strings.HasPrefix(arg, "-") {
+			previousNoIgnore := resolver.NoIgnore
+			resolver.NoIgnore = startupScopeContainsNoIgnore(args, i)
 			resolvedArgs, resolvedTargets, resolvedExplicitTargets, targetUsedFzf, err := resolveStartupScopeInputsWithPrompt(resolver, []string{arg}, nil, currentScopeTargets, currentScopeExplicitTargets, targetPrompt)
+			resolver.NoIgnore = previousNoIgnore
 			if err != nil {
 				return nil, nil, false, err
 			}
@@ -1083,7 +1091,7 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 			i += 1 + consumed
 			modifierMode = true
 			hadScopeInput = true
-		case "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines":
+		case "--no-ignore", "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines":
 			argsAfterStage, newScopeTargets, stageUsedFzf, consumed, err := resolveStartupModifierStage(resolver, finalArgs, currentScopeTargets, currentScopeExplicitTargets, []string{arg}, args[i+1:], false)
 			if err != nil {
 				return nil, nil, false, err
@@ -1134,13 +1142,30 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 	return finalArgs, currentScopeTargets, usedFzf, nil
 }
 
+func startupScopeContainsNoIgnore(args []string, at int) bool {
+	start := at
+	for start > 0 && args[start-1] != "--then" {
+		start--
+	}
+	end := at + 1
+	for end < len(args) && args[end] != "--then" {
+		end++
+	}
+	for _, arg := range args[start:end] {
+		if arg == "--no-ignore" {
+			return true
+		}
+	}
+	return false
+}
+
 func startupLeadingModifierNeedsInitialScope(arg string) bool {
 	switch arg {
 	case "--then":
 		return false
 	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 		return true
-	case "--", "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths",
+	case "--", "--include", "--no-ignore", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths",
 		"--changed", "--staged", "--unstaged", "--untracked",
 		"--changed-diff", "--staged-diff", "--unstaged-diff":
 		return true
@@ -1523,6 +1548,9 @@ func startupCurrentScopeNeedsInclude(scopes []command.ExecutionScope) (bool, err
 	}
 
 	current := scopes[len(scopes)-1]
+	if current.NoIgnore {
+		return false, nil
+	}
 	if len(current.IncludedTargets) > 0 {
 		exactIncludedTargets, unresolvedIncludeQueries, err := resolver.ResolveExactIgnoredIncludeTargets(current.IncludedTargets, current.Targets)
 		if err != nil {

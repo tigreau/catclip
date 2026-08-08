@@ -110,7 +110,7 @@ func TestResolvedScopeViewMarksOnlyIncludedIgnoredFile(t *testing.T) {
 	}
 }
 
-func TestResolvedScopeViewWildcardMarksOnlyActuallyIgnoredFiles(t *testing.T) {
+func TestResolvedScopeViewNoIgnoreMarksOnlyActuallyIgnoredFiles(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		".gitignore":                              "internal/ui/bench_modifier_menu_test.go\ninternal/generated/\n",
 		"config/catclip/.hiss":                    "internal/ui/local_notes.txt\n",
@@ -125,7 +125,7 @@ func TestResolvedScopeViewWildcardMarksOnlyActuallyIgnoredFiles(t *testing.T) {
 
 	view, err := resolvedCurrentScopeViewForArgs([]string{
 		"internal",
-		"--include", "*",
+		"--no-ignore",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestResolvedScopeViewWildcardMarksOnlyActuallyIgnoredFiles(t *testing.T) {
 		"internal/ui/local_notes.txt":             {true, ".hiss"},
 	}
 	if !reflect.DeepEqual(allowed, want) {
-		t.Fatalf("wildcard AllowedByInclude attribution = %#v, want %#v", allowed, want)
+		t.Fatalf("no-ignore AllowedByInclude attribution = %#v, want %#v", allowed, want)
 	}
 }
 
@@ -627,7 +627,7 @@ func TestSelectionPathsExcludingExplicitTargetsPreservesEqualInclude(t *testing.
 	}
 }
 
-func TestResolveStartupWildcardNarrowExcludesVisibleSibling(t *testing.T) {
+func TestResolveStartupNoIgnoreNarrowExcludesVisibleSibling(t *testing.T) {
 	setupIgnoredIncludeProject(t)
 	installScriptFzf(t, `#!/bin/sh
 prompt=""
@@ -662,7 +662,7 @@ esac
 		t.Fatalf("resolveStartupModifierStage: %v", err)
 	}
 	joined := strings.Join(args, "\n")
-	for _, want := range []string{"--include\n*", "--only", "docs/*", "vendor/*", "src/debug.log"} {
+	for _, want := range []string{"--no-ignore", "--only", "docs/*", "vendor/*", "src/debug.log"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("args %v do not contain %q", args, want)
 		}

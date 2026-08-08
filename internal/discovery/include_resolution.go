@@ -47,7 +47,7 @@ func includePathRelatedToScopeTargets(includePath string, scopeTargets []string)
 }
 
 func (r *Resolver) unusedConcreteIncludes(scopeTargets []string, entries []Entry) []string {
-	if r.IncludedTargets.wildcard {
+	if r.NoIgnore {
 		return nil
 	}
 	unused := make([]string, 0, len(r.IncludedTargets.paths))
@@ -110,7 +110,7 @@ func (r *Resolver) includeRecoveryCandidates(rawIncludes, scopeTargets []string)
 	seenQueries := make(map[string]struct{}, len(rawIncludes))
 	for _, raw := range rawIncludes {
 		query := normalizeRelPath(raw)
-		if query == "" || query == "." || query == "*" {
+		if query == "" || query == "." {
 			continue
 		}
 		if _, duplicate := seenQueries[query]; duplicate {

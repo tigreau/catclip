@@ -205,7 +205,7 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 				StartArgs:   cloneStringSlice(args),
 				PendingArgs: cloneStringSlice(pending[1:]),
 			}, nil, false, nil
-		case "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines",
+		case "--no-ignore", "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines",
 			"--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff":
 			return startupInteractiveFrame{
 				Kind:                       startupInteractiveFrameStage,
@@ -492,6 +492,8 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 			inModifierMode = false
 		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 			continue
+		case "--no-ignore":
+			inModifierMode = true
 		case "--include":
 			inModifierMode = true
 			values, next := cli.ConsumeModifierValues(args, i+1)
@@ -554,6 +556,8 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 			inModifierMode = false
 		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
 			continue
+		case "--no-ignore":
+			inModifierMode = true
 		case "--include", "--only", "--exclude":
 			inModifierMode = true
 			_, next := cli.ConsumeModifierValues(args, i+1)

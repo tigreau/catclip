@@ -57,6 +57,7 @@ type stageApplier func(ctx stageContext, entries []Entry) ([]Entry, error)
 // add the kind to scope_stage.go, add an applier function below, and
 // register it here. Tests in scope_stages_test.go enforce coverage.
 var stageApplierTable = map[command.StageKind]stageApplier{
+	command.StageNoIgnore:     applyNoIgnoreStageCase,
 	command.StageInclude:      applyIncludeStageCase,
 	command.StageOnly:         applyOnlyStageCase,
 	command.StageExclude:      applyExcludeStageCase,
@@ -137,6 +138,10 @@ func deadTrailingSlashGlobStageValues(stage command.Stage) []string {
 
 func applyIncludeStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
 	return applyIncludeStage(ctx.Resolver, ctx.Scope, entries, ctx.Stage.Values, ctx.Stage.ExactValues)
+}
+
+func applyNoIgnoreStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
+	return applyNoIgnoreStage(ctx.Resolver, ctx.Scope, entries)
 }
 
 func applyOnlyStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
@@ -245,11 +250,8 @@ func applyLinesStageCase(_ stageContext, entries []Entry) ([]Entry, error) {
 }
 
 func applyIncludeStage(resolver *Resolver, s command.ExecutionScope, entries []Entry, _ []string, _ bool) ([]Entry, error) {
-	if len(resolver.IncludedTargets.paths) == 0 && !resolver.IncludedTargets.wildcard {
+	if len(resolver.IncludedTargets.paths) == 0 {
 		return entries, nil
-	}
-	if resolver.IncludedTargets.wildcard {
-		return applyWildcardIncludeStage(resolver, s, entries)
 	}
 
 	out := append([]Entry(nil), entries...)
@@ -269,13 +271,13 @@ func applyIncludeStage(resolver *Resolver, s command.ExecutionScope, entries []E
 	return DedupeEntriesByPathPreserveOrder(out), nil
 }
 
-// applyWildcardIncludeStage expands the already-resolved scope targets during
-// checkpoint replay. Initial discovery sees wildcard authorization before it
+// applyNoIgnoreStage expands the already-resolved scope targets during
+// checkpoint replay. Initial discovery sees --no-ignore authorization before it
 // resolves targets, but a prediscovered checkpoint contains only the earlier
-// visible set and must recover ignored entries when the include stage is
-// replayed. Resolve each target independently so `src --include '*'` cannot
+// visible set and must recover ignored entries when the no-ignore stage is
+// replayed. Resolve each target independently so `src --no-ignore` cannot
 // widen to ignored files elsewhere in cwd.
-func applyWildcardIncludeStage(resolver *Resolver, s command.ExecutionScope, entries []Entry) ([]Entry, error) {
+func applyNoIgnoreStage(resolver *Resolver, s command.ExecutionScope, entries []Entry) ([]Entry, error) {
 	targets := s.Targets
 	if len(targets) == 0 {
 		targets = []string{"."}

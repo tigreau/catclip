@@ -129,3 +129,27 @@ func TestDeepIncludeCanonicalRenderKeepsUserIncludesVerbatim(t *testing.T) {
 		t.Fatalf("canonical command should NOT synthesize --only under v0.6.4 walker semantic:\n%s", got)
 	}
 }
+
+func TestNoIgnoreSurvivesSpecRoundTripAndCanonicalRender(t *testing.T) {
+	spec := FinalizedSpecFromExecutionScopes([]ExecutionScope{
+		{
+			Targets:  []string{"src"},
+			NoIgnore: true,
+			Stages:   []Stage{{Kind: StageNoIgnore}, {Kind: StageOnly, Values: []string{"*.tsx"}}},
+		},
+		{
+			Targets: []string{"docs"},
+			Stages:  []Stage{{Kind: StageOnly, Values: []string{"*.md"}}},
+		},
+	})
+	scopes := ExecutionScopesFromSpec(spec)
+	if len(scopes) != 2 || !scopes[0].NoIgnore || scopes[1].NoIgnore {
+		t.Fatalf("no-ignore scope round-trip = %#v", scopes)
+	}
+	resolved := Resolved{Config: Invocation{}, Scopes: scopes}
+	got := CanonicalResolvedInvocationCommand(resolved, RenderFlags{})
+	want := `catclip src --no-ignore --only "*.tsx" --then docs --only "*.md"`
+	if got != want {
+		t.Fatalf("canonical command = %q, want %q", got, want)
+	}
+}

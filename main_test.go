@@ -184,9 +184,9 @@ func TestParseArgsAcceptedCommandShapes(t *testing.T) {
 				t.Fatalf("unexpected scope: %#v", scope)
 			}
 		}},
-		{name: "include wildcard", args: []string{".", "--include", "*"}, check: func(t *testing.T, cfg command.Parsed) {
-			if got := parsedExecutionScope(t, cfg).IncludedTargets; !reflect.DeepEqual(got, []string{"*"}) {
-				t.Fatalf("included targets = %v", got)
+		{name: "no ignore", args: []string{".", "--no-ignore"}, check: func(t *testing.T, cfg command.Parsed) {
+			if scope := parsedExecutionScope(t, cfg); !scope.NoIgnore || len(scope.IncludedTargets) != 0 {
+				t.Fatalf("unexpected scope: %#v", scope)
 			}
 		}},
 		{name: "staged implies changed", args: []string{"src", "--staged"}, check: func(t *testing.T, cfg command.Parsed) {
@@ -325,7 +325,7 @@ func TestParseArgsStructuredFailures(t *testing.T) {
 		{name: "bare double dash outside interactive", args: []string{"src", "--"}, wantReason: cli.ReasonBarePlaceholderInteractiveOnly},
 		{name: "bare double dash in headless", args: []string{".", "--headless", "--"}, wantReason: cli.ReasonBarePlaceholderHeadlessMode},
 		{name: "include name without target", args: []string{"--include", "cmd", "--headless"}, wantReason: cli.ReasonIncludeMissingPositionalTarget, wantFlag: "cmd"},
-		{name: "include wildcard without target", args: []string{"--include", "*", "--headless"}, wantReason: cli.ReasonIncludeMissingPositionalTarget, wantFlag: "*"},
+		{name: "no ignore without target", args: []string{"--no-ignore", "--headless"}, wantReason: cli.ReasonNoIgnoreMissingPositionalTarget, wantFlag: "--no-ignore"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1664,14 +1664,14 @@ func TestRunIncludeAllowsBlockedDirectory(t *testing.T) {
 	}
 }
 
-func TestRunIncludeWildcardBypassesAllIgnoreRules(t *testing.T) {
+func TestRunNoIgnoreBypassesAllIgnoreRules(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":             "console.log('ok')\n",
 		"tests/main.ts":           "console.log('test')\n",
 		"node_modules/lib/idx.js": "module.exports = {}\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", ".", "--include", "*", "--paths"})
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", ".", "--no-ignore", "--paths"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -1687,6 +1687,55 @@ func TestRunIncludeWildcardBypassesAllIgnoreRules(t *testing.T) {
 	}
 	if !strings.Contains(out, "node_modules/lib/idx.js") {
 		t.Fatalf("expected node_modules/lib/idx.js (normally ignored by .hiss) in output, got:\n%s", out)
+	}
+}
+
+func TestRunNoIgnoreKeepsBinaryPolicySeparate(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":         "ignored/\n",
+		"ignored/readme.txt": "ignored text\n",
+		"ignored/data.bin":   "\x00\x01ignored binary",
+	})
+
+	withoutBinary := parseInProject(t, project, []string{"--quiet", "--print", ".", "--no-ignore", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(withoutBinary, &stdout, &stderr); err != nil {
+		t.Fatalf("run without binaries: %v", err)
+	}
+	if out := stdout.String(); !strings.Contains(out, "ignored/readme.txt") || strings.Contains(out, "ignored/data.bin") {
+		t.Fatalf("no-ignore must retain text classification, got:\n%s", out)
+	}
+
+	withBinary := parseInProject(t, project, []string{"--quiet", "--print", ".", "--no-ignore", "--with-binaries", "--paths"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(withBinary, &stdout, &stderr); err != nil {
+		t.Fatalf("run with binaries: %v", err)
+	}
+	if out := stdout.String(); !strings.Contains(out, "ignored/readme.txt") || !strings.Contains(out, "ignored/data.bin") {
+		t.Fatalf("no-ignore plus with-binaries should include both files, got:\n%s", out)
+	}
+}
+
+func TestRunNoIgnoreDoesNotFollowFileSymlinks(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":    "ignored/\n",
+		"real/value.ts": "export const value = true\n",
+	})
+	if err := os.MkdirAll(filepath.Join(project, "ignored"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../real/value.ts", filepath.Join(project, "ignored", "value.ts")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", ".", "--no-ignore", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if out := stdout.String(); strings.Contains(out, "ignored/value.ts") || !strings.Contains(out, "real/value.ts") {
+		t.Fatalf("no-ignore must retain non-followed symlink policy, got:\n%s", out)
 	}
 }
 
@@ -1773,15 +1822,15 @@ func TestRunIncludeAnchoredPathScopedToTarget(t *testing.T) {
 	}
 }
 
-func TestRunIncludeWildcardScopedToTarget(t *testing.T) {
+func TestRunNoIgnoreScopedToTarget(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":            "console.log('ok')\n",
 		"src/tests/test.ts":      "test('ok', () => {})\n",
 		"vendor/lodash/index.js": "module.exports = {}\n",
 	})
 
-	// --include '*' with target "src" should only bypass ignore rules under src/
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "--include", "*", "--paths"})
+	// --no-ignore with target "src" should only bypass ignore rules under src/.
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "--no-ignore", "--paths"})
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
@@ -1789,14 +1838,90 @@ func TestRunIncludeWildcardScopedToTarget(t *testing.T) {
 
 	out := stdout.String()
 	if !strings.Contains(out, "src/main.ts") {
-		t.Fatalf("expected --include '*' to include src files, got:\n%s", out)
+		t.Fatalf("expected --no-ignore to include src files, got:\n%s", out)
 	}
 	if !strings.Contains(out, "src/tests/test.ts") {
-		t.Fatalf("expected --include '*' to bypass ignore rules under src/, got:\n%s", out)
+		t.Fatalf("expected --no-ignore to bypass ignore rules under src/, got:\n%s", out)
 	}
 	if strings.Contains(out, "vendor/lodash") {
-		t.Fatalf("expected --include '*' scoped to src to NOT include root vendor/, got:\n%s", out)
+		t.Fatalf("expected --no-ignore scoped to src to NOT include root vendor/, got:\n%s", out)
 	}
+}
+
+func TestRunNoIgnorePreservesTargetResolutionPriority(t *testing.T) {
+	t.Run("visible exact basename beats ignored duplicate", func(t *testing.T) {
+		project := setupTestProject(t, map[string]string{
+			".gitignore":          "generated/\n",
+			"src/config.ts":       "export const visible = true\n",
+			"generated/config.ts": "export const hidden = true\n",
+		})
+
+		cfg := parseInProject(t, project, []string{"--quiet", "--print", "config.ts", "--no-ignore", "--paths"})
+		var stdout, stderr bytes.Buffer
+		if err := run(cfg, &stdout, &stderr); err != nil {
+			t.Fatalf("run: %v\nstderr:\n%s", err, stderr.String())
+		}
+		if got, want := strings.TrimSpace(stdout.String()), "src/config.ts"; got != want {
+			t.Fatalf("visible exact basename priority = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("visible nested directory beats ignored duplicate", func(t *testing.T) {
+		project := setupTestProject(t, map[string]string{
+			".gitignore":                  "app/src/generated/\nignored/\n",
+			"app/src/main.ts":             "export const main = true\n",
+			"app/src/generated/hidden.ts": "export const hidden = true\n",
+			"ignored/src/wrong.ts":        "export const wrong = true\n",
+		})
+
+		cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "--no-ignore", "--paths"})
+		var stdout, stderr bytes.Buffer
+		if err := run(cfg, &stdout, &stderr); err != nil {
+			t.Fatalf("run: %v\nstderr:\n%s", err, stderr.String())
+		}
+		out := stdout.String()
+		for _, want := range []string{"app/src/main.ts", "app/src/generated/hidden.ts"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("nested visible target output missing %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "ignored/src/wrong.ts") {
+			t.Fatalf("no-ignore target resolution leaked ignored duplicate src:\n%s", out)
+		}
+	})
+
+	t.Run("ignored exact basename beats visible fuzzy file", func(t *testing.T) {
+		project := setupTestProject(t, map[string]string{
+			".gitignore":          "generated/\n",
+			"generated/nested.ts": "export const exact = true\n",
+			"src/nested_test.ts":  "export const fuzzy = true\n",
+		})
+
+		cfg := parseInProject(t, project, []string{"--quiet", "--print", "nested.ts", "--no-ignore", "--paths"})
+		var stdout, stderr bytes.Buffer
+		if err := run(cfg, &stdout, &stderr); err != nil {
+			t.Fatalf("run: %v\nstderr:\n%s", err, stderr.String())
+		}
+		if got, want := strings.TrimSpace(stdout.String()), "generated/nested.ts"; got != want {
+			t.Fatalf("ignored exact basename priority = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("ignored fuzzy target is a fallback after visible miss", func(t *testing.T) {
+		project := setupTestProject(t, map[string]string{
+			".gitignore":          "generated/\n",
+			"generated/Login.tsx": "export const hidden = true\n",
+		})
+
+		cfg := parseInProject(t, project, []string{"--quiet", "--print", "lgn", "--no-ignore", "--paths"})
+		var stdout, stderr bytes.Buffer
+		if err := run(cfg, &stdout, &stderr); err != nil {
+			t.Fatalf("run: %v\nstderr:\n%s", err, stderr.String())
+		}
+		if got, want := strings.TrimSpace(stdout.String()), "generated/Login.tsx"; got != want {
+			t.Fatalf("ignored fuzzy fallback = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestRunIncludeGlobPatternErrors(t *testing.T) {
@@ -2789,23 +2914,21 @@ func TestRunIncludeNoOpMixedCaseSurfacesOnlyForNoOpEntry(t *testing.T) {
 	}
 }
 
-// TestRunIncludeWildcardSkipsNoOpClassification asserts that
-// `--include *` (the deliberate "open everything ignored" broadcast)
-// is never flagged as no-op even though each member would individually
-// pass the visibility check.
-func TestRunIncludeWildcardSkipsNoOpClassification(t *testing.T) {
+// TestRunNoIgnoreSkipsIncludeNoOpClassification asserts that broad
+// authorization does not run the concrete --include no-op classifier.
+func TestRunNoIgnoreSkipsIncludeNoOpClassification(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"cli.go": "package main\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--print", ".", "--include", "*"})
+	cfg := parseInProject(t, project, []string{"--print", ".", "--no-ignore"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
 	}
 	if strings.Contains(stderr.String(), "Notice: --include") {
-		t.Fatalf("wildcard --include must not trigger no-op classification, stderr was:\n%s", stderr.String())
+		t.Fatalf("--no-ignore must not trigger include no-op classification, stderr was:\n%s", stderr.String())
 	}
 	_ = stdout
 }
@@ -3946,11 +4069,10 @@ func TestIncludeAdditiveAcrossNonIgnoredTargets(t *testing.T) {
 	}
 }
 
-// TestIncludeWildcardBypassesEffect4Check — `catclip cmd --include '*'`
-// authorizes any ignored subtree under any positional's walk; the
-// per-entry filter's wildcard short-circuit lets everything through.
-// The rationale note's wildcard rules require this shape to succeed.
-func TestIncludeWildcardBypassesEffect4Check(t *testing.T) {
+// TestNoIgnoreBypassesEffect4Check verifies that broad authorization admits
+// ignored descendants beneath a visible target without requiring a concrete
+// --include path.
+func TestNoIgnoreBypassesEffect4Check(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -3961,17 +4083,17 @@ func TestIncludeWildcardBypassesEffect4Check(t *testing.T) {
 	})
 	initGitRepo(t, project)
 
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "cmd", "--include", "*"})
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "cmd", "--no-ignore"})
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
-		t.Fatalf("wildcard include on visible-target scope should succeed, got err: %v\nstderr:\n%s", err, stderr.String())
+		t.Fatalf("no-ignore on visible-target scope should succeed, got err: %v\nstderr:\n%s", err, stderr.String())
 	}
 	out := stdout.String()
 	if !strings.Contains(out, `<file path="cmd/main.go">`) {
 		t.Fatalf("expected cmd/main.go:\n%s", out)
 	}
 	if !strings.Contains(out, `<file path="cmd/build/artifact.js">`) {
-		t.Fatalf("expected cmd/build/artifact.js (wildcard authorizes ignored descendants):\n%s", out)
+		t.Fatalf("expected cmd/build/artifact.js (--no-ignore authorizes ignored descendants):\n%s", out)
 	}
 }
 

@@ -23,8 +23,8 @@ type CheckpointData struct {
 	GitContext git.Context
 	GitStatus  map[string]string
 	Entries    []Entry
-	// NoIgnore signals that the parent scope was discovered with
-	// gitignore bypassed (via --include). Picker subprocesses that
+	// NoIgnore signals that the parent scope was discovered with ignore rules
+	// bypassed (via --no-ignore or a selective --include). Picker subprocesses that
 	// run direct rg over the same scope must also bypass gitignore;
 	// otherwise authorized-ignored files vanish from the picker.
 	// See docs/versions/v0.6.4/reports/ACTIVE_PLAN_picker_no_ignore_for_include.md.
@@ -310,6 +310,7 @@ func ApplyPrediscoveredScopeTail(cfg command.Invocation, gitCtx git.Context, sco
 		GitCtx:            gitCtx,
 		AllowFileSymlinks: false,
 		WithBinaries:      cfg.WithBinaries,
+		NoIgnore:          scope.NoIgnore || scope.HasStage(command.StageNoIgnore),
 		IncludedTargets:   BuildIncludedTargetSet(cfg.WorkingDir, scope.IncludedTargets),
 		WantedBasenames:   CollectWantedBasenames(scope.Targets),
 		ScopeTargets:      append([]string(nil), scope.Targets...),
@@ -322,8 +323,13 @@ func ApplyPrediscoveredScopeTail(cfg command.Invocation, gitCtx git.Context, sco
 	// A checkpoint has no such diagnostic state: an empty base can legitimately
 	// mean the selected target contains only ignored files. Expand its leading
 	// include once before the shared stage runner's empty-input guard.
-	if len(entries) == 0 && len(scope.Stages) > 0 && scope.Stages[0].Kind == command.StageInclude {
-		entries, err = applyIncludeStage(&resolver, scope, entries, scope.Stages[0].Values, scope.Stages[0].ExactValues)
+	if len(entries) == 0 && len(scope.Stages) > 0 {
+		switch scope.Stages[0].Kind {
+		case command.StageInclude:
+			entries, err = applyIncludeStage(&resolver, scope, entries, scope.Stages[0].Values, scope.Stages[0].ExactValues)
+		case command.StageNoIgnore:
+			entries, err = applyNoIgnoreStage(&resolver, scope, entries)
+		}
 		if err != nil {
 			return nil, err
 		}

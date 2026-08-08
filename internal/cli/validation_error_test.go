@@ -33,7 +33,7 @@ func TestValidationFailureConstructors(t *testing.T) {
 		{name: "include after modifier", err: includeAfterModifierError(), want: ValidationFailure{Reason: ReasonIncludeAfterModifier}},
 		{name: "repeated include", err: repeatedIncludeError(), want: ValidationFailure{Reason: ReasonRepeatedInclude}},
 		{name: "include missing target", err: IncludeMissingPositionalTargetError("cmd"), want: ValidationFailure{Reason: ReasonIncludeMissingPositionalTarget, Flag: "cmd"}},
-		{name: "include wildcard missing target", err: IncludeMissingPositionalTargetError("*"), want: ValidationFailure{Reason: ReasonIncludeMissingPositionalTarget, Flag: "*"}},
+		{name: "no ignore missing target", err: NoIgnoreMissingPositionalTargetError(), want: ValidationFailure{Reason: ReasonNoIgnoreMissingPositionalTarget, Flag: "--no-ignore"}},
 	}
 
 	for _, tt := range tests {
@@ -65,7 +65,7 @@ func TestValidationFailureRendering(t *testing.T) {
 		{name: "include after modifier", err: includeAfterModifierError(), wantContains: "--include must come before other modifiers"},
 		{name: "repeated include", err: repeatedIncludeError(), wantContains: "--include can only appear once per scope"},
 		{name: "include missing target", err: IncludeMissingPositionalTargetError("cmd"), wantContains: "catclip cmd --include cmd"},
-		{name: "include wildcard missing target", err: IncludeMissingPositionalTargetError("*"), wantContains: "catclip . --include '*'"},
+		{name: "no ignore missing target", err: NoIgnoreMissingPositionalTargetError(), wantContains: "catclip src --no-ignore"},
 	}
 
 	for _, tt := range tests {

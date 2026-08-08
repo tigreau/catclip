@@ -314,6 +314,42 @@ func TestStartupCommandCanRunDirectlyLetsIncludePickerAuthorizeBlockedTarget(t *
 	}
 }
 
+func TestNoIgnoreAuthorizesBlockedTargetWithoutIncludeOrNarrowPicker(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	setupStartupGateXDG(t)
+	project := setupTestProject(t, map[string]string{
+		".gitignore":    "docs/\n",
+		"docs/guide.md": "ignored documentation\n",
+		"visible.go":    "package visible\n",
+	})
+	initGitRepo(t, project)
+	_ = parseInProject(t, project, []string{"."})
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver: %v", err)
+	}
+	direct, err := startupCommandCanRunDirectly(resolver, []string{"docs", "--no-ignore"})
+	if err != nil {
+		t.Fatalf("startupCommandCanRunDirectly: %v", err)
+	}
+	if !direct {
+		t.Fatal("typed --no-ignore should not require an include or narrow picker")
+	}
+	args, _, usedPicker, err := resolveStartupArgs(resolver, []string{"docs", "--no-ignore"})
+	if err != nil {
+		t.Fatalf("resolveStartupArgs: %v", err)
+	}
+	if usedPicker {
+		t.Fatal("typed --no-ignore unexpectedly used fzf")
+	}
+	if got, want := strings.Join(args, "\n"), "docs\n--no-ignore"; got != want {
+		t.Fatalf("resolved args = %q, want %q", got, want)
+	}
+}
+
 func TestResolveStartupArgsIncludePickerCanSelectBlockedTargetItAuthorizes(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -513,5 +549,66 @@ func TestStartupCommandCanRunDirectlyOpensPickerForMultiHitAuthorizedBasename(t 
 	}
 	if direct {
 		t.Fatal("expected multi-hit basename in --include'd subtree to require the picker")
+	}
+}
+
+func TestStartupCommandNoIgnoreRoutesIgnoredFuzzyTargetsByAmbiguity(t *testing.T) {
+	t.Run("unique ignored fuzzy target runs without startup picker", func(t *testing.T) {
+		setupStartupGateXDG(t)
+		project := setupTestProject(t, map[string]string{
+			".gitignore":          "generated/\n",
+			"generated/Login.tsx": "ok\n",
+		})
+		_ = parseInProject(t, project, []string{"."})
+
+		resolver, err := newStartupPickerResolver()
+		if err != nil {
+			t.Fatalf("newStartupPickerResolver: %v", err)
+		}
+		direct, err := startupCommandCanRunDirectly(resolver, []string{"lgn", "--no-ignore"})
+		if err != nil {
+			t.Fatalf("startupCommandCanRunDirectly: %v", err)
+		}
+		if !direct {
+			t.Fatal("unique ignored fuzzy target should run directly")
+		}
+	})
+
+	t.Run("ambiguous ignored fuzzy targets require startup picker", func(t *testing.T) {
+		setupStartupGateXDG(t)
+		project := setupTestProject(t, map[string]string{
+			".gitignore":              "generated/\n",
+			"generated/Login.tsx":     "ok\n",
+			"generated/LoginForm.tsx": "ok\n",
+		})
+		_ = parseInProject(t, project, []string{"."})
+
+		resolver, err := newStartupPickerResolver()
+		if err != nil {
+			t.Fatalf("newStartupPickerResolver: %v", err)
+		}
+		direct, err := startupCommandCanRunDirectly(resolver, []string{"lgn", "--no-ignore"})
+		if err != nil {
+			t.Fatalf("startupCommandCanRunDirectly: %v", err)
+		}
+		if direct {
+			t.Fatal("ambiguous ignored fuzzy targets should require the picker")
+		}
+	})
+}
+
+func TestStartupScopeContainsNoIgnore(t *testing.T) {
+	args := []string{"src", "--no-ignore", "--then", "docs", "--only", "*.md", "--then", "cache", "--no-ignore"}
+	for _, tt := range []struct {
+		at   int
+		want bool
+	}{
+		{at: 0, want: true},
+		{at: 3, want: false},
+		{at: 7, want: true},
+	} {
+		if got := startupScopeContainsNoIgnore(args, tt.at); got != tt.want {
+			t.Fatalf("startupScopeContainsNoIgnore(args, %d) = %v, want %v", tt.at, got, tt.want)
+		}
 	}
 }

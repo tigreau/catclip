@@ -64,6 +64,13 @@ func buildScopeModifierFlagSpecs() []flagSpec {
 
 var scopeModifierFlagSpecTable = []flagSpec{
 	{
+		StageKind:      command.StageNoIgnore,
+		Arity:          flagArityNone,
+		Family:         flagFamilyFileSetRefinement,
+		BoundaryPolicy: scopeStageBoundaryNone,
+		Recoverability: flagRecoverabilityNoValue,
+	},
+	{
 		StageKind:      command.StageInclude,
 		Arity:          flagArityMany,
 		Family:         flagFamilyFileSetRefinement,

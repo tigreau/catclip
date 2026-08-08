@@ -49,6 +49,15 @@ func TestIsDirectModeEligibleMatrix(t *testing.T) {
 		{name: "without content match", scope: ExecutionScope{Targets: []string{"."}}},
 		{name: "with binaries", invocation: withBinaries, scope: containsScope()},
 		{
+			name: "no-ignore policy without reconstructed stage",
+			scope: ExecutionScope{
+				Targets:  []string{"."},
+				Contains: "TODO",
+				NoIgnore: true,
+				Stages:   []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
+			},
+		},
+		{
 			name: "multiple targets",
 			scope: ExecutionScope{
 				Targets:  []string{"src", "docs"},
