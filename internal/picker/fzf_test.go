@@ -2,6 +2,7 @@ package picker
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -52,6 +53,44 @@ func TestBuildArgsEmitsPreviewWindowWithoutPreviewCommand(t *testing.T) {
 	}
 	if !containsArgPair(args, "--bind", "start:preview(echo hi)") {
 		t.Fatalf("expected start:preview binding, got %#v", args)
+	}
+}
+
+func TestBuildArgsEmitsOptionalFooter(t *testing.T) {
+	args := buildArgs(Request{
+		Prompt:       "filter> ",
+		WithNth:      "1,3",
+		Footer:       "Filters",
+		FooterBorder: "rounded",
+	})
+
+	if !containsArgPair(args, "--footer", "Filters") {
+		t.Fatalf("expected footer text, got %#v", args)
+	}
+	if !containsArgPair(args, "--footer-border", "rounded") {
+		t.Fatalf("expected rounded footer border, got %#v", args)
+	}
+}
+
+func TestBuildArgsOmitsFooterOptionsWhenFooterIsEmpty(t *testing.T) {
+	args := buildArgs(Request{
+		Prompt:       "select> ",
+		WithNth:      "1,2",
+		FooterBorder: "rounded",
+	})
+
+	if containsArg(args, "--footer") || containsArg(args, "--footer-border") {
+		t.Fatalf("expected no footer options, got %#v", args)
+	}
+}
+
+func TestRevealHeaderAfterQueryChangeBindingRunsOnce(t *testing.T) {
+	binding := RevealHeaderAfterQueryChangeBinding("line one\nline two")
+	if !strings.HasPrefix(binding, "change:change-header{") {
+		t.Fatalf("expected native change-header action, got %q", binding)
+	}
+	if !strings.HasSuffix(binding, "}+unbind(change)") {
+		t.Fatalf("expected reveal binding to remove itself, got %q", binding)
 	}
 }
 

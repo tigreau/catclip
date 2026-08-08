@@ -30,7 +30,7 @@ func summarizeDiagnostics(diags []discovery.Diagnostic, hadSelectionCancel bool)
 		if diag.IsScopeUnsatisfiable {
 			summary.HasScopeUnsatisfiable = true
 		}
-		if diag.ExplainsEmptyResult {
+		if diag.ExplainsEmptyResult && diag.ScopeIndex >= 0 {
 			summary.ExplainedEmptyScopes[diag.ScopeIndex] = struct{}{}
 		}
 	}
@@ -49,10 +49,16 @@ func (s DiagnosticSummary) AllEmptyScopesExplained(scopeCount int) bool {
 	return true
 }
 
-func writeDiscoveryDiagnostics(diags []discovery.Diagnostic, quiet bool, stderr io.Writer) {
+func writeDiscoveryDiagnostics(diags []discovery.Diagnostic, stderr io.Writer) error {
+	seen := make(map[string]struct{}, len(diags))
 	for _, diag := range diags {
-		if diag.IsError || diag.IsTargetNotFound || diag.IsScopeUnsatisfiable || !quiet {
-			fmt.Fprintln(stderr, diag.Message)
+		if _, duplicate := seen[diag.Message]; duplicate {
+			continue
+		}
+		seen[diag.Message] = struct{}{}
+		if _, err := fmt.Fprintln(stderr, diag.Message); err != nil {
+			return err
 		}
 	}
+	return nil
 }

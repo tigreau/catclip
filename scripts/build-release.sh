@@ -8,7 +8,7 @@
 #
 # Env (with defaults):
 #   RIPGREP_VERSION=14.1.1
-#   FZF_VERSION=0.71.0
+#   FZF_VERSION=0.74.1
 #   DIST_DIR=dist
 #   CATCLIP_VERSION=$(cat VERSION)
 
@@ -29,7 +29,7 @@ archive_kind="$7"
 bin_ext="$8"
 
 RIPGREP_VERSION="${RIPGREP_VERSION:-14.1.1}"
-FZF_VERSION="${FZF_VERSION:-0.71.0}"
+FZF_VERSION="${FZF_VERSION:-0.74.1}"
 DIST_DIR="${DIST_DIR:-dist}"
 CATCLIP_VERSION="${CATCLIP_VERSION:-$(cat VERSION)}"
 

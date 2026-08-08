@@ -16,11 +16,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tigreau/catclip/internal/cli"
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/platform"
 )
+
+func requireStartupValidationFailure(t *testing.T, err error, wantReason cli.Reason) cli.ValidationFailure {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected startup validation failure %q", wantReason)
+	}
+	var failure cli.ValidationFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("expected cli.ValidationFailure reason %q, got %T: %v", wantReason, err, err)
+	}
+	if failure.Reason != wantReason {
+		t.Fatalf("validation reason = %q, want %q", failure.Reason, wantReason)
+	}
+	return failure
+}
 
 func TestPickerHeadersUseFourLinesMax60Chars(t *testing.T) {
 	headers := map[string]string{
@@ -46,6 +62,68 @@ func TestPickerHeadersUseFourLinesMax60Chars(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetPickerHeaderShowsFzfSearchAndSelectionHints(t *testing.T) {
+	header := discovery.SafeTargetPickerHeader()
+	hint := discovery.TargetPickerSymbolsHint()
+	wantControls := fmt.Sprintf("[Tab] mark [%s] toggle", platform.MultiSelectToggleAllKey())
+	if !strings.Contains(header, wantControls) {
+		t.Fatalf("expected target header controls %q, got %q", wantControls, header)
+	}
+	if !strings.Contains(hint, "Symbols: 'name not fuzzy, ^name starts with, name$ ends with") {
+		t.Fatalf("expected target hint to explain fzf match symbols, got %q", hint)
+	}
+	if strings.Contains(header, "Symbols:") {
+		t.Fatalf("expected match symbols to stay out of the initial target header, got %q", header)
+	}
+	if strings.Contains(header, "[Esc] exit") {
+		t.Fatalf("expected ordinary target header to reserve space for toggle-all, got %q", header)
+	}
+	if strings.Contains(discovery.IgnoredTargetPickerHeader(), "Symbols:") {
+		t.Fatalf("expected fzf match-symbol hint to remain target-only")
+	}
+}
+
+func TestOnlyAndExcludePickersRevealFzfSearchSymbolsAfterTyping(t *testing.T) {
+	for _, tc := range []struct {
+		flag   string
+		prompt string
+	}{
+		{flag: "--only", prompt: "only> "},
+		{flag: "--exclude", prompt: "exclude> "},
+	} {
+		t.Run(tc.flag, func(t *testing.T) {
+			header := startupFileSetPickerHeader(tc.flag)
+			if strings.Contains(header, "Symbols:") {
+				t.Fatalf("expected initial %s header to stay compact, got %q", tc.flag, header)
+			}
+			if !startupFileSetPickerShowsSearchSymbols(tc.prompt) {
+				t.Fatalf("expected %s picker to reveal search symbols", tc.flag)
+			}
+			revealed := discovery.PickerHeaderWithFzfSearchSymbols(header, platform.Palette{})
+			if !strings.Contains(revealed, discovery.TargetPickerSymbolsHint()) {
+				t.Fatalf("expected revealed %s header to contain symbols hint, got %q", tc.flag, revealed)
+			}
+			bindings := startupFileSetPickerBindings(tc.prompt, header, platform.Palette{})
+			if got := bindings[len(bindings)-1]; !strings.Contains(got, "change:change-header{") || !strings.Contains(got, discovery.TargetPickerSymbolsHint()) {
+				t.Fatalf("expected %s picker to install one-shot symbols binding, got %q", tc.flag, got)
+			}
+		})
+	}
+
+	for _, prompt := range []string{"changed> ", "staged> ", "unstaged> ", "untracked> "} {
+		if startupFileSetPickerShowsSearchSymbols(prompt) {
+			t.Fatalf("git picker %q must not inherit only/exclude search hint", prompt)
+		}
+		bindings := startupFileSetPickerBindings(prompt, startupFileSetPickerHeader("--changed"), platform.Palette{})
+		for _, binding := range bindings {
+			if strings.Contains(binding, "change-header") {
+				t.Fatalf("git picker %q unexpectedly received symbols binding %q", prompt, binding)
+			}
+		}
+	}
+}
+
 func TestPickerHeadersCanShowEscExitAndUndo(t *testing.T) {
 	headers := map[string]string{
 		"target":         discovery.TargetPickerHeaderWithEscHint("select> ", "undo"),
@@ -1886,12 +1964,7 @@ func TestResolveStartupArgsRejectsSnippetAfterDiffInSameScope(t *testing.T) {
 	}
 
 	_, _, _, err = resolveStartupArgs(resolver, []string{"src", "--changed-diff", "--snippet", "TODO"})
-	if err == nil {
-		t.Fatal("expected same-scope --diff --snippet conflict error")
-	}
-	if !strings.Contains(err.Error(), "--snippet and --diff cannot be combined") {
-		t.Fatalf("expected diff/snippet conflict error, got %v", err)
-	}
+	requireStartupValidationFailure(t, err, cli.ReasonDiffSnippetConflict)
 }
 func TestResolveStartupArgsRejectsContainsAfterDiffInSameScope(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
@@ -1905,11 +1978,9 @@ func TestResolveStartupArgsRejectsContainsAfterDiffInSameScope(t *testing.T) {
 	}
 
 	_, _, _, err = resolveStartupArgs(resolver, []string{"src", "--changed-diff", "--contains", "TODO"})
-	if err == nil {
-		t.Fatal("expected same-scope --contains after --diff error")
-	}
-	if !strings.Contains(err.Error(), "--contains must come before --changed-diff in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
+	failure := requireStartupValidationFailure(t, err, cli.ReasonDiffContentFilterOrder)
+	if failure.Flag != "--contains" || failure.BoundaryFlag != "--changed-diff" {
+		t.Fatalf("unexpected validation fields: %#v", failure)
 	}
 }
 func TestResolveStartupArgsRejectsGitFilterAfterDiffInSameScope(t *testing.T) {
@@ -1924,11 +1995,9 @@ func TestResolveStartupArgsRejectsGitFilterAfterDiffInSameScope(t *testing.T) {
 	}
 
 	_, _, _, err = resolveStartupArgs(resolver, []string{"src", "--changed-diff", "--staged"})
-	if err == nil {
-		t.Fatal("expected same-scope git filter after --diff error")
-	}
-	if !strings.Contains(err.Error(), "--staged must come before --changed-diff in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
+	failure := requireStartupValidationFailure(t, err, cli.ReasonDiffGitFilterOrder)
+	if failure.Flag != "--staged" || failure.BoundaryFlag != "--changed-diff" {
+		t.Fatalf("unexpected validation fields: %#v", failure)
 	}
 }
 func TestResolveInteractiveStartupArgsEmptyCurrentScopeStopsWithNoFilesMessage(t *testing.T) {
@@ -2485,8 +2554,9 @@ func TestMaybeResolveStartupPickerArgsLeadingOnlyRequiresPattern(t *testing.T) {
 	if !handled {
 		t.Fatal("expected leading --only error to be handled by startup picker")
 	}
-	if !strings.Contains(err.Error(), "--only requires a pattern") {
-		t.Fatalf("expected --only requires a pattern error, got %v", err)
+	failure := requireStartupValidationFailure(t, err, cli.ReasonRequiredValue)
+	if failure.Flag != "--only" {
+		t.Fatalf("unexpected validation fields: %#v", failure)
 	}
 }
 func TestMaybeResolveStartupPickerArgsLeadingRecentLimitPicksTargetsFirst(t *testing.T) {
@@ -2963,12 +3033,7 @@ func TestResolveStartupArgsRejectsUntrackedDiffInGitRepo(t *testing.T) {
 	}
 
 	_, _, _, err = resolveStartupArgs(resolver, []string{"--untracked", "--changed-diff"})
-	if err == nil {
-		t.Fatal("expected startup resolution error for --untracked --diff")
-	}
-	if !strings.Contains(err.Error(), "--untracked-diff doesn't make sense") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireStartupValidationFailure(t, err, cli.ReasonUntrackedDiff)
 }
 func TestResolveStartupModifierArgsChangedInGitRepoAfterResolvedTargetsOpensFilePicker(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
@@ -4647,11 +4712,9 @@ func TestResolveStartupArgsBareSnippetErrors(t *testing.T) {
 	}
 
 	_, _, _, err = resolveInteractiveStartupArgs(resolver, []string{"src", "--snippet"})
-	if err == nil {
-		t.Fatal("expected bare --snippet to fail")
-	}
-	if !strings.Contains(err.Error(), "--snippet requires a regex pattern") {
-		t.Fatalf("unexpected error: %v", err)
+	failure := requireStartupValidationFailure(t, err, cli.ReasonRequiredValue)
+	if failure.Flag != "--snippet" {
+		t.Fatalf("unexpected validation fields: %#v", failure)
 	}
 }
 func TestResolveStartupArgsPlaceholderOnlyConsumesMultipleValues(t *testing.T) {
@@ -5081,12 +5144,7 @@ exit 91
 	}
 
 	_, _, _, err = resolveStartupArgs(resolver, []string{"--", "TODO", "extra"})
-	if err == nil {
-		t.Fatal("expected extra plain token after placeholder contains stage to fail")
-	}
-	if !strings.Contains(err.Error(), "positional targets must come before modifiers") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireStartupValidationFailure(t, err, cli.ReasonPositionalAfterModifier)
 }
 func TestResolveStartupArgsPlaceholderChangedRejectsPlainValue(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
@@ -5122,12 +5180,7 @@ exit 91
 	}
 
 	_, _, _, err = resolveStartupArgs(resolver, []string{"--", "extra"})
-	if err == nil {
-		t.Fatal("expected plain token after placeholder changed stage to fail")
-	}
-	if !strings.Contains(err.Error(), "positional targets must come before modifiers") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireStartupValidationFailure(t, err, cli.ReasonPositionalAfterModifier)
 }
 func TestResolveStartupArgsExplicitChangedRejectsPlainValue(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
@@ -5147,12 +5200,7 @@ func TestResolveStartupArgsExplicitChangedRejectsPlainValue(t *testing.T) {
 	}
 
 	_, _, _, err = resolveStartupArgs(resolver, []string{"--changed", "README.md"})
-	if err == nil {
-		t.Fatal("expected explicit changed shorthand to fail")
-	}
-	if !strings.Contains(err.Error(), "positional targets must come before modifiers") {
-		t.Fatalf("unexpected error: %v", err)
-	}
+	requireStartupValidationFailure(t, err, cli.ReasonPositionalAfterModifier)
 }
 func TestMaybeResolveStartupPickerArgsTrailingContainsAfterResolvedTargets(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
@@ -5208,11 +5256,9 @@ func TestResolveStartupTrailingActionArgsRejectsContainsAfterDiff(t *testing.T) 
 	}
 
 	_, _, err = resolveStartupTrailingActionArgs(resolver, []string{"src", "--changed-diff"}, StartupTrailingActionContains)
-	if err == nil {
-		t.Fatal("expected trailing contains action after --diff to fail")
-	}
-	if !strings.Contains(err.Error(), "--contains must come before --changed-diff in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
+	failure := requireStartupValidationFailure(t, err, cli.ReasonDiffContentFilterOrder)
+	if failure.Flag != "--contains" || failure.BoundaryFlag != "--changed-diff" {
+		t.Fatalf("unexpected validation fields: %#v", failure)
 	}
 }
 func TestResolveStartupTrailingActionArgsRejectsContainsAfterSnippet(t *testing.T) {
@@ -5227,11 +5273,9 @@ func TestResolveStartupTrailingActionArgsRejectsContainsAfterSnippet(t *testing.
 	}
 
 	_, _, err = resolveStartupTrailingActionArgs(resolver, []string{"src", "--snippet", "TODO"}, StartupTrailingActionContains)
-	if err == nil {
-		t.Fatal("expected trailing contains action after --snippet to fail")
-	}
-	if !strings.Contains(err.Error(), "--contains must come before --snippet in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
+	failure := requireStartupValidationFailure(t, err, cli.ReasonSnippetContentFilterOrder)
+	if failure.Flag != "--contains" {
+		t.Fatalf("unexpected validation fields: %#v", failure)
 	}
 }
 func TestResolveStartupTrailingActionArgsSnippetStillUsesPicker(t *testing.T) {
@@ -5402,26 +5446,6 @@ func TestInternalPreviewPatternIsEmptyOnlyContentMode(t *testing.T) {
 		if got != c.want {
 			t.Errorf("%s: internalPreviewPatternIsEmpty = %v, want %v", c.name, got, c.want)
 		}
-	}
-}
-
-// buildInternalContentHintDocument returns different hint text based on
-// the scope's content mode. Snippet scope -> snippet hint; contains
-// scope (or neither, falling through) -> contains hint.
-func TestBuildInternalContentHintDocumentRoutesByMode(t *testing.T) {
-	snippetDoc := buildInternalContentHintDocument(command.ExecutionScope{
-		Snippet: true,
-		Stages:  []command.Stage{{Kind: command.StageSnippet}},
-	})
-	if snippetDoc.File == nil || snippetDoc.File.Content != internalSnippetPreviewEmptyHint {
-		t.Fatalf("snippet hint mismatch: %#v", snippetDoc.File)
-	}
-
-	containsDoc := buildInternalContentHintDocument(command.ExecutionScope{
-		Stages: []command.Stage{{Kind: command.StageContains}},
-	})
-	if containsDoc.File == nil || containsDoc.File.Content != internalContainsPreviewEmptyHint {
-		t.Fatalf("contains hint mismatch: %#v", containsDoc.File)
 	}
 }
 

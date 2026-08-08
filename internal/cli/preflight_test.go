@@ -1,57 +1,60 @@
 package cli
 
 import (
-	"github.com/tigreau/catclip/internal/command"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/command"
 )
 
 func TestValidateStartupPreflightArgsExamples(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    []string
-		wantErr string
+		name       string
+		args       []string
+		wantReason Reason
+		wantText   string
 	}{
 		{name: "target then bare modifier menu", args: []string{"a", "--"}},
 		{name: "double bare modifier menu chain", args: []string{"--", "--"}},
-		{name: "bare modifier menu cannot take args", args: []string{"a", "--", "a"}, wantErr: "bare -- can only be followed by another bare -- in the same scope"},
-		{name: "bare only", args: []string{"--only"}, wantErr: "--only requires a pattern"},
+		{name: "bare modifier menu cannot take args", args: []string{"a", "--", "a"}, wantReason: ReasonBarePlaceholderOrder},
+		{name: "bare only", args: []string{"--only"}, wantReason: ReasonRequiredValue},
 		{name: "only with value", args: []string{"--only", "a"}},
-		{name: "only recovery prefix", args: []string{"--only", "--", "--"}, wantErr: "--only requires a pattern"},
+		{name: "only recovery prefix", args: []string{"--only", "--", "--"}, wantReason: ReasonRequiredValue},
 		{name: "only value then modifier menu", args: []string{"--only", "a", "--"}},
-		{name: "only cannot leave bare menu in middle", args: []string{"--only", "a", "--", "a", "--"}, wantErr: "bare -- can only be followed by another bare -- in the same scope"},
-		{name: "bare exclude", args: []string{"--exclude"}, wantErr: "--exclude requires a pattern"},
+		{name: "only cannot leave bare menu in middle", args: []string{"--only", "a", "--", "a", "--"}, wantReason: ReasonBarePlaceholderOrder},
+		{name: "bare exclude", args: []string{"--exclude"}, wantReason: ReasonRequiredValue},
 		{name: "exclude value then modifier menu", args: []string{"--exclude", "a", "--"}},
 		{name: "bare recent", args: []string{"--recent"}},
 		{name: "recent value then modifier menu", args: []string{"--recent", "5", "--"}},
-		{name: "recent invalid value", args: []string{"--recent", "a"}, wantErr: "--recent takes an optional positive integer"},
+		{name: "recent invalid value", args: []string{"--recent", "a"}, wantText: "--recent takes an optional positive integer"},
 		{name: "bare size", args: []string{"--size"}},
 		{name: "size min", args: []string{"--size", "10"}},
 		{name: "size range then modifier menu", args: []string{"--size", "0", "100", "--"}},
-		{name: "size invalid value", args: []string{"--size", "big"}, wantErr: "--size expects integer KiB values"},
-		{name: "size zero max", args: []string{"--size", "0", "0"}, wantErr: "--size max must be >= 1 KiB"},
-		{name: "bare depth", args: []string{"--depth"}, wantErr: "--depth requires a positive integer"},
+		{name: "size invalid value", args: []string{"--size", "big"}, wantText: "--size expects integer KiB values"},
+		{name: "size zero max", args: []string{"--size", "0", "0"}, wantText: "--size max must be >= 1 KiB"},
+		{name: "bare depth", args: []string{"--depth"}, wantReason: ReasonRequiredValue},
 		{name: "depth with value", args: []string{"--depth", "2"}},
-		{name: "depth invalid value", args: []string{"--depth", "0"}, wantErr: "--depth takes a positive integer"},
+		{name: "depth invalid value", args: []string{"--depth", "0"}, wantText: "--depth takes a positive integer"},
 		{name: "paths is valid prefix", args: []string{"--paths"}},
-		{name: "contains after paths rejected", args: []string{"--paths", "--contains", "a"}, wantErr: "--paths finalizes the current scope"},
-		{name: "bare contains", args: []string{"--contains"}, wantErr: "--contains requires a regex pattern"},
+		{name: "contains after paths rejected", args: []string{"--paths", "--contains", "a"}, wantReason: ReasonTerminalBoundaryOrder},
+		{name: "bare contains", args: []string{"--contains"}, wantReason: ReasonRequiredValue},
 		{name: "contains with value", args: []string{"--contains", "a"}},
 		{name: "contains with modifier-like value", args: []string{"--contains", "--snippet"}},
 		{name: "contains with double-dash value", args: []string{"--contains", "--"}},
-		{name: "bare snippet", args: []string{"--snippet"}, wantErr: "--snippet requires a regex pattern"},
-		{name: "contains then bare snippet recovery", args: []string{"--contains", "a", "--snippet"}, wantErr: "--snippet requires a regex pattern"},
+		{name: "bare snippet", args: []string{"--snippet"}, wantReason: ReasonRequiredValue},
+		{name: "contains then bare snippet recovery", args: []string{"--contains", "a", "--snippet"}, wantReason: ReasonRequiredValue},
 		{name: "snippet with value", args: []string{"--snippet", "a"}},
 		{name: "snippet with modifier-like value", args: []string{"--snippet", "--contains"}},
 		{name: "snippet with double-dash value", args: []string{"--snippet", "--"}},
 		{name: "changed snippet is valid prefix", args: []string{"--changed", "--snippet", "TODO"}},
-		{name: "bare diff is invalid prefix", args: []string{"--diff"}, wantErr: "--diff is no longer a standalone modifier"},
+		{name: "bare diff is invalid prefix", args: []string{"--diff"}, wantReason: ReasonDiffStandalone},
 		{name: "bare no-bundle is valid prefix", args: []string{"--no-bundle"}},
 		{name: "no-bundle with target", args: []string{"--no-bundle", "."}},
 		{name: "no-bundle across then scopes", args: []string{".", "--no-bundle", "--then", "src"}},
 		{name: "with-binaries before target and modifier menu", args: []string{"--with-binaries", "dist", "--"}},
-		{name: "untracked diff is invalid prefix", args: []string{"--untracked", "--changed-diff"}, wantErr: "--untracked-diff doesn't make sense"},
-		{name: "contains after diff rejected", args: []string{"--changed-diff", "--contains", "a"}, wantErr: "--contains must come before --changed-diff in the same scope"},
+		{name: "untracked diff is invalid prefix", args: []string{"--untracked", "--changed-diff"}, wantReason: ReasonUntrackedDiff},
+		{name: "contains after diff rejected", args: []string{"--changed-diff", "--contains", "a"}, wantReason: ReasonDiffContentFilterOrder},
 		{name: "contains then changed diff then modifier menu", args: []string{"--contains", "a", "--changed-diff", "--"}},
 		{name: "snippet then changed then modifier menu", args: []string{"--snippet", "a", "--changed", "--"}},
 	}
@@ -59,17 +62,27 @@ func TestValidateStartupPreflightArgsExamples(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateStartupPreflightArgs(tt.args)
-			if tt.wantErr == "" {
+			if tt.wantReason == "" && tt.wantText == "" {
 				if err != nil {
 					t.Fatalf("validateStartupPreflightArgs returned error: %v", err)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("expected error containing %q", tt.wantErr)
+				t.Fatal("expected validation error")
 			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
+			if tt.wantReason != "" {
+				var failure ValidationFailure
+				if !errors.As(err, &failure) {
+					t.Fatalf("expected ValidationFailure reason %q, got %T: %v", tt.wantReason, err, err)
+				}
+				if failure.Reason != tt.wantReason {
+					t.Fatalf("reason = %q, want %q", failure.Reason, tt.wantReason)
+				}
+				return
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantText, err)
 			}
 		})
 	}
@@ -82,38 +95,49 @@ func TestValidateStartupPreflightArgsExamples(t *testing.T) {
 // higher-level picker helpers.
 func TestIncludePublicCommandShapeContract(t *testing.T) {
 	tests := []struct {
-		name    string
-		args    []string
-		wantErr string
+		name       string
+		args       []string
+		wantReason Reason
+		wantText   string
 	}{
-		{name: "missing value is not an unseeded picker", args: []string{"src", "--include"}, wantErr: "--include requires a target query"},
+		{name: "missing value is not an unseeded picker", args: []string{"src", "--include"}, wantReason: ReasonRequiredValue},
 		{name: "modifier menu is the unseeded interactive entry", args: []string{"src", "--"}},
 		{name: "concrete or unresolved value is valid startup syntax", args: []string{"src", "--include", "src/build"}},
 		{name: "reserved wildcard is valid", args: []string{"src", "--include", "*"}},
 		{name: "stdin sentinel is valid startup syntax", args: []string{"src", "--include", "-"}},
-		{name: "value still requires a positional target", args: []string{"--include", "node_modules"}, wantErr: "--include 'node_modules' requires a positional target"},
-		{name: "wildcard still requires a positional target", args: []string{"--include", "*"}, wantErr: "--include '*' requires a positional target"},
-		{name: "parent traversal is rejected", args: []string{"src", "--include", "src/../vendor"}, wantErr: "--include cannot traverse above the current directory"},
-		{name: "dot is not a target-root alias", args: []string{"src", "--include", "."}, wantErr: "--include '.' is not supported"},
-		{name: "ordinary globs are rejected", args: []string{"src", "--include", "*.js"}, wantErr: "--include does not accept glob patterns"},
-		{name: "include must lead its scope", args: []string{"src", "--only", "*.ts", "--include", "src/build"}, wantErr: "--include must come before other modifiers"},
+		{name: "value still requires a positional target", args: []string{"--include", "node_modules"}, wantReason: ReasonIncludeMissingPositionalTarget},
+		{name: "wildcard still requires a positional target", args: []string{"--include", "*"}, wantReason: ReasonIncludeMissingPositionalTarget},
+		{name: "parent traversal is rejected", args: []string{"src", "--include", "src/../vendor"}, wantText: "--include cannot traverse above the current directory"},
+		{name: "dot is not a target-root alias", args: []string{"src", "--include", "."}, wantText: "--include '.' is not supported"},
+		{name: "ordinary globs are rejected", args: []string{"src", "--include", "*.js"}, wantText: "--include does not accept glob patterns"},
+		{name: "include must lead its scope", args: []string{"src", "--only", "*.ts", "--include", "src/build"}, wantReason: ReasonIncludeAfterModifier},
 		{name: "then starts a fresh include scope", args: []string{"src", "--only", "*.ts", "--then", "docs", "--include", "docs"}},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := ValidateStartupPreflightArgs(tt.args)
-			if tt.wantErr == "" {
+			if tt.wantReason == "" && tt.wantText == "" {
 				if err != nil {
 					t.Fatalf("ValidateStartupPreflightArgs(%q) returned error: %v", tt.args, err)
 				}
 				return
 			}
 			if err == nil {
-				t.Fatalf("ValidateStartupPreflightArgs(%q) succeeded; want error containing %q", tt.args, tt.wantErr)
+				t.Fatalf("ValidateStartupPreflightArgs(%q) succeeded; want validation error", tt.args)
 			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("ValidateStartupPreflightArgs(%q) error = %v; want text %q", tt.args, err, tt.wantErr)
+			if tt.wantReason != "" {
+				var failure ValidationFailure
+				if !errors.As(err, &failure) {
+					t.Fatalf("ValidateStartupPreflightArgs(%q) error = %T %v; want reason %q", tt.args, err, err, tt.wantReason)
+				}
+				if failure.Reason != tt.wantReason {
+					t.Fatalf("ValidateStartupPreflightArgs(%q) reason = %q; want %q", tt.args, failure.Reason, tt.wantReason)
+				}
+				return
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("ValidateStartupPreflightArgs(%q) error = %v; want text %q", tt.args, err, tt.wantText)
 			}
 		})
 	}

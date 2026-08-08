@@ -63,9 +63,8 @@ func TestWriteClipboardSuccessUsesDistinctSummarySubjects(t *testing.T) {
 }
 
 // TestWriteBundleSuccessIncludesWarnings pins the bundle-success
-// formatter: the warnings emitted by the EmitStats producer (sandboxed
-// portal hint, --no-bundle guidance) must appear in user-facing output
-// when the bundle sink path runs.
+// formatter: warnings emitted by the EmitStats producer must survive into
+// user-facing output when the bundle sink path runs.
 func TestWriteBundleSuccessIncludesWarnings(t *testing.T) {
 	plan := output.PlanFromItemsForTesting([]output.PlanItem{
 		output.NewFilePlanItem(output.PreparedFileUnit{Entry: discovery.Entry{RelPath: "src/a.ts", Mode: command.EntryModeFull}, BodyBytes: 10}),
@@ -74,7 +73,7 @@ func TestWriteBundleSuccessIncludesWarnings(t *testing.T) {
 		SinkName:     "bundle",
 		BundlePath:   "/tmp/catclip/catclip-123.txt",
 		PayloadBytes: 5000,
-		Warnings:     []string{"xdg-desktop-portal 1.18 is older than the recommended 1.21 baseline. Sandboxed apps such as Firefox Snap may not attach this bundle from the clipboard; drag and drop the file if paste fails."},
+		Warnings:     []string{"producer warning"},
 	}
 
 	var out bytes.Buffer
@@ -82,7 +81,7 @@ func TestWriteBundleSuccessIncludesWarnings(t *testing.T) {
 		t.Fatalf("WriteClipboardSuccess returned error: %v", err)
 	}
 	got := out.String()
-	for _, want := range []string{"Warning:", "xdg-desktop-portal 1.18", "Firefox Snap", "drag and drop"} {
+	for _, want := range []string{"Warning:", "producer warning"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("bundle success output missing %q:\n%s", want, got)
 		}

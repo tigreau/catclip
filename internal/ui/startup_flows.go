@@ -731,8 +731,8 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 		consumed := 1
 		if len(remaining) > 1 {
 			if n, err := strconv.Atoi(remaining[1]); err == nil {
-				if n < 0 || n > snippetContextMax {
-					return nil, append([]string(nil), currentScopeTargets...), false, 0, newUsageError("Error: --snippet context must be between 0 and %d (got %d).\n  Use: --snippet 'REGEX' N for N lines around each match (0 = matching line only).", snippetContextMax, n)
+				if err := cli.ValidateSnippetContext(n); err != nil {
+					return nil, append([]string(nil), currentScopeTargets...), false, 0, err
 				}
 				finalArgs = append(finalArgs, strconv.Itoa(n))
 				consumed = 2

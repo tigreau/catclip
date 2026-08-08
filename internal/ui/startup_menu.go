@@ -215,14 +215,14 @@ var startupExtrasChoices = []StartupModifierChoice{
 }
 
 // startupSnippetBoundaryChoices lists the smart block plus every legal fixed
-// context 0..200 (the CLI's snippetContextMax). Listing every value keeps the
+// context. Listing every value keeps the
 // picker's contract identical to the parser's and gives each value a live
 // preview; fzf filtering makes the long list instantly navigable (typing 42
 // narrows to it).
 var startupSnippetBoundaryChoices = buildStartupSnippetBoundaryChoices()
 
 func buildStartupSnippetBoundaryChoices() []startupSnippetBoundaryChoice {
-	const maxContext = 200 // mirrors cli snippetContextMax; parser rejects beyond it
+	const maxContext = cli.SnippetContextMax
 	choices := make([]startupSnippetBoundaryChoice, 0, maxContext+2)
 	choices = append(choices, startupSnippetBoundaryChoice{
 		Key:         "block",

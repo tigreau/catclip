@@ -16,6 +16,7 @@ import (
 type resolvedScopeView struct {
 	Invocation command.Invocation
 	Render     RenderConfig
+	Progress   interactiveProgressExtras
 	GitContext git.Context
 	Scopes     []command.ExecutionScope
 	ScopeIndex int
@@ -89,6 +90,7 @@ func resolvedCurrentScopeViewForArgs(args []string) (resolvedScopeView, error) {
 	if err != nil {
 		return view, err
 	}
+	view.Progress = interactiveProgressExtrasFromParsed(cfg)
 	scopeViewMemoStore(key, view)
 	return view, nil
 }

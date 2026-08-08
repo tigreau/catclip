@@ -71,4 +71,3 @@ func probedVersionCell(path string) string {
 	}
 	return version
 }
-

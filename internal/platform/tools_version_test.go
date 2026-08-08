@@ -14,49 +14,26 @@ import (
 // cannot flake them; the production ProbeToolVersion still uses its own budget.
 const testProbeTimeout = 30 * time.Second
 
-func TestParseToolVersionOutput_FzfFormat(t *testing.T) {
-	got := parseToolVersionOutput("0.44.1 (26f37b8)\n")
-	if got != "0.44.1" {
-		t.Fatalf("parseToolVersionOutput(fzf) = %q, want 0.44.1", got)
+func TestParseToolVersionOutput(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{name: "fzf", output: "0.44.1 (26f37b8)\n", want: "0.44.1"},
+		{name: "ripgrep multiline", output: "ripgrep 14.1.0 (rev abcdef)\nPCRE2\nAll features enabled\n", want: "14.1.0"},
+		{name: "unknown fallback", output: "banana\n", want: "banana"},
+		{name: "Windows CRLF", output: "0.44.1 (26f37b8)\r\n", want: "0.44.1"},
+		{name: "empty", output: "", want: ""},
+		{name: "ripgrep prefix only fallback", output: "ripgrep\n", want: "ripgrep"},
 	}
-}
 
-func TestParseToolVersionOutput_RgFormat(t *testing.T) {
-	// rg prints multi-line; we should read only the first line.
-	got := parseToolVersionOutput("ripgrep 14.1.0 (rev abcdef)\nPCRE2\nAll features enabled\n")
-	if got != "14.1.0" {
-		t.Fatalf("parseToolVersionOutput(rg) = %q, want 14.1.0", got)
-	}
-}
-
-func TestParseToolVersionOutput_UnknownFormat(t *testing.T) {
-	got := parseToolVersionOutput("banana\n")
-	if got != "banana" {
-		t.Fatalf("parseToolVersionOutput(unknown) = %q, want fallback 'banana'", got)
-	}
-}
-
-func TestParseToolVersionOutput_CRLF(t *testing.T) {
-	// Windows binaries print CRLF line endings.
-	got := parseToolVersionOutput("0.44.1 (26f37b8)\r\n")
-	if got != "0.44.1" {
-		t.Fatalf("parseToolVersionOutput(crlf) = %q, want 0.44.1", got)
-	}
-}
-
-func TestParseToolVersionOutput_Empty(t *testing.T) {
-	got := parseToolVersionOutput("")
-	if got != "" {
-		t.Fatalf("parseToolVersionOutput(empty) = %q, want empty", got)
-	}
-}
-
-func TestParseToolVersionOutput_RgPrefixOnly(t *testing.T) {
-	// Defensive: "ripgrep" alone with no version token still returns
-	// the first line via the fallback branch.
-	got := parseToolVersionOutput("ripgrep\n")
-	if got != "ripgrep" {
-		t.Fatalf("parseToolVersionOutput(rg-prefix-only) = %q, want 'ripgrep' fallback", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseToolVersionOutput(tt.output); got != tt.want {
+				t.Fatalf("parseToolVersionOutput() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -70,33 +47,29 @@ func TestProbeToolVersion_EmptyPath(t *testing.T) {
 	}
 }
 
-func TestProbeToolVersion_FzfFormat(t *testing.T) {
+func TestProbeToolVersionSuccessFormats(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("fake-binary tests use POSIX shell scripts; see fzf CI smoke for Windows coverage")
 	}
-	dir := t.TempDir()
-	bin := writeFakeVersionBinary(t, dir, "fake-fzf", "0.44.1 (26f37b8)")
-	got, err := probeToolVersion(bin, testProbeTimeout)
-	if err != nil {
-		t.Fatalf("ProbeToolVersion(fake-fzf) err = %v", err)
+	tests := []struct {
+		name        string
+		versionLine string
+		want        string
+	}{
+		{name: "fzf", versionLine: "0.44.1 (26f37b8)", want: "0.44.1"},
+		{name: "ripgrep", versionLine: "ripgrep 14.1.0", want: "14.1.0"},
 	}
-	if got != "0.44.1" {
-		t.Fatalf("ProbeToolVersion(fake-fzf) = %q, want 0.44.1", got)
-	}
-}
-
-func TestProbeToolVersion_RgFormat(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("fake-binary tests use POSIX shell scripts; see rg CI smoke for Windows coverage")
-	}
-	dir := t.TempDir()
-	bin := writeFakeVersionBinary(t, dir, "fake-rg", "ripgrep 14.1.0")
-	got, err := probeToolVersion(bin, testProbeTimeout)
-	if err != nil {
-		t.Fatalf("ProbeToolVersion(fake-rg) err = %v", err)
-	}
-	if got != "14.1.0" {
-		t.Fatalf("ProbeToolVersion(fake-rg) = %q, want 14.1.0", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bin := writeFakeVersionBinary(t, t.TempDir(), "fake-"+tt.name, tt.versionLine)
+			got, err := probeToolVersion(bin, testProbeTimeout)
+			if err != nil {
+				t.Fatalf("probeToolVersion() err = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("probeToolVersion() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 

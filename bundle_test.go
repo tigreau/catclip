@@ -349,16 +349,6 @@ func TestBundleDoesNotWarnForModernGNOMEOnWayland(t *testing.T) {
 	}
 }
 
-func TestParseMajorMinorVersion(t *testing.T) {
-	major, minor, ok := output.ParseMajorMinorVersion("xdg-desktop-portal 1.21.0")
-	if !ok {
-		t.Fatal("expected version to parse")
-	}
-	if major != 1 || minor != 21 {
-		t.Fatalf("version = %d.%d, want 1.21", major, minor)
-	}
-}
-
 func TestXDGDesktopPortalVersionUsesConfiguredBinary(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell script test")

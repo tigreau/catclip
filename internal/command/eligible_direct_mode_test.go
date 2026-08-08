@@ -2,199 +2,160 @@ package command
 
 import "testing"
 
-func TestIsDirectModeEligibleBareContainsScope(t *testing.T) {
-	inv := Invocation{}
-	scope := ExecutionScope{
-		Targets:  []string{"."},
-		Contains: "TODO",
-		Stages:   []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
+func TestIsDirectModeEligibleMatrix(t *testing.T) {
+	containsScope := func() ExecutionScope {
+		return ExecutionScope{
+			Targets:  []string{"."},
+			Contains: "TODO",
+			Stages:   []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
+		}
 	}
-	if !IsDirectModeEligible(inv, scope) {
-		t.Fatal("bare scope with --contains should be eligible")
+	withNarrowingStage := func(kind StageKind) ExecutionScope {
+		scope := containsScope()
+		scope.Stages = []Stage{
+			{Kind: kind, Values: []string{"x"}},
+			{Kind: StageContains, Values: []string{"TODO"}},
+		}
+		return scope
 	}
-}
 
-func TestIsDirectModeEligibleBareSnippetScope(t *testing.T) {
-	inv := Invocation{}
-	scope := ExecutionScope{
-		Targets:        []string{"src"},
-		Snippet:        true,
-		SnippetPattern: "TODO",
-		Stages:         []Stage{{Kind: StageSnippet, Values: []string{"TODO"}}},
-	}
-	if !IsDirectModeEligible(inv, scope) {
-		t.Fatal("bare scope with --snippet should be eligible")
-	}
-}
+	changed := containsScope()
+	changed.Changed = true
+	staged := containsScope()
+	staged.Staged = true
+	unstaged := containsScope()
+	unstaged.Unstaged = true
+	untracked := containsScope()
+	untracked.Untracked = true
+	withBinaries := Invocation{WithBinaries: true}
 
-func TestIsDirectModeIneligibleWithoutContentMatch(t *testing.T) {
-	inv := Invocation{}
-	scope := ExecutionScope{Targets: []string{"."}}
-	if IsDirectModeEligible(inv, scope) {
-		t.Fatal("scope without --contains/--snippet must be ineligible")
-	}
-}
-
-func TestIsDirectModeIneligibleWithBinaries(t *testing.T) {
-	inv := Invocation{WithBinaries: true}
-	scope := ExecutionScope{
-		Targets:  []string{"."},
-		Contains: "TODO",
-		Stages:   []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
-	}
-	if IsDirectModeEligible(inv, scope) {
-		t.Fatal("--with-binaries must disable direct mode (rg default skips binaries)")
-	}
-}
-
-func TestIsDirectModeIneligibleMultiTarget(t *testing.T) {
-	inv := Invocation{}
-	scope := ExecutionScope{
-		Targets:  []string{"src", "docs"},
-		Contains: "TODO",
-		Stages:   []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
-	}
-	if IsDirectModeEligible(inv, scope) {
-		t.Fatal("multi-target scope must be ineligible (direct mode passes a single positional)")
-	}
-}
-
-func TestIsDirectModeIneligibleWithPositionalGlobTarget(t *testing.T) {
-	scope := ExecutionScope{
-		Targets:        []string{"*.go"},
-		Snippet:        true,
-		SnippetPattern: "func",
-		Stages:         []Stage{{Kind: StageSnippet, Values: []string{"func"}}},
-	}
-	if IsDirectModeEligible(Invocation{}, scope) {
-		t.Fatal("positional glob target must use discovered entries, not direct rg")
-	}
-}
-
-func TestIsDirectModeIneligibleWithInclude(t *testing.T) {
-	inv := Invocation{}
-	scope := ExecutionScope{
-		Targets:         []string{"."},
-		IncludedTargets: []string{"docs"},
-		Contains:        "TODO",
-		Stages:          []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
-	}
-	if IsDirectModeEligible(inv, scope) {
-		t.Fatal("--include must be ineligible (different ignore semantics)")
-	}
-}
-
-func TestIsDirectModeIneligibleWithOnlyOrExclude(t *testing.T) {
-	cases := []struct {
-		name  string
-		scope ExecutionScope
+	tests := []struct {
+		name       string
+		invocation Invocation
+		scope      ExecutionScope
+		want       bool
 	}{
-		{"only", ExecutionScope{Targets: []string{"."}, Contains: "TODO", Only: []string{"*.ts"}, Stages: []Stage{{Kind: StageContains, Values: []string{"TODO"}}}}},
-		{"exclude", ExecutionScope{Targets: []string{"."}, Contains: "TODO", Exclude: []string{"*.css"}, Stages: []Stage{{Kind: StageContains, Values: []string{"TODO"}}}}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if IsDirectModeEligible(Invocation{}, tc.scope) {
-				t.Fatalf("--%s must be ineligible (glob semantics diverge from rg)", tc.name)
-			}
-		})
-	}
-}
-
-func TestIsDirectModeIneligibleWithGitSelection(t *testing.T) {
-	for _, name := range []string{"Changed", "Staged", "Unstaged", "Untracked"} {
-		t.Run(name, func(t *testing.T) {
-			scope := ExecutionScope{
-				Targets:  []string{"."},
+		{name: "bare contains", scope: containsScope(), want: true},
+		{
+			name: "bare snippet",
+			scope: ExecutionScope{
+				Targets:        []string{"src"},
+				Snippet:        true,
+				SnippetPattern: "TODO",
+				Stages:         []Stage{{Kind: StageSnippet, Values: []string{"TODO"}}},
+			},
+			want: true,
+		},
+		{name: "without content match", scope: ExecutionScope{Targets: []string{"."}}},
+		{name: "with binaries", invocation: withBinaries, scope: containsScope()},
+		{
+			name: "multiple targets",
+			scope: ExecutionScope{
+				Targets:  []string{"src", "docs"},
 				Contains: "TODO",
 				Stages:   []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
-			}
-			switch name {
-			case "Changed":
-				scope.Changed = true
-			case "Staged":
-				scope.Staged = true
-			case "Unstaged":
-				scope.Unstaged = true
-			case "Untracked":
-				scope.Untracked = true
-			}
-			if IsDirectModeEligible(Invocation{}, scope) {
-				t.Fatalf("--%s must be ineligible (narrows scope)", name)
-			}
-		})
-	}
-}
-
-func TestIsDirectModeIneligibleWithNarrowingStages(t *testing.T) {
-	for _, kind := range []StageKind{StageRecent, StageSize, StageDepth, StageOnly, StageExclude, StageInclude} {
-		t.Run(string(kind), func(t *testing.T) {
-			scope := ExecutionScope{
+			},
+		},
+		{
+			name: "positional glob target",
+			scope: ExecutionScope{
+				Targets:        []string{"*.go"},
+				Snippet:        true,
+				SnippetPattern: "func",
+				Stages:         []Stage{{Kind: StageSnippet, Values: []string{"func"}}},
+			},
+		},
+		{
+			name: "include",
+			scope: ExecutionScope{
+				Targets:         []string{"."},
+				IncludedTargets: []string{"docs"},
+				Contains:        "TODO",
+				Stages:          []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
+			},
+		},
+		{
+			name: "only",
+			scope: ExecutionScope{
 				Targets:  []string{"."},
 				Contains: "TODO",
+				Only:     []string{"*.ts"},
+				Stages:   []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
+			},
+		},
+		{
+			name: "exclude",
+			scope: ExecutionScope{
+				Targets:  []string{"."},
+				Contains: "TODO",
+				Exclude:  []string{"*.css"},
+				Stages:   []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
+			},
+		},
+		{name: "changed", scope: changed},
+		{name: "staged", scope: staged},
+		{name: "unstaged", scope: unstaged},
+		{name: "untracked", scope: untracked},
+		{name: "recent stage", scope: withNarrowingStage(StageRecent)},
+		{name: "size stage", scope: withNarrowingStage(StageSize)},
+		{name: "depth stage", scope: withNarrowingStage(StageDepth)},
+		{name: "only stage", scope: withNarrowingStage(StageOnly)},
+		{name: "exclude stage", scope: withNarrowingStage(StageExclude)},
+		{name: "include stage", scope: withNarrowingStage(StageInclude)},
+		{
+			name: "bare not-contains",
+			scope: ExecutionScope{
+				Targets:     []string{"."},
+				NotContains: []string{"TODO"},
+				Stages:      []Stage{{Kind: StageNotContains, Values: []string{"TODO"}}},
+			},
+			want: true,
+		},
+		{
+			name: "contains and not-contains",
+			scope: ExecutionScope{
+				Targets:     []string{"."},
+				Contains:    "TODO",
+				NotContains: []string{"FIXME"},
 				Stages: []Stage{
-					{Kind: kind, Values: []string{"x"}},
 					{Kind: StageContains, Values: []string{"TODO"}},
+					{Kind: StageNotContains, Values: []string{"FIXME"}},
 				},
-			}
-			if IsDirectModeEligible(Invocation{}, scope) {
-				t.Fatalf("stage %s must be ineligible (narrowing)", kind)
+			},
+			want: true,
+		},
+		{
+			name: "multiple not-contains",
+			scope: ExecutionScope{
+				Targets:     []string{"."},
+				NotContains: []string{"TODO", "FIXME"},
+				Stages: []Stage{
+					{Kind: StageNotContains, Values: []string{"TODO"}},
+					{Kind: StageNotContains, Values: []string{"FIXME"}},
+				},
+			},
+			want: true,
+		},
+		{
+			name: "output stage",
+			scope: ExecutionScope{
+				Targets:  []string{"."},
+				Contains: "TODO",
+				Paths:    true,
+				Stages: []Stage{
+					{Kind: StageContains, Values: []string{"TODO"}},
+					{Kind: StagePaths},
+				},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsDirectModeEligible(tt.invocation, tt.scope); got != tt.want {
+				t.Fatalf("IsDirectModeEligible() = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestIsDirectModeEligibleBareNotContainsScope(t *testing.T) {
-	scope := ExecutionScope{
-		Targets:     []string{"."},
-		NotContains: []string{"TODO"},
-		Stages:      []Stage{{Kind: StageNotContains, Values: []string{"TODO"}}},
-	}
-	if !IsDirectModeEligible(Invocation{}, scope) {
-		t.Fatal("bare scope with only --not-contains should be eligible")
-	}
-}
-
-func TestIsDirectModeEligibleMixedContainsAndNotContains(t *testing.T) {
-	scope := ExecutionScope{
-		Targets:     []string{"."},
-		Contains:    "TODO",
-		NotContains: []string{"FIXME"},
-		Stages: []Stage{
-			{Kind: StageContains, Values: []string{"TODO"}},
-			{Kind: StageNotContains, Values: []string{"FIXME"}},
-		},
-	}
-	if !IsDirectModeEligible(Invocation{}, scope) {
-		t.Fatal("mixed --contains + --not-contains scope should be eligible")
-	}
-}
-
-func TestIsDirectModeEligibleMultipleNotContains(t *testing.T) {
-	scope := ExecutionScope{
-		Targets:     []string{"."},
-		NotContains: []string{"TODO", "FIXME"},
-		Stages: []Stage{
-			{Kind: StageNotContains, Values: []string{"TODO"}},
-			{Kind: StageNotContains, Values: []string{"FIXME"}},
-		},
-	}
-	if !IsDirectModeEligible(Invocation{}, scope) {
-		t.Fatal("multiple --not-contains should be eligible (each is one rg call)")
-	}
-}
-
-func TestIsDirectModeEligibleAllowsOutputStages(t *testing.T) {
-	scope := ExecutionScope{
-		Targets:  []string{"."},
-		Contains: "TODO",
-		Paths:    true,
-		Stages: []Stage{
-			{Kind: StageContains, Values: []string{"TODO"}},
-			{Kind: StagePaths},
-		},
-	}
-	if !IsDirectModeEligible(Invocation{}, scope) {
-		t.Fatal("output-only stages (paths/lines) should not disable eligibility")
 	}
 }

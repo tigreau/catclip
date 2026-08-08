@@ -7,7 +7,7 @@ on:
 
 env:
   RIPGREP_VERSION: 14.1.1
-  FZF_VERSION: 0.71.0
+  FZF_VERSION: 0.74.1
 
 jobs:
   test:
@@ -87,7 +87,7 @@ jobs:
           # roots: test-only helpers stay reachable (via test roots), so this
           # only fires on functions nothing — production or test — calls.
           # Example* doc functions are expected to be unreachable. See
-          # docs/versions/v0.6.6/reports/ACTIVE_PLAN_modifier_wiring_consolidation_v2.md
+          # docs/versions/v0.6.6/reports/RESOLVED_PLAN_modifier_wiring_consolidation_v2.md
           # Phase 0.
           out=$(go run golang.org/x/tools/cmd/deadcode@latest -test ./cmd/catclip ./fileclip/cmd/fileclip ./... | grep -v 'unreachable func: Example' || true)
           if [[ -n "$out" ]]; then

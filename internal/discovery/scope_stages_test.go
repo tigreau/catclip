@@ -233,6 +233,90 @@ func TestClassifyStageValueNormalizesDirectorySyntax(t *testing.T) {
 	}
 }
 
+func TestFilterEntriesByStagePatternsCharacterizesLegacyGlobGrammar(t *testing.T) {
+	entries := testStageEntries(
+		"src/api/root.go",
+		"src/api/v1/nested.go",
+		"pkg/src/api/other.go",
+		"src/utils/a.ts",
+		"utils/root.ts",
+		"config/root.ts",
+		"src/config/nested.ts",
+		"matcher/config-file.ts",
+		"build/root.txt",
+		"a/build/nested.txt",
+		"keep.txt",
+	)
+
+	tests := []struct {
+		name        string
+		pattern     string
+		keepMatches bool
+		want        []string
+	}{
+		{
+			name:        "slash glob is cwd anchored but star crosses folders",
+			pattern:     "src/api/*",
+			keepMatches: true,
+			want:        []string{"src/api/root.go", "src/api/v1/nested.go"},
+		},
+		{
+			name:        "question mark can consume separator",
+			pattern:     "src?utils/*",
+			keepMatches: true,
+			want:        []string{"src/utils/a.ts"},
+		},
+		{
+			name:        "bracket class can consume separator",
+			pattern:     "src[/]utils/*",
+			keepMatches: true,
+			want:        []string{"src/utils/a.ts"},
+		},
+		{
+			name:        "slashless glob matches basename or full path",
+			pattern:     "config*",
+			keepMatches: true,
+			want:        []string{"config/root.ts", "matcher/config-file.ts"},
+		},
+		{
+			name:        "literal subtree exclude floats",
+			pattern:     "build/",
+			keepMatches: false,
+			want:        []string{"src/api/root.go", "src/api/v1/nested.go", "pkg/src/api/other.go", "src/utils/a.ts", "utils/root.ts", "config/root.ts", "src/config/nested.ts", "matcher/config-file.ts", "keep.txt"},
+		},
+		{
+			name:        "globbed subtree spelling anchors",
+			pattern:     "build/*",
+			keepMatches: false,
+			want:        []string{"src/api/root.go", "src/api/v1/nested.go", "pkg/src/api/other.go", "src/utils/a.ts", "utils/root.ts", "config/root.ts", "src/config/nested.ts", "matcher/config-file.ts", "a/build/nested.txt", "keep.txt"},
+		},
+		{
+			name:        "glob normalization does not clean parent traversal",
+			pattern:     "src/../utils/*",
+			keepMatches: true,
+			want:        []string{},
+		},
+		{
+			name:        "literal normalization cleans to floating subtree",
+			pattern:     "src/../utils/",
+			keepMatches: true,
+			want:        []string{"src/utils/a.ts", "utils/root.ts"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotEntries, err := filterEntriesByStagePatterns(entries, []string{tt.pattern}, tt.keepMatches)
+			if err != nil {
+				t.Fatalf("filterEntriesByStagePatterns(%q) returned error: %v", tt.pattern, err)
+			}
+			if got := testStageRelPaths(gotEntries); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("pattern %q paths = %v, want %v", tt.pattern, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestApplyRecentStageSortsByNewestThenPath(t *testing.T) {
 	now := time.Now()
 	entries := []Entry{

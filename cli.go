@@ -192,7 +192,7 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		}
 		diagnostics := make([]discovery.Diagnostic, 0, len(cfg.Warnings)+len(discoveryResult.Diagnostics))
 		for _, warning := range cfg.Warnings {
-			diagnostics = append(diagnostics, discovery.Diagnostic{Message: warning})
+			diagnostics = append(diagnostics, discovery.Diagnostic{Message: warning, ScopeIndex: -1})
 		}
 		diagnostics = append(diagnostics, discoveryResult.Diagnostics...)
 		notices := discoveryResult.Notices
@@ -342,38 +342,30 @@ func exitWithError(err error, stderr io.Writer) {
 	if err == nil {
 		return
 	}
-
-	code := 1
-	if _, ok := err.(usageError); ok {
-		code = 2
-	}
-	var discoveryUsage discovery.UsageError
-	if errors.As(err, &discoveryUsage) {
-		code = 2
-	}
-	var outputUsage output.UsageError
-	if errors.As(err, &outputUsage) {
-		code = 2
-	}
-	var uiUsage ui.UsageError
-	if errors.As(err, &uiUsage) {
-		code = 2
-	}
-	var cliUsage cli.UsageError
-	if errors.As(err, &cliUsage) {
-		code = 2
-	}
-	var validation cli.ValidationFailure
-	if errors.As(err, &validation) {
-		code = 2
-	}
-	if exitErr, ok := err.(exitError); ok {
-		code = exitErr.code
-	}
 	if msg := strings.TrimSpace(err.Error()); msg != "" {
 		fmt.Fprintln(stderr, msg)
 	}
-	os.Exit(code)
+	os.Exit(exitCodeForError(err))
+}
+
+type catclipExitCoder interface {
+	error
+	CatclipExitCode() int
+}
+
+func exitCodeForError(err error) int {
+	if err == nil {
+		return 0
+	}
+	var coded catclipExitCoder
+	if !errors.As(err, &coded) {
+		return 1
+	}
+	code := coded.CatclipExitCode()
+	if code != 1 && code != 2 {
+		return 1
+	}
+	return code
 }
 
 type hissConfig struct {

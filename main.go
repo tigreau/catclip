@@ -30,9 +30,13 @@ func (e usageError) Error() string {
 	return e.message
 }
 
+func (e usageError) CatclipExitCode() int { return 2 }
+
 func (e exitError) Error() string {
 	return e.message
 }
+
+func (e exitError) CatclipExitCode() int { return e.code }
 
 func newUsageError(format string, args ...any) error {
 	return usageError{message: fmt.Sprintf(format, args...)}
@@ -75,7 +79,7 @@ func Main() {
 	// --help and --version fail here, so this must come before
 	// ensureRequiredTools (a missing rg/fzf must not mask the policy
 	// message) and before cli.ParseArgs. See
-	// docs/versions/v0.6.0/reports/ACTIVE_PLAN_x11_full_removal.md.
+	// docs/versions/v0.6.0/reports/RESOLVED_PLAN_x11_full_removal.md.
 	finishGateBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "linux_session_gate")
 	if err := linuxSessionGateError(); err != nil {
 		finishGateBench("err", platform.InternalBenchError(err))
@@ -200,7 +204,7 @@ func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
 // every other classification (Wayland, WSL, unknown/displayless, non-Linux),
 // so SSH/Docker/TTY/CI runs continue to stdout sinks while desktop X11 is
 // blocked at startup. See
-// docs/versions/v0.6.0/reports/ACTIVE_PLAN_x11_full_removal.md.
+// docs/versions/v0.6.0/reports/RESOLVED_PLAN_x11_full_removal.md.
 func linuxSessionGateError() error {
 	return linuxSessionGateErrorFor(platform.DetectLinuxSession())
 }

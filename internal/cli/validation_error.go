@@ -32,8 +32,7 @@ const (
 )
 
 // ValidationFailure is the structured error the parser returns on rule
-// violations. Exported so exitWithError at root can errors.As against
-// it and bump the exit code to 2.
+// violations. CatclipExitCode participates in root's structural exit protocol.
 type ValidationFailure struct {
 	Reason       Reason
 	Flag         string
@@ -42,6 +41,8 @@ type ValidationFailure struct {
 	Suggestion   string
 	Value        string
 }
+
+func (e ValidationFailure) CatclipExitCode() int { return 2 }
 
 func (e ValidationFailure) Error() string {
 	return renderValidationFailure(e)
@@ -144,6 +145,29 @@ func renderRequiredValueValidationFailure(e ValidationFailure) string {
 
 func RequiredStageValueError(flag string) error {
 	return ValidationFailure{Reason: ReasonRequiredValue, Flag: flag}
+}
+
+func UnknownOptionError(value string) error {
+	return newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(value))
+}
+
+func ValidateSnippetContext(value int) error {
+	if value < 0 || value > SnippetContextMax {
+		return newUsageError("Error: --snippet context must be between 0 and %d (got %d).\n  Use: --snippet 'REGEX' N for N lines around each match (0 = matching line only).", SnippetContextMax, value)
+	}
+	return nil
+}
+
+func LinesStartError(value int) error {
+	return newUsageError("Error: --lines start must be >= 1 (got %d).\n  Line numbers are 1-based, matching editors and compiler output.", value)
+}
+
+func LinesEndBeforeStartError(end, start int) error {
+	return newUsageError("Error: --lines end (%d) must be >= start (%d).\n  Use: --lines START END where END >= START.", end, start)
+}
+
+func LinesInvalidValueError(value string) error {
+	return newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", value)
 }
 
 // IncludeMissingPositionalTargetError fires for effect 5 of the

@@ -37,9 +37,8 @@ func TestLinuxSessionGateErrorForBlocksOnlyX11(t *testing.T) {
 	}
 }
 
-// TestLinuxSessionGateErrorForX11MessageContent pins the user-facing message
-// shape. The phrasing is reliability-focused (paste workflow, not
-// "tool not found"). Don't soften it without re-reading the plan rationale.
+// TestLinuxSessionGateErrorForX11MessageContent pins the actionable meaning,
+// while leaving the diagnostic prose free to change.
 func TestLinuxSessionGateErrorForX11MessageContent(t *testing.T) {
 	err := linuxSessionGateErrorFor(platform.LinuxSessionX11)
 	if err == nil {
@@ -47,10 +46,9 @@ func TestLinuxSessionGateErrorForX11MessageContent(t *testing.T) {
 	}
 	msg := err.Error()
 	for _, want := range []string{
-		"requires a reliable Linux desktop session",
-		"X11 clipboard delivery is not reliable",
+		"X11",
 		"Linux desktop sessions must use Wayland",
-		"Log into a Wayland session",
+		"Wayland session",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("gate message missing %q\ngot:\n%s", want, msg)

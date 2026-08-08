@@ -182,6 +182,8 @@ Subpackages and platform shims:
 
 27. **Smart snippet finds first, then chooses a block** — PCRE2 finds every regex match, exactly as it does for `--contains`. The smart-block engine must keep all those matches; its only job is choosing the surrounding block. It returns the smallest recognized block or the documented fallback when no block is recognized. Matches in comments, strings, examples, function calls, or longer names are still valid. Use a more precise regex to narrow matches. The current per-language and per-probe rules are in `SNIPPET_SMART_BLOCK_RULES.md`.
 
+28. **Interactive progress is a derived filter outline** — the rounded progress footer appears only in the `filter>` and `output>` pickers. Committed `[extras]` flags appear immediately after `catclip`; committed stages and `--then` follow in order. One `--` represents each current or remaining filter menu, and `▶` marks the current position (`catclip --quiet --only ▶ -- --` or `catclip --quiet --only --exclude ▶ output`). Targets, modifier values, unrelated sink flags, and sink choices stay out; the later `Resolved command:` remains the detailed executable authority. Derive progress from already-parsed extras and scopes so Esc automatically reflects restored state and operand text cannot masquerade as an extra. The footer must remain a one-line, picker-open-only presentation step: no argv reparse, discovery, filesystem access, subprocess, terminal-size query, resize callback, or per-keystroke work. Formatting may allocate only the returned short string. See `docs/versions/v0.6.10/reports/RESOLVED_PLAN_interactive_command_progress.md`.
+
 ## Execution flow
 
 1. Parse args and build scopes (via `CommandSpec` / `FlagSpec` declarative model).
@@ -220,6 +222,7 @@ Subpackages and platform shims:
    - `AbsPath` is materialized only when a file survives to real work like `--contains`, preview sizing, snippets/diffs, or final emission
 
 8. Apply scope stages in order (left to right within each scope):
+   - multiple positional targets belong to one scope: resolve their files, union and deduplicate them, then apply the scope's stages once to that combined set. This is the conventional multiple-search-root model used by recursive tools such as `find`, `grep`, and ripgrep. `--recent N` therefore keeps N across the target union, `--size` orders the union once, and ordinary predicates apply uniformly. `--depth N` remains multi-target but measures from each resolved target independently before combining survivors. `--then` is the explicit boundary for independent target sets and pipelines
    - `--include` adds authorized ignored paths (must be first, once per scope)
    - a specific `--include` value has one exact cwd-relative identity; positional targets limit where it can have an effect but never rebase it (`catclip src --include src/build`, not `catclip src --include build`)
    - a concrete included directory authorizes ignored descendants encountered below a visible target walk; walk permission may reach an ancestor of a deep include, but per-entry authorization must narrow emitted ignored files back to the concrete include set

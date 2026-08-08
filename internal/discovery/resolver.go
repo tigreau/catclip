@@ -111,9 +111,14 @@ type Scope struct {
 	SelectionCancel bool
 }
 
-func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s command.ExecutionScope, stderr io.Writer, colors platform.Palette) (Scope, error) {
+func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s command.ExecutionScope, stderr io.Writer, colors platform.Palette) (result Scope, err error) {
 	mode := s.OutputMode()
-	result := Scope{Scope: s, GitContext: gitCtx}
+	result = Scope{Scope: s, GitContext: gitCtx}
+	defer func() {
+		for i := range result.Diagnostics {
+			result.Diagnostics[i].ScopeIndex = scopeIndex
+		}
+	}()
 
 	resolver := Resolver{
 		Cfg:               cfg,
@@ -124,8 +129,6 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		WantedBasenames:   CollectWantedBasenames(s.Targets),
 		ScopeTargets:      append([]string(nil), s.Targets...),
 	}
-	var err error
-
 	if len(resolver.IncludedTargets.unresolved) > 0 {
 		diagnostics, err := resolver.unresolvedIncludeDiagnostics(scopeIndex, s.Targets, s.IncludedTargets, colors)
 		if err != nil {
@@ -149,6 +152,7 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 
 	var entries []Entry
 	selectedPaths := make([]string, 0, len(s.Targets))
+	explainedTargetCount := 0
 	for _, target := range s.Targets {
 		covered, err := resolver.InteractiveQueryCoveredBySelection(target, selectedPaths)
 		if err != nil {
@@ -158,6 +162,7 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 			continue
 		}
 
+		diagnosticStart := len(result.Diagnostics)
 		discovered, targetDiagnostics, targetNotices, selectionCancelled, err := resolver.resolveAndDiscoverTarget(scopeIndex, target, stderr, colors)
 		if err != nil {
 			return result, err
@@ -178,6 +183,9 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 					IsTargetNotFound: true,
 				})
 			}
+		}
+		if len(discovered) == 0 && diagnosticsExplainTargetRequest(result.Diagnostics[diagnosticStart:]) {
+			explainedTargetCount++
 		}
 		if len(discovered) > 0 && !hasGlobChars(target) {
 			// selectedPaths tracks resolved single-path targets so that later
@@ -208,20 +216,20 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		}
 		result.Diagnostics = append(result.Diagnostics, diagnostics...)
 	}
-	// A zero-match glob explains the scope only when every requested target in
-	// that scope was a conclusively empty glob. If any sibling target produced
-	// entries, a later stage can still empty the scope for an unrelated reason;
-	// if any sibling target was unresolved in another way, the generic footer
-	// still has useful work to do.
-	explainedTargetCount := 0
-	for _, diagnostic := range result.Diagnostics {
-		if diagnostic.ExplainsEmptyResult {
-			explainedTargetCount++
-		}
-	}
+	// Per-target diagnostics explain an empty scope only when every requested
+	// target ended conclusively. If any sibling target produced entries, a later
+	// stage can still empty the scope for an unrelated reason; if any sibling
+	// target stayed unexplained, the generic footer still has useful work to do.
 	if len(entries) > 0 || explainedTargetCount != len(s.Targets) {
 		for i := range result.Diagnostics {
 			result.Diagnostics[i].ExplainsEmptyResult = false
+		}
+	} else {
+		for i := range result.Diagnostics {
+			if diagnosticsExplainTargetRequest(result.Diagnostics[i : i+1]) {
+				result.Diagnostics[i].ExplainsEmptyResult = true
+				break
+			}
 		}
 	}
 
@@ -253,6 +261,8 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{
 			Message:              command.GitSelectionRequiresGitRepoMessage(),
 			IsScopeUnsatisfiable: true,
+			ExplainsEmptyResult:  true,
+			ScopeIndex:           scopeIndex,
 		})
 		result.Notices = DedupePreserveOrder(result.Notices)
 		return result, nil
@@ -269,6 +279,15 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	result.Entries = EnsureEntryAbsPaths(entries, cfg.WorkingDir)
 	result.Notices = DedupePreserveOrder(result.Notices)
 	return result, nil
+}
+
+func diagnosticsExplainTargetRequest(diagnostics []Diagnostic) bool {
+	for _, diagnostic := range diagnostics {
+		if diagnostic.IsTargetNotFound || diagnostic.IsError || diagnostic.ExplainsEmptyResult {
+			return true
+		}
+	}
+	return false
 }
 
 func executionScopeHasEntryOutputMode(s command.ExecutionScope) bool {
@@ -726,11 +745,8 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 	var Diagnostics []Diagnostic
 	var notices []string
 
-	if filepath.IsAbs(target) {
-		return nil, nil, nil, false, newUsageError("Error: Absolute paths not allowed: %s\n  Use a relative path from your project root instead.", SingleQuoted(target))
-	}
-	if ContainsParentTraversal(target) {
-		return nil, nil, nil, false, newUsageError("Error: Cannot traverse above working directory: %s\n  catclip only operates within the current directory tree.\n  Use a relative path from your project root instead.\n  Example: catclip config/", SingleQuoted(target))
+	if err := ValidateTargetBoundary(target); err != nil {
+		return nil, nil, nil, false, err
 	}
 
 	if hasGlobChars(target) {

@@ -7,17 +7,16 @@ import (
 	"github.com/tigreau/catclip/internal/search"
 )
 
-// UsageError is the typed error returned by discovery-side
-// helpers when the user input that reached discovery is invalid (bad
-// regex argument, absolute path, etc). Root exitWithError classifies it
-// as exit code 2, matching the cli.UsageError precedent. Will travel
-// with the discovery cluster in the next commit; on move it becomes the
-// exported discovery.UsageError.
+// UsageError is the typed error returned by discovery-side helpers when user
+// input that reached discovery is invalid (bad regex argument, absolute path,
+// etc). CatclipExitCode participates in root's structural exit protocol.
 type UsageError struct {
 	message string
 }
 
 func (e UsageError) Error() string { return e.message }
+
+func (e UsageError) CatclipExitCode() int { return 2 }
 
 func newUsageError(format string, args ...any) error {
 	return UsageError{message: fmt.Sprintf(format, args...)}

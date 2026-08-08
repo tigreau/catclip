@@ -8,7 +8,8 @@ UNAME_M := $(shell uname -m)
 
 # Pinned versions
 RG_V := 14.1.1
-FZF_V := 0.71.0
+FZF_V := 0.74.1
+FZF_MIN_V := 0.71.0
 FZF_TAG := v$(FZF_V)
 ACTIONLINT_V := v1.7.12
 ACTIONLINT ?= go run github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_V)
@@ -88,7 +89,7 @@ $(BIN_DIR)/fzf:
 		printf '  fzf -> %s\n' "$$fzf_path"; \
 	else \
 		printf 'Error: fzf too old or missing required feature support.\n\n' >&2; \
-		printf 'Required: fzf >= %s\n' "$(FZF_V)" >&2; \
+		printf 'Required: fzf >= %s with the needed picker features\n' "$(FZF_MIN_V)" >&2; \
 		printf 'Detected: %s\n\n' "$$fzf_detected" >&2; \
 		printf 'Install local pinned version:\n' >&2; \
 		printf '  curl -fL '\''%s'\'' | tar -xz -C %s\n' "$(FZF_URL)" "$(BIN_DIR)" >&2; \
@@ -96,7 +97,7 @@ $(BIN_DIR)/fzf:
 	fi
 
 RIPGREP_VERSION := 14.1.1
-FZF_VERSION := 0.71.0
+FZF_VERSION := 0.74.1
 RELEASE_PLATFORM ?= all
 ifneq ($(strip $(PLATFORM)),)
 RELEASE_PLATFORM := $(PLATFORM)

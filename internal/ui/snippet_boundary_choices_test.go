@@ -7,7 +7,7 @@ import (
 
 // TestSnippetBoundaryChoicesListEveryContextValue pins the boundary picker's
 // contract: the smart block leads, and every legal fixed context 0..200 (the
-// CLI's snippetContextMax) is a real row, so each value is selectable and
+// CLI's SnippetContextMax) is a real row, so each value is selectable and
 // previewable without any typed-value escape hatch.
 func TestSnippetBoundaryChoicesListEveryContextValue(t *testing.T) {
 	choices := startupSnippetBoundaryChoices

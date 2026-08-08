@@ -328,7 +328,7 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 				next := args[i+1]
 				if n, err := strconv.Atoi(next); err == nil {
 					if n < 1 {
-						return command.Parsed{}, newUsageError("Error: --lines start must be >= 1 (got %d).\n  Line numbers are 1-based, matching editors and compiler output.", n)
+						return command.Parsed{}, LinesStartError(n)
 					}
 					start = n
 					i++
@@ -336,18 +336,18 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 						next2 := args[i+1]
 						if n2, err := strconv.Atoi(next2); err == nil {
 							if n2 < start {
-								return command.Parsed{}, newUsageError("Error: --lines end (%d) must be >= start (%d).\n  Use: --lines START END where END >= START.", n2, start)
+								return command.Parsed{}, LinesEndBeforeStartError(n2, start)
 							}
 							end = n2
 							i++
 						} else if next2 == "EOF" {
 							i++
 						} else if !strings.HasPrefix(next2, "-") {
-							return command.Parsed{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next2)
+							return command.Parsed{}, LinesInvalidValueError(next2)
 						}
 					}
 				} else if !strings.HasPrefix(next, "-") {
-					return command.Parsed{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next)
+					return command.Parsed{}, LinesInvalidValueError(next)
 				}
 			}
 			current.LinesStart = start
@@ -365,8 +365,8 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			current.Snippet = true
 			if i+1 < len(args) {
 				if n, err := strconv.Atoi(args[i+1]); err == nil {
-					if n < 0 || n > snippetContextMax {
-						return command.Parsed{}, newUsageError("Error: --snippet context must be between 0 and %d (got %d).\n  Use: --snippet 'REGEX' N for N lines around each match (0 = matching line only).", snippetContextMax, n)
+					if err := ValidateSnippetContext(n); err != nil {
+						return command.Parsed{}, err
 					}
 					i++
 					current.SnippetContextSet = true
@@ -508,9 +508,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			case arg == "--diff":
 				return command.Parsed{}, DiffStandaloneError()
 			case strings.HasPrefix(arg, "--"):
-				return command.Parsed{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
+				return command.Parsed{}, UnknownOptionError(arg)
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
-				return command.Parsed{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
+				return command.Parsed{}, UnknownOptionError(arg)
 			case arg == "-":
 				return command.Parsed{}, newUsageError("Error: '-' is not a valid target path.\n  To read file paths from stdin, use it with a modifier:\n    catclip src --exclude -\n    catclip src --only -")
 			default:

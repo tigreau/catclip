@@ -112,10 +112,22 @@ func (p StartupTargetProbe) RequiresPicker() bool {
 	return p.Outcome == StartupTargetAmbiguousFuzzy || p.Outcome == StartupTargetIncludedAmbiguous
 }
 
-// Diagnostic is a single user-facing message produced during
-// discovery (or, occasionally, by the parser). Field shapes are
-// exported so root can construct parser warnings before discovery
-// runs. Was root catclip.Diagnostic.
+// Diagnostic is a single user-facing message plus the independent effects
+// root needs when aggregating a run. The booleans are deliberately not a kind
+// enum: hard target errors become both IsError and IsScopeUnsatisfiable at the
+// scope boundary, while target-not-found remains a partial-result outcome.
+//
+// IsError drops sibling entries from the same scope rather than emitting a
+// subset of a request that contained a hard target failure.
+// IsTargetNotFound makes the invocation exit 1 while allowing other resolved
+// targets and scopes to emit.
+// IsScopeUnsatisfiable means the whole scope could not run. An all-empty run
+// exits 2; mixed successful/unsatisfiable scopes retain the current partial
+// output plus exit-1 behavior.
+// ExplainsEmptyResult suppresses generic no-files speculation only when every
+// empty scope is covered by a precise diagnostic.
+// ScopeIndex >= 0 names the owning --then scope. ScopeIndex == -1 is reserved
+// for invocation-wide parser warnings, which never explain a scope's emptiness.
 type Diagnostic struct {
 	Message              string
 	IsError              bool

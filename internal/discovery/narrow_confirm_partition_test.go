@@ -5,122 +5,60 @@ import (
 	"testing"
 )
 
-func TestPartitionIgnoredByIncludes_EmptyInputs(t *testing.T) {
-	all, ignored := PartitionIgnoredByIncludes(nil, []string{"docs"})
-	if all != nil || ignored != nil {
-		t.Fatalf("empty entries: want nil/nil, got %v / %v", all, ignored)
-	}
-	entries := []Entry{{RelPath: "a.txt"}}
-	all, ignored = PartitionIgnoredByIncludes(entries, nil)
-	if !reflect.DeepEqual(all, entries) || ignored != nil {
-		t.Fatalf("empty includes: want entries/nil, got %v / %v", all, ignored)
-	}
-}
-
-func TestPartitionIgnoredByIncludes_DotsAndEmptyIncludesDropped(t *testing.T) {
-	entries := []Entry{
-		{RelPath: "docs/x.md", AllowedByInclude: true},
-	}
-	all, ignored := PartitionIgnoredByIncludes(entries, []string{".", "", "  "})
-	if !reflect.DeepEqual(all, entries) {
-		t.Fatalf("all should pass through, got %v", all)
-	}
-	// All include paths normalized away → no narrow set.
-	if ignored != nil {
-		t.Fatalf("dots/empty includes should produce no ignored set, got %v", ignored)
-	}
-}
-
-func TestPartitionIgnoredByIncludes_OnlyAuthorizedByIncludeQualifies(t *testing.T) {
-	entries := []Entry{
-		{RelPath: "src/main.go", AllowedByInclude: false},
+func TestPartitionIgnoredByIncludes(t *testing.T) {
+	authorizedDocs := []Entry{
+		{RelPath: "src/main.go"},
 		{RelPath: "docs/readme.md", AllowedByInclude: true, BlockSource: ".gitignore"},
 		{RelPath: "docs/sub/x.md", AllowedByInclude: true, BlockSource: ".gitignore"},
-		{RelPath: "docs/tracked.md", AllowedByInclude: false}, // tracked, not via include
+		{RelPath: "docs/tracked.md"},
 	}
-	all, ignored := PartitionIgnoredByIncludes(entries, []string{"docs"})
-	if len(all) != 4 {
-		t.Fatalf("all should preserve all entries, got %d", len(all))
-	}
-	if len(ignored) != 2 {
-		t.Fatalf("ignored should contain only the 2 --include-admitted entries, got %d: %v", len(ignored), ignored)
-	}
-	wantPaths := map[string]bool{"docs/readme.md": true, "docs/sub/x.md": true}
-	for _, e := range ignored {
-		if !wantPaths[e.RelPath] {
-			t.Fatalf("unexpected ignored entry: %s", e.RelPath)
-		}
-	}
-}
-
-func TestPartitionIgnoredByIncludes_OnlyDescendantsOfIncludePathsQualify(t *testing.T) {
-	entries := []Entry{
+	descendants := []Entry{
 		{RelPath: "docs/a.md", AllowedByInclude: true},
-		{RelPath: "vendor/b.go", AllowedByInclude: true}, // include-admitted but outside `docs`
+		{RelPath: "vendor/b.go", AllowedByInclude: true},
 		{RelPath: "docs/sub/c.md", AllowedByInclude: true},
 	}
-	_, ignored := PartitionIgnoredByIncludes(entries, []string{"docs"})
-	if len(ignored) != 2 {
-		t.Fatalf("expected 2 entries under docs/, got %d: %v", len(ignored), ignored)
-	}
-	for _, e := range ignored {
-		if e.RelPath == "vendor/b.go" {
-			t.Fatalf("vendor entry must NOT be in 'narrow under docs' set, got %v", e)
-		}
-	}
-}
-
-func TestPartitionIgnoredByIncludes_PathEqualsIncludeQualifies(t *testing.T) {
-	entries := []Entry{
-		{RelPath: "docs", AllowedByInclude: true}, // include path itself (a dir entry)
-	}
-	_, ignored := PartitionIgnoredByIncludes(entries, []string{"docs"})
-	if len(ignored) != 1 || ignored[0].RelPath != "docs" {
-		t.Fatalf("entry equal to include path should be included, got %v", ignored)
-	}
-}
-
-func TestPartitionIgnoredByIncludes_StablePreservesInputOrder(t *testing.T) {
-	entries := []Entry{
+	stable := []Entry{
 		{RelPath: "docs/z.md", AllowedByInclude: true},
 		{RelPath: "docs/a.md", AllowedByInclude: true},
 		{RelPath: "docs/m.md", AllowedByInclude: true},
 	}
-	_, ignored := PartitionIgnoredByIncludes(entries, []string{"docs"})
-	gotOrder := make([]string, 0, len(ignored))
-	for _, e := range ignored {
-		gotOrder = append(gotOrder, e.RelPath)
-	}
-	want := []string{"docs/z.md", "docs/a.md", "docs/m.md"}
-	if !reflect.DeepEqual(gotOrder, want) {
-		t.Fatalf("partition must preserve input order, got %v want %v", gotOrder, want)
-	}
-}
-
-func TestPartitionIgnoredByIncludes_MultipleIncludesUnion(t *testing.T) {
-	entries := []Entry{
+	union := []Entry{
 		{RelPath: "docs/a.md", AllowedByInclude: true},
 		{RelPath: "vendor/b.go", AllowedByInclude: true},
-		{RelPath: "src/c.go", AllowedByInclude: false},
+		{RelPath: "src/c.go"},
 	}
-	_, ignored := PartitionIgnoredByIncludes(entries, []string{"docs", "vendor"})
-	if len(ignored) != 2 {
-		t.Fatalf("expected union of both include subtrees, got %d: %v", len(ignored), ignored)
-	}
-}
-
-func TestPartitionIgnoredByIncludes_WildcardSelectsAllAuthorizedEntries(t *testing.T) {
-	entries := []Entry{
+	wildcard := []Entry{
 		{RelPath: "src/main.ts"},
 		{RelPath: "src/debug.log", AllowedByInclude: true},
 		{RelPath: "docs/generated.md", AllowedByInclude: true},
 	}
-	all, ignored := PartitionIgnoredByIncludes(entries, []string{"*"})
-	if !reflect.DeepEqual(all, entries) {
-		t.Fatalf("all should pass through, got %v", all)
+	tests := []struct {
+		name        string
+		entries     []Entry
+		includes    []string
+		wantAll     []Entry
+		wantIgnored []Entry
+	}{
+		{name: "empty entries", includes: []string{"docs"}},
+		{name: "empty includes", entries: []Entry{{RelPath: "a.txt"}}, wantAll: []Entry{{RelPath: "a.txt"}}},
+		{name: "dot and empty includes normalize away", entries: []Entry{{RelPath: "docs/x.md", AllowedByInclude: true}}, includes: []string{".", "", "  "}, wantAll: []Entry{{RelPath: "docs/x.md", AllowedByInclude: true}}},
+		{name: "only include-authorized entries", entries: authorizedDocs, includes: []string{"docs"}, wantAll: authorizedDocs, wantIgnored: authorizedDocs[1:3]},
+		{name: "only descendants of include path", entries: descendants, includes: []string{"docs"}, wantAll: descendants, wantIgnored: []Entry{descendants[0], descendants[2]}},
+		{name: "path equal to include", entries: []Entry{{RelPath: "docs", AllowedByInclude: true}}, includes: []string{"docs"}, wantAll: []Entry{{RelPath: "docs", AllowedByInclude: true}}, wantIgnored: []Entry{{RelPath: "docs", AllowedByInclude: true}}},
+		{name: "stable input order", entries: stable, includes: []string{"docs"}, wantAll: stable, wantIgnored: stable},
+		{name: "multiple include union", entries: union, includes: []string{"docs", "vendor"}, wantAll: union, wantIgnored: union[:2]},
+		{name: "wildcard selects authorized", entries: wildcard, includes: []string{"*"}, wantAll: wildcard, wantIgnored: wildcard[1:]},
 	}
-	want := []Entry{entries[1], entries[2]}
-	if !reflect.DeepEqual(ignored, want) {
-		t.Fatalf("got %v want %v", ignored, want)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			all, ignored := PartitionIgnoredByIncludes(tt.entries, tt.includes)
+			if !reflect.DeepEqual(all, tt.wantAll) {
+				t.Fatalf("all = %v, want %v", all, tt.wantAll)
+			}
+			if !reflect.DeepEqual(ignored, tt.wantIgnored) {
+				t.Fatalf("ignored = %v, want %v", ignored, tt.wantIgnored)
+			}
+		})
 	}
 }

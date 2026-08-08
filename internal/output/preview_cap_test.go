@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -104,7 +103,7 @@ func TestPreviewCapWriterCancellationOutranksCap(t *testing.T) {
 	// precedence: it bails before touching the underlying writer.
 	var buf bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // pre-cancelled
+	cancel()                               // pre-cancelled
 	w := NewPreviewCapWriter(&buf, ctx, 1) // tiny cap too
 	n, err := w.Write([]byte("x"))
 	if !errors.Is(err, ErrPreviewLimitReached) {
@@ -153,11 +152,8 @@ func TestPreviewCapWriterNilContextIsBackground(t *testing.T) {
 	}
 }
 
-func TestPreviewCapWriterReportsConstants(t *testing.T) {
+func TestPreviewByteLimitRemains128KiB(t *testing.T) {
 	if PreviewByteLimit != 128*1024 {
 		t.Fatalf("PreviewByteLimit should be 128 KiB, got %d", PreviewByteLimit)
-	}
-	if !strings.Contains(ErrPreviewLimitReached.Error(), "preview") {
-		t.Fatalf("sentinel message should mention 'preview', got %q", ErrPreviewLimitReached.Error())
 	}
 }

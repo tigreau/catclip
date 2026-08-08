@@ -20,6 +20,8 @@ type Request struct {
 	WithNth        string
 	Nth            string
 	Header         string
+	Footer         string
+	FooterBorder   string
 	PreviewCommand string
 	PreviewWindow  string
 	ColorSpecs     []string
@@ -44,6 +46,13 @@ const (
 	defaultPreviewWindow = "right:55%:wrap:border-rounded"
 	defaultPreviewLabel  = "Scrollable Preview"
 )
+
+// RevealHeaderAfterQueryChangeBinding replaces the picker header after the
+// first query edit, then removes itself. The action is handled entirely by
+// fzf; it does not start a subprocess on each keystroke.
+func RevealHeaderAfterQueryChangeBinding(header string) string {
+	return "change:change-header{" + header + "}+unbind(change)"
+}
 
 // DefaultPreviewWindow is the standard preview-window layout used by every
 // catclip picker. Callers can pass this verbatim as Request.PreviewWindow when
@@ -173,6 +182,12 @@ func buildArgs(req Request) []string {
 	}
 	if req.Header != "" {
 		args = append(args, "--header", req.Header, "--header-border=rounded")
+	}
+	if req.Footer != "" {
+		args = append(args, "--footer", req.Footer)
+		if req.FooterBorder != "" {
+			args = append(args, "--footer-border", req.FooterBorder)
+		}
 	}
 	window := req.PreviewWindow
 	if window == "" {

@@ -4,7 +4,59 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/platform"
 )
+
+func TestStyledTargetPickerHeaderAccentsOnlyMatchSymbols(t *testing.T) {
+	plain := strings.TrimSuffix(TargetPickerHeaderWithEscHint("select> ", ""), "\n") + "\n" + TargetPickerSymbolsHint()
+	colors := platform.Palette{Bold: "<bold>", Prompt: "<cyan>", Reset: "<reset>"}
+	styled := styledTargetPickerHeaderWithSymbols("select> ", "", colors)
+
+	for _, want := range []string{
+		"<bold><cyan>'<reset>name not fuzzy",
+		"<bold><cyan>^<reset>name starts with",
+		"name<bold><cyan>$<reset> ends with",
+	} {
+		if !strings.Contains(styled, want) {
+			t.Fatalf("styled target header missing %q: %q", want, styled)
+		}
+	}
+	stripped := strings.NewReplacer(
+		"<bold>", "",
+		"<cyan>", "",
+		"<reset>", "",
+	).Replace(styled)
+	if stripped != plain {
+		t.Fatalf("styling changed target header text\nwant: %q\n got: %q", plain, stripped)
+	}
+	if got := styledTargetPickerHeaderWithSymbols("select> ", "", platform.Palette{}); got != plain {
+		t.Fatalf("disabled palette changed target header: %q", got)
+	}
+}
+
+func TestTargetPickerSymbolsRevealOnceAfterQueryChange(t *testing.T) {
+	binding := targetPickerRevealHeaderBinding(TargetPickerSymbolsHint())
+	if !strings.HasPrefix(binding, "change:change-header{") {
+		t.Fatalf("expected native change-header action, got %q", binding)
+	}
+	if !strings.HasSuffix(binding, "}+unbind(change)") {
+		t.Fatalf("expected reveal binding to remove itself, got %q", binding)
+	}
+}
+
+func TestTargetPickerRevealHeaderBindingIsAcceptedByFzf(t *testing.T) {
+	fzf, err := FuzzyResolverBinary()
+	if err != nil {
+		t.Skipf("fzf unavailable: %v", err)
+	}
+	header := styledTargetPickerHeaderWithSymbols("select> ", "", platform.ANSIPalette())
+	cmd := exec.Command(fzf, "--ansi", "--bind", targetPickerRevealHeaderBinding(header), "--filter", "candidate")
+	cmd.Stdin = strings.NewReader("candidate\n")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fzf rejected target reveal binding: %v\n%s", err, out)
+	}
+}
 
 func TestTargetPickerFzfFieldsDisplayMetadataAndMatchPath(t *testing.T) {
 	fzf, err := FuzzyResolverBinary()

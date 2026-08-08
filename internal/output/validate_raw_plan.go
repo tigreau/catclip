@@ -8,8 +8,8 @@ import "github.com/tigreau/catclip/internal/command"
 // multi-block payloads that need the <file ...> wrapper to stay
 // attributable).
 //
-// Returns a typed UsageError so root exitWithError classifies the
-// failure as exit code 2. Was root cli.go's validateRawOutputPlan
+// Returns a typed UsageError whose CatclipExitCode classifies the failure as
+// exit code 2. Was root cli.go's validateRawOutputPlan
 // before the v0.6.0 output extraction; moved here to keep Plan.items
 // access internal to the package.
 func ValidateRawPlan(cfg EmitConfig, plan Plan) error {

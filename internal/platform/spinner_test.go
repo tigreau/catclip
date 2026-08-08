@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,60 +18,49 @@ import (
 // The timer→hintOn transition itself is stdlib time.AfterFunc; we
 // don't need to reverify it fires.
 
-func TestSpinnerHintLinesSplitsMultilineHint(t *testing.T) {
-	got := spinnerHintLines("first\nsecond\n")
-	want := []string{"first", "second"}
-	if len(got) != len(want) {
-		t.Fatalf("line count = %d, want %d: %#v", len(got), len(want), got)
+func TestSpinnerHintLines(t *testing.T) {
+	tests := []struct {
+		name string
+		hint string
+		want []string
+	}{
+		{name: "multiline", hint: "first\nsecond\n", want: []string{"first", "second"}},
+		{name: "empty", hint: ""},
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("line %d = %q, want %q", i, got[i], want[i])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := spinnerHintLines(tt.hint); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("spinnerHintLines() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSlowFileScanHintForGOOS(t *testing.T) {
+	windows := slowFileScanHintForGOOS("windows")
+	for _, want := range []string{"antivirus", "later searches", "next reboot"} {
+		if !strings.Contains(windows, want) {
+			t.Fatalf("Windows scan hint missing %q: %q", want, windows)
 		}
 	}
-}
-
-func TestSpinnerHintLinesEmptyHintIsNoop(t *testing.T) {
-	if got := spinnerHintLines(""); got != nil {
-		t.Fatalf("empty hint should render no static rows, got %#v", got)
+	if got := slowFileScanHintForGOOS("darwin"); got != "" {
+		t.Fatalf("non-Windows scan hint = %q, want empty", got)
 	}
 }
 
-func TestSlowFileScanHintExplainsWindowsDefender(t *testing.T) {
-	got := slowFileScanHintForGOOS("windows")
-	if !strings.Contains(got, "antivirus") || !strings.Contains(got, "next reboot") {
-		t.Fatalf("windows scan hint should explain Defender-style scan cost, got %q", got)
+func TestStartLoadingSpinnerNoopStopIsIdempotent(t *testing.T) {
+	tests := []struct {
+		name  string
+		start func() func()
+	}{
+		{name: "plain", start: func() func() { return StartLoadingSpinner(nil, "test") }},
+		{name: "delayed hint", start: func() func() { return StartLoadingSpinnerWithDelayedHint(nil, "test", "hint", 50*time.Millisecond) }},
 	}
-}
-
-func TestSlowFileScanHintUsesStaticRows(t *testing.T) {
-	lines := spinnerHintLines(slowFileScanHintForGOOS("windows"))
-	if len(lines) != 3 {
-		t.Fatalf("windows scan hint should be three static rows, got %#v", lines)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stop := tt.start()
+			stop()
+			stop()
+		})
 	}
-	if !strings.Contains(lines[1], "10x+ slower") {
-		t.Fatalf("windows scan hint should explain the rough magnitude, got %#v", lines)
-	}
-}
-
-func TestSlowFileScanHintOmitsUnixFallback(t *testing.T) {
-	got := slowFileScanHintForGOOS("darwin")
-	if got != "" {
-		t.Fatalf("non-windows scan hint = %q", got)
-	}
-}
-
-func TestStartLoadingSpinnerNoop_ReturnsCallableStop(t *testing.T) {
-	// Non-TTY output → helper returns a no-op stop(); calling it
-	// multiple times is safe. Guards against a regression where the
-	// state machine gets initialized despite the TTY gate.
-	stop := StartLoadingSpinner(nil, "test")
-	stop()
-	stop() // idempotent
-}
-
-func TestStartLoadingSpinnerWithDelayedHint_Noop_StopStillSafe(t *testing.T) {
-	stop := StartLoadingSpinnerWithDelayedHint(nil, "test", "hint", 50*time.Millisecond)
-	stop()
-	stop() // idempotent
 }

@@ -395,11 +395,48 @@ func TargetPickerHeaderWithEscHint(prompt, escHint string) string {
 	if prompt == "then> " {
 		firstLine = "Add more files and folders."
 	}
+	controls := fmt.Sprintf(
+		"[Up/Down] move [Enter] confirm [Tab] mark [%s] toggle",
+		platform.MultiSelectToggleAllKey(),
+	)
+	if escHint == "undo" {
+		controls = fmt.Sprintf(
+			"[Enter] confirm [Tab] mark [%s] toggle [Esc] undo",
+			platform.MultiSelectToggleAllKey(),
+		)
+	}
 	return PickerHeader(
 		firstLine,
 		"Type to search by name.",
-		fmt.Sprintf("[Up/Down] move  [Enter] confirm  [Tab] mark  %s", startupEscLabel(escHint)),
+		controls,
 	)
+}
+
+func TargetPickerSymbolsHint() string {
+	return "Symbols: 'name not fuzzy, ^name starts with, name$ ends with"
+}
+
+// PickerHeaderWithFzfSearchSymbols fills a header's reserved fourth line with
+// the compact fzf query-language hint used by name-based selection pickers.
+func PickerHeaderWithFzfSearchSymbols(header string, colors platform.Palette) string {
+	header = strings.TrimSuffix(header, "\n")
+	hint := TargetPickerSymbolsHint()
+	if colors == (platform.Palette{}) {
+		return header + "\n" + hint
+	}
+	style := func(symbol string) string {
+		return colors.Bold + colors.Prompt + symbol + colors.Reset
+	}
+	styledHint := strings.NewReplacer(
+		"'name", style("'")+"name",
+		"^name", style("^")+"name",
+		"name$", "name"+style("$"),
+	).Replace(hint)
+	return header + "\n" + styledHint
+}
+
+func styledTargetPickerHeaderWithSymbols(prompt, escHint string, colors platform.Palette) string {
+	return PickerHeaderWithFzfSearchSymbols(TargetPickerHeaderWithEscHint(prompt, escHint), colors)
 }
 
 func SafeTargetPickerHeader() string {

@@ -220,9 +220,9 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 			}
 			switch {
 			case strings.HasPrefix(arg, "--"):
-				return startupInteractiveFrame{}, nil, false, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", discovery.SingleQuoted(arg))
+				return startupInteractiveFrame{}, nil, false, cli.UnknownOptionError(arg)
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
-				return startupInteractiveFrame{}, nil, false, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", discovery.SingleQuoted(arg))
+				return startupInteractiveFrame{}, nil, false, cli.UnknownOptionError(arg)
 			}
 			if startupFrameCurrentScopeHasModifier(args) {
 				return startupInteractiveFrame{}, nil, false, cli.PositionalAfterModifierError()
@@ -360,7 +360,11 @@ func runStartupTargetFrame(resolver *discovery.Resolver, frame startupInteractiv
 }
 
 func runStartupModifierFrame(frame startupInteractiveFrame) (startupInteractiveFrameResult, error) {
-	choice, err := chooseStartupModifierWithEscHint(frame.StartArgs, frame.EscHint)
+	choice, err := chooseStartupModifierWithProgress(
+		frame.StartArgs,
+		frame.EscHint,
+		pendingFilterSlotCount(frame.PendingArgs),
+	)
 	if err != nil {
 		return startupInteractiveFrameResult{UsedFzf: true}, err
 	}

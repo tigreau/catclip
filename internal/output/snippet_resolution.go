@@ -61,7 +61,7 @@ const (
 // scanner keys on: the line-comment tokens stripLineComment treats as a trailing
 // comment, and the extent strategy. Patterns/strategies are authored from public
 // language syntax; git userdiff is a coverage reference only (MIT vs GPLv2). See
-// docs/versions/v0.6.7/reports/ACTIVE_PLAN_snippet_language_profiles.md.
+// docs/versions/v0.6.7/reports/RESOLVED_PLAN_snippet_language_profiles.md.
 type languageProfile struct {
 	lineComments    []string
 	extent          extentStrategy

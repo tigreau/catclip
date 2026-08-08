@@ -19,17 +19,17 @@ type Report struct {
 	Notices   []string
 }
 
-// UsageError is the typed error returned by output-side helpers
-// when the user input that reached emit/plan validation is invalid
-// (e.g. --raw combined with snippet output). Root exitWithError
-// classifies it as exit code 2, matching the cli.UsageError /
-// discovery.UsageError precedent. Travels with output in the bundled
-// move; on relocation it becomes the exported output.UsageError.
+// UsageError is the typed error returned by output-side helpers when user
+// input that reached emit/plan validation is invalid (e.g. --raw combined
+// with snippet output). CatclipExitCode participates in root's structural
+// exit protocol.
 type UsageError struct {
 	message string
 }
 
 func (e UsageError) Error() string { return e.message }
+
+func (e UsageError) CatclipExitCode() int { return 2 }
 
 func newUsageError(format string, args ...any) error {
 	return UsageError{message: fmt.Sprintf(format, args...)}

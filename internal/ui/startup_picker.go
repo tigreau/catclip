@@ -106,6 +106,7 @@ type startupCurrentScopeState struct {
 	AnyUntracked            bool
 	AllUntracked            bool
 	Scopes                  []command.ExecutionScope
+	ProgressExtras          interactiveProgressExtras
 	// GitStatusMap is the porcelain map (workPath → "S"/"M"/"SM"/"?")
 	// collected once in startupCurrentScopeStateForArgs and reused by
 	// startupModifierCurrentScopePreviewCommand so the checkpoint write
@@ -511,11 +512,8 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 		if strings.HasPrefix(arg, "--") || (strings.HasPrefix(arg, "-") && len(arg) > 1) {
 			return false, nil
 		}
-		if filepath.IsAbs(arg) {
-			return false, newUsageError("Error: Absolute paths not allowed: %s\n  Use a relative path from your project root instead.", discovery.SingleQuoted(arg))
-		}
-		if discovery.ContainsParentTraversal(arg) {
-			return false, newUsageError("Error: Cannot traverse above working directory: %s\n  catclip only operates within the current directory tree.\n  Use a relative path from your project root instead.\n  Example: catclip config/", discovery.SingleQuoted(arg))
+		if err := discovery.ValidateTargetBoundary(arg); err != nil {
+			return false, err
 		}
 	}
 	return true, nil
@@ -607,8 +605,8 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 			i++
 			if flag == "--snippet" && i+1 < len(tokens) {
 				if n, err := strconv.Atoi(tokens[i+1]); err == nil {
-					if n < 0 || n > snippetContextMax {
-						return startupInputParse{}, newUsageError("Error: --snippet context must be between 0 and %d (got %d).\n  Use: --snippet 'REGEX' N for N lines around each match (0 = matching line only).", snippetContextMax, n)
+					if err := cli.ValidateSnippetContext(n); err != nil {
+						return startupInputParse{}, err
 					}
 					i++
 					parsed.modifiers = append(parsed.modifiers, strconv.Itoa(n))
@@ -672,9 +670,9 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 			case strings.HasPrefix(tokens[i], "--depth="):
 				return startupInputParse{}, newUsageError("Error: --depth requires a space before the value.\n  Use: --depth 2")
 			case strings.HasPrefix(tokens[i], "--"):
-				return startupInputParse{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", discovery.SingleQuoted(tokens[i]))
+				return startupInputParse{}, cli.UnknownOptionError(tokens[i])
 			case strings.HasPrefix(tokens[i], "-") && len(tokens[i]) > 1:
-				return startupInputParse{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", discovery.SingleQuoted(tokens[i]))
+				return startupInputParse{}, cli.UnknownOptionError(tokens[i])
 			default:
 				return startupInputParse{}, cli.PositionalAfterModifierError()
 			}
@@ -1113,9 +1111,9 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 			}
 			switch {
 			case strings.HasPrefix(arg, "--"):
-				return nil, nil, false, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", discovery.SingleQuoted(arg))
+				return nil, nil, false, cli.UnknownOptionError(arg)
 			case strings.HasPrefix(arg, "-") && len(arg) > 1:
-				return nil, nil, false, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", discovery.SingleQuoted(arg))
+				return nil, nil, false, cli.UnknownOptionError(arg)
 			default:
 				return nil, nil, false, cli.PositionalAfterModifierError()
 			}
@@ -1201,8 +1199,12 @@ func chooseStartupModifier(currentArgs []string) (StartupModifierChoice, error) 
 }
 
 func chooseStartupModifierWithEscHint(currentArgs []string, escHint string) (StartupModifierChoice, error) {
+	return chooseStartupModifierWithProgress(currentArgs, escHint, 1)
+}
+
+func chooseStartupModifierWithProgress(currentArgs []string, escHint string, filterSlots int) (StartupModifierChoice, error) {
 	for {
-		choice, err := chooseStartupModifierChoiceWithEscHint(currentArgs, escHint)
+		choice, err := chooseStartupModifierChoiceWithProgress(currentArgs, escHint, filterSlots)
 		if err != nil {
 			return StartupModifierChoice{}, err
 		}
@@ -1228,7 +1230,7 @@ func chooseStartupModifierWithEscHint(currentArgs []string, escHint string) (Sta
 	}
 }
 
-func chooseStartupModifierChoiceWithEscHint(currentArgs []string, escHint string) (StartupModifierChoice, error) {
+func chooseStartupModifierChoiceWithProgress(currentArgs []string, escHint string, filterSlots int) (StartupModifierChoice, error) {
 	finishBench := platform.InternalBenchSpan("ui.startup.modifier_picker")
 	finishStateBench := platform.InternalBenchSpan("ui.startup.modifier_picker.scope_state")
 	state, view, err := startupCurrentScopeStateForArgs(currentArgs)
@@ -1265,12 +1267,14 @@ func chooseStartupModifierChoiceWithEscHint(currentArgs []string, escHint string
 		defer os.RemoveAll(previewTmpdir)
 	}
 	req := picker.Request{
-		Prompt:  "filter> ",
-		WithNth: "1,3",
-		Nth:     "1",
-		Header:  startupModifierPickerHeaderWithEscHint(escHint),
-		NoSort:  true,
-		Lines:   lines,
+		Prompt:       "filter> ",
+		WithNth:      "1,3",
+		Nth:          "1",
+		Header:       startupModifierPickerHeaderWithEscHint(escHint),
+		Footer:       formatInteractiveFilterProgress(state.ProgressExtras, state.Scopes, filterSlots),
+		FooterBorder: "rounded",
+		NoSort:       true,
+		Lines:        lines,
 	}
 	if previewCmd != "" {
 		// The modifier menu's preview is static — the scope cannot change
@@ -1394,9 +1398,10 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 	}
 
 	state := startupCurrentScopeState{
-		Known:  true,
-		Empty:  len(view.Entries) == 0,
-		Scopes: append([]command.ExecutionScope(nil), view.Scopes...),
+		Known:          true,
+		Empty:          len(view.Entries) == 0,
+		Scopes:         append([]command.ExecutionScope(nil), view.Scopes...),
+		ProgressExtras: view.Progress,
 	}
 	if state.Empty {
 		needsInclude, err := startupCurrentScopeNeedsInclude(view.Scopes)
@@ -1690,6 +1695,7 @@ func chooseManyStartupFileSetRowsWithFzf(query, prompt, header, previewCommand s
 	if err != nil {
 		return nil, err
 	}
+	bindings := startupFileSetPickerBindings(prompt, header, platform.ActivePalette())
 	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
 		Query:          query,
 		Prompt:         prompt,
@@ -1698,7 +1704,7 @@ func chooseManyStartupFileSetRowsWithFzf(query, prompt, header, previewCommand s
 		Header:         header,
 		PreviewCommand: previewCommand,
 		Multi:          true,
-		Bindings:       discovery.MultiSelectPickerBindings(),
+		Bindings:       bindings,
 		NoSort:         startupFileSetRowsNeedStableOrder(rows),
 		Lines:          formatStartupFileSetRows(rows),
 	}))
@@ -1712,6 +1718,19 @@ func chooseManyStartupFileSetRowsWithFzf(query, prompt, header, previewCommand s
 		return nil, discovery.ErrSelectionCancelled
 	}
 	return result.Matches, nil
+}
+
+func startupFileSetPickerShowsSearchSymbols(prompt string) bool {
+	return prompt == "only> " || prompt == "exclude> "
+}
+
+func startupFileSetPickerBindings(prompt, header string, colors platform.Palette) []string {
+	bindings := discovery.MultiSelectPickerBindings()
+	if !startupFileSetPickerShowsSearchSymbols(prompt) {
+		return bindings
+	}
+	revealedHeader := discovery.PickerHeaderWithFzfSearchSymbols(header, colors)
+	return append(bindings, picker.RevealHeaderAfterQueryChangeBinding(revealedHeader))
 }
 
 func startupFileSetRowsNeedStableOrder(rows []startupFileSetRow) bool {

@@ -86,6 +86,21 @@ func parsedExecutionScope(t *testing.T, cfg command.Parsed) command.ExecutionSco
 	return scopes[0]
 }
 
+func requireCLIValidationFailure(t *testing.T, err error, wantReason cli.Reason) cli.ValidationFailure {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("expected CLI validation failure %q", wantReason)
+	}
+	var failure cli.ValidationFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("expected cli.ValidationFailure reason %q, got %T: %v", wantReason, err, err)
+	}
+	if failure.Reason != wantReason {
+		t.Fatalf("validation reason = %q, want %q", failure.Reason, wantReason)
+	}
+	return failure
+}
+
 func setTestStdinFile(t *testing.T, file *os.File) {
 	t.Helper()
 	old := os.Stdin
@@ -111,132 +126,215 @@ func setTestPipeStdin(t *testing.T, input string) {
 	setTestStdinFile(t, reader)
 }
 
-func TestParseArgsRejectsBareInvocationWithoutTargets(t *testing.T) {
-	_, err := cli.ParseArgs(nil)
-	if err == nil {
-		t.Fatal("expected bare parseArgs to error (no implicit '.' target)")
+func TestParseArgsAcceptedCommandShapes(t *testing.T) {
+	tests := []struct {
+		name  string
+		args  []string
+		check func(t *testing.T, cfg command.Parsed)
+	}{
+		{
+			name: "multiple scopes",
+			args: []string{"src", "--only", "*.ts", "--then", "tests", "--only", "*.test.ts"},
+			check: func(t *testing.T, cfg command.Parsed) {
+				scopes := parsedExecutionScopes(t, cfg)
+				if len(scopes) != 2 || !reflect.DeepEqual(scopes[0].Targets, []string{"src"}) || !reflect.DeepEqual(scopes[0].Only, []string{"*.ts"}) || !reflect.DeepEqual(scopes[1].Targets, []string{"tests"}) || !reflect.DeepEqual(scopes[1].Only, []string{"*.test.ts"}) {
+					t.Fatalf("unexpected scopes: %#v", scopes)
+				}
+			},
+		},
+		{name: "multi-value exclude", args: []string{"src", "--exclude", "*.snap", "build/"}, check: func(t *testing.T, cfg command.Parsed) {
+			if got := parsedExecutionScope(t, cfg).Exclude; !reflect.DeepEqual(got, []string{"*.snap", "build/"}) {
+				t.Fatalf("exclude = %v", got)
+			}
+		}},
+		{name: "bare recent", args: []string{"src", "--recent"}, check: func(t *testing.T, cfg command.Parsed) {
+			stages := parsedExecutionScope(t, cfg).Stages
+			if len(stages) != 1 || stages[0].Kind != command.StageRecent || stages[0].Limit != nil {
+				t.Fatalf("unexpected stages: %#v", stages)
+			}
+		}},
+		{name: "recent limit keeps boundaries", args: []string{"src", "--only", "*.ts", "--recent", "5"}, check: func(t *testing.T, cfg command.Parsed) {
+			scope := parsedExecutionScope(t, cfg)
+			if len(scope.Stages) != 2 || scope.Stages[0].Kind != command.StageOnly || scope.Stages[1].Kind != command.StageRecent || scope.Stages[1].Limit == nil || *scope.Stages[1].Limit != 5 {
+				t.Fatalf("unexpected stages: %#v", scope.Stages)
+			}
+		}},
+		{name: "depth", args: []string{"src", "--depth", "2"}, check: func(t *testing.T, cfg command.Parsed) {
+			stages := parsedExecutionScope(t, cfg).Stages
+			if len(stages) != 1 || stages[0].Kind != command.StageDepth || stages[0].Limit == nil || *stages[0].Limit != 2 {
+				t.Fatalf("unexpected stages: %#v", stages)
+			}
+		}},
+		{name: "paths", args: []string{"src", "--paths"}, check: func(t *testing.T, cfg command.Parsed) {
+			scope := parsedExecutionScope(t, cfg)
+			if !scope.Paths || len(scope.Stages) != 1 || scope.Stages[0].Kind != command.StagePaths {
+				t.Fatalf("unexpected scope: %#v", scope)
+			}
+		}},
+		{name: "raw", args: []string{"src", "-r"}, check: func(t *testing.T, cfg command.Parsed) {
+			if !cfg.Raw {
+				t.Fatal("Raw = false")
+			}
+		}},
+		{name: "preview then print", args: []string{"src", "--preview", "--print"}, check: assertPreviewStdoutParsed},
+		{name: "print then preview", args: []string{"src", "--print", "--preview"}, check: assertPreviewStdoutParsed},
+		{name: "include target metadata", args: []string{".", "--include", "node_modules", "coverage"}, check: func(t *testing.T, cfg command.Parsed) {
+			scope := parsedExecutionScope(t, cfg)
+			if !reflect.DeepEqual(scope.Targets, []string{"."}) || !reflect.DeepEqual(scope.IncludedTargets, []string{"node_modules", "coverage"}) {
+				t.Fatalf("unexpected scope: %#v", scope)
+			}
+		}},
+		{name: "include wildcard", args: []string{".", "--include", "*"}, check: func(t *testing.T, cfg command.Parsed) {
+			if got := parsedExecutionScope(t, cfg).IncludedTargets; !reflect.DeepEqual(got, []string{"*"}) {
+				t.Fatalf("included targets = %v", got)
+			}
+		}},
+		{name: "staged implies changed", args: []string{"src", "--staged"}, check: func(t *testing.T, cfg command.Parsed) {
+			scope := parsedExecutionScope(t, cfg)
+			if !scope.Staged || !scope.Changed {
+				t.Fatalf("unexpected scope: %#v", scope)
+			}
+		}},
+		{name: "snippet after filters", args: []string{".", "--contains", "keep", "--only", "README.md", "--snippet", "show"}, check: func(t *testing.T, cfg command.Parsed) {
+			scope := parsedExecutionScope(t, cfg)
+			if !scope.Snippet || scope.Contains != "keep" || scope.SnippetPattern != "show" {
+				t.Fatalf("unexpected scope: %#v", scope)
+			}
+		}},
+		{name: "contains before diff", args: []string{"src", "--contains", "TODO", "--changed-diff"}, check: func(t *testing.T, cfg command.Parsed) {
+			scope := parsedExecutionScope(t, cfg)
+			if !scope.Diff || !scope.Changed || scope.Contains != "TODO" {
+				t.Fatalf("unexpected scope: %#v", scope)
+			}
+		}},
+		{name: "modifier-like contains pattern", args: []string{"src", "--contains", "--snippet"}, check: func(t *testing.T, cfg command.Parsed) {
+			if got := parsedExecutionScope(t, cfg).Contains; got != "--snippet" {
+				t.Fatalf("Contains = %q", got)
+			}
+		}},
+		{name: "modifier-like snippet pattern", args: []string{"src", "--snippet", "--contains"}, check: func(t *testing.T, cfg command.Parsed) {
+			if got := parsedExecutionScope(t, cfg).SnippetPattern; got != "--contains" {
+				t.Fatalf("SnippetPattern = %q", got)
+			}
+		}},
+		{name: "double-dash regex patterns", args: []string{"src", "--contains", "--", "--snippet", "--"}, check: func(t *testing.T, cfg command.Parsed) {
+			scope := parsedExecutionScope(t, cfg)
+			if scope.Contains != "--" || scope.SnippetPattern != "--" {
+				t.Fatalf("unexpected scope: %#v", scope)
+			}
+		}},
+		{name: "recent after diff", args: []string{"src", "--changed-diff", "--recent", "5"}, check: func(t *testing.T, cfg command.Parsed) {
+			scope := parsedExecutionScope(t, cfg)
+			if !scope.Diff || !scope.Changed || len(scope.Stages) == 0 || scope.Stages[len(scope.Stages)-1].Kind != command.StageRecent {
+				t.Fatalf("unexpected scope: %#v", scope)
+			}
+		}},
+		{name: "glob-like contains warning", args: []string{"src", "--contains", "use*Context"}, check: func(t *testing.T, cfg command.Parsed) {
+			if len(cfg.Warnings) != 1 {
+				t.Fatalf("warnings = %v", cfg.Warnings)
+			}
+		}},
+		{name: "headless implies stdout and quiet", args: []string{".", "--headless"}, check: func(t *testing.T, cfg command.Parsed) {
+			if !cfg.Headless || !cfg.Quiet || cfg.OutputMode != command.OutputModeStdout {
+				t.Fatalf("unexpected config: %#v", cfg)
+			}
+		}},
+		{name: "headless preview with target", args: []string{".", "--preview", "--headless"}},
 	}
-	if !strings.Contains(err.Error(), "no target specified") {
-		t.Fatalf("expected no-target error, got: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := cli.ParseArgs(tt.args)
+			if err != nil {
+				t.Fatalf("ParseArgs() error = %v", err)
+			}
+			if tt.check != nil {
+				tt.check(t, cfg)
+			}
+		})
 	}
 }
 
-func TestParseArgsBuildsMultipleScopes(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--only", "*.ts", "--then", "tests", "--only", "*.test.ts"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-
-	scopes := parsedExecutionScopes(t, cfg)
-	if got, want := len(scopes), 2; got != want {
-		t.Fatalf("expected %d scopes, got %d", want, got)
-	}
-
-	if got := scopes[0].Targets[0]; got != "src" {
-		t.Fatalf("expected first scope target 'src', got %q", got)
-	}
-	if got := scopes[0].Only[0]; got != "*.ts" {
-		t.Fatalf("expected first scope only '*.ts', got %q", got)
-	}
-	if got := scopes[1].Targets[0]; got != "tests" {
-		t.Fatalf("expected second scope target 'tests', got %q", got)
-	}
-	if got := scopes[1].Only[0]; got != "*.test.ts" {
-		t.Fatalf("expected second scope only '*.test.ts', got %q", got)
+func assertPreviewStdoutParsed(t *testing.T, cfg command.Parsed) {
+	t.Helper()
+	if !cfg.Preview || cfg.OutputMode != command.OutputModeStdout {
+		t.Fatalf("unexpected config: %#v", cfg)
 	}
 }
 
-func TestParseArgsRejectsModifierOnlyWithoutTargets(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"--changed-diff"})
-	if err == nil {
-		t.Fatal("expected modifier-only invocation to error (no implicit '.' target)")
+func TestParseArgsRejectedCommandShapes(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantText string
+	}{
+		{name: "bare invocation", wantText: "no target specified"},
+		{name: "modifier without target", args: []string{"--changed-diff"}, wantText: "no target specified"},
+		{name: "retired internal tree payload", args: []string{"--internal-tree-payload"}, wantText: "Unknown option '--internal-tree-payload'"},
+		{name: "recent non-integer", args: []string{"src", "--recent", "later"}, wantText: "--recent takes an optional positive integer"},
+		{name: "recent equals", args: []string{"src", "--recent=5"}, wantText: "--recent requires a space before the value"},
+		{name: "size non-integer", args: []string{"src", "--size", "large"}, wantText: "--size expects integer KiB values"},
+		{name: "size negative", args: []string{"src", "--size", "-1"}, wantText: "--size expects integer KiB values"},
+		{name: "size zero max", args: []string{"src", "--size", "0", "0"}, wantText: "--size max must be >= 1 KiB"},
+		{name: "size max before min", args: []string{"src", "--size", "100", "10"}, wantText: "--size max (10) must be >= min (100)"},
+		{name: "size too many", args: []string{"src", "--size", "1", "2", "3"}, wantText: "--size takes at most two values"},
+		{name: "size equals", args: []string{"src", "--size=10"}, wantText: "--size requires a space before the value"},
+		{name: "size unknown flag boundary", args: []string{"src", "--size", "--foo"}, wantText: "Unknown option '--foo'"},
+		{name: "depth zero", args: []string{"src", "--depth", "0"}, wantText: "--depth takes a positive integer"},
+		{name: "depth equals", args: []string{"src", "--depth=2"}, wantText: "--depth requires a space before the value"},
+		{name: "bare dash target", args: []string{"-"}, wantText: "'-' is not a valid target path"},
+		{name: "include absolute", args: []string{".", "--include", "/vendor"}, wantText: "--include does not accept absolute paths"},
+		{name: "include Windows absolute", args: []string{".", "--include", `C:\vendor`}, wantText: "--include does not accept absolute paths"},
+		{name: "include parent traversal", args: []string{".", "--include", "../vendor"}, wantText: "--include cannot traverse above the current directory"},
+		{name: "include normalizing traversal", args: []string{".", "--include", "src/../vendor"}, wantText: "--include cannot traverse above the current directory"},
+		{name: "include glob", args: []string{".", "--include", "*.js"}, wantText: "--include does not accept glob patterns"},
+		{name: "contains equals", args: []string{"src", "--contains=TODO"}, wantText: "--contains requires a space"},
+		{name: "extra contains value", args: []string{"src", "--contains", "TODO", "extra"}, wantText: "--contains 'TODO extra'"},
+		{name: "headless without target", args: []string{"--headless"}, wantText: "--headless requires explicit targets"},
+		{name: "headless preview without target", args: []string{"--preview", "--headless"}, wantText: "--headless requires explicit targets"},
 	}
-	if !strings.Contains(err.Error(), "no target specified") {
-		t.Fatalf("expected no-target error, got: %v", err)
-	}
-}
-
-func TestParseArgsRejectsRetiredInternalTreePayloadFlag(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"--internal-tree-payload"})
-	if err == nil {
-		t.Fatal("expected retired --internal-tree-payload to fail")
-	}
-	if !strings.Contains(err.Error(), "Unknown option '--internal-tree-payload'") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsConsumesMultiValueExcludeStage(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--exclude", "*.snap", "build/"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if got, want := len(scope.Exclude), 2; got != want {
-		t.Fatalf("expected %d exclude patterns, got %d", want, got)
-	}
-}
-
-func TestParseArgsAcceptsBareRecentStage(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--recent"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if got, want := len(scope.Stages), 1; got != want {
-		t.Fatalf("expected %d stage, got %d", want, got)
-	}
-	if scope.Stages[0].Kind != command.StageRecent {
-		t.Fatalf("expected recent stage, got %q", scope.Stages[0].Kind)
-	}
-	if scope.Stages[0].Limit != nil {
-		t.Fatalf("expected bare --recent to have no limit, got %v", *scope.Stages[0].Limit)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := cli.ParseArgs(tt.args)
+			if err == nil || !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("ParseArgs() error = %v, want text %q", err, tt.wantText)
+			}
+		})
 	}
 }
 
-func TestParseArgsAcceptsRecentLimitAndKeepsStageBoundaries(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--only", "*.ts", "--recent", "5"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
+func TestParseArgsStructuredFailures(t *testing.T) {
+	tests := []struct {
+		name         string
+		args         []string
+		wantReason   cli.Reason
+		wantFlag     string
+		wantBoundary string
+		wantNext     string
+	}{
+		{name: "contains after paths", args: []string{"src", "--paths", "--contains", "TODO"}, wantReason: cli.ReasonTerminalBoundaryOrder, wantBoundary: "--paths", wantNext: "--contains"},
+		{name: "snippet missing pattern", args: []string{"src", "--snippet"}, wantReason: cli.ReasonRequiredValue, wantFlag: "--snippet"},
+		{name: "snippet with diff", args: []string{"src", "--snippet", "TODO", "--changed-diff"}, wantReason: cli.ReasonDiffSnippetConflict},
+		{name: "contains after snippet", args: []string{"src", "--snippet", "TODO", "--contains", "FIXME"}, wantReason: cli.ReasonSnippetContentFilterOrder, wantFlag: "--contains"},
+		{name: "repeated snippet", args: []string{"src", "--snippet", "TODO", "--snippet", "FIXME"}, wantReason: cli.ReasonRepeatedOutputMode, wantFlag: "--snippet"},
+		{name: "contains after diff", args: []string{"src", "--changed-diff", "--contains", "TODO"}, wantReason: cli.ReasonDiffContentFilterOrder, wantFlag: "--contains", wantBoundary: "--changed-diff"},
+		{name: "git filter after diff", args: []string{"src", "--changed-diff", "--staged"}, wantReason: cli.ReasonDiffGitFilterOrder, wantFlag: "--staged", wantBoundary: "--changed-diff"},
+		{name: "standalone diff", args: []string{"src", "--diff"}, wantReason: cli.ReasonDiffStandalone},
+		{name: "untracked diff", args: []string{"src", "--untracked", "--changed-diff"}, wantReason: cli.ReasonUntrackedDiff},
+		{name: "plain token after no-value modifier", args: []string{"src", "--changed", "extra"}, wantReason: cli.ReasonNoValueModifier, wantFlag: "--changed"},
+		{name: "bare double dash order", args: []string{"src", "--", "other"}, wantReason: cli.ReasonBarePlaceholderOrder},
+		{name: "bare double dash outside interactive", args: []string{"src", "--"}, wantReason: cli.ReasonBarePlaceholderInteractiveOnly},
+		{name: "bare double dash in headless", args: []string{".", "--headless", "--"}, wantReason: cli.ReasonBarePlaceholderHeadlessMode},
+		{name: "include name without target", args: []string{"--include", "cmd", "--headless"}, wantReason: cli.ReasonIncludeMissingPositionalTarget, wantFlag: "cmd"},
+		{name: "include wildcard without target", args: []string{"--include", "*", "--headless"}, wantReason: cli.ReasonIncludeMissingPositionalTarget, wantFlag: "*"},
 	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if got, want := len(scope.Only), 1; got != want {
-		t.Fatalf("expected %d only pattern, got %d", want, got)
-	}
-	if got, want := len(scope.Stages), 2; got != want {
-		t.Fatalf("expected %d stages, got %d", want, got)
-	}
-	if scope.Stages[0].Kind != command.StageOnly {
-		t.Fatalf("expected first stage to be only, got %q", scope.Stages[0].Kind)
-	}
-	if scope.Stages[1].Kind != command.StageRecent {
-		t.Fatalf("expected second stage to be recent, got %q", scope.Stages[1].Kind)
-	}
-	if scope.Stages[1].Limit == nil || *scope.Stages[1].Limit != 5 {
-		t.Fatalf("expected recent limit 5, got %+v", scope.Stages[1].Limit)
-	}
-}
-
-func TestParseArgsRejectsInvalidRecentValue(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--recent", "later"})
-	if err == nil {
-		t.Fatal("expected error for invalid --recent value")
-	}
-	if !strings.Contains(err.Error(), "--recent takes an optional positive integer") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsRecentEqualsForm(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--recent=5"})
-	if err == nil {
-		t.Fatal("expected error for --recent=5")
-	}
-	if !strings.Contains(err.Error(), "--recent requires a space before the value") {
-		t.Fatalf("unexpected error: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := cli.ParseArgs(tt.args)
+			failure := requireCLIValidationFailure(t, err, tt.wantReason)
+			if failure.Flag != tt.wantFlag || failure.BoundaryFlag != tt.wantBoundary || failure.NextFlag != tt.wantNext {
+				t.Fatalf("validation failure = %#v, want flag=%q boundary=%q next=%q", failure, tt.wantFlag, tt.wantBoundary, tt.wantNext)
+			}
+		})
 	}
 }
 
@@ -273,175 +371,6 @@ func TestParseArgsAcceptsSizeStageForms(t *testing.T) {
 	}
 }
 
-func TestParseArgsRejectsInvalidSizeValues(t *testing.T) {
-	cases := []struct {
-		name    string
-		args    []string
-		wantErr string
-	}{
-		{name: "non integer", args: []string{"src", "--size", "large"}, wantErr: "--size expects integer KiB values"},
-		{name: "negative", args: []string{"src", "--size", "-1"}, wantErr: "--size expects integer KiB values"},
-		{name: "zero max", args: []string{"src", "--size", "0", "0"}, wantErr: "--size max must be >= 1 KiB"},
-		{name: "max before min", args: []string{"src", "--size", "100", "10"}, wantErr: "--size max (10) must be >= min (100)"},
-		{name: "too many", args: []string{"src", "--size", "1", "2", "3"}, wantErr: "--size takes at most two values"},
-		{name: "equals form", args: []string{"src", "--size=10"}, wantErr: "--size requires a space before the value"},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := cli.ParseArgs(tc.args)
-			if err == nil {
-				t.Fatal("expected error")
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("unexpected error: %v", err)
-			}
-		})
-	}
-}
-
-func TestParseArgsSizeTreatsUnknownFlagAsBoundary(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--size", "--foo"})
-	if err == nil {
-		t.Fatal("expected unknown option error")
-	}
-	if !strings.Contains(err.Error(), "Unknown option '--foo'") {
-		t.Fatalf("expected unknown option error, got: %v", err)
-	}
-}
-
-func TestParseArgsAcceptsDepthStage(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--depth", "2"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if got, want := len(scope.Stages), 1; got != want {
-		t.Fatalf("expected %d stage, got %d", want, got)
-	}
-	if scope.Stages[0].Kind != command.StageDepth {
-		t.Fatalf("expected depth stage, got %q", scope.Stages[0].Kind)
-	}
-	if scope.Stages[0].Limit == nil || *scope.Stages[0].Limit != 2 {
-		t.Fatalf("expected depth limit 2, got %+v", scope.Stages[0].Limit)
-	}
-}
-
-func TestParseArgsRejectsInvalidDepthValue(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--depth", "0"})
-	if err == nil {
-		t.Fatal("expected error for invalid --depth value")
-	}
-	if !strings.Contains(err.Error(), "--depth takes a positive integer") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsDepthEqualsForm(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--depth=2"})
-	if err == nil {
-		t.Fatal("expected error for --depth=2")
-	}
-	if !strings.Contains(err.Error(), "--depth requires a space before the value") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsAcceptsPathsStage(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--paths"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if !scope.Paths {
-		t.Fatal("expected scope to record --paths output mode")
-	}
-	if got, want := len(scope.Stages), 1; got != want {
-		t.Fatalf("expected %d stage, got %d", want, got)
-	}
-	if scope.Stages[0].Kind != command.StagePaths {
-		t.Fatalf("expected paths stage, got %q", scope.Stages[0].Kind)
-	}
-}
-
-func TestParseArgsAcceptsRawFlag(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "-r"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	if !cfg.Raw {
-		t.Fatal("expected raw output mode to be enabled")
-	}
-}
-
-func TestParseArgsPreviewAndPrintCoexist(t *testing.T) {
-	for _, args := range [][]string{
-		{"src", "--preview", "--print"},
-		{"src", "--print", "--preview"},
-	} {
-		cfg, err := cli.ParseArgs(args)
-		if err != nil {
-			t.Fatalf("cli.ParseArgs(%v) returned error: %v", args, err)
-		}
-		if !cfg.Preview {
-			t.Fatalf("cli.ParseArgs(%v): expected Preview=true, got %+v", args, cfg)
-		}
-		if cfg.OutputMode != command.OutputModeStdout {
-			t.Fatalf("cli.ParseArgs(%v): expected OutputMode=stdout, got %q", args, cfg.OutputMode)
-		}
-	}
-}
-
-func TestParseArgsRejectsContainsAfterPaths(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--paths", "--contains", "TODO"})
-	if err == nil {
-		t.Fatal("expected terminal boundary error after --paths")
-	}
-	if !strings.Contains(err.Error(), "--paths finalizes the current scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsTreatsIncludeAsAllowedTargetSelection(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{".", "--include", "node_modules", "coverage"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	scope := parsedExecutionScope(t, cfg)
-	if got := scope.Targets; strings.Join(got, "\n") != "." {
-		t.Fatalf("expected include to preserve the explicit base target only, got %#v", got)
-	}
-	if got := scope.IncludedTargets; strings.Join(got, "\n") != "node_modules\ncoverage" {
-		t.Fatalf("expected included target metadata, got %#v", got)
-	}
-}
-
-func TestParseArgsExplicitIncludeAugmentsDotTarget(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{".", "--include", "node_modules", "coverage"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	scope := parsedExecutionScope(t, cfg)
-	if got := scope.Targets; strings.Join(got, "\n") != "." {
-		t.Fatalf("expected explicit dot scope, got %#v", got)
-	}
-	if got := scope.IncludedTargets; strings.Join(got, "\n") != "node_modules\ncoverage" {
-		t.Fatalf("expected included target metadata, got %#v", got)
-	}
-}
-
-func TestParseArgsRejectsBareDashTarget(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"-"})
-	if err == nil {
-		t.Fatal("expected bare '-' target to fail")
-	}
-	if !strings.Contains(err.Error(), "'-' is not a valid target path") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 func TestParseArgsRejectsStdinModifierWithoutPipe(t *testing.T) {
 	if !platform.IsTerminalFile(os.Stdin) {
 		t.Skip("terminal stdin not available")
@@ -456,73 +385,26 @@ func TestParseArgsRejectsStdinModifierWithoutPipe(t *testing.T) {
 	}
 }
 
-func TestParseArgsRejectsEmptyStdinPathList(t *testing.T) {
-	setTestPipeStdin(t, "")
-
-	_, err := cli.ParseArgs([]string{"src", "--only", "-"})
-	if err == nil {
-		t.Fatal("expected empty stdin path list to fail")
-	}
-	if !strings.Contains(err.Error(), "--only - received no paths from stdin") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsInvalidTypedIncludeValues(t *testing.T) {
+func TestParseArgsRejectsInvalidStdinValues(t *testing.T) {
 	tests := []struct {
 		name    string
-		value   string
-		wantErr string
-	}{
-		{name: "absolute", value: "/vendor", wantErr: "--include does not accept absolute paths"},
-		{name: "windows absolute", value: `C:\vendor`, wantErr: "--include does not accept absolute paths"},
-		{name: "parent traversal", value: "../vendor", wantErr: "--include cannot traverse above the current directory"},
-		{name: "normalizing parent traversal", value: "src/../vendor", wantErr: "--include cannot traverse above the current directory"},
-		{name: "glob", value: "*.js", wantErr: "--include does not accept glob patterns"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := cli.ParseArgs([]string{".", "--include", tc.value})
-			if err == nil {
-				t.Fatalf("expected %q to fail", tc.value)
-			}
-			if !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("expected error containing %q, got %v", tc.wantErr, err)
-			}
-		})
-	}
-}
-
-func TestParseArgsAllowsIncludeWildcardSpecialCase(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{".", "--include", "*"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	scopes := cfg.Command.Scopes()
-	if got := scopes[0].IncludedTargets(); !reflect.DeepEqual(got, []string{"*"}) {
-		t.Fatalf("IncludedTargets = %#v, want [*]", got)
-	}
-}
-
-func TestParseArgsRejectsInvalidStdinIncludeValues(t *testing.T) {
-	tests := []struct {
-		name    string
+		args    []string
 		stdin   string
 		wantErr string
 	}{
-		{name: "absolute", stdin: "/vendor\n", wantErr: "--include does not accept absolute paths"},
-		{name: "absolute normalized to dot", stdin: "/tmp/..\n", wantErr: "--include does not accept absolute paths"},
-		{name: "windows absolute", stdin: "C:\\vendor\n", wantErr: "--include does not accept absolute paths"},
-		{name: "parent traversal", stdin: "../vendor\n", wantErr: "--include cannot traverse above the current directory"},
-		{name: "normalizing parent traversal", stdin: "src/../vendor\n", wantErr: "--include cannot traverse above the current directory"},
-		{name: "glob", stdin: "*.js\n", wantErr: "--include does not accept glob patterns"},
+		{name: "empty only list", args: []string{"src", "--only", "-"}, wantErr: "--only - received no paths from stdin"},
+		{name: "absolute include", args: []string{".", "--include", "-"}, stdin: "/vendor\n", wantErr: "--include does not accept absolute paths"},
+		{name: "absolute include normalized to dot", args: []string{".", "--include", "-"}, stdin: "/tmp/..\n", wantErr: "--include does not accept absolute paths"},
+		{name: "Windows absolute include", args: []string{".", "--include", "-"}, stdin: "C:\\vendor\n", wantErr: "--include does not accept absolute paths"},
+		{name: "include parent traversal", args: []string{".", "--include", "-"}, stdin: "../vendor\n", wantErr: "--include cannot traverse above the current directory"},
+		{name: "include normalizing parent traversal", args: []string{".", "--include", "-"}, stdin: "src/../vendor\n", wantErr: "--include cannot traverse above the current directory"},
+		{name: "include glob", args: []string{".", "--include", "-"}, stdin: "*.js\n", wantErr: "--include does not accept glob patterns"},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			setTestPipeStdin(t, tc.stdin)
-			_, err := cli.ParseArgs([]string{".", "--include", "-"})
+			_, err := cli.ParseArgs(tc.args)
 			if err == nil {
 				t.Fatalf("expected stdin %q to fail", tc.stdin)
 			}
@@ -533,308 +415,10 @@ func TestParseArgsRejectsInvalidStdinIncludeValues(t *testing.T) {
 	}
 }
 
-func TestParseArgsStagedImpliesChanged(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--staged"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if !scope.Staged || !scope.Changed {
-		t.Fatalf("expected staged to imply changed, got %+v", scope)
-	}
-}
-
-func TestParseArgsSnippetRequiresPattern(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--snippet"})
-	if err == nil {
-		t.Fatal("expected error for --snippet without a regex pattern")
-	}
-	if !strings.Contains(err.Error(), "--snippet requires a regex pattern") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsSnippetWithDiff(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--snippet", "TODO", "--changed-diff"})
-	if err == nil {
-		t.Fatal("expected error for --snippet with --diff")
-	}
-	if !strings.Contains(err.Error(), "--snippet and --diff cannot be combined") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsContainsAfterSnippet(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--snippet", "TODO", "--contains", "FIXME"})
-	if err == nil {
-		t.Fatal("expected error for --contains after --snippet")
-	}
-	if !strings.Contains(err.Error(), "--contains must come before --snippet in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsRepeatedSnippet(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--snippet", "TODO", "--snippet", "FIXME"})
-	if err == nil {
-		t.Fatal("expected error for repeated --snippet")
-	}
-	if !strings.Contains(err.Error(), "--snippet cannot be repeated in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsAllowsSnippetAfterEarlierFilters(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{".", "--contains", "keep", "--only", "README.md", "--snippet", "show"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	scope := parsedExecutionScope(t, cfg)
-	if !scope.Snippet || scope.Contains != "keep" || scope.SnippetPattern != "show" {
-		t.Fatalf("unexpected parsed scope: %+v", scope)
-	}
-}
-
-func TestParseArgsAllowsContainsBeforeChangedDiff(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--contains", "TODO", "--changed-diff"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if !scope.Diff || !scope.Changed || scope.Contains != "TODO" {
-		t.Fatalf("unexpected parsed scope: %+v", scope)
-	}
-}
-
-func TestParseArgsRejectsContainsAfterDiff(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--changed-diff", "--contains", "TODO"})
-	if err == nil {
-		t.Fatal("expected error for --contains after --diff")
-	}
-	if !strings.Contains(err.Error(), "--contains must come before --changed-diff in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(err.Error(), "content filters cannot come after it") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsAllowsModifierLikeContainsPattern(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--contains", "--snippet"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	scope := parsedExecutionScope(t, cfg)
-	if got := scope.Contains; got != "--snippet" {
-		t.Fatalf("scope.Contains = %q, want --snippet", got)
-	}
-}
-
-func TestParseArgsAllowsModifierLikeSnippetPattern(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--snippet", "--contains"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	scope := parsedExecutionScope(t, cfg)
-	if got := scope.SnippetPattern; got != "--contains" {
-		t.Fatalf("scope.SnippetPattern = %q, want --contains", got)
-	}
-}
-
-func TestParseArgsAllowsDoubleDashRegexPatterns(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--contains", "--", "--snippet", "--"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	scope := parsedExecutionScope(t, cfg)
-	if got := scope.Contains; got != "--" {
-		t.Fatalf("scope.Contains = %q, want --", got)
-	}
-	if got := scope.SnippetPattern; got != "--" {
-		t.Fatalf("scope.SnippetPattern = %q, want --", got)
-	}
-}
-
 // TestParseStartupInputTokens* tests moved to internal/ui/startup_input_parse_test.go
 // during the v0.6.0 internal/ui extraction — they assert against the
 // private startupInputParse.modifiers field which can't be read from
 // root.
-
-func TestParseArgsRejectsGitFilterAfterDiff(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--changed-diff", "--staged"})
-	if err == nil {
-		t.Fatal("expected error for git filter after --diff")
-	}
-	if !strings.Contains(err.Error(), "--staged must come before --changed-diff in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(err.Error(), "git change filters are not allowed") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsAllowsRecentAfterDiff(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--changed-diff", "--recent", "5"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-
-	scope := parsedExecutionScope(t, cfg)
-	if !scope.Diff || !scope.Changed {
-		t.Fatalf("unexpected parsed scope: %+v", scope)
-	}
-	if len(scope.Stages) == 0 || scope.Stages[len(scope.Stages)-1].Kind != command.StageRecent {
-		t.Fatalf("expected trailing recent stage, got %+v", scope.Stages)
-	}
-}
-
-func TestParseArgsRejectsDiffWithoutChangeSelector(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--diff"})
-	if err == nil {
-		t.Fatal("expected error for --diff without change selector")
-	}
-	if !strings.Contains(err.Error(), "--diff is no longer a standalone modifier") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsUntrackedDiffAlone(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--untracked", "--changed-diff"})
-	if err == nil {
-		t.Fatal("expected error for --untracked --diff")
-	}
-	if !strings.Contains(err.Error(), "--untracked-diff doesn't make sense") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsContainsEqualsForm(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--contains=TODO"})
-	if err == nil {
-		t.Fatal("expected error for --contains=TODO")
-	}
-	if !strings.Contains(err.Error(), "--contains requires a space") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsWarnsAboutGlobLikeContainsPattern(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"src", "--contains", "use*Context"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-
-	if len(cfg.Warnings) != 1 {
-		t.Fatalf("expected 1 warning, got %d", len(cfg.Warnings))
-	}
-}
-
-func TestParseArgsRejectsExtraContainsValueAfterModifierMode(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--contains", "TODO", "extra"})
-	if err == nil {
-		t.Fatal("expected error for extra plain token after --contains")
-	}
-	// --contains is a regex, so an extra bare token gets the quote hint (the
-	// usual cause is an unquoted regex with spaces split by the shell).
-	if !strings.Contains(err.Error(), "quote it if it contains spaces") || !strings.Contains(err.Error(), "--contains 'TODO extra'") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsPlainTokenAfterZeroArgModifier(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--changed", "extra"})
-	if err == nil {
-		t.Fatal("expected error for plain token after zero-arg modifier")
-	}
-	if !strings.Contains(err.Error(), "--changed takes no value") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsBareDoubleDashAsPositionalDelimiter(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--", "other"})
-	if err == nil {
-		t.Fatal("expected bare -- delimiter usage to fail")
-	}
-	if !strings.Contains(err.Error(), "bare -- can only be followed by another bare -- in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsRejectsTrailingBareDoubleDashOutsideInteractive(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--"})
-	if err == nil {
-		t.Fatal("expected trailing bare -- to fail outside startup interactive flow")
-	}
-	if !strings.Contains(err.Error(), "opens interactive modifier selection") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.Contains(err.Error(), "headless mode") {
-		t.Fatalf("non-headless invocation should not mention headless mode: %v", err)
-	}
-}
-
-func TestParseArgsRejectsTrailingBareDoubleDashInHeadlessMode(t *testing.T) {
-	_, err := cli.ParseArgs([]string{".", "--headless", "--"})
-	if err == nil {
-		t.Fatal("expected trailing bare -- to fail under --headless")
-	}
-	if !strings.Contains(err.Error(), "headless mode") {
-		t.Fatalf("expected headless-specific error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "--headless") {
-		t.Fatalf("expected error to mention --headless, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "(-p -q)") || strings.Contains(err.Error(), "(-q -p)") {
-		t.Fatalf("error should not reference -p -q anymore, got: %v", err)
-	}
-}
-
-func TestParseArgsHeadlessImpliesStdoutAndQuiet(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{".", "--headless"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
-	}
-	if !cfg.Headless {
-		t.Fatal("expected cfg.Headless to be true")
-	}
-	if cfg.OutputMode != command.OutputModeStdout {
-		t.Fatalf("expected OutputMode=stdout, got %q", cfg.OutputMode)
-	}
-	if !cfg.Quiet {
-		t.Fatal("expected cfg.Quiet to be true")
-	}
-}
-
-func TestParseArgsHeadlessRequiresExplicitTargets(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"--headless"})
-	if err == nil {
-		t.Fatal("expected --headless without targets to fail")
-	}
-	if !strings.Contains(err.Error(), "--headless requires explicit targets") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if _, err := cli.ParseArgs([]string{".", "--headless"}); err != nil {
-		t.Fatalf("--headless with explicit target should succeed, got: %v", err)
-	}
-}
-
-func TestParseArgsHeadlessPreviewRequiresTargets(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"--preview", "--headless"})
-	if err == nil {
-		t.Fatal("expected --preview --headless without targets to fail")
-	}
-	if !strings.Contains(err.Error(), "--headless requires explicit targets") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if _, err := cli.ParseArgs([]string{".", "--preview", "--headless"}); err != nil {
-		t.Fatalf("--preview --headless with explicit target should succeed, got: %v", err)
-	}
-}
 
 func TestRunHeadlessRejectsBareDoubleDash(t *testing.T) {
 	_, err := cli.ParseArgs([]string{".", "--headless", "--"})
@@ -1001,6 +585,69 @@ func TestRunSizeFiltersAndOrdersByLargestFirst(t *testing.T) {
 
 	if got, want := strings.TrimSpace(stdout.String()), "two.txt\none.txt"; got != want {
 		t.Fatalf("size-filtered paths = %q, want %q", got, want)
+	}
+}
+
+func TestRunSizeOrdersMultipleTargetsAsOneScope(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/tiny.txt":   strings.Repeat("a", 100),
+		"src/medium.txt": strings.Repeat("b", 300),
+		"docs/small.md":  strings.Repeat("c", 200),
+		"docs/large.md":  strings.Repeat("d", 400),
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "docs", "--size", "--paths"})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+
+	if got, want := strings.TrimSpace(stdout.String()), strings.Join([]string{
+		"docs/large.md",
+		"src/medium.txt",
+		"docs/small.md",
+		"src/tiny.txt",
+	}, "\n"); got != want {
+		t.Fatalf("multi-target size order = %q, want one scope-wide order %q", got, want)
+	}
+}
+
+func TestRunStageOrderChangesRecentThenOnlyResult(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/newest.ts":  "newest\n",
+		"src/newer.go":   "package src\n",
+		"src/older.go":   "package src\n",
+		"src/oldest.txt": "oldest\n",
+	})
+
+	now := time.Now()
+	for relPath, modTime := range map[string]time.Time{
+		"src/newest.ts":  now.Add(-1 * time.Hour),
+		"src/newer.go":   now.Add(-2 * time.Hour),
+		"src/older.go":   now.Add(-3 * time.Hour),
+		"src/oldest.txt": now.Add(-4 * time.Hour),
+	} {
+		if err := os.Chtimes(filepath.Join(project, filepath.FromSlash(relPath)), modTime, modTime); err != nil {
+			t.Fatalf("chtimes %s failed: %v", relPath, err)
+		}
+	}
+
+	runPaths := func(args ...string) string {
+		t.Helper()
+		cfg := parseInProject(t, project, append([]string{"--quiet", "--print"}, args...))
+		var stdout, stderr bytes.Buffer
+		if err := run(cfg, &stdout, &stderr); err != nil {
+			t.Fatalf("run(%v) returned error: %v\nstderr:\n%s", args, err, stderr.String())
+		}
+		return strings.TrimSpace(stdout.String())
+	}
+
+	if got, want := runPaths("src", "--recent", "2", "--only", "*.go", "--paths"), "src/newer.go"; got != want {
+		t.Fatalf("recent-then-only paths = %q, want %q", got, want)
+	}
+	if got, want := runPaths("src", "--only", "*.go", "--recent", "2", "--paths"), "src/newer.go\nsrc/older.go"; got != want {
+		t.Fatalf("only-then-recent paths = %q, want %q", got, want)
 	}
 }
 
@@ -1171,16 +818,28 @@ func TestRunIncludeSupportsGitignoreOutsideGitRepo(t *testing.T) {
 }
 
 func TestParseArgsImmediateActionsReturnEarly(t *testing.T) {
-	cfg, err := cli.ParseArgs([]string{"--version", "src", "--changed"})
-	if err != nil {
-		t.Fatalf("parseArgs returned error: %v", err)
+	tests := []struct {
+		name string
+		args []string
+		want command.Action
+	}{
+		{name: "version", args: []string{"--version", "src", "--changed"}, want: command.ActionVersion},
+		{name: "short help", args: []string{"--help", "src", "--changed"}, want: command.ActionHelp},
+		{name: "full help", args: []string{"--help-all", "src", "--changed"}, want: command.ActionHelpAll},
 	}
-
-	if cfg.Action != command.ActionVersion {
-		t.Fatalf("expected version action, got %q", cfg.Action)
-	}
-	if got := len(parsedExecutionScopes(t, cfg)); got != 0 {
-		t.Fatalf("expected no scopes for immediate action, got %d", got)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := cli.ParseArgs(test.args)
+			if err != nil {
+				t.Fatalf("parseArgs returned error: %v", err)
+			}
+			if cfg.Action != test.want {
+				t.Fatalf("expected %q action, got %q", test.want, cfg.Action)
+			}
+			if got := len(parsedExecutionScopes(t, cfg)); got != 0 {
+				t.Fatalf("expected no scopes for immediate action, got %d", got)
+			}
+		})
 	}
 }
 
@@ -1679,63 +1338,40 @@ func TestRunLinesRawMode(t *testing.T) {
 	}
 }
 
-func TestParseArgsLinesRejectsZeroStart(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--lines", "0"})
-	if err == nil {
-		t.Fatal("expected error for --lines 0")
+func TestParseArgsLinesRejectsInvalidBounds(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		wantText string
+	}{
+		{name: "zero start", args: []string{"src", "--lines", "0"}, wantText: "--lines start must be >= 1"},
+		{name: "end before start", args: []string{"src", "--lines", "10", "5"}, wantText: "--lines end (5) must be >= start (10)"},
+		{name: "non-integer start", args: []string{"src", "--lines", "abc"}, wantText: "--lines expects line numbers"},
+		{name: "non-integer end", args: []string{"src", "--lines", "10", "abc"}, wantText: "--lines expects line numbers"},
 	}
-	if !strings.Contains(err.Error(), "--lines start must be >= 1") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsLinesRejectsEndLessThanStart(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--lines", "10", "5"})
-	if err == nil {
-		t.Fatal("expected error for --lines 10 5")
-	}
-	if !strings.Contains(err.Error(), "--lines end (5) must be >= start (10)") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsLinesRejectsNonIntegerStart(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--lines", "abc"})
-	if err == nil {
-		t.Fatal("expected error for --lines abc")
-	}
-	if !strings.Contains(err.Error(), "--lines expects line numbers") {
-		t.Fatalf("unexpected error: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := cli.ParseArgs(tt.args)
+			if err == nil || !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("ParseArgs() error = %v, want text %q", err, tt.wantText)
+			}
+		})
 	}
 }
 
-func TestParseArgsLinesRejectsNonIntegerEnd(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--lines", "10", "abc"})
-	if err == nil {
-		t.Fatal("expected error for --lines 10 abc")
-	}
-	if !strings.Contains(err.Error(), "--lines expects line numbers") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsLinesRejectsWithSnippet(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--lines", "--snippet", "a"})
-	if err == nil {
-		t.Fatal("expected error for --lines --snippet")
-	}
-	if !strings.Contains(err.Error(), "--lines finalizes the current scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestParseArgsLinesRejectsWithPaths(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"src", "--lines", "--paths"})
-	if err == nil {
-		t.Fatal("expected error for --lines --paths")
-	}
-	if !strings.Contains(err.Error(), "--lines finalizes the current scope") {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseArgsLinesRejectsFollowingOutputStage(t *testing.T) {
+	for _, next := range []string{"--snippet", "--paths"} {
+		t.Run(next, func(t *testing.T) {
+			args := []string{"src", "--lines", next}
+			if next == "--snippet" {
+				args = append(args, "a")
+			}
+			_, err := cli.ParseArgs(args)
+			failure := requireCLIValidationFailure(t, err, cli.ReasonTerminalBoundaryOrder)
+			if failure.BoundaryFlag != "--lines" || failure.NextFlag != next {
+				t.Fatalf("unexpected validation fields: %#v", failure)
+			}
+		})
 	}
 }
 
@@ -2311,14 +1947,15 @@ func TestRunWithBinariesErrorsWithDiff(t *testing.T) {
 
 func TestRunOnlyFromStdinMatchesExactNormalizedPaths(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
-		"src/types.go":        "package src\n",
-		"src/types.go.bak.ts": "export const backup = true\n",
-		"src/space name.ts":   "export const spaced = true\n",
-		"src/other.ts":        "export const other = true\n",
+		"foo/bar.go":        "package foo\n",
+		"foo/bar.go.bak.ts": "export const backup = true\n",
+		"foo/space name.go": "package foo\n",
+		"foo/windows.go":    "package foo\n",
+		"foo/other.go":      "package foo\n",
 	})
 
-	setTestPipeStdin(t, "src\\types.go\r\n\r\nsrc\\space name.ts\r\n")
-	cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "--only", "-"})
+	setTestPipeStdin(t, "./foo//bar.go\r\nx/../foo/space name.go\r\nfoo\\windows.go\r\n../escape\r\n")
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "foo", "--only", "-"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -2326,10 +1963,12 @@ func TestRunOnlyFromStdinMatchesExactNormalizedPaths(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, `<file path="src/types.go">`) || !strings.Contains(out, `<file path="src/space name.ts">`) {
-		t.Fatalf("expected exact stdin-selected files in output, got:\n%s", out)
+	for _, want := range []string{"foo/bar.go", "foo/space name.go", "foo/windows.go"} {
+		if !strings.Contains(out, `<file path="`+want+`">`) {
+			t.Fatalf("expected normalized stdin path %s in output, got:\n%s", want, out)
+		}
 	}
-	if strings.Contains(out, "src/types.go.bak") || strings.Contains(out, "src/other.ts") {
+	if strings.Contains(out, "foo/bar.go.bak") || strings.Contains(out, "foo/other.go") || strings.Contains(out, "../escape") {
 		t.Fatalf("expected stdin --only to match exact normalized paths only, got:\n%s", out)
 	}
 	if got := stderr.String(); got != "" {
@@ -2639,9 +2278,6 @@ func TestSafeTargetPickerHeaderOmitsCtrlO(t *testing.T) {
 	header := discovery.SafeTargetPickerHeader()
 	if strings.Contains(header, "[Ctrl-O]") || strings.Contains(header, "ignored ones") {
 		t.Fatalf("expected safe picker header to stay visible-target-only, got %q", header)
-	}
-	if !strings.Contains(header, "Pick files and folders to include.") || !strings.Contains(header, "[Up/Down] move  [Enter] confirm  [Tab] mark  [Esc] exit") {
-		t.Fatalf("expected safe picker header to guide first-time fzf users, got %q", header)
 	}
 }
 
@@ -3660,6 +3296,80 @@ func TestRunWarnsForDeadTrailingSlashFilterGlobs(t *testing.T) {
 	}
 }
 
+func TestRunHeadlessDeadOnlyGlobExplainsFailure(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"internal/output/emit.go": "package output\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--headless", "internal", "--only", "*/", "--paths"})
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected dead --only glob to produce an empty result")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("headless failure polluted stdout:\n%s", stdout.String())
+	}
+	message := stderr.String()
+	if !strings.Contains(message, "--only pattern '*/' cannot match file paths") {
+		t.Fatalf("headless failure missing precise warning:\n%s", message)
+	}
+	if strings.Contains(message, "Possible causes:") {
+		t.Fatalf("precise warning must suppress generic footer:\n%s", message)
+	}
+}
+
+func TestRunQuietDeadOnlyGlobStillExplainsFailure(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"internal/output/emit.go": "package output\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "internal", "--only", "*/", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err == nil {
+		t.Fatal("expected dead --only glob to produce an empty result")
+	}
+	if !strings.Contains(stderr.String(), "--only pattern '*/' cannot match file paths") {
+		t.Fatalf("quiet failure missing precise warning:\n%s", stderr.String())
+	}
+}
+
+func TestRunHeadlessDeadExcludeGlobWarnsWithoutPollutingStdout(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"internal/output/emit.go": "package output\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--headless", "internal", "--exclude", "*/", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("dead --exclude glob changed successful selection: %v", err)
+	}
+	if got, want := stdout.String(), "internal/output/emit.go\n"; got != want {
+		t.Fatalf("stdout mismatch\nwant: %q\ngot:  %q", want, got)
+	}
+	if !strings.Contains(stderr.String(), "--exclude pattern '*/' cannot match file paths") {
+		t.Fatalf("headless success missing ineffective-filter warning:\n%s", stderr.String())
+	}
+}
+
+func TestRunHeadlessParserWarningDoesNotPolluteStdout(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/app.ts": "export const useContext = true\n",
+	})
+
+	cfg := parseInProject(t, project, []string{"--headless", "src", "--contains", "use*Context", "--paths"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("glob-shaped regex command failed: %v", err)
+	}
+	if got, want := stdout.String(), "src/app.ts\n"; got != want {
+		t.Fatalf("stdout mismatch\nwant: %q\ngot:  %q", want, got)
+	}
+	if !strings.Contains(stderr.String(), "--contains uses regex, not globs") {
+		t.Fatalf("headless parser warning missing:\n%s", stderr.String())
+	}
+}
+
 func TestRunSuppressesGenericFooterOnlyWhenEveryEmptyScopeIsExplained(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/app.go": "package src\n",
@@ -3729,7 +3439,7 @@ func TestRunExactBasenameSearchWorksWithoutFzf(t *testing.T) {
 	}
 }
 
-func TestRunNoMatchShowsShellStyleFooter(t *testing.T) {
+func TestRunNoMatchSuppressesGenericFooterWhenEveryTargetIsExplained(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"node_modules/index.js": "ignored\n",
 		"src/app.ts":            "export const ok = true\n",
@@ -3744,20 +3454,8 @@ func TestRunNoMatchShowsShellStyleFooter(t *testing.T) {
 	}
 
 	errOut := stderr.String()
-	for _, want := range []string{
-		"No text files found matching your criteria.",
-		"Possible causes:",
-		"1. Directory is empty or contains only binary files",
-		`Try: catclip --all-ignore-rules`,
-		// v0.6.4: hint updated to canonical shape (was
-		// `catclip --include blocked-dir`, which errors under
-		// effect-5); teach a form that works.
-		`catclip <target> --include <path>`,
-		`catclip --hiss`,
-	} {
-		if !strings.Contains(errOut, want) {
-			t.Fatalf("expected stderr to contain %q, got:\n%s", want, errOut)
-		}
+	if strings.Contains(errOut, "No text files found matching your criteria.") || strings.Contains(errOut, "Possible causes:") {
+		t.Fatalf("fully explained targets must suppress the generic footer:\n%s", errOut)
 	}
 	if first := strings.Index(errOut, "Warning: No file or directory 'include' found"); first == -1 {
 		t.Fatalf("expected missing-target warning, got:\n%s", errOut)
@@ -4274,53 +3972,6 @@ func TestIncludeWildcardBypassesEffect4Check(t *testing.T) {
 	}
 	if !strings.Contains(out, `<file path="cmd/build/artifact.js">`) {
 		t.Fatalf("expected cmd/build/artifact.js (wildcard authorizes ignored descendants):\n%s", out)
-	}
-}
-
-// TestEffect5_IncludeWithoutPositionalTargetErrors — --include with no positional target
-// must error at parse time with the effect-5 canonical-form hint. This
-// is the "no walk scope to authorize" case from the rationale note.
-func TestEffect5_IncludeWithoutPositionalTargetErrors(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"cmd/main.go": "package main\n",
-	})
-	// parseInProject wraps ParseArgs (strict) — the mode where effect-5
-	// fires. Inspection parsers still auto-fill "." for their partial-arg
-	// shapes; see the gate on !allowImplicitDotScope in parse.go.
-	defer func() {
-		if r := recover(); r != nil {
-			// parseInProject t.Fatalf's on parse error; that's a
-			// side effect of the harness, not the test's assertion.
-			// We assert on the error text instead via a helper below.
-			_ = r
-		}
-	}()
-	_, err := cli.ParseArgs([]string{"--include", "cmd", "--headless"})
-	_ = project
-	if err == nil {
-		t.Fatal("expected effect-5 error for --include without a positional target, got nil")
-	}
-	if !strings.Contains(err.Error(), "requires a positional target") {
-		t.Fatalf("expected 'requires a positional target' in error, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "catclip cmd --include cmd") {
-		t.Fatalf("expected canonical-form hint 'catclip cmd --include cmd' in error, got: %v", err)
-	}
-}
-
-// TestEffect5_WildcardIncludeWithoutPositionalTarget — --include '*' with no
-// positional target gets its own message with the "define the scope"
-// suggestion set (`catclip . --include '*'` or `catclip docs --include '*'`).
-func TestEffect5_WildcardIncludeWithoutPositionalTarget(t *testing.T) {
-	_, err := cli.ParseArgs([]string{"--include", "*", "--headless"})
-	if err == nil {
-		t.Fatal("expected effect-5 wildcard error without a positional target, got nil")
-	}
-	if !strings.Contains(err.Error(), "--include '*' requires a positional target") {
-		t.Fatalf("expected wildcard-variant error text, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "catclip . --include '*'") {
-		t.Fatalf("expected 'catclip . --include *' example in hint, got: %v", err)
 	}
 }
 
@@ -4961,6 +4612,40 @@ func TestRunChangedSelectors(t *testing.T) {
 	}
 }
 
+func TestRunNestedRepositoryTargetUsesGitContextFromWorkingDirectory(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+
+	project := setupTestProject(t, map[string]string{
+		"README.md": "parent repository\n",
+	})
+	initGitRepo(t, project)
+
+	nested := filepath.Join(project, "nested")
+	writeProjectFile(t, project, "nested/inner.txt", "committed in nested repository\n")
+	initGitRepo(t, nested)
+	writeProjectFile(t, project, "nested/inner.txt", "modified only in nested repository\n")
+
+	// The nested repository sees an unstaged tracked change. The parent sees the
+	// nested tree as untracked, so a parent-owned --unstaged selection is empty.
+	// This difference makes the repository owner observable without inspecting
+	// internal git.Context fields.
+	if output, err := git.Capture(nested, "diff", "--name-only"); err != nil || !strings.Contains(output, "inner.txt") {
+		t.Fatalf("nested repository fixture missing unstaged change: output=%q err=%v", output, err)
+	}
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "nested", "--unstaged", "--paths"})
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected parent-repository --unstaged selection to be empty")
+	}
+	if strings.Contains(stdout.String(), "nested/inner.txt") {
+		t.Fatalf("nested target incorrectly switched to nested repository context:\n%s", stdout.String())
+	}
+}
+
 func TestRunChangedHardFailsOutsideGit(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('ok')\n",
@@ -4983,8 +4668,45 @@ func TestRunChangedHardFailsOutsideGit(t *testing.T) {
 	if !strings.Contains(stderr.String(), "require a git repository") {
 		t.Fatalf("expected git-required error on stderr, got:\n%s", stderr.String())
 	}
+	if strings.Contains(stderr.String(), "working tree may be clean") || strings.Contains(stderr.String(), "No --changed files found") {
+		t.Fatalf("precise git-required error must suppress clean-tree guidance:\n%s", stderr.String())
+	}
 	if strings.Contains(stdout.String(), "src/main.ts") {
 		t.Fatalf("expected no file output when git selection is unsatisfiable, got:\n%s", stdout.String())
+	}
+}
+
+func TestRunRepeatedNoGitDiagnosticsDedupe(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts": "console.log('ok')\n",
+	})
+
+	cfg := parseInProject(t, project, []string{
+		"--quiet", "--print", ".", "--changed",
+		"--then", ".", "--changed",
+	})
+
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected non-zero exit when every scope requires git")
+	}
+	var exitErr exitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected exitError, got %T: %v", err, err)
+	}
+	if exitErr.code != 2 {
+		t.Fatalf("expected exit code 2 when every scope is unsatisfiable, got %d", exitErr.code)
+	}
+	message := stderr.String()
+	if got := strings.Count(message, "require a git repository"); got != 1 {
+		t.Fatalf("expected one deduplicated git-required error, got %d:\n%s", got, message)
+	}
+	if strings.Contains(message, "working tree may be clean") || strings.Contains(message, "No --changed files found") {
+		t.Fatalf("precise git-required errors must suppress clean-tree guidance:\n%s", message)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("unsatisfiable scopes polluted stdout:\n%s", stdout.String())
 	}
 }
 
@@ -5445,28 +5167,6 @@ func TestRunHissResetRestoresDefaults(t *testing.T) {
 	}
 }
 
-func TestHelpTextIncludesShellParitySections(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"src/main.ts": "console.log('ok')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-
-	hissDisplay := platform.DisplayPath(discovery.GlobalHissPath())
-	help := cli.ShortHelpText("0.2.1", hissDisplay, platform.Palette{})
-	full := cli.FullHelpText("0.2.1", hissDisplay, platform.Palette{})
-
-	for _, want := range []string{"Quick Start:", "Interactive mode (build commands from menus):", "Filtering:", "Git Filters (requires a git repo):", "Full reference manual: catclip --help-all"} {
-		if !strings.Contains(help, want) {
-			t.Fatalf("expected short help to contain %q, got:\n%s", want, help)
-		}
-	}
-	for _, want := range []string{"Reference Manual", "COMMON TASKS", "TARGETING", "FILTERING", "PIPELINE MODEL", "AUTHORIZATION", "OUTPUT FORMAT", "CLIPBOARD DELIVERY", "EXIT CODES", "COMMON ERRORS", "MODIFIER REFERENCE", platform.DisplayPath(discovery.GlobalHissPath())} {
-		if !strings.Contains(full, want) {
-			t.Fatalf("expected full help to contain %q, got:\n%s", want, full)
-		}
-	}
-}
-
 func TestClipboardCommandDisplaylessRequiresWayland(t *testing.T) {
 	skipUnlessLinux(t, "linux displayless clipboard error")
 
@@ -5509,18 +5209,6 @@ func TestClipboardCommandWaylandMissingWlCopyShowsInstallHint(t *testing.T) {
 	legacyTool := "x" + "clip"
 	if strings.Contains(err.Error(), legacyTool) {
 		t.Fatalf("Wayland install hint must not mention %s, got: %v", legacyTool, err)
-	}
-}
-
-func TestClipboardInstallHintWaylandIncludesFedora(t *testing.T) {
-	skipUnlessLinux(t, "wayland clipboard install hint")
-
-	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
-	hint := output.ClipboardInstallHint("linux", platform.Palette{})
-	for _, want := range []string{"wl-clipboard", "Debian/Ubuntu", "Arch", "Fedora"} {
-		if !strings.Contains(hint, want) {
-			t.Errorf("wayland install hint missing %q, got: %s", want, hint)
-		}
 	}
 }
 
@@ -6786,6 +6474,36 @@ func TestRunUnresolvableTargetWarnsAndExitsNonZero(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Warning:") {
 		t.Fatalf("expected warning on stderr even with -q, got:\n%s", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "Possible causes:") {
+		t.Fatalf("precise missing-target warning must suppress generic footer:\n%s", stderr.String())
+	}
+}
+
+func TestRunMixedMissingAndUnexplainedTargetKeepsGenericFooter(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/app.ts": "export const app = true\n",
+	})
+	if err := os.Mkdir(filepath.Join(project, "empty"), 0o755); err != nil {
+		t.Fatalf("mkdir empty target: %v", err)
+	}
+
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", "zzzznothing", "empty"})
+
+	var stdout, stderr bytes.Buffer
+	err := run(cfg, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("expected non-zero exit for empty targets")
+	}
+	message := stderr.String()
+	if !strings.Contains(message, "zzzznothing") {
+		t.Fatalf("expected precise warning for missing target:\n%s", message)
+	}
+	if !strings.Contains(message, "Possible causes:") {
+		t.Fatalf("unexplained empty directory must retain generic footer:\n%s", message)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("empty result polluted stdout:\n%s", stdout.String())
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 
 const (
 	tokenWarnThreshold = 100000
-	snippetContextMax  = 200
 )
 
 // invocationConfigFromParsedCommand is a dup of root catclip's
@@ -132,7 +131,7 @@ func formatByteCount(totalBytes int64) string {
 // exitError is a typed exit-code error returned by UI helpers that
 // want to short-circuit with a specific exit code (e.g. picker
 // cancellation returns exit code 1 without an error message). Root
-// exitWithError classifies it via the existing exitError branch.
+// Root classifies it through CatclipExitCode without importing this private type.
 type exitError struct {
 	message string
 	code    int
@@ -140,8 +139,7 @@ type exitError struct {
 
 func (e exitError) Error() string { return e.message }
 
-// Code returns the requested exit code. Used by root exitWithError.
-func (e exitError) Code() int { return e.code }
+func (e exitError) CatclipExitCode() int { return e.code }
 
 // newExitError constructs an exitError with the given exit code and
 // message. Replaces root newExitError calls from UI files after the

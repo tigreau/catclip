@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -36,6 +37,11 @@ func TestStrictAndPreflightAgreeOnValueConsumption(t *testing.T) {
 		{"src", "--not-contains=TODO"},
 		{"src", "--snippet=TODO"},
 		{"src", "--include=x"},
+		{"src", "--wat"},
+		{"src", "--snippet", "TODO", "201"},
+		{"src", "--lines", "0"},
+		{"src", "--lines", "5", "4"},
+		{"src", "--lines", "last"},
 	}
 	for _, args := range vectors {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
@@ -44,8 +50,24 @@ func TestStrictAndPreflightAgreeOnValueConsumption(t *testing.T) {
 			if (strictErr == nil) != (preflightErr == nil) {
 				t.Fatalf("accept/reject diverges:\n  strict:    %v\n  preflight: %v", strictErr, preflightErr)
 			}
-			if strictErr != nil && strictErr.Error() != preflightErr.Error() {
-				t.Fatalf("error text diverges:\n  strict:    %v\n  preflight: %v", strictErr, preflightErr)
+			if strictErr == nil {
+				return
+			}
+
+			var strictFailure, preflightFailure ValidationFailure
+			strictTyped := errors.As(strictErr, &strictFailure)
+			preflightTyped := errors.As(preflightErr, &preflightFailure)
+			if strictTyped != preflightTyped {
+				t.Fatalf("structured error ownership diverges:\n  strict:    %T %v\n  preflight: %T %v", strictErr, strictErr, preflightErr, preflightErr)
+			}
+			if strictTyped {
+				if strictFailure != preflightFailure {
+					t.Fatalf("validation fields diverge:\n  strict:    %#v\n  preflight: %#v", strictFailure, preflightFailure)
+				}
+				return
+			}
+			if strictErr.Error() != preflightErr.Error() {
+				t.Fatalf("untyped error text diverges:\n  strict:    %v\n  preflight: %v", strictErr, preflightErr)
 			}
 		})
 	}

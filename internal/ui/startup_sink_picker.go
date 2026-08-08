@@ -102,13 +102,15 @@ type sinkPreview struct {
 }
 
 type StartupSinkPickerContext struct {
-	Config    command.Parsed
-	Emit      output.EmitConfig
-	Render    RenderConfig
-	Git       git.Context
-	Discovery discovery.Result
-	Plan      output.Plan
-	Report    output.Report
+	Config         command.Parsed
+	ProgressExtras interactiveProgressExtras
+	ProgressScopes []command.ExecutionScope
+	Emit           output.EmitConfig
+	Render         RenderConfig
+	Git            git.Context
+	Discovery      discovery.Result
+	Plan           output.Plan
+	Report         output.Report
 }
 
 type startupSinkPreviewFiles struct {
@@ -247,7 +249,8 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 	// later sees on stderr after picker confirmation.
 	colors := platform.ActivePalette()
 
-	discoveryResult, err := discovery.DiscoverInvocation(resolvedInvocationFromParsedCommand(cfg), gitCtx, io.Discard, colors)
+	resolved := resolvedInvocationFromParsedCommand(cfg)
+	discoveryResult, err := discovery.DiscoverInvocation(resolved, gitCtx, io.Discard, colors)
 	if err != nil {
 		return StartupSinkPickerContext{}, err
 	}
@@ -266,13 +269,15 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 		return StartupSinkPickerContext{}, err
 	}
 	return StartupSinkPickerContext{
-		Config:    cfg,
-		Emit:      emitCfg,
-		Render:    renderCfg,
-		Git:       gitCtx,
-		Discovery: discoveryResult,
-		Plan:      plan,
-		Report:    report,
+		Config:         cfg,
+		ProgressExtras: interactiveProgressExtrasFromParsed(cfg),
+		ProgressScopes: resolved.Scopes,
+		Emit:           emitCfg,
+		Render:         renderCfg,
+		Git:            gitCtx,
+		Discovery:      discoveryResult,
+		Plan:           plan,
+		Report:         report,
 	}, nil
 }
 
@@ -313,6 +318,8 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 		WithNth:        "1,3",
 		Nth:            "1,3",
 		Header:         startupSinkPickerHeaderWithEscHint(escHint),
+		Footer:         formatInteractiveFilterProgress(ctx.ProgressExtras, ctx.ProgressScopes, 0),
+		FooterBorder:   "rounded",
 		PreviewCommand: files.PreviewCommand,
 		PreviewWindow:  picker.DefaultPreviewWindow,
 		Bindings:       []string{files.ToggleBinding},

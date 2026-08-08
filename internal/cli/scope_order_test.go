@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"github.com/tigreau/catclip/internal/command"
+	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -9,8 +9,9 @@ import (
 	"runtime"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/command"
 )
 
 func TestScopeStageSemanticsClassifiesEveryDeclaredStageKind(t *testing.T) {
@@ -28,151 +29,84 @@ func TestScopeStageSemanticsClassifiesEveryDeclaredStageKind(t *testing.T) {
 	}
 }
 
-func TestCurrentScopeStagesFromArgsUsesCurrentScopeOnly(t *testing.T) {
-	stages := currentScopeStagesFromArgs([]string{
-		"src",
-		"--contains", "TODO",
-		"--recent", "5",
-		"--then",
-		"docs",
-		"--changed-diff",
-	})
-
-	got := make([]command.StageKind, 0, len(stages))
-	for _, stage := range stages {
-		got = append(got, stage.Kind)
+func TestCurrentScopeStagesFromArgs(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want []command.StageKind
+	}{
+		{
+			name: "uses only the scope after then",
+			args: []string{"src", "--contains", "TODO", "--recent", "5", "--then", "docs", "--changed-diff"},
+			want: []command.StageKind{command.StageChangedDiff},
+		},
+		{
+			name: "treats modifier-like regex as a value",
+			args: []string{"src", "--contains", "--snippet"},
+			want: []command.StageKind{command.StageContains},
+		},
 	}
-	want := []command.StageKind{command.StageChangedDiff}
-	if !slices.Equal(got, want) {
-		t.Fatalf("expected current-scope stages %v, got %v", want, got)
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stages := currentScopeStagesFromArgs(tt.args)
+			got := make([]command.StageKind, 0, len(stages))
+			for _, stage := range stages {
+				got = append(got, stage.Kind)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("stage kinds = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestCurrentScopeStagesFromArgsTreatsModifierLikeRegexAsValue(t *testing.T) {
-	stages := currentScopeStagesFromArgs([]string{"src", "--contains", "--snippet"})
+func TestValidateCurrentScopeFlagSequence(t *testing.T) {
+	tests := []struct {
+		name         string
+		currentArgs  []string
+		flags        []string
+		wantReason   Reason
+		wantFlag     string
+		wantBoundary string
+		wantNext     string
+	}{
+		{name: "modifier-like contains value then snippet", currentArgs: []string{"src", "--contains", "--snippet"}, flags: []string{"--snippet"}},
+		{name: "contains after diff", currentArgs: []string{"src", "--changed-diff"}, flags: []string{"--contains"}, wantReason: ReasonDiffContentFilterOrder, wantFlag: "--contains", wantBoundary: "--changed-diff"},
+		{name: "contains after snippet", currentArgs: []string{"src", "--snippet", "TODO"}, flags: []string{"--contains"}, wantReason: ReasonSnippetContentFilterOrder, wantFlag: "--contains"},
+		{name: "diff after snippet", currentArgs: []string{"src", "--snippet", "TODO"}, flags: []string{"--changed-diff"}, wantReason: ReasonDiffSnippetConflict},
+		{name: "snippet after contains", currentArgs: []string{"src", "--contains", "TODO", "--only", "src/main.ts"}, flags: []string{"--snippet"}},
+		{name: "recent after diff", currentArgs: []string{"src", "--changed-diff"}, flags: []string{"--recent"}},
+		{name: "depth after diff", currentArgs: []string{"src", "--changed-diff"}, flags: []string{"--depth"}},
+		{name: "contains after paths", currentArgs: []string{"src", "--paths"}, flags: []string{"--contains"}, wantReason: ReasonTerminalBoundaryOrder, wantBoundary: "--paths", wantNext: "--contains"},
+		{name: "include after only", currentArgs: []string{"src", "--only", "val"}, flags: []string{"--include"}, wantReason: ReasonIncludeAfterModifier},
+		{name: "include after exclude", currentArgs: []string{"src", "--exclude", "val"}, flags: []string{"--include"}, wantReason: ReasonIncludeAfterModifier},
+		{name: "include after changed", currentArgs: []string{"src", "--changed"}, flags: []string{"--include"}, wantReason: ReasonIncludeAfterModifier},
+		{name: "include after contains", currentArgs: []string{"src", "--contains", "val"}, flags: []string{"--include"}, wantReason: ReasonIncludeAfterModifier},
+		{name: "include after recent", currentArgs: []string{"src", "--recent"}, flags: []string{"--include"}, wantReason: ReasonIncludeAfterModifier},
+		{name: "repeated include", currentArgs: []string{"src", "--include", "vendor"}, flags: []string{"--include"}, wantReason: ReasonRepeatedInclude},
+		{name: "include first", currentArgs: []string{"src"}, flags: []string{"--include"}},
+		{name: "modifier after include", currentArgs: []string{"src", "--include", "vendor"}, flags: []string{"--only"}},
+		{name: "then resets include ordering", currentArgs: []string{"src", "--only", "*.ts", "--then", "docs"}, flags: []string{"--include"}},
+	}
 
-	got := make([]command.StageKind, 0, len(stages))
-	for _, stage := range stages {
-		got = append(got, stage.Kind)
-	}
-	want := []command.StageKind{command.StageContains}
-	if !slices.Equal(got, want) {
-		t.Fatalf("expected current-scope stages %v, got %v", want, got)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceAllowsSnippetAfterModifierLikeContainsValue(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--contains", "--snippet"}, []string{"--snippet"})
-	if err != nil {
-		t.Fatalf("expected snippet after modifier-like contains value to remain valid, got %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceRejectsContainsAfterDiff(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--changed-diff"}, []string{"--contains"})
-	if err == nil {
-		t.Fatal("expected contains after diff to fail")
-	}
-	if !strings.Contains(err.Error(), "--contains must come before --changed-diff in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceRejectsContainsAfterSnippet(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--snippet", "TODO"}, []string{"--contains"})
-	if err == nil {
-		t.Fatal("expected contains after snippet to fail")
-	}
-	if !strings.Contains(err.Error(), "--contains must come before --snippet in the same scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceRejectsDiffAfterSnippet(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--snippet", "TODO"}, []string{"--changed-diff"})
-	if err == nil {
-		t.Fatal("expected diff after snippet to fail")
-	}
-	if !strings.Contains(err.Error(), "--snippet and --diff cannot be combined") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceAllowsSnippetAfterContains(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--contains", "TODO", "--only", "src/main.ts"}, []string{"--snippet"})
-	if err != nil {
-		t.Fatalf("expected snippet after earlier filters to remain valid, got %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceAllowsRecentAfterDiff(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--changed-diff"}, []string{"--recent"})
-	if err != nil {
-		t.Fatalf("expected recent after diff to remain valid, got %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceAllowsDepthAfterDiff(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--changed-diff"}, []string{"--depth"})
-	if err != nil {
-		t.Fatalf("expected depth after diff to remain valid, got %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceRejectsContainsAfterPaths(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--paths"}, []string{"--contains"})
-	if err == nil {
-		t.Fatal("expected contains after --paths to fail")
-	}
-	if !strings.Contains(err.Error(), "--paths finalizes the current scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceRejectsIncludeAfterModifier(t *testing.T) {
-	for _, prior := range []string{"--only", "--exclude", "--changed", "--contains", "--recent"} {
-		args := []string{"src", prior}
-		if prior == "--only" || prior == "--exclude" || prior == "--contains" {
-			args = append(args, "val")
-		}
-		err := ValidateCurrentScopeFlagSequence(args, []string{"--include"})
-		if err == nil {
-			t.Fatalf("expected --include after %s to fail", prior)
-		}
-		if !strings.Contains(err.Error(), "--include must come before other modifiers") {
-			t.Fatalf("unexpected error after %s: %v", prior, err)
-		}
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceRejectsRepeatedInclude(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--include", "vendor"}, []string{"--include"})
-	if err == nil {
-		t.Fatal("expected repeated --include to fail")
-	}
-	if !strings.Contains(err.Error(), "--include can only appear once per scope") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceAllowsIncludeFirst(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src"}, []string{"--include"})
-	if err != nil {
-		t.Fatalf("expected --include as first modifier to succeed, got %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceAllowsModifierAfterInclude(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--include", "vendor"}, []string{"--only"})
-	if err != nil {
-		t.Fatalf("expected --only after --include to succeed, got %v", err)
-	}
-}
-
-func TestValidateCurrentScopeFlagSequenceIncludeAfterThenResetsScope(t *testing.T) {
-	err := ValidateCurrentScopeFlagSequence([]string{"src", "--only", "*.ts", "--then", "docs"}, []string{"--include"})
-	if err != nil {
-		t.Fatalf("expected --include after --then to succeed, got %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateCurrentScopeFlagSequence(tt.currentArgs, tt.flags)
+			if tt.wantReason == "" {
+				if err != nil {
+					t.Fatalf("expected sequence to be valid, got %v", err)
+				}
+				return
+			}
+			var failure ValidationFailure
+			if !errors.As(err, &failure) {
+				t.Fatalf("expected ValidationFailure reason %q, got %T: %v", tt.wantReason, err, err)
+			}
+			if failure.Reason != tt.wantReason || failure.Flag != tt.wantFlag || failure.BoundaryFlag != tt.wantBoundary || failure.NextFlag != tt.wantNext {
+				t.Fatalf("validation failure = %#v, want reason=%q flag=%q boundary=%q next=%q", failure, tt.wantReason, tt.wantFlag, tt.wantBoundary, tt.wantNext)
+			}
+		})
 	}
 }
 

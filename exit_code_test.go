@@ -1,6 +1,8 @@
 package catclip
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +12,44 @@ import (
 
 	"github.com/tigreau/catclip/internal/discovery"
 )
+
+type foreignCatclipExitError struct {
+	code int
+}
+
+func (e foreignCatclipExitError) Error() string        { return "foreign failure" }
+func (e foreignCatclipExitError) CatclipExitCode() int { return e.code }
+
+type genericExitCodeError struct{}
+
+func (genericExitCodeError) Error() string { return "subprocess failure" }
+func (genericExitCodeError) ExitCode() int { return 2 }
+
+func TestExitCodeForError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "nil", err: nil, want: 0},
+		{name: "ordinary", err: errors.New("boom"), want: 1},
+		{name: "root usage", err: usageError{message: "bad input"}, want: 2},
+		{name: "root exit", err: exitError{message: "stop", code: 2}, want: 2},
+		{name: "foreign structural", err: foreignCatclipExitError{code: 2}, want: 2},
+		{name: "wrapped structural", err: fmt.Errorf("wrapped: %w", foreignCatclipExitError{code: 2}), want: 2},
+		{name: "generic exit code method", err: genericExitCodeError{}, want: 1},
+		{name: "zero rejected", err: foreignCatclipExitError{code: 0}, want: 1},
+		{name: "negative rejected", err: foreignCatclipExitError{code: -1}, want: 1},
+		{name: "large rejected", err: foreignCatclipExitError{code: 3}, want: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := exitCodeForError(tt.err); got != tt.want {
+				t.Fatalf("exitCodeForError(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
+	}
+}
 
 // TestExitCodeForRegexModifierExtraValueError pins the exit code returned
 // when --contains REGEX EXTRA (an unquoted regex split into multiple

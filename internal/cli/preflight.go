@@ -214,7 +214,7 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 				next := args[i+1]
 				if n, err := strconv.Atoi(next); err == nil {
 					if n < 1 {
-						return command.Spec{}, newUsageError("Error: --lines start must be >= 1 (got %d).\n  Line numbers are 1-based, matching editors and compiler output.", n)
+						return command.Spec{}, LinesStartError(n)
 					}
 					start = n
 					i++
@@ -222,16 +222,16 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 						next2 := args[i+1]
 						if n2, err := strconv.Atoi(next2); err == nil {
 							if n2 < start {
-								return command.Spec{}, newUsageError("Error: --lines end (%d) must be >= start (%d).\n  Use: --lines START END where END >= START.", n2, start)
+								return command.Spec{}, LinesEndBeforeStartError(n2, start)
 							}
 							end = n2
 							i++
 						} else if !strings.HasPrefix(next2, "-") {
-							return command.Spec{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next2)
+							return command.Spec{}, LinesInvalidValueError(next2)
 						}
 					}
 				} else if !strings.HasPrefix(next, "-") {
-					return command.Spec{}, newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", next)
+					return command.Spec{}, LinesInvalidValueError(next)
 				}
 			}
 			current.LinesStart = start
@@ -261,8 +261,8 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 				// parseArgs so the startup/interactive path carries it too.
 				if i+1 < len(args) {
 					if n, err := strconv.Atoi(args[i+1]); err == nil {
-						if n < 0 || n > snippetContextMax {
-							return command.Spec{}, newUsageError("Error: --snippet context must be between 0 and %d (got %d).\n  Use: --snippet 'REGEX' N for N lines around each match (0 = matching line only).", snippetContextMax, n)
+						if err := ValidateSnippetContext(n); err != nil {
+							return command.Spec{}, err
 						}
 						i++
 						current.SnippetContextSet = true
@@ -383,9 +383,9 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		case arg == "--diff":
 			return command.Spec{}, DiffStandaloneError()
 		case strings.HasPrefix(arg, "--"):
-			return command.Spec{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
+			return command.Spec{}, UnknownOptionError(arg)
 		case strings.HasPrefix(arg, "-") && len(arg) > 1:
-			return command.Spec{}, newUsageError("Error: Unknown option %s\n  Run 'catclip --help' for available options.", singleQuoted(arg))
+			return command.Spec{}, UnknownOptionError(arg)
 		default:
 			if inModifierMode {
 				return command.Spec{}, PositionalAfterModifierError()

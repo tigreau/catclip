@@ -6,16 +6,22 @@ import (
 	"testing"
 )
 
-func TestDetectForGOOSClassifiesNativeWindows(t *testing.T) {
-	if got := DetectForGOOS("windows", ""); got != "windows" {
-		t.Fatalf("expected windows, got %q", got)
+func TestDetectForGOOS(t *testing.T) {
+	tests := []struct {
+		name        string
+		goos        string
+		procVersion string
+		want        string
+	}{
+		{name: "native Windows", goos: "windows", want: "windows"},
+		{name: "WSL from proc version", goos: "linux", procVersion: "Linux version 5.15.167.4-microsoft-standard-WSL2", want: "wsl"},
 	}
-}
-
-func TestDetectForGOOSClassifiesWSLFromProcVersion(t *testing.T) {
-	procVersion := "Linux version 5.15.167.4-microsoft-standard-WSL2"
-	if got := DetectForGOOS("linux", procVersion); got != "wsl" {
-		t.Fatalf("expected wsl, got %q", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := DetectForGOOS(tt.goos, tt.procVersion); got != tt.want {
+				t.Fatalf("DetectForGOOS() = %q, want %q", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -53,22 +59,24 @@ func TestBundledToolCandidatesForGOOSFindWindowsShareLayout(t *testing.T) {
 	}
 }
 
-func TestMultiSelectToggleAllBindingForGOOSUsesCtrlAOnDarwin(t *testing.T) {
-	if got := multiSelectToggleAllBindingForGOOS("darwin"); got != "ctrl-a:toggle-all" {
-		t.Fatalf("expected ctrl-a binding on darwin, got %q", got)
+func TestMultiSelectToggleAllForGOOS(t *testing.T) {
+	tests := []struct {
+		goos        string
+		wantBinding string
+		wantKey     string
+	}{
+		{goos: "darwin", wantBinding: "ctrl-a:toggle-all", wantKey: "Ctrl-A"},
+		{goos: "linux", wantBinding: "alt-a:toggle-all", wantKey: "Alt-A"},
+		{goos: "windows", wantBinding: "alt-a:toggle-all", wantKey: "Alt-A"},
 	}
-	if got := multiSelectToggleAllKeyForGOOS("darwin"); got != "Ctrl-A" {
-		t.Fatalf("expected Ctrl-A label on darwin, got %q", got)
-	}
-}
-
-func TestMultiSelectToggleAllBindingForGOOSUsesAltAOffDarwin(t *testing.T) {
-	for _, goos := range []string{"linux", "windows"} {
-		if got := multiSelectToggleAllBindingForGOOS(goos); got != "alt-a:toggle-all" {
-			t.Fatalf("expected alt-a binding on %s, got %q", goos, got)
-		}
-		if got := multiSelectToggleAllKeyForGOOS(goos); got != "Alt-A" {
-			t.Fatalf("expected Alt-A label on %s, got %q", goos, got)
-		}
+	for _, tt := range tests {
+		t.Run(tt.goos, func(t *testing.T) {
+			if got := multiSelectToggleAllBindingForGOOS(tt.goos); got != tt.wantBinding {
+				t.Fatalf("binding = %q, want %q", got, tt.wantBinding)
+			}
+			if got := multiSelectToggleAllKeyForGOOS(tt.goos); got != tt.wantKey {
+				t.Fatalf("key = %q, want %q", got, tt.wantKey)
+			}
+		})
 	}
 }

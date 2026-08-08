@@ -63,7 +63,9 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	}
 
 	labels, index := TargetMatchLabels(options)
-	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, TargetPickerHeaderWithEscHint(prompt, r.StartupEscHint), labels, false, r.WithBinaries)
+	header := TargetPickerHeaderWithEscHint(prompt, r.StartupEscHint)
+	revealedHeader := styledTargetPickerHeaderWithSymbols(prompt, r.StartupEscHint, platform.ActivePalette())
+	selectedLabels, err := chooseManyTargetMatchesWithFzfChrome(path, query, prompt, header, revealedHeader, labels, false, r.WithBinaries)
 	if err != nil {
 		return nil, err
 	}
@@ -741,15 +743,19 @@ func contentMatchReloadBindings(reloadCommand, searchingPreviewCommand string) [
 }
 
 func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind, state string, includeTarget, withBinaries bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", FzfPreviewCommand(includeTarget, withBinaries), formatFzfCandidates(candidates, kind, state))
+	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", "", FzfPreviewCommand(includeTarget, withBinaries), formatFzfCandidates(candidates, kind, state))
 }
 
 func chooseManyTargetMatchesWithFzfHeader(bin, query, prompt, header string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", header, FzfPreviewCommand(includeTarget, withBinaries), candidates)
+	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", header, "", FzfPreviewCommand(includeTarget, withBinaries), candidates)
+}
+
+func chooseManyTargetMatchesWithFzfChrome(bin, query, prompt, header, revealedHeader string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
+	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", header, revealedHeader, FzfPreviewCommand(includeTarget, withBinaries), candidates)
 }
 
 func chooseManyTargetMatchesWithFzf(bin, query, prompt string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", "", FzfPreviewCommand(includeTarget, withBinaries), candidates)
+	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", "", "", FzfPreviewCommand(includeTarget, withBinaries), candidates)
 }
 
 type fzfChooseResult struct {
@@ -758,9 +764,9 @@ type fzfChooseResult struct {
 	Matches []string
 }
 
-func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, previewCommand string, candidates []string) ([]string, error) {
+func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, revealedHeader, previewCommand string, candidates []string) ([]string, error) {
 	platform.StopActiveSpinner()
-	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
+	req := picker.Request{
 		Query:          query,
 		Prompt:         prompt,
 		WithNth:        withNth,
@@ -770,7 +776,11 @@ func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, previewC
 		Multi:          true,
 		Bindings:       MultiSelectPickerBindings(),
 		Lines:          candidates,
-	}))
+	}
+	if revealedHeader != "" {
+		req.Bindings = append(req.Bindings, targetPickerRevealHeaderBinding(revealedHeader))
+	}
+	result, err := picker.Run(bin, themedFzfRequest(req))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return nil, ErrSelectionCancelled
 	}
@@ -781,4 +791,8 @@ func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, previewC
 		return nil, ErrSelectionCancelled
 	}
 	return result.Matches, nil
+}
+
+func targetPickerRevealHeaderBinding(header string) string {
+	return picker.RevealHeaderAfterQueryChangeBinding(header)
 }

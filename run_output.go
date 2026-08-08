@@ -48,7 +48,9 @@ func executeTreePreview(ctx outputExecutionContext, state outputExecutionState) 
 }
 
 func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) error {
-	writeDiscoveryDiagnostics(state.Diagnostics, ctx.Invocation.Quiet, ctx.Stderr)
+	if err := writeDiscoveryDiagnostics(state.Diagnostics, ctx.Stderr); err != nil {
+		return err
+	}
 	if state.Plan.IsEmpty() {
 		return executeEmptyOutput(ctx, state)
 	}

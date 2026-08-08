@@ -19,10 +19,10 @@ import (
 // is unlikely to change. If any grows substantially, promote to a
 // shared package instead of letting the implementations diverge.
 
-const snippetContextMax = 200
+const SnippetContextMax = 200
 
-// UsageError is the CLI parsing failure shape. Exported so root
-// exitWithError can errors.As against it and bump exit code to 2.
+// UsageError is the CLI parsing failure shape. CatclipExitCode lets the root
+// process boundary classify it structurally without importing this type.
 type UsageError struct {
 	Message string
 }
@@ -30,6 +30,8 @@ type UsageError struct {
 func (e UsageError) Error() string {
 	return e.Message
 }
+
+func (e UsageError) CatclipExitCode() int { return 2 }
 
 func newUsageError(format string, args ...any) error {
 	return UsageError{Message: fmt.Sprintf(format, args...)}
