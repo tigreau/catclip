@@ -258,6 +258,11 @@ function Resolve-BundledToolSource {
     try {
         return Resolve-CommandPath $ToolName
     } catch {
+        $existingBundle = Join-Path $ToolsDir "$ToolName.exe"
+        if (Test-Path -LiteralPath $existingBundle -PathType Leaf) {
+            Note "Reusing the existing bundled $ToolName at $existingBundle."
+            return (Resolve-Path -LiteralPath $existingBundle).Path
+        }
         Fail "'$ToolName' is required for Windows source installs because catclip packages a private bundled copy with every install.`nInstall $ToolName first, or set $EnvVar to an executable path."
     }
 }
@@ -534,7 +539,7 @@ try {
         Write-Host "Source:   $sourceDir"
         Note 'Building from your local checkout so the installed binary matches the code you have checked out.'
         Note 'Windows source installs are a developer path. Normal users should use the published release bundle.'
-        Note 'Source installs require local Go, rg, and fzf once at install time so catclip can bundle private copies into the final install.'
+        Note 'Source installs need Go. Catclip uses rg and fzf from PATH, or reuses them from an existing Catclip install.'
 
         $versionFile = Join-Path $sourceDir 'VERSION'
         $binaryFile = Join-Path $tmpRoot "$ProgramName.exe"

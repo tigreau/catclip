@@ -207,7 +207,7 @@ resolve_bundled_tool_source_into() {
   local out_var="$1"
   local env_var="$2"
   local tool_name="$3"
-  local override resolved
+  local override resolved existing_bundle
 
   override="${!env_var:-}"
   if [[ -n "$override" ]]; then
@@ -223,25 +223,26 @@ resolve_bundled_tool_source_into() {
   fi
 
   resolved="$(command -v "$tool_name" || true)"
-  if [[ -z "$resolved" ]]; then
-    die_missing_source_tool "$tool_name" "$env_var"
+  if [[ -n "$resolved" ]]; then
+    printf -v "$out_var" '%s' "$resolved"
+    return 0
   fi
-  printf -v "$out_var" '%s' "$resolved"
+
+  existing_bundle="$TOOLS_DIR/$tool_name"
+  if [[ -x "$existing_bundle" ]]; then
+    note "Reusing the existing bundled $tool_name at $existing_bundle."
+    printf -v "$out_var" '%s' "$existing_bundle"
+    return 0
+  fi
+
+  die_missing_source_tool "$tool_name" "$env_var"
 }
 
-# die_missing_source_tool prints a scenario-appropriate hint before
-# exiting. Two branches:
-#   - Reinstall path: TOOLS_DIR/<tool> already exists from a prior
-#     install, so we tell the user to self-bootstrap via the env var.
-#   - Fresh install: no existing bundle, so we list package-manager
-#     install commands.
-# Kept as its own function so the die string is readable and both
-# branches can share the "or set $env_var to an executable path"
-# escape hatch line.
+# die_missing_source_tool handles a fresh local source install with no explicit
+# override, PATH copy, or existing Catclip bundle to reuse.
 die_missing_source_tool() {
   local tool_name="$1"
   local env_var="$2"
-  local existing_bundle="$TOOLS_DIR/$tool_name"
   local pkg_name
   local message
 
@@ -254,25 +255,7 @@ die_missing_source_tool() {
     *)   pkg_name="$tool_name" ;;
   esac
 
-  if [[ -x "$existing_bundle" ]]; then
-    message="'$tool_name' is not on PATH, and this install needs a source to bundle from.
-
-  You have an existing bundled $tool_name at:
-    $existing_bundle
-
-  To self-bootstrap from it (fast path — reuses your existing copy), rerun with:
-    $env_var=$existing_bundle ./install.sh
-
-  To upgrade $tool_name instead, install it first, then rerun without the env var:
-    macOS:            brew install $pkg_name
-    Debian/Ubuntu:    sudo apt install $pkg_name
-    Fedora:           sudo dnf install $pkg_name
-    Arch:             sudo pacman -S $pkg_name
-
-  Or point install.sh at any executable manually:
-    $env_var=/path/to/$tool_name ./install.sh"
-  else
-    message="'$tool_name' is required for local source installs because catclip packages a private bundled copy with every install.
+  message="'$tool_name' is required for local source installs because catclip packages a private bundled copy with every install.
 
   Install $tool_name first:
     macOS:            brew install $pkg_name
@@ -282,7 +265,6 @@ die_missing_source_tool() {
 
   Or point install.sh at an existing binary:
     $env_var=/path/to/$tool_name ./install.sh"
-  fi
 
   die "$message"
 }
@@ -516,7 +498,7 @@ if SOURCE_DIR="$(find_local_source_dir)"; then
   printf 'Source:   %s%s%s\n' "$CYAN" "$SOURCE_DIR" "$RESET"
   note "Building from your local checkout so the installed binary matches the code you have checked out."
   note "This avoids replacing your in-progress source tree with the latest published release."
-  note "Source installs require local Go, rg, and fzf once at install time so catclip can bundle private copies into the final install."
+  note "Source installs need Go. Catclip uses rg and fzf from PATH, or reuses them from an existing Catclip install."
 
   VERSION_FILE="$SOURCE_DIR/VERSION"
   BINARY_FILE="$TMP_ROOT/$PROGRAM_NAME"
