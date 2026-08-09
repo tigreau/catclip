@@ -1689,7 +1689,7 @@ func TestRunNoIgnoreUsesCombinedTargetUniverse(t *testing.T) {
 			"generated/config.ts": "export const hidden = true\n",
 		})
 
-		cfg := parseInProject(t, project, []string{"--quiet", "--print", "config.ts", "--no-ignore", "--paths"})
+		cfg := parseInProject(t, project, []string{"config.ts", "--no-ignore", "--headless", "--paths"})
 		var stdout, stderr bytes.Buffer
 		err := run(cfg, &stdout, &stderr)
 		if err == nil {
@@ -1711,7 +1711,7 @@ func TestRunNoIgnoreUsesCombinedTargetUniverse(t *testing.T) {
 			"ignored/src/wrong.ts":        "export const wrong = true\n",
 		})
 
-		cfg := parseInProject(t, project, []string{"--quiet", "--print", "src", "--no-ignore", "--paths"})
+		cfg := parseInProject(t, project, []string{"src", "--no-ignore", "--headless", "--paths"})
 		var stdout, stderr bytes.Buffer
 		err := run(cfg, &stdout, &stderr)
 		if err == nil {
