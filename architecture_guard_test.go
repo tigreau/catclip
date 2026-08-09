@@ -67,7 +67,7 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 
 // previewCommandBuilders are the functions that emit fzf preview/reload command
 // strings forwarded to the shell (sh on POSIX, `cmd /s /c` on Windows). Every
-// fzf placeholder ({2}, {+2}, {q}, …) in their output must be a standalone,
+// fzf placeholder ({2}, {+2}, {+f}, {q}, …) in their output must be a standalone,
 // whitespace-delimited token — never concatenated into a compound string —
 // because cmd.exe and POSIX sh quote embedded substitutions differently.
 // Compound paths must be assembled in Go on the receiving side (e.g. root
@@ -86,7 +86,6 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 // why `--input-file {N}` with a full-path column is unsafe even though it would
 // pass this guard.
 var previewCommandBuilders = map[string]struct{}{
-	"FzfFileSetPreviewCommand":                  {},
 	"FzfDiffFilePreviewCommand":                 {},
 	"FzfPreviewCommand":                         {},
 	"FzfContentPreviewCommand":                  {},
@@ -124,7 +123,6 @@ var previewBuilderFiles = []string{
 // live in internal/discovery after the v0.6.0 extraction. They moved
 // with the resolver and still need the placeholder-standalone audit.
 var previewBuilderDiscoveryFunctions = map[string]struct{}{
-	"FzfFileSetPreviewCommand":             {},
 	"FzfDiffFilePreviewCommand":            {},
 	"FzfPreviewCommand":                    {},
 	"FzfContentPreviewCommand":             {},
@@ -136,10 +134,10 @@ var previewBuilderDiscoveryFunctions = map[string]struct{}{
 func requirePreviewPlaceholdersStayStandalone(t *testing.T, files []parsedGoFile) {
 	t.Helper()
 	// All fzf placeholder forms used in this codebase.
-	anyPlaceholder := regexp.MustCompile(`\{\+?\d+}|\{q}`)
+	anyPlaceholder := regexp.MustCompile(`\{(?:\+|\*)?(?:\d+|f)}|\{q}`)
 	// Forms that can never be a regex quantifier, so they are safe to flag in
 	// any file (used by the cross-file meta-check).
-	unambiguous := regexp.MustCompile(`\{q}|\{\+\d+}`)
+	unambiguous := regexp.MustCompile(`\{q}|\{(?:\+|\*)\d+}|\{(?:\+|\*)?f}`)
 
 	seen := make(map[string]bool, len(previewCommandBuilders))
 	for _, parsed := range files {

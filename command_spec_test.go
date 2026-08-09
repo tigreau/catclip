@@ -12,15 +12,14 @@ func TestCommandSpecFromScopesCopiesAndDerivesFields(t *testing.T) {
 	limit := 5
 	scopes := []command.ExecutionScope{
 		{
-			Targets:         []string{"src"},
-			IncludedTargets: []string{"vendor"},
-			Only:            []string{"*.go"},
-			Exclude:         []string{"*_test.go"},
-			Contains:        "TODO",
-			SnippetPattern:  "func",
-			Snippet:         true,
-			Changed:         true,
-			Staged:          true,
+			Targets:        []string{"src"},
+			Only:           []string{"*.go"},
+			Exclude:        []string{"*_test.go"},
+			Contains:       "TODO",
+			SnippetPattern: "func",
+			Snippet:        true,
+			Changed:        true,
+			Staged:         true,
 			Stages: []command.Stage{
 				{Kind: command.StageContains, Values: []string{"TODO"}},
 				{Kind: command.StageSnippet, Values: []string{"func"}},
@@ -155,11 +154,10 @@ func BenchmarkFinalizedCommandSpecFromScopesInteractiveSized(b *testing.B) {
 	limit := 10
 	scopes := []command.ExecutionScope{
 		{
-			Targets:         []string{"src", "docs"},
-			IncludedTargets: []string{"node_modules"},
-			Only:            []string{"*.go", "*.md"},
-			Exclude:         []string{"vendor", "*.snap"},
-			Contains:        "TODO",
+			Targets:  []string{"src", "docs"},
+			Only:     []string{"*.go", "*.md"},
+			Exclude:  []string{"vendor", "*.snap"},
+			Contains: "TODO",
 			Stages: []command.Stage{
 				{Kind: command.StageOnly, Values: []string{"*.go", "*.md"}},
 				{Kind: command.StageExclude, Values: []string{"vendor", "*.snap"}},

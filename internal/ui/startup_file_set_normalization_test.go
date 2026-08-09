@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/tigreau/catclip/internal/discovery"
 )
 
 func TestResolveStartupScopeFileSetArgsOnlyDropsExactFilesCoveredBySelectedPattern(t *testing.T) {
@@ -575,7 +577,7 @@ func TestNormalizeInteractiveFileSetStageValuesDoesNotCollapseOneFile(t *testing
 	}
 }
 
-func TestNormalizeInteractiveFileSetStageValuesDoesNotCollapseAcrossUnselectedDirectories(t *testing.T) {
+func TestNormalizeInteractiveFileSetStageValuesCollapsesCompleteDirectoryWithoutCrossingSiblings(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/UserController.java":    "class UserController {}\n",
 		"src/AdminController.java":   "class AdminController {}\n",
@@ -588,8 +590,194 @@ func TestNormalizeInteractiveFileSetStageValuesDoesNotCollapseAcrossUnselectedDi
 	if err != nil {
 		t.Fatalf("normalizeInteractiveFileSetStageValues returned error: %v", err)
 	}
-	if strings.Join(got, "\n") != strings.Join(selected, "\n") {
-		t.Fatalf("normalized values = %q, want %q", got, selected)
+	if want := []string{"src/*"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("normalized values = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeInteractiveFileSetStageValuesCollapsesLargeRootSubtreePrecisely(t *testing.T) {
+	files := map[string]string{
+		"src/main.ts":                    "export const main = true\n",
+		"other/node_modules/keep.js":     "module.exports = true\n",
+		"node_modules/pkg-a/index.js":    "module.exports = 'a'\n",
+		"node_modules/pkg-b/README.md":   "# package b\n",
+		"node_modules/pkg-c/styles.css":  "body {}\n",
+		"node_modules/pkg-c/schema.json": "{}\n",
+	}
+	project := setupTestProject(t, files)
+	_ = parseInProject(t, project, []string{".", "--no-ignore"})
+
+	selected := []string{
+		"node_modules/pkg-a/index.js",
+		"node_modules/pkg-b/README.md",
+		"node_modules/pkg-c/styles.css",
+		"node_modules/pkg-c/schema.json",
+	}
+	got, err := normalizeInteractiveFileSetStageValues([]string{".", "--no-ignore"}, selected)
+	if err != nil {
+		t.Fatalf("normalizeInteractiveFileSetStageValues returned error: %v", err)
+	}
+	if want := []string{"node_modules/*"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("normalized values = %q, want %q", got, want)
+	}
+
+	matcher, err := discovery.ClassifyStageValue(got[0])
+	if err != nil {
+		t.Fatalf("ClassifyStageValue returned error: %v", err)
+	}
+	if !discovery.MatchesStageValue("node_modules/pkg-c/schema.json", matcher) {
+		t.Fatal("compacted selector did not retain a selected descendant")
+	}
+	if discovery.MatchesStageValue("other/node_modules/keep.js", matcher) {
+		t.Fatal("compacted selector widened to a same-named nested directory")
+	}
+}
+
+func TestNormalizeInteractiveFileSetStageValuesCollapsesAnchoredNestedSubtree(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/vendor/pkg-a/index.js":  "module.exports = 'a'\n",
+		"src/vendor/pkg-b/README.md": "# package b\n",
+		"src/main.ts":                "export const main = true\n",
+		"other/vendor/keep.js":       "module.exports = true\n",
+	})
+	_ = parseInProject(t, project, []string{".", "--no-ignore"})
+
+	got, err := normalizeInteractiveFileSetStageValues([]string{".", "--no-ignore"}, []string{
+		"src/vendor/pkg-a/index.js",
+		"src/vendor/pkg-b/README.md",
+	})
+	if err != nil {
+		t.Fatalf("normalizeInteractiveFileSetStageValues returned error: %v", err)
+	}
+	if want := []string{"src/vendor/"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("normalized values = %q, want %q", got, want)
+	}
+}
+
+func TestInferCompleteSelectedSubtreesDoesNotBroadenPartialDirectory(t *testing.T) {
+	selected := []string{
+		"node_modules/pkg-a/index.js",
+		"node_modules/pkg-b/index.js",
+	}
+	scopeFiles := append(append([]string(nil), selected...), "node_modules/pkg-c/index.js")
+
+	selectors, remaining, err := inferCompleteSelectedSubtrees(selected, scopeFiles)
+	if err != nil {
+		t.Fatalf("inferCompleteSelectedSubtrees returned error: %v", err)
+	}
+	if len(selectors) != 0 {
+		t.Fatalf("selectors = %q, want none for a partial directory selection", selectors)
+	}
+	if got, want := strings.Join(remaining, "\n"), strings.Join(selected, "\n"); got != want {
+		t.Fatalf("remaining exact paths = %q, want %q", got, want)
+	}
+}
+
+func TestInferCompleteSelectedSubtreesScalesAcrossLargeNestedTree(t *testing.T) {
+	const packageCount = 10000
+	scopeFiles := make([]string, 0, packageCount+1)
+	selected := make([]string, 0, packageCount)
+	for i := 0; i < packageCount; i++ {
+		relPath := fmt.Sprintf("node_modules/pkg-%05d/lib/index-%05d.js", i, i)
+		scopeFiles = append(scopeFiles, relPath)
+		selected = append(selected, relPath)
+	}
+	scopeFiles = append(scopeFiles, "src/main.ts")
+
+	selectors, remaining, err := inferCompleteSelectedSubtrees(selected, scopeFiles)
+	if err != nil {
+		t.Fatalf("inferCompleteSelectedSubtrees returned error: %v", err)
+	}
+	if want := []string{"node_modules/*"}; strings.Join(selectors, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("selectors = %q, want %q", selectors, want)
+	}
+	if len(remaining) != 0 {
+		t.Fatalf("remaining exact paths = %d, want 0", len(remaining))
+	}
+}
+
+func TestNormalizeInteractiveFileSetStageValuesLargeTreeUsesOneSubtree(t *testing.T) {
+	const packageCount = 10000
+	scopeFiles := make([]string, 0, packageCount+1)
+	selected := make([]string, 0, packageCount)
+	for i := 0; i < packageCount; i++ {
+		relPath := fmt.Sprintf("node_modules/pkg-%05d/lib/file-%05d.js", i, i)
+		scopeFiles = append(scopeFiles, relPath)
+		selected = append(selected, relPath)
+	}
+	scopeFiles = append(scopeFiles, "src/main.ts")
+
+	got, err := normalizeInteractiveFileSetStageValuesForPaths(scopeFiles, selected)
+	if err != nil {
+		t.Fatalf("normalizeInteractiveFileSetStageValuesForPaths returned error: %v", err)
+	}
+	if want := []string{"node_modules/*"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("normalized values = %q, want %q", got, want)
+	}
+}
+
+func TestInteractiveExcludeLargeDirectoryReachesOutputPreparationWithCompactStage(t *testing.T) {
+	files := map[string]string{
+		".gitignore":  "node_modules/\n",
+		"src/main.ts": "export const main = true\n",
+	}
+	for i := 0; i < 512; i++ {
+		relPath := fmt.Sprintf("node_modules/pkg-%04d/lib/file-%04d.%s", i, i, []string{"js", "json", "md", "css"}[i%4])
+		files[relPath] = "fixture\n"
+	}
+	project := setupTestProject(t, files)
+	_ = parseInProject(t, project, []string{".", "--no-ignore"})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+case "$prompt" in
+	"filter> ")
+		printf '%s\n' "$input" | grep -F $'\texclude\t' | head -n 1
+		;;
+	"exclude> ")
+		printf '%s\n' "$input" | grep -F $'\tnode_modules/'
+		;;
+	*)
+		echo "unexpected prompt: $prompt" >&2
+		exit 91
+		;;
+esac
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{".", "--no-ignore", "--"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected interactive filter and exclude pickers")
+	}
+	if got, want := strings.Join(args, "\n"), ".\n--no-ignore\n--exclude\nnode_modules/*"; got != want {
+		t.Fatalf("resolved args = %q, want %q", got, want)
+	}
+
+	context, err := buildStartupSinkPickerContext(args)
+	if err != nil {
+		t.Fatalf("buildStartupSinkPickerContext returned error: %v", err)
+	}
+	paths := context.Plan.DistinctRelPaths()
+	if got, want := strings.Join(paths, "\n"), ".gitignore\nsrc/main.ts"; got != want {
+		t.Fatalf("prepared output paths = %q, want %q", got, want)
 	}
 }
 

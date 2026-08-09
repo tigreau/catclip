@@ -11,7 +11,7 @@ import (
 	"github.com/tigreau/catclip/internal/platform"
 )
 
-func TestNoIgnoreBasenameResolutionPreservesPriorityAndAttribution(t *testing.T) {
+func TestNoIgnoreBasenameResolutionUsesCompleteUniverseAndPreservesAttribution(t *testing.T) {
 	project := t.TempDir()
 	configDir := filepath.Join(project, "config")
 	t.Setenv("XDG_CONFIG_HOME", configDir)
@@ -49,14 +49,22 @@ func TestNoIgnoreBasenameResolutionPreservesPriorityAndAttribution(t *testing.T)
 		},
 	}
 
+	_, _, _, _, err := resolver.resolveAndDiscoverTarget(0, "config.ts", io.Discard, platform.Palette{})
+	if err == nil {
+		t.Fatal("expected visible and ignored config.ts files to be ambiguous")
+	}
+	for _, want := range []string{"src/config.ts", "generated/config.ts"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("combined ambiguity missing %q:\n%s", want, err)
+		}
+	}
+
 	wants := map[string]struct {
 		path        string
-		allowed     bool
 		blockSource string
 	}{
-		"config.ts":    {path: "src/config.ts"},
-		"from-git.ts":  {path: "generated/from-git.ts", allowed: true, blockSource: ".gitignore"},
-		"from-hiss.ts": {path: "local/from-hiss.ts", allowed: true, blockSource: ".hiss"},
+		"from-git.ts":  {path: "generated/from-git.ts", blockSource: ".gitignore"},
+		"from-hiss.ts": {path: "local/from-hiss.ts", blockSource: ".hiss"},
 	}
 	for basename, want := range wants {
 		entries, diagnostics, _, cancelled, err := resolver.resolveAndDiscoverTarget(0, basename, io.Discard, platform.Palette{})
@@ -67,17 +75,14 @@ func TestNoIgnoreBasenameResolutionPreservesPriorityAndAttribution(t *testing.T)
 			t.Fatalf("resolveAndDiscoverTarget(%q) entries=%+v diagnostics=%+v cancelled=%v", basename, entries, diagnostics, cancelled)
 		}
 		got := entries[0]
-		if got.RelPath != want.path || got.AllowedByInclude != want.allowed || got.BlockSource != want.blockSource {
-			t.Fatalf("resolveAndDiscoverTarget(%q) attribution = %+v, want path=%q allowed=%v source=%q", basename, got, want.path, want.allowed, want.blockSource)
-		}
-		if !want.allowed && !got.GitVisible {
-			t.Fatalf("resolveAndDiscoverTarget(%q) visible entry was not marked visible: %+v", basename, got)
+		if got.RelPath != want.path || !got.IgnoreBypassed || got.BlockSource != want.blockSource {
+			t.Fatalf("resolveAndDiscoverTarget(%q) attribution = %+v, want path=%q bypassed source=%q", basename, got, want.path, want.blockSource)
 		}
 	}
 }
 
-func TestNoIgnoreFuzzyFallbackPreservesVisibleFirstTiers(t *testing.T) {
-	t.Run("visible fuzzy result wins before ignored fuzzy fallback", func(t *testing.T) {
+func TestNoIgnoreFuzzyResolutionUsesCompleteUniverse(t *testing.T) {
+	t.Run("visible and ignored fuzzy results share one ambiguity set", func(t *testing.T) {
 		project := writeNoIgnoreTargetFixture(t, map[string]string{
 			".gitignore":          "generated/\n",
 			"generated/Login.tsx": "export const hidden = true\n",
@@ -85,16 +90,18 @@ func TestNoIgnoreFuzzyFallbackPreservesVisibleFirstTiers(t *testing.T) {
 		})
 		resolver := Resolver{Cfg: command.Invocation{WorkingDir: project, Headless: true}, NoIgnore: true}
 
-		entries, diagnostics, _, cancelled, err := resolver.resolveAndDiscoverTarget(0, "lgn", io.Discard, platform.Palette{})
-		if err != nil {
-			t.Fatalf("resolveAndDiscoverTarget: %v", err)
+		_, _, _, _, err := resolver.resolveAndDiscoverTarget(0, "lgn", io.Discard, platform.Palette{})
+		if err == nil {
+			t.Fatal("expected visible and ignored fuzzy results to be ambiguous")
 		}
-		if cancelled || len(diagnostics) != 0 || len(entries) != 1 || entries[0].RelPath != "src/LoginPage.tsx" {
-			t.Fatalf("entries=%+v diagnostics=%+v cancelled=%v", entries, diagnostics, cancelled)
+		for _, want := range []string{"src/LoginPage.tsx", "generated/Login.tsx"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("combined ambiguity missing %q:\n%s", want, err)
+			}
 		}
 	})
 
-	t.Run("ignored fuzzy fallback resolves after visible miss", func(t *testing.T) {
+	t.Run("unique ignored fuzzy result resolves", func(t *testing.T) {
 		project := writeNoIgnoreTargetFixture(t, map[string]string{
 			".gitignore":          "generated/\n",
 			"generated/Login.tsx": "export const hidden = true\n",
@@ -108,7 +115,7 @@ func TestNoIgnoreFuzzyFallbackPreservesVisibleFirstTiers(t *testing.T) {
 		if cancelled || len(diagnostics) != 0 || len(entries) != 1 {
 			t.Fatalf("entries=%+v diagnostics=%+v cancelled=%v", entries, diagnostics, cancelled)
 		}
-		if got := entries[0]; got.RelPath != "generated/Login.tsx" || !got.AllowedByInclude || got.BlockSource != ".gitignore" {
+		if got := entries[0]; got.RelPath != "generated/Login.tsx" || !got.IgnoreBypassed || got.BlockSource != ".gitignore" {
 			t.Fatalf("ignored fuzzy attribution = %+v", got)
 		}
 	})
@@ -130,7 +137,7 @@ func TestNoIgnoreFuzzyFallbackPreservesVisibleFirstTiers(t *testing.T) {
 		}
 	})
 
-	t.Run("visible exact ambiguity excludes ignored duplicate", func(t *testing.T) {
+	t.Run("exact ambiguity includes visible and ignored duplicates", func(t *testing.T) {
 		project := writeNoIgnoreTargetFixture(t, map[string]string{
 			".gitignore":                  "generated/\n",
 			"a/cache/one.ts":              "export const one = true\n",
@@ -150,8 +157,8 @@ func TestNoIgnoreFuzzyFallbackPreservesVisibleFirstTiers(t *testing.T) {
 				t.Fatalf("ambiguity error missing %q:\n%s", want, message)
 			}
 		}
-		if strings.Contains(message, "generated/cache") {
-			t.Fatalf("ignored lower-tier duplicate leaked into visible ambiguity:\n%s", message)
+		if !strings.Contains(message, "generated/cache") {
+			t.Fatalf("combined ambiguity omitted ignored duplicate:\n%s", message)
 		}
 	})
 
@@ -186,7 +193,7 @@ func TestProbeStartupTargetNoIgnoreUsesIgnoredFuzzyFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeStartupTarget(cache): %v", err)
 	}
-	if probe.Outcome != StartupTargetIncludedUnique || len(probe.Matches) != 1 || probe.Matches[0].Path != "generated/cache" {
+	if probe.Outcome != StartupTargetUniqueFuzzy || len(probe.Matches) != 1 || probe.Matches[0].Path != "generated/cache" {
 		t.Fatalf("cache probe = %+v", probe)
 	}
 
@@ -194,8 +201,32 @@ func TestProbeStartupTargetNoIgnoreUsesIgnoredFuzzyFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeStartupTarget(lgn): %v", err)
 	}
-	if probe.Outcome != StartupTargetIncludedAmbiguous || len(probe.Matches) != 2 {
+	if probe.Outcome != StartupTargetAmbiguousFuzzy || len(probe.Matches) != 2 {
 		t.Fatalf("lgn probe = %+v", probe)
+	}
+}
+
+func TestAllNoIgnoreTargetsContainsVisibleAndIgnoredRows(t *testing.T) {
+	project := writeNoIgnoreTargetFixture(t, map[string]string{
+		".gitignore":          "generated/\n",
+		"src/LoginPage.tsx":   "export const visible = true\n",
+		"generated/Login.tsx": "export const ignored = true\n",
+	})
+	resolver := Resolver{Cfg: command.Invocation{WorkingDir: project}, NoIgnore: true}
+
+	targets, err := resolver.AllNoIgnoreTargets(nil)
+	if err != nil {
+		t.Fatalf("AllNoIgnoreTargets: %v", err)
+	}
+	byPath := make(map[string]TargetMatch, len(targets))
+	for _, target := range targets {
+		byPath[target.Path] = target
+	}
+	if got, ok := byPath["src/LoginPage.tsx"]; !ok || got.Ignored {
+		t.Fatalf("visible row missing or mislabeled: %+v (present=%v)", got, ok)
+	}
+	if got, ok := byPath["generated/Login.tsx"]; !ok || !got.Ignored || got.IgnoreSource != ".gitignore" {
+		t.Fatalf("ignored row missing or mislabeled: %+v (present=%v)", got, ok)
 	}
 }
 

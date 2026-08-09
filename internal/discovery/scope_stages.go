@@ -29,7 +29,7 @@ type StageValueMatcher struct {
 // stageContext bundles the inputs every per-stage applier needs. The
 // pipeline owns it; appliers consume it read-only. Carrying the scope
 // and the specific stage (not just stage values) lets appliers see
-// scope-wide info — e.g., the include applier inspects s.Targets — and
+// scope-wide info — e.g., the no-ignore applier inspects s.Targets — and
 // keeps each applier's signature uniform so the dispatch table stays
 // flat.
 type stageContext struct {
@@ -40,7 +40,7 @@ type stageContext struct {
 }
 
 // stageApplier is the per-stage transformer. Each kind of scope stage
-// (include, only, exclude, recent, depth, contains, snippet, the git
+// (no-ignore, only, exclude, recent, depth, contains, snippet, the git
 // selection family, diff) gets one applier registered in
 // stageApplierTable. The pipeline calls them in scope.Stages order;
 // returning an empty entry slice short-circuits the rest of the chain.
@@ -58,7 +58,6 @@ type stageApplier func(ctx stageContext, entries []Entry) ([]Entry, error)
 // register it here. Tests in scope_stages_test.go enforce coverage.
 var stageApplierTable = map[command.StageKind]stageApplier{
 	command.StageNoIgnore:     applyNoIgnoreStageCase,
-	command.StageInclude:      applyIncludeStageCase,
 	command.StageOnly:         applyOnlyStageCase,
 	command.StageExclude:      applyExcludeStageCase,
 	command.StageRecent:       ApplyRecentStageCase,
@@ -134,10 +133,6 @@ func deadTrailingSlashGlobStageValues(stage command.Stage) []string {
 		}
 	}
 	return dead
-}
-
-func applyIncludeStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
-	return applyIncludeStage(ctx.Resolver, ctx.Scope, entries, ctx.Stage.Values, ctx.Stage.ExactValues)
 }
 
 func applyNoIgnoreStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
@@ -249,28 +244,6 @@ func applyLinesStageCase(_ stageContext, entries []Entry) ([]Entry, error) {
 	return entries, nil
 }
 
-func applyIncludeStage(resolver *Resolver, s command.ExecutionScope, entries []Entry, _ []string, _ bool) ([]Entry, error) {
-	if len(resolver.IncludedTargets.paths) == 0 {
-		return entries, nil
-	}
-
-	out := append([]Entry(nil), entries...)
-	for _, target := range resolver.IncludedTargets.paths {
-		if includeTargetActsAsAuthorizationOnly(s, target) || !includePathRelatedToScopeTargets(target, s.Targets) {
-			continue
-		}
-		if resolver.includeAwareTargetWalked(target) {
-			continue
-		}
-		included, err := resolveExactIncludeStageTarget(resolver, target)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, included...)
-	}
-	return DedupeEntriesByPathPreserveOrder(out), nil
-}
-
 // applyNoIgnoreStage expands the already-resolved scope targets during
 // checkpoint replay. Initial discovery sees --no-ignore authorization before it
 // resolves targets, but a prediscovered checkpoint contains only the earlier
@@ -288,7 +261,7 @@ func applyNoIgnoreStage(resolver *Resolver, s command.ExecutionScope, entries []
 		if target == "" {
 			target = "."
 		}
-		if resolver.includeAwareTargetWalked(target) {
+		if resolver.noIgnoreTargetWalked(target) {
 			continue
 		}
 
@@ -313,42 +286,6 @@ func applyNoIgnoreStage(resolver *Resolver, s command.ExecutionScope, entries []
 		out = append(out, included...)
 	}
 	return DedupeEntriesByPathPreserveOrder(out), nil
-}
-
-func includeTargetActsAsAuthorizationOnly(s command.ExecutionScope, includeTarget string) bool {
-	return includeTargetActsAsAuthorizationOnlyForTargets(s.Targets, includeTarget)
-}
-
-func includeTargetActsAsAuthorizationOnlyForTargets(targets []string, includeTarget string) bool {
-	includeTarget = normalizeRelPath(includeTarget)
-	if includeTarget == "" || includeTarget == "." {
-		return false
-	}
-	for _, target := range targets {
-		target = normalizeRelPath(target)
-		if target == "" || target == "." {
-			continue
-		}
-		if strings.HasPrefix(target, includeTarget+"/") {
-			return true
-		}
-	}
-	return false
-}
-
-func resolveExactIncludeStageTarget(resolver *Resolver, target string) ([]Entry, error) {
-	normalized := normalizeRelPath(target)
-	if normalized == "" {
-		return nil, nil
-	}
-	included, handled, _, err := resolver.resolveExactTarget(normalized, false, platform.Palette{})
-	if err != nil {
-		return nil, err
-	}
-	if !handled {
-		return nil, nil
-	}
-	return included, nil
 }
 
 func FilterEntriesByExactStagePaths(entries []Entry, paths []string, keepMatches bool) []Entry {

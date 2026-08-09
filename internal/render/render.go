@@ -87,11 +87,10 @@ func RenderSummarySection(w io.Writer, summary *DocumentSummary, opts RenderOpti
 	return nil
 }
 
-// AllowedByIncludeDirectoryLabel reports whether a directory label should
-// inherit the include-allowed color for an ignored subtree admitted by
-// explicit --include.
-func AllowedByIncludeDirectoryLabel(entry DocumentEntry, relDir string) bool {
-	if !entry.AllowedByInclude {
+// IgnoreBypassedDirectoryLabel reports whether a directory label should
+// inherit the ignore-bypass color for a subtree admitted by --no-ignore.
+func IgnoreBypassedDirectoryLabel(entry DocumentEntry, relDir string) bool {
+	if !entry.IgnoreBypassed {
 		return false
 	}
 	targetRoot := normalizeRelPath(entry.TargetRoot)
@@ -189,7 +188,7 @@ func renderEntries(w io.Writer, entries []DocumentEntry, entriesSorted bool, opt
 				lineCount = 0
 			}
 			dirColor := colors.Dir
-			if AllowedByIncludeDirectoryLabel(entry, accum) {
+			if IgnoreBypassedDirectoryLabel(entry, accum) {
 				dirColor = colors.Err
 			}
 			if _, err := fmt.Fprintf(w, "%s%s%s%s\n", prefix, dirColor, label, colors.Reset); err != nil {
@@ -205,7 +204,7 @@ func renderEntries(w io.Writer, entries []DocumentEntry, entriesSorted bool, opt
 
 		nameColor := ""
 		nameReset := ""
-		if entry.AllowedByInclude {
+		if entry.IgnoreBypassed {
 			nameColor = colors.Err
 			nameReset = colors.Reset
 		}
@@ -213,7 +212,7 @@ func renderEntries(w io.Writer, entries []DocumentEntry, entriesSorted bool, opt
 		fileLine := filePrefix + nameColor + parts[fileIndex] + nameReset
 		if opts.ShowSizes && entry.Size != nil {
 			sizeLabel := formatInlineSize(*entry.Size)
-			if entry.AllowedByInclude {
+			if entry.IgnoreBypassed {
 				fileLine += " " + colors.Err + "(" + sizeLabel + ")" + colors.Reset
 			} else {
 				fileLine += " " + styleSize(sizeLabel, *entry.Size, colors)

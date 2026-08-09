@@ -75,15 +75,6 @@ func TestIsDirectModeEligibleMatrix(t *testing.T) {
 			},
 		},
 		{
-			name: "include",
-			scope: ExecutionScope{
-				Targets:         []string{"."},
-				IncludedTargets: []string{"docs"},
-				Contains:        "TODO",
-				Stages:          []Stage{{Kind: StageContains, Values: []string{"TODO"}}},
-			},
-		},
-		{
 			name: "only",
 			scope: ExecutionScope{
 				Targets:  []string{"."},
@@ -110,7 +101,6 @@ func TestIsDirectModeEligibleMatrix(t *testing.T) {
 		{name: "depth stage", scope: withNarrowingStage(StageDepth)},
 		{name: "only stage", scope: withNarrowingStage(StageOnly)},
 		{name: "exclude stage", scope: withNarrowingStage(StageExclude)},
-		{name: "include stage", scope: withNarrowingStage(StageInclude)},
 		{
 			name: "bare not-contains",
 			scope: ExecutionScope{

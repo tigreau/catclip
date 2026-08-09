@@ -94,7 +94,7 @@ func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 				LinesEnd:         8,
 				DiffWantStaged:   true,
 				DiffWantUnstaged: true,
-				AllowedByInclude: true,
+				IgnoreBypassed:   true,
 				BlockSource:      ".gitignore",
 			},
 			{
@@ -174,7 +174,7 @@ func TestPrediscoveredCheckpointFileEntrySchemaCoversAllFields(t *testing.T) {
 		"LinesEnd",
 		"DiffWantStaged",
 		"DiffWantUnstaged",
-		"AllowedByInclude",
+		"IgnoreBypassed",
 		"BlockSource",
 	}
 	// AbsPath is a runtime-derived filesystem handle, intentionally not
@@ -223,7 +223,7 @@ func TestPrediscoveredCheckpointJSONFieldNames(t *testing.T) {
 			LinesEnd:         5,
 			DiffWantStaged:   true,
 			DiffWantUnstaged: true,
-			AllowedByInclude: true,
+			IgnoreBypassed:   true,
 			BlockSource:      ".gitignore",
 		}},
 	}
@@ -265,7 +265,7 @@ func TestPrediscoveredCheckpointJSONFieldNames(t *testing.T) {
 		"lines_end",
 		"diff_want_staged",
 		"diff_want_unstaged",
-		"allowed_by_include",
+		"ignore_bypassed",
 		"block_source",
 	} {
 		if _, ok := entry[key]; !ok {
@@ -580,16 +580,7 @@ func TestRunInternalPrediscoveredContentMatchListDirectModeMatchesChunked(t *tes
 	}
 }
 
-// TestRunInternalPrediscoveredContentMatchListHonorsParentInclude
-// reproduces the v0.6.3 direct-mode regression: when the parent scope
-// authorized gitignored files via --include, the picker subprocess
-// must also bypass gitignore (--no-ignore) so those files appear in
-// the match-list. Before the fix, parent discovered 2 entries matching
-// the pattern; picker returned 0 because direct rg respected
-// .gitignore and never entered the authorized subtree.
-//
-// See docs/versions/v0.6.4/reports/ACTIVE_PLAN_picker_no_ignore_for_include.md.
-func TestRunInternalPrediscoveredContentMatchListHonorsParentInclude(t *testing.T) {
+func TestRunInternalPrediscoveredContentMatchListHonorsNoIgnore(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		".gitignore":     "docs/\n",
 		"docs/readme.md": "talks about fzf and other things\n",
@@ -598,14 +589,14 @@ func TestRunInternalPrediscoveredContentMatchListHonorsParentInclude(t *testing.
 		"src/main.go":    "package main\n",
 	})
 
-	parentCfg := parseInProject(t, project, []string{"docs", "--include", "docs", "--contains", "fzf"})
+	parentCfg := parseInProject(t, project, []string{"docs", "--no-ignore", "--contains", "fzf"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
 	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
 	if len(discovered.Entries) == 0 {
-		t.Fatalf("parent discovery should authorize docs/ entries; got 0")
+		t.Fatalf("parent no-ignore discovery returned 0 entries")
 	}
 
 	checkpointPath := filepath.Join(t.TempDir(), "scope.json")
@@ -618,7 +609,7 @@ func TestRunInternalPrediscoveredContentMatchListHonorsParentInclude(t *testing.
 		t.Fatalf("discovery.WriteCheckpoint returned error: %v", err)
 	}
 
-	freshCfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "docs", "--include", "docs", "--contains", "fzf"})
+	freshCfg, err := cli.ParseArgs([]string{"--quiet", "--internal-content-match-list", "docs", "--no-ignore", "--contains", "fzf"})
 	if err != nil {
 		t.Fatalf("parseArgs fresh: %v", err)
 	}
@@ -635,7 +626,7 @@ func TestRunInternalPrediscoveredContentMatchListHonorsParentInclude(t *testing.
 		t.Fatalf("checkpoint run: %v", err)
 	}
 	if ckptOut.Len() == 0 {
-		t.Fatalf("checkpoint picker returned 0 rows for fzf-matching content under --include'd docs/ (the original bug)\nfresh output was:\n%s", freshOut.String())
+		t.Fatalf("checkpoint picker returned 0 rows for fzf-matching content under --no-ignore docs/\nfresh output was:\n%s", freshOut.String())
 	}
 	if !bytes.Equal(freshOut.Bytes(), ckptOut.Bytes()) {
 		t.Fatalf("checkpoint output differs from fresh\nfresh:\n%s\ncheckpoint:\n%s", freshOut.String(), ckptOut.String())

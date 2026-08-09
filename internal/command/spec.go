@@ -25,12 +25,11 @@ type Spec struct {
 // Fields are unexported and reached through accessor methods so callers
 // can't accidentally mutate the frozen snapshot.
 type ScopeSpec struct {
-	targets         []string
-	noIgnore        bool
-	includedTargets []string
-	only            []string
-	exclude         []string
-	stages          []Stage
+	targets  []string
+	noIgnore bool
+	only     []string
+	exclude  []string
+	stages   []Stage
 
 	hasContainsFilter   bool
 	containsPattern     string
@@ -58,17 +57,16 @@ type ScopeSpec struct {
 // the same canonical scope shape.
 func ExecutionScopeFromScopeSpec(s ScopeSpec) ExecutionScope {
 	out := ExecutionScope{
-		Targets:         s.Targets(),
-		NoIgnore:        s.NoIgnore(),
-		IncludedTargets: s.IncludedTargets(),
-		Only:            s.OnlyPatterns(),
-		Exclude:         s.ExcludePatterns(),
-		Stages:          s.Stages(),
-		Paths:           s.HasPathsOutput(),
-		Changed:         s.Changed(),
-		Staged:          s.Staged(),
-		Unstaged:        s.Unstaged(),
-		Untracked:       s.Untracked(),
+		Targets:   s.Targets(),
+		NoIgnore:  s.NoIgnore(),
+		Only:      s.OnlyPatterns(),
+		Exclude:   s.ExcludePatterns(),
+		Stages:    s.Stages(),
+		Paths:     s.HasPathsOutput(),
+		Changed:   s.Changed(),
+		Staged:    s.Staged(),
+		Unstaged:  s.Unstaged(),
+		Untracked: s.Untracked(),
 	}
 	if s.HasContainsFilter() {
 		out.Contains = s.ContainsPattern()
@@ -90,13 +88,6 @@ func ExecutionScopeFromScopeSpec(s ScopeSpec) ExecutionScope {
 	if s.OutputMode() == EntryModeDiff {
 		out.Diff = true
 	}
-	// Include narrowing belongs to the discovery walker: targetIncluded plus
-	// walkAuthorizedByInclude (see internal/discovery/resolver.go) distinguish
-	// permission to descend from permission to emit. Do not synthesize --only
-	// stages or add automatic include ancestors here; broader include values
-	// would admit more paths through the per-entry filter. See
-	// docs/architecture/ACTIVE_NOTE_include_double_syntax_rationale.md
-	// for the walker semantic that replaced this.
 	return out
 }
 
@@ -137,7 +128,6 @@ func scopeSpecFromExecutionScope(s ExecutionScope) ScopeSpec {
 	return ScopeSpec{
 		targets:             cloneStringSlice(s.Targets),
 		noIgnore:            s.NoIgnore || s.HasStage(StageNoIgnore),
-		includedTargets:     cloneStringSlice(s.IncludedTargets),
 		only:                cloneStringSlice(s.Only),
 		exclude:             cloneStringSlice(s.Exclude),
 		stages:              cloneStages(s.Stages),
@@ -179,7 +169,6 @@ func (s Spec) Scopes() []ScopeSpec {
 
 func (s ScopeSpec) Targets() []string         { return cloneStringSlice(s.targets) }
 func (s ScopeSpec) NoIgnore() bool            { return s.noIgnore }
-func (s ScopeSpec) IncludedTargets() []string { return cloneStringSlice(s.includedTargets) }
 func (s ScopeSpec) OnlyPatterns() []string    { return cloneStringSlice(s.only) }
 func (s ScopeSpec) ExcludePatterns() []string { return cloneStringSlice(s.exclude) }
 func (s ScopeSpec) Stages() []Stage           { return cloneStages(s.stages) }
@@ -205,7 +194,6 @@ func (s ScopeSpec) HasGitSelection() bool         { return s.hasGitSelection }
 
 func (s ScopeSpec) clone() ScopeSpec {
 	s.targets = cloneStringSlice(s.targets)
-	s.includedTargets = cloneStringSlice(s.includedTargets)
 	s.only = cloneStringSlice(s.only)
 	s.exclude = cloneStringSlice(s.exclude)
 	s.stages = cloneStages(s.stages)

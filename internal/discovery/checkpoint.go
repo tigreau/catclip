@@ -24,10 +24,9 @@ type CheckpointData struct {
 	GitStatus  map[string]string
 	Entries    []Entry
 	// NoIgnore signals that the parent scope was discovered with ignore rules
-	// bypassed (via --no-ignore or a selective --include). Picker subprocesses that
-	// run direct rg over the same scope must also bypass gitignore;
-	// otherwise authorized-ignored files vanish from the picker.
-	// See docs/versions/v0.6.4/reports/ACTIVE_PLAN_picker_no_ignore_for_include.md.
+	// bypassed via --no-ignore. Picker subprocesses that run direct rg over the
+	// same scope must also bypass gitignore; otherwise admitted ignored files
+	// vanish from the picker.
 	NoIgnore bool
 }
 
@@ -57,7 +56,7 @@ type checkpointGit struct {
 //
 // json tags also use omitempty on the fields a typical full-file visible entry
 // leaves at their zero value (target_root, snippet/lines/diff fields,
-// allowed_by_include, block_source, …); for such entries this drops ~9 fields
+// ignore_bypassed, block_source, …); for such entries this drops ~9 fields
 // from the serialized form. Zero values round-trip transparently (absent →
 // decoded as zero). RelPath, ModTime, and Mode are kept unconditional.
 type CheckpointEntry struct {
@@ -82,7 +81,7 @@ type CheckpointEntry struct {
 	LinesEnd          int    `json:"lines_end,omitempty"`
 	DiffWantStaged    bool   `json:"diff_want_staged,omitempty"`
 	DiffWantUnstaged  bool   `json:"diff_want_unstaged,omitempty"`
-	AllowedByInclude  bool   `json:"allowed_by_include,omitempty"`
+	IgnoreBypassed    bool   `json:"ignore_bypassed,omitempty"`
 	BlockSource       string `json:"block_source,omitempty"`
 }
 
@@ -252,7 +251,7 @@ func entriesToCheckpoint(entries []Entry) []CheckpointEntry {
 			LinesEnd:            entry.LinesEnd,
 			DiffWantStaged:      entry.DiffWantStaged,
 			DiffWantUnstaged:    entry.DiffWantUnstaged,
-			AllowedByInclude:    entry.AllowedByInclude,
+			IgnoreBypassed:      entry.IgnoreBypassed,
 			BlockSource:         entry.BlockSource,
 		})
 	}
@@ -281,7 +280,7 @@ func checkpointToEntries(entries []CheckpointEntry) []Entry {
 			LinesEnd:            entry.LinesEnd,
 			DiffWantStaged:      entry.DiffWantStaged,
 			DiffWantUnstaged:    entry.DiffWantUnstaged,
-			AllowedByInclude:    entry.AllowedByInclude,
+			IgnoreBypassed:      entry.IgnoreBypassed,
 			BlockSource:         entry.BlockSource,
 		})
 	}
@@ -311,7 +310,6 @@ func ApplyPrediscoveredScopeTail(cfg command.Invocation, gitCtx git.Context, sco
 		AllowFileSymlinks: false,
 		WithBinaries:      cfg.WithBinaries,
 		NoIgnore:          scope.NoIgnore || scope.HasStage(command.StageNoIgnore),
-		IncludedTargets:   BuildIncludedTargetSet(cfg.WorkingDir, scope.IncludedTargets),
 		WantedBasenames:   CollectWantedBasenames(scope.Targets),
 		ScopeTargets:      append([]string(nil), scope.Targets...),
 	}
@@ -319,14 +317,11 @@ func ApplyPrediscoveredScopeTail(cfg command.Invocation, gitCtx git.Context, sco
 	entries = append([]Entry(nil), entries...)
 	var err error
 	// Normal evaluation may clear entries after a hard diagnostic; its stage
-	// runner must not let a later additive include resurrect a partial result.
+	// runner must not let a later stage resurrect a partial result.
 	// A checkpoint has no such diagnostic state: an empty base can legitimately
 	// mean the selected target contains only ignored files. Expand its leading
-	// include once before the shared stage runner's empty-input guard.
 	if len(entries) == 0 && len(scope.Stages) > 0 {
 		switch scope.Stages[0].Kind {
-		case command.StageInclude:
-			entries, err = applyIncludeStage(&resolver, scope, entries, scope.Stages[0].Values, scope.Stages[0].ExactValues)
 		case command.StageNoIgnore:
 			entries, err = applyNoIgnoreStage(&resolver, scope, entries)
 		}

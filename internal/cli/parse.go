@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -27,7 +25,7 @@ func SetVersionLoader(fn func() string) {
 }
 
 // stdinPathCache memoizes the contents of os.Stdin so a multi-flag
-// pipeline like `... | catclip src --include - --exclude -` reads it
+// pipeline like `... | catclip src --only - --exclude -` reads it
 // once and lets both modifiers consume the same paths.
 type stdinPathCache struct {
 	loaded   bool
@@ -46,7 +44,7 @@ type executionScopeBuilder struct {
 }
 
 func (b executionScopeBuilder) hasContent() bool {
-	return len(b.Targets) > 0 || b.NoIgnore || len(b.IncludedTargets) > 0 || len(b.Only) > 0 || len(b.Exclude) > 0 ||
+	return len(b.Targets) > 0 || b.NoIgnore || len(b.Only) > 0 || len(b.Exclude) > 0 ||
 		len(b.Stages) > 0 ||
 		b.Contains != "" || b.Paths || b.SnippetPattern != "" || b.Snippet || b.Changed || b.Staged || b.Unstaged ||
 		b.Untracked || b.Diff
@@ -116,26 +114,11 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			}
 		}
 		if len(s.Targets) == 0 {
-			// Effect 5: --include with no positional target. Refuse to
-			// insert the "." default when --include is set. Two shapes
-			// the user might have meant — "just docs" (walk docs only)
-			// vs "everything + docs" (walk repo, authorize docs) — have
-			// different perf and output. Silently picking one hides the
-			// ambiguity. Error with a canonical-form hint pointing at
-			// the double-syntax shape ignoredDirMessage suggests. Gated
-			// on !allowImplicitDotScope so inspection parsers used by
-			// the startup picker / preview probes still fall through to
-			// the "." default (the picker's resolved argv always
-			// includes a positional, so the error surfaces to
-			// strict-runtime entry only).
 			if s.NoIgnore && !allowImplicitDotScope {
 				return NoIgnoreMissingPositionalTargetError()
 			}
-			if len(s.IncludedTargets) > 0 && !allowImplicitDotScope {
-				return IncludeMissingPositionalTargetError(s.IncludedTargets[0])
-			}
 			if cfg.Headless {
-				return newUsageError("Error: --headless requires explicit targets.\n  Pass a path, --include, or another scope-defining flag.\n  Example: catclip . --headless")
+				return newUsageError("Error: --headless requires explicit targets.\n  Pass a path or another scope-defining flag.\n  Example: catclip . --headless")
 			}
 			if cfg.IsInternalKind() || cfg.Action != command.ActionRun || allowImplicitDotScope {
 				s.Targets = []string{"."}
@@ -153,6 +136,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if IsUnsupportedIncludeOption(arg) {
+			return command.Parsed{}, IncludeUnsupportedError()
+		}
 
 		switch arg {
 		case "-h", "--help":
@@ -228,6 +214,21 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			}
 			i++
 			cfg.TreeState = args[i]
+		case "--internal-file-set-selection":
+			if i+1 >= len(args) {
+				return command.Parsed{}, newUsageError("Error: --internal-file-set-selection requires a path.")
+			}
+			i++
+			cfg.FileSetSelectionPath = args[i]
+		case "--internal-file-set-stage":
+			if i+1 >= len(args) {
+				return command.Parsed{}, newUsageError("Error: --internal-file-set-stage requires only or exclude.")
+			}
+			i++
+			if args[i] != "only" && args[i] != "exclude" {
+				return command.Parsed{}, newUsageError("Error: --internal-file-set-stage requires only or exclude.")
+			}
+			cfg.FileSetSelectionStage = args[i]
 		case "--internal-file-preview":
 			cfg.FilePreview = true
 		case "--internal-searching-preview":
@@ -414,22 +415,6 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			current.NoIgnore = true
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageNoIgnore})
 			lastNoValueModifier = arg
-		case "--include":
-			inModifierMode = true
-			values, next, exactValues, err := consumePathModifierValues(args, i+1, "--include", &stdinCache)
-			if err != nil {
-				return command.Parsed{}, err
-			}
-			if len(values) == 0 {
-				return command.Parsed{}, RequiredStageValueError("--include")
-			}
-			if err := ValidateIncludeValues(values); err != nil {
-				return command.Parsed{}, err
-			}
-			current.IncludedTargets = append(current.IncludedTargets, values...)
-			current.Stages = append(current.Stages, command.Stage{Kind: command.StageInclude, Values: append([]string(nil), values...), ExactValues: exactValues})
-			i = next - 1
-			lastNoValueModifier = ""
 		case "--exclude":
 			inModifierMode = true
 			values, next, exactValues, err := consumePathModifierValues(args, i+1, "--exclude", &stdinCache)
@@ -549,7 +534,7 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 
 	if len(executionScopes) == 0 {
 		if cfg.Headless {
-			return command.Parsed{}, newUsageError("Error: --headless requires explicit targets.\n  Pass a path, --include, or another scope-defining flag.\n  Example: catclip . --headless")
+			return command.Parsed{}, newUsageError("Error: --headless requires explicit targets.\n  Pass a path or another scope-defining flag.\n  Example: catclip . --headless")
 		}
 		if cfg.IsInternalKind() || cfg.Action != command.ActionRun || allowImplicitDotScope {
 			executionScopes = append(executionScopes, command.ExecutionScope{Targets: []string{"."}})
@@ -590,53 +575,8 @@ func consumePathModifierValues(args []string, start int, flag string, cache *std
 	return values, next, false, nil
 }
 
-func ValidateIncludeValues(values []string) error {
-	for _, value := range values {
-		if value == "*" {
-			return newUsageError("Error: --include accepts specific ignored paths, not '*'.\n\n" +
-				"  To include every file hidden by ignore rules below the selected targets,\n" +
-				"  use --no-ignore:\n" +
-				"    catclip src --no-ignore\n\n" +
-				"  To include one ignored file or directory, name its path:\n" +
-				"    catclip src --include src/generated")
-		}
-		if isAbsolutePathForValidation(value) {
-			return newUsageError("Error: --include does not accept absolute paths: %s\n  Use a path relative to the current directory.", singleQuoted(value))
-		}
-		if containsParentTraversal(value) {
-			return newUsageError("Error: --include cannot traverse above the current directory: %s\n  Use a path relative to the current directory.", singleQuoted(value))
-		}
-		if hasGlobChars(value) {
-			return newUsageError("Error: --include does not accept glob patterns. Name a specific ignored file or directory, or use --no-ignore to include everything hidden by ignore rules below the selected targets.")
-		}
-		if normalizeRelPath(value) == "." {
-			return newUsageError("Error: --include '.' is not supported.\n  Name a specific ignored path from the current directory, or use --no-ignore to include everything hidden by ignore rules below the selected targets.")
-		}
-	}
-	return nil
-}
-
-func isAbsolutePathForValidation(value string) bool {
-	if path.IsAbs(value) || filepath.IsAbs(value) {
-		return true
-	}
-	if strings.HasPrefix(value, `\\`) {
-		return true
-	}
-	if len(value) >= 3 && value[1] == ':' && (value[2] == '/' || value[2] == '\\') {
-		drive := value[0]
-		return (drive >= 'A' && drive <= 'Z') || (drive >= 'a' && drive <= 'z')
-	}
-	return false
-}
-
 func readModifierPathsFromStdin(flag string, cache *stdinPathCache) ([]string, error) {
 	if cache.loaded {
-		if flag == "--include" {
-			if err := ValidateIncludeValues(cache.rawPaths); err != nil {
-				return nil, err
-			}
-		}
 		return append([]string(nil), cache.paths...), nil
 	}
 	if platform.IsTerminalFile(os.Stdin) {
@@ -648,11 +588,6 @@ func readModifierPathsFromStdin(flag string, cache *stdinPathCache) ([]string, e
 	}
 	if len(paths) == 0 {
 		return nil, newUsageError("Error: %s - received no paths from stdin.\n  The piped command produced no output.", flag)
-	}
-	if flag == "--include" {
-		if err := ValidateIncludeValues(rawPaths); err != nil {
-			return nil, err
-		}
 	}
 	cache.loaded = true
 	cache.paths = append([]string(nil), paths...)
@@ -709,7 +644,6 @@ func FormatScopeSummary(s command.ExecutionScope) string {
 	parts := []string{
 		fmt.Sprintf("targets=%q", s.Targets),
 		fmt.Sprintf("no_ignore=%t", s.NoIgnore),
-		fmt.Sprintf("included=%q", s.IncludedTargets),
 		fmt.Sprintf("only=%q", s.Only),
 		fmt.Sprintf("exclude=%q", s.Exclude),
 	}

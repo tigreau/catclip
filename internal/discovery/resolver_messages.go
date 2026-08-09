@@ -15,12 +15,8 @@ import (
 // matches and emits guidance in catclip's actual matcher grammar. Positional
 // globs use path.Match over files, so a glob ending in `/` can never match.
 // Positional `**` is rejected before this formatter runs. Recursive recovery
-// uses an exact directory target, optionally followed by the legacy
-// cwd-relative --only filter.
-//
-// Replaces the misleading unconditional "If the parent directory is
-// ignored, use --include" message that fired even when the parent was
-// fully visible. See v0.6.4 ACTIVE_PLAN_natural_glob_targets_followup.md.
+// uses an exact directory target, optionally followed by a cwd-relative
+// --only filter.
 func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors platform.Palette) string {
 	prefix := longestLiteralPathPrefix(pattern)
 	if prefix == "" || prefix == "." {
@@ -108,26 +104,26 @@ func visibleGlobZeroMatchWarning(pattern, prefix, suffix string, scopeIndex int,
 
 func ignoredGlobZeroMatchWarning(pattern, prefix, suffix, source string, scopeIndex int, directoryShaped bool, colors platform.Palette) string {
 	if directoryShaped {
-		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %sTarget globs match files, not directory names; file paths do not end in '/'.%s\n  %sTo authorize and include everything below %s:%s\n    %scatclip %s --include %s%s",
+		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %sTarget globs match files, not directory names; file paths do not end in '/'.%s\n  %sName the ignored directory directly:%s\n    %scatclip %s%s",
 			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, scopeIndex+1,
 			colors.Dim, colors.Reset,
-			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
-			colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(prefix), colors.Reset)
+			colors.Dim, colors.Reset,
+			colors.OK, ShellQuoteArg(prefix), colors.Reset)
 	}
 	if globSuffixIsOnlyStars(suffix) {
-		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %s%s checks direct files in %s; target '*' does not cross folders.%s\n  %sTo authorize and include everything below it:%s\n    %scatclip %s --include %s%s",
+		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %s%s checks direct files in %s; target '*' does not cross folders.%s\n  %sName the ignored directory directly:%s\n    %scatclip %s%s",
 			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, scopeIndex+1,
 			colors.Dim, SingleQuoted(pattern), SingleQuoted(prefix+"/"), colors.Reset,
 			colors.Dim, colors.Reset,
-			colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(prefix), colors.Reset)
+			colors.OK, ShellQuoteArg(prefix), colors.Reset)
 	}
 	filterPattern := recursiveGlobFilterPattern(pattern, suffix)
 
-	return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sTo authorize it and search recursively:%s\n    %scatclip %s --include %s --only %s%s",
+	return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sName the ignored directory, then filter it:%s\n    %scatclip %s --only %s%s",
 		colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, scopeIndex+1,
 		colors.Dim, SingleQuoted(pattern), SingleQuoted(suffix), SingleQuoted(prefix+"/"), colors.Reset,
 		colors.Dim, colors.Reset,
-		colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(prefix), ShellQuoteArg(filterPattern), colors.Reset)
+		colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(filterPattern), colors.Reset)
 }
 
 func globSuffixIsOnlyStars(suffix string) bool {
@@ -202,19 +198,18 @@ func recursiveGlobFilterPattern(pattern, suffix string) string {
 
 func targetNotFoundWarning(target string, scopeIndex int, colors platform.Palette) string {
 	if strings.Contains(target, "/") {
-		return fmt.Sprintf("%sWarning:%s Target %s not found (scope %d).\n\n  %sIf the parent directory is ignored, use --include to allow it first.%s\n  %sExample:%s %scatclip %s --include %s --only %s%s",
+		return fmt.Sprintf("%sWarning:%s Target %s not found (scope %d).\n\n  %sIgnored paths must be named by their complete relative path, or discovered with --no-ignore.%s\n  %sExample:%s %scatclip . --no-ignore%s",
 			colors.Warn, colors.Reset, SingleQuoted(target), scopeIndex+1,
 			colors.Dim, colors.Reset,
-			colors.Dim, colors.Reset,
-			colors.OK, SingleQuoted(path.Dir(target)), SingleQuoted(path.Dir(target)), SingleQuoted(path.Base(target)), colors.Reset)
+			colors.Dim, colors.Reset, colors.OK, colors.Reset)
 	}
 	if prefersDirectFileLookup(target) {
-		return fmt.Sprintf("%sWarning:%s No file named %s found (scope %d).\n\n  %sDirect file targets use exact basenames first. Non-exact file shorthand is resolved by fzf across safe directories.%s\n\n  %sIf an ignored rule is hiding it, use --include to allow that blocked file or directory first.%s",
+		return fmt.Sprintf("%sWarning:%s No file named %s found (scope %d).\n\n  %sDirect file targets use exact basenames first. Non-exact file shorthand is resolved by fzf across visible directories.%s\n\n  %sFor ignored files, name the complete relative path or add --no-ignore.%s",
 			colors.Warn, colors.Reset, SingleQuoted(target), scopeIndex+1,
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset)
 	}
-	return fmt.Sprintf("%sWarning:%s No file or directory %s found (scope %d).\n\n  %sDirectory shorthand is resolved by fzf. File targets use exact basenames first, then fzf across safe directories.%s\n\n  %sIf the thing you want is ignored, use --include to browse blocked targets for this scope.%s",
+	return fmt.Sprintf("%sWarning:%s No file or directory %s found (scope %d).\n\n  %sDirectory shorthand is resolved by fzf. File targets use exact basenames first, then fzf across visible directories.%s\n\n  %sFor ignored paths, name the complete relative path or add --no-ignore.%s",
 		colors.Warn, colors.Reset, SingleQuoted(target), scopeIndex+1,
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset)
@@ -240,94 +235,6 @@ func IgnoreRemovalHint(source string, colors platform.Palette) string {
 // scopeTargets is empty (defensive; the resolver always has at least
 // one). Preserves the user's original argv order so hints don't
 // silently reshuffle their input.
-func scopeTargetsForHint(relTarget string, scopeTargets []string) string {
-	if len(scopeTargets) == 0 {
-		return relTarget
-	}
-	parts := make([]string, 0, len(scopeTargets))
-	for _, t := range scopeTargets {
-		if strings.TrimSpace(t) == "" {
-			continue
-		}
-		parts = append(parts, t)
-	}
-	if len(parts) == 0 {
-		return relTarget
-	}
-	return strings.Join(parts, " ")
-}
-
-func ignoredDirMessage(relTarget, source string, includesActive bool, includedDescendants []string, scopeTargets []string, colors platform.Palette) string {
-	scopeTail := scopeTargetsForHint(relTarget, scopeTargets)
-	// Most actionable case: the user passed `--include <path>` where the
-	// include path lives inside the target (so the include is a
-	// descendant, not the ancestor that --include needs). Show them the
-	// two correct shapes instead of the generic "your --include does not
-	// cover this target" line.
-	if len(includedDescendants) > 0 {
-		descendant := includedDescendants[0]
-		return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %s--include %s points inside %s — it doesn't authorize %s itself.%s\n  %s--include must name the gitignored target, or an ancestor of it.%s\n\n  %sTo open %s and narrow to %s:%s\n    %scatclip %s --include %s --only %s%s\n  %sTo open %s directly:%s\n    %scatclip %s --include %s%s",
-			colors.Bold, colors.Err, colors.Reset, colors.Err, SingleQuoted(relTarget), source, colors.Reset,
-			colors.Dim, SingleQuoted(descendant), SingleQuoted(relTarget), SingleQuoted(relTarget), colors.Reset,
-			colors.Dim, colors.Reset,
-			colors.Dim, SingleQuoted(relTarget), SingleQuoted(descendant), colors.Reset,
-			colors.OK, relTarget, SingleQuoted(relTarget), SingleQuoted(descendant), colors.Reset,
-			colors.Dim, SingleQuoted(descendant), colors.Reset,
-			colors.OK, descendant, SingleQuoted(relTarget), colors.Reset,
-		) + IgnoreRemovalHint(source, colors)
-	}
-	if includesActive {
-		return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip --include %s%s",
-			colors.Bold, colors.Err, colors.Reset, colors.Err, SingleQuoted(relTarget), source, colors.Reset,
-			colors.Dim, colors.Reset,
-			colors.Dim, colors.Reset, colors.OK, SingleQuoted(relTarget), colors.Reset,
-		) + IgnoreRemovalHint(source, colors)
-	}
-	// Canonical double-syntax hint: `catclip <scope-targets> --include
-	// <path>`. Preserves ALL of the user's positional targets so a run
-	// like `catclip cmd docs` gets `catclip cmd docs --include docs`,
-	// not the misleading `catclip docs --include docs` (which drops
-	// cmd). Matches the effect-5 error's suggestion.
-	return fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to authorize %s for this run.%s\n  %sExample:%s %scatclip %s --include %s%s\n  %sTo narrow inside it:%s   %scatclip %s --include %s --only \"*.ext\"%s",
-		colors.Bold, colors.Err, colors.Reset, colors.Err, SingleQuoted(relTarget), source, colors.Reset,
-		colors.Dim, SingleQuoted(relTarget), colors.Reset,
-		colors.Dim, colors.Reset, colors.OK, scopeTail, SingleQuoted(relTarget), colors.Reset,
-		colors.Dim, colors.Reset, colors.OK, scopeTail, SingleQuoted(relTarget), colors.Reset,
-	) + IgnoreRemovalHint(source, colors)
-}
-
-func ignoredFileMessage(relTarget, source string, fromChained, includesActive bool, scopeTargets []string, colors platform.Palette) string {
-	scopeTail := scopeTargetsForHint(relTarget, scopeTargets)
-	if includesActive {
-		message := fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sYour --include does not cover this target. Add it directly:%s\n  %sExample:%s %scatclip %s --include %s%s",
-			colors.Bold, colors.Err, colors.Reset, colors.Err, SingleQuoted(relTarget), source, colors.Reset,
-			colors.Dim, colors.Reset,
-			colors.Dim, colors.Reset, colors.OK, scopeTail, SingleQuoted(relTarget), colors.Reset)
-		if fromChained {
-			return message
-		}
-		return message + fmt.Sprintf("\n  %sTo remove permanently:%s   %scatclip --hiss%s %s(delete the rule)%s",
-			colors.Dim, colors.Reset, colors.OK, colors.Reset, colors.Dim, colors.Reset)
-	}
-	// Canonical double-syntax hint preserving all scope targets so
-	// `catclip cmd docs/blocked.md` renders `catclip cmd docs/blocked.md
-	// --include docs/blocked.md`, not the target-dropping shorter form.
-	message := fmt.Sprintf("\n%s%sError:%s%s %s is ignored by %s%s\n\n  %sUse --include to authorize %s for this run.%s\n  %sExample:%s %scatclip %s --include %s%s",
-		colors.Bold, colors.Err, colors.Reset, colors.Err, SingleQuoted(relTarget), source, colors.Reset,
-		colors.Dim, SingleQuoted(relTarget), colors.Reset,
-		colors.Dim, colors.Reset, colors.OK, scopeTail, SingleQuoted(relTarget), colors.Reset)
-	if fromChained {
-		return message
-	}
-	return message + IgnoreRemovalHint(source, colors)
-}
-
-func includeQueryNeedsSelectionMessage(query string, colors platform.Palette) string {
-	return fmt.Sprintf("\n%sError: %s needs an ignored-target selection.%s\n\n  %sUse --include with an exact ignored path, or run it in a TTY so catclip can open the ignored picker.%s",
-		colors.Err, SingleQuoted(query), colors.Reset,
-		colors.Dim, colors.Reset)
-}
-
 func formatSkippedMatchesWarning(matches []SkippedMatch) []string {
 	if len(matches) == 0 {
 		return nil
@@ -433,15 +340,10 @@ func WriteNoFilesMatchedMessage(scopes []command.ExecutionScope, stderr io.Write
 			return err
 		}
 	}
-	// Hint form uses `<target> --include <path>` so users copy the
-	// canonical double-syntax shape ignoredDirMessage and effect-5
-	// both point at. `catclip --include <path>` without a positional target errors under
-	// effect-5 in strict mode; teaching users a form that fails is
-	// worse than showing the working shape.
 	if _, err := fmt.Fprintf(stderr, "\n  %sTry: catclip --all-ignore-rules             # list every active ignore rule (.hiss + .gitignore)%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(stderr, "  %s     catclip <target> --include <path>      # authorize a gitignored path for this run%s\n", colors.Dim, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(stderr, "  %s     catclip <ignored-path>                 # name an ignored path directly%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}
 	_, err := fmt.Fprintf(stderr, "  %s     catclip --hiss                         # edit catclip's own ignore rules%s\n", colors.Dim, colors.Reset)

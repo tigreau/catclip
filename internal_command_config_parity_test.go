@@ -31,6 +31,8 @@ func TestInternalKindPredicateParity(t *testing.T) {
 		{name: "LinesPreview", cfg: command.Parsed{LinesPreview: true}},
 		{name: "PrediscoveredPath", cfg: command.Parsed{PrediscoveredPath: "/tmp/ck.json"}},
 		{name: "TreeInputDir", cfg: command.Parsed{TreeInputDir: "/tmp"}},
+		{name: "FileSetSelectionPath", cfg: command.Parsed{FileSetSelectionPath: "/tmp/selected"}},
+		{name: "FileSetSelectionStage", cfg: command.Parsed{FileSetSelectionStage: "exclude"}},
 		{name: "SinkTogglePath", cfg: command.Parsed{SinkTogglePath: "/tmp/toggle"}},
 		{name: "SinkPreviewModePath", cfg: command.Parsed{SinkPreviewModePath: "/tmp/mode"}},
 	}

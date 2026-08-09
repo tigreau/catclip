@@ -94,7 +94,7 @@ Subpackages and platform shims:
 
 3. **Selectors drive status UI** — tree badges should optimize for `--changed`, `--staged`, `--unstaged`, and `--untracked`, not raw porcelain fidelity. The badges that matter today are `[S]`, `[M]`, `[?]`, and `[SM]`; there is no dedicated rename badge.
 
-4. **Authorization grants access** — safe discovery stays safe; ignored content only enters through a specific `--include PATH` or a target-bounded `--no-ignore` policy.
+4. **Explicit roots can enter ignored paths** — exact file and directory targets are direct user instructions, even when a parent ignore rule hides them. An exact ignored directory bypasses the rule hiding that root while nested ignore rules still apply. `--no-ignore` is the separate broad policy that disables `.gitignore` and `.hiss` filtering below every target in its scope. Filters never authorize traversal.
 
 5. **Exact beats fuzzy** — exact existing paths and exact basename hits should execute directly; genuinely ambiguous fuzzy resolution belongs to fzf, not local heuristics.
 
@@ -199,13 +199,13 @@ Subpackages and platform shims:
    - an exact directory subtree
    - a glob pattern matched against all visible files
    - an fzf-backed fuzzy selection
-   - an `--include`-allowed ignored target
+   - an exact target, including a path hidden by an ignore rule
 
 4. Discover files for resolved targets:
    - rg is the primary engine for visible file enumeration
    - exact visible directory targets also use rg-backed subtree discovery
    - rg is also used for exact basename lookup and `--contains` matching
-   - Go walks are still used where directory objects matter: ignored-target browsing and some exact ignored / include-allowed directory cases
+   - Go walks are still used where directory objects matter and for bounded exact ignored-directory traversal
    - symlinks are currently excluded everywhere by policy
    - visible directory targets are derived from the visible file set rather than a separate directory walk, so there is no standalone visible-dir walk in the hot path; they inherit both rg/.gitignore visibility and catclip's `.hiss` filtering
    - consequence: empty directories, or directories with no surviving text files, are intentionally excluded from the visible picker
@@ -223,11 +223,10 @@ Subpackages and platform shims:
 
 8. Apply scope stages in order (left to right within each scope):
    - multiple positional targets belong to one scope: resolve their files, union and deduplicate them, then apply the scope's stages once to that combined set. This is the conventional multiple-search-root model used by recursive tools such as `find`, `grep`, and ripgrep. `--recent N` therefore keeps N across the target union, `--size` orders the union once, and ordinary predicates apply uniformly. `--depth N` remains multi-target but measures from each resolved target independently before combining survivors. `--then` is the explicit boundary for independent target sets and pipelines
-   - `--include` adds specific authorized ignored paths; `--no-ignore` disables ignore rules below the resolved targets. Either authorization form must be first, may appear once per scope, and cannot be combined with the other in the same scope
-   - a specific `--include` value has one exact cwd-relative identity; positional targets limit where it can have an effect but never rebase it (`catclip src --include src/generated`, not `catclip src --include generated`)
-   - a concrete included directory authorizes ignored descendants encountered below a visible target walk; walk permission may reach an ancestor of a deep include, but per-entry authorization must narrow emitted ignored files back to the concrete include set
-   - `--include` accepts concrete paths only. `*`, other glob metacharacters, and `.` are rejected; broad authorization is written `--no-ignore`. The complete current contract, picker lifecycle, error taxonomy, performance rules, and change-control checklist live in `docs/versions/v0.6.10/INCLUDE_REFERENCE.md`
-   - interactive include selections that leave both ordinary visible files and newly authorized ignored files offer an explicit Keep all versus Keep only decision. This applies equally to a typed query and the modifier-menu picker. Esc from that decision goes back to the most recent include picker that actually made a selection; it never means Keep all. Repeated or parent/child queries already covered by earlier selections are skipped and do not create fake Back steps. Selecting every row in a multi-row include picker may normalize to `--no-ignore` but retains picker provenance and still receives the decision; a singleton selection stays concrete. Typed `--no-ignore` is already resolved and opens neither include nor narrow picker. No-ignore traversal must mark only actually ignored files as `AllowedByInclude`, never every file reached by the broad walk. Prediscovered replay must expand no-ignore authorization per scope target, including from an empty checkpoint, without widening to cwd
+   - exact ignored paths belong in the target list (`catclip src src/generated --recent 20`). Multiple targets remain one combined stage input, so selective ignored traversal does not require a separate authorization stage
+   - `--no-ignore` disables `.gitignore` and `.hiss` below all resolved targets in its scope. It must be the first modifier and may appear once per scope
+   - a fuzzy query without `--no-ignore` sees visible candidates only. With `--no-ignore`, it searches one complete universe containing visible and ignored files and directories; ignore policy must not become an ignored-only fallback tier
+   - exact paths beat basename and fuzzy lookup even with `--no-ignore`. A root `index.js` therefore remains the exact target; absent that path, `index.js` is visible-only basename navigation unless `--no-ignore` broadens the universe
    - `--only` / `--exclude` run as sequential file-set stages
    - `--recent N` sorts by mtime, keeps top N
    - `--depth N` removes files more than N levels below each target (rg `--max-depth`)
@@ -238,8 +237,9 @@ Subpackages and platform shims:
    - `--lines [START [END]]` slices each surviving file to that 1-based line range
    - git selectors (`--changed`, `--staged`, `--unstaged`, `--untracked`)
    - output shape: `--paths` (terminal), `--*-diff`, or default full-file
-   - `--only -`, `--exclude -`, `--include -` read exact paths from stdin
-   - interactive file-set selections are normalized before argv emission: redundant literals covered by a selected pattern are dropped, and repeated exact selections collapse into a single wildcard when full current-scope coverage proves the shorter form equivalent (dynamic pattern inference). The rewritten argv must satisfy resolved-command parity (rule 22)
+   - `--only -` and `--exclude -` read exact paths from stdin
+   - interactive file-set selections are normalized before argv emission: redundant literals covered by a selected pattern are dropped, repeated basename families may collapse into a wildcard, and a completely selected directory may collapse into one precise subtree selector when full current-scope coverage proves equivalence. The rewritten argv must satisfy resolved-command parity (rule 22)
+   - live `--only` / `--exclude` previews must never expand every marked row into subprocess argv. Pass fzf's selected-row temporary file (`{+f}`) to the checkpoint-backed internal preview and parse its value column in-process. If checkpoint setup fails, omit the live preview instead of restoring an unbounded argv fallback. This keeps preview command size constant for large `--no-ignore` scopes; see `docs/versions/v0.7.0/reports/RESOLVED_BUG_large_file_set_selection_argmax.md`
 
 9. Build preview metadata and render the tree/summary when needed:
    - `--preview` renders a per-file table (path + size/tokens/git/modified/shape) instead of the tree; the confirmation flow, sink picker, and fzf pickers keep the tree. `--no-tree` governs only the confirmation tree, not `--preview`
@@ -316,22 +316,24 @@ Profiling answers *where the time/memory goes within one process*. Pair it with 
 - CLI `**` rejection stops at the argv grammar boundary. `.gitignore`, `.hiss`, and internal ripgrep queries retain real gitignore/ripgrep globstar, where `*` stays inside a path component and `**` crosses components. Do not apply the CLI validation rule to ignore files, PCRE2 content patterns, or internal discovery globs.
 - In TARGET resolution, trailing slash is not a picker-mode command. Existing directory targets `src` and `src/` resolve to the same directory and neither should open a special directory-only picker; overloading target `dir/` to change picker contents or mean "everything under this directory" as a separate mode is intentionally rejected. Current normalization removes the slash before filesystem resolution, so `foo/` can also select an exact file named `foo`; adding a directory-kind assertion later would be a separate compatibility decision, not a picker-mode change. This is separate from file-set stage syntax: `--only "handler/"` and `--exclude "handler/"` are recursive subtree selectors. Exact targets stay exact, scoped targets like `layout/Footer.tsx` use normal resolution, and fuzzy discovery stays with fzf. If directory-only or directory-first target-picker modes return later, they should use explicit flags or picker toggles instead of path punctuation.
 - The normal picker is visible-only.
-- Ignored targets require explicit authorization. Use `--include PATH` for selected ignored content or `--no-ignore` for every ignored path below the resolved targets; the include picker keeps ignored entries separate from the safe target list by default.
+- Exact ignored targets are valid direct instructions. Use a complete relative path such as `src/generated` for selective traversal; nested ignore rules still apply. Use `--no-ignore` to disable `.gitignore` and `.hiss` below all targets in the current scope.
 - Packaged installs resolve fzf/rg from app-private paths; env overrides remain for tests and developer runs, but there is no normal user-facing PATH fallback.
-- A direct `--include` without a value is a required-value error. To open
-  ignored-target selection without an initial query, end the current scope
-  with bare `--` and choose `--include` from the modifier menu.
 - `--no-ignore` takes no value. A typed flag applies immediately; choosing it
-  from the modifier menu must not open the include picker.
-- A typed include value that is not an exact path may also open that ignored-target picker in interactive startup. Human confirmation resolves it to a concrete cwd-relative path in the echoed command. `--headless` never performs that reinterpretation: it reports the missing exact path and may show qualified target-bounded suggestions without selecting one.
-- `.` means "all safe targets" and suppresses further safe-target picking, but it must not suppress ignored-target browsing.
+  from the modifier menu broadens the next target picker to one combined
+  visible-and-ignored universe.
+- `catclip --no-ignore` opens a combined target picker. A queried form such as
+  `catclip index.js --no-ignore` resolves exact basenames or fuzzy matches from
+  that same universe. Without the flag, basename and fuzzy navigation remain
+  visible-only.
+- `.` means every normally visible target. `catclip . --no-ignore` means every
+  eligible target below cwd with ignore rules disabled.
 - Scope coverage is literal and subtree-based: selecting `src/vs` covers only `src/vs/...`, not all of `src/...`, so a later `--then src` is valid and should remain available.
 - Exact overlapping scopes are allowed in scripting mode even when a later scope is already covered by an earlier one; final payload is still deduped by path, but the command should keep the user's literal scope structure.
 - `--then` is a true fresh scope boundary: treat it like starting a brand new catclip command on the same line, then unioning the final file sets. Interactive recovery must not turn it into "remaining files only".
 - Current interactive continuation exclusion is target-based, not result-set-based, within the current scope: later pickers in the same scope exclude previously selected target paths/subtrees, but do not evaluate prior modifiers like `--only`, `--exclude`, `--contains`, `--changed`, `--snippet`, or `--diff` before deciding what counts as "already covered".
 - Consequence of that simplification within one scope: `src --only "*.ts"` still makes later same-scope picker logic treat all of `src` as covered, and prior `.` still means "all safe targets are covered" for same-scope continuation purposes, even if that scope would later be narrowed by modifiers.
 - The interactive modifier menu can apply no-value `--no-ignore` or collect
-  values for `--include`, `--only`, `--exclude`, and `--contains`; the direct
+  values for `--only`, `--exclude`, and `--contains`; the direct
   value-taking flags still require values. Open the menu with bare `--`.
   Repeated bare `--` placeholders are allowed and each inserts one more
   modifier stage.

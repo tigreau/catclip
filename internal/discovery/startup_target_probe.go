@@ -9,7 +9,7 @@ import (
 
 // ProbeStartupTarget classifies one startup target with a single mixed
 // file-and-directory fzf filter pass for ordinary fuzzy queries. It preserves
-// the normal resolver's exact, ignored, slash-qualified, and --include paths;
+// the normal resolver's exact, ignored, and slash-qualified paths;
 // callers use the outcome to decide whether a startup picker can help.
 func (r *Resolver) ProbeStartupTarget(target string) (StartupTargetProbe, error) {
 	normalized := normalizeRelPath(target)
@@ -18,15 +18,12 @@ func (r *Resolver) ProbeStartupTarget(target string) (StartupTargetProbe, error)
 	}
 
 	abs := filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(normalized))
-	info, statErr := os.Stat(abs)
+	_, statErr := os.Stat(abs)
 	if statErr == nil {
-		block, err := r.startupTargetBlock(normalized, info.IsDir())
-		if err != nil {
-			return StartupTargetProbe{}, err
-		}
-		if block != nil && block.Source != "" && !r.NoIgnore && !r.walkAuthorizedByInclude(normalized) {
-			return StartupTargetProbe{Outcome: StartupTargetBlocked}, nil
-		}
+		// Exact on-disk targets are direct user instructions, including paths
+		// hidden by an ancestor ignore rule. The normal resolver performs the
+		// target-bounded walk; startup probing must not pay for a cwd-wide
+		// visibility inventory just to authorize the path.
 		return StartupTargetProbe{Outcome: StartupTargetDirect}, nil
 	}
 	if statErr != nil && !os.IsNotExist(statErr) {
@@ -52,6 +49,21 @@ func (r *Resolver) ProbeStartupTarget(target string) (StartupTargetProbe, error)
 			return StartupTargetProbe{Outcome: StartupTargetMissing}, nil
 		}
 		return StartupTargetProbe{Outcome: StartupTargetAmbiguousFuzzy}, nil
+	}
+
+	if r.NoIgnore {
+		matches, err := r.noIgnoreQueryTargetMatches(normalized)
+		if err != nil {
+			return StartupTargetProbe{}, err
+		}
+		switch len(matches) {
+		case 0:
+			return StartupTargetProbe{Outcome: StartupTargetMissing}, nil
+		case 1:
+			return StartupTargetProbe{Outcome: StartupTargetUniqueFuzzy, Matches: matches}, nil
+		default:
+			return StartupTargetProbe{Outcome: StartupTargetAmbiguousFuzzy, Matches: matches}, nil
+		}
 	}
 
 	if resolvedDir, ok, err := r.resolveVisibleDirByExactBasename(".", normalized); err != nil {
@@ -85,29 +97,6 @@ func (r *Resolver) ProbeStartupTarget(target string) (StartupTargetProbe, error)
 	if err != nil {
 		return StartupTargetProbe{}, err
 	}
-	if r.NoIgnore {
-		var ignoredMatches []TargetMatch
-		if len(exactBasenameTargetMatches(matches, normalized)) == 0 {
-			ignoredMatches, err = r.ignoredExactBasenameTargetMatches(normalized)
-			if err != nil {
-				return StartupTargetProbe{}, err
-			}
-		}
-		if len(ignoredMatches) == 0 && len(matches) == 0 {
-			ignoredTargets, err := r.AllIgnoredTargets(nil)
-			if err != nil {
-				return StartupTargetProbe{}, err
-			}
-			ignoredTargets = eligibleTargetMatches(ignoredTargets)
-			ignoredMatches, err = fuzzyFilterTargetMatches(normalized, ignoredTargets)
-			if err != nil {
-				return StartupTargetProbe{}, err
-			}
-		}
-		if len(ignoredMatches) > 0 {
-			return includedStartupTargetProbe(ignoredMatches), nil
-		}
-	}
 	switch len(matches) {
 	case 1:
 		// A visible exact basename retains priority over hidden duplicates.
@@ -138,36 +127,7 @@ func (r *Resolver) ProbeStartupTarget(target string) (StartupTargetProbe, error)
 		}
 	}
 
-	includeHits, err := r.FindBasenameInIncludedSubtrees(normalized)
-	if err != nil {
-		return StartupTargetProbe{}, err
-	}
-	includedMatches := make([]TargetMatch, 0, len(includeHits))
-	for _, hit := range includeHits {
-		includedMatches = append(includedMatches, hitToTargetMatch(hit))
-	}
-	switch len(includedMatches) {
-	case 0:
-		return StartupTargetProbe{Outcome: StartupTargetMissing}, nil
-	case 1:
-		return StartupTargetProbe{Outcome: StartupTargetIncludedUnique, Matches: includedMatches}, nil
-	default:
-		return StartupTargetProbe{Outcome: StartupTargetIncludedAmbiguous, Matches: includedMatches}, nil
-	}
-}
-
-func includedStartupTargetProbe(matches []TargetMatch) StartupTargetProbe {
-	if len(matches) == 1 {
-		return StartupTargetProbe{Outcome: StartupTargetIncludedUnique, Matches: matches}
-	}
-	return StartupTargetProbe{Outcome: StartupTargetIncludedAmbiguous, Matches: matches}
-}
-
-func (r *Resolver) startupTargetBlock(normalized string, isDir bool) (*BlockInfo, error) {
-	if isDir {
-		return r.dirBlockedBy(normalized)
-	}
-	return r.fileBlockedBy(normalized)
+	return StartupTargetProbe{Outcome: StartupTargetMissing}, nil
 }
 
 // scopedStartupTargetIsReachable retains the pre-existing chained-path
@@ -195,9 +155,5 @@ func (r *Resolver) scopedStartupTargetIsReachable(normalized string) (bool, erro
 	if len(dirs) > 0 {
 		return true, nil
 	}
-	if !r.hasAnyIncludeActive() {
-		return false, nil
-	}
-	hits, err := r.FindBasenameInIncludedSubtrees(normalized)
-	return len(hits) > 0, err
+	return false, nil
 }

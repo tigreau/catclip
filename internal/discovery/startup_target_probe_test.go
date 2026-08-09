@@ -12,9 +12,6 @@ func TestAdoptVisibleTargetInventoryFromCompatibleResolver(t *testing.T) {
 		ScopeTargets:         []string{"src"},
 		interactiveTargets:   []TargetMatch{{Path: "src/App.tsx", Kind: "file"}},
 		interactiveTargetsOk: true,
-		IncludedTargets: includedTargetSet{
-			exact: map[string]struct{}{"blocked": {}},
-		},
 	}
 	target := Resolver{
 		Cfg:          command.Invocation{WorkingDir: "/project"},
@@ -27,10 +24,6 @@ func TestAdoptVisibleTargetInventoryFromCompatibleResolver(t *testing.T) {
 	if !target.interactiveTargetsOk || len(target.interactiveTargets) != 1 {
 		t.Fatalf("adopted inventory = %#v, ready=%v", target.interactiveTargets, target.interactiveTargetsOk)
 	}
-	if target.hasAnyIncludeActive() {
-		t.Fatal("inventory adoption must not copy include authorization")
-	}
-
 	source.interactiveTargets[0].Path = "changed.ts"
 	if got := target.interactiveTargets[0].Path; got != "src/App.tsx" {
 		t.Fatalf("adopted inventory shares mutable backing storage: %q", got)

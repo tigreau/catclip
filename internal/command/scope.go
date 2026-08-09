@@ -8,14 +8,13 @@ import "strings"
 // pipeline's stage appliers consume an ExecutionScope plus their per-stage
 // inputs; nothing in this file knows about filesystem state.
 type ExecutionScope struct {
-	Targets         []string
-	NoIgnore        bool
-	IncludedTargets []string
-	Only            []string
-	Exclude         []string
-	Contains        string
-	NotContains     []string
-	SnippetPattern  string
+	Targets        []string
+	NoIgnore       bool
+	Only           []string
+	Exclude        []string
+	Contains       string
+	NotContains    []string
+	SnippetPattern string
 	// SnippetContextSet=false is smallest-enclosing-unit mode with paragraph
 	// fallback (the default).
 	// SnippetContextSet=true is fixed-context mode: SnippetContextLines (0..200)
@@ -85,7 +84,7 @@ func GitSelectionRequiresGitRepoMessage() string {
 // The predicate is deliberately narrow. The only piece of
 // configuration the canonical rg command can faithfully reproduce is
 // the regex pattern itself — every other catclip modifier (--only,
-// --exclude, --recent, --depth, --include, git filters, multi-leg
+// --exclude, --recent, --depth, git filters, multi-leg
 // --then, --with-binaries) diverges in semantics or invariants from
 // what rg would do natively. Anything outside this set must fall
 // back to the chunked path. See
@@ -116,9 +115,6 @@ func IsDirectModeEligible(invocation Invocation, scope ExecutionScope) bool {
 	if strings.ContainsAny(scope.Targets[0], "*?[") {
 		return false
 	}
-	if len(scope.IncludedTargets) > 0 {
-		return false
-	}
 	if len(scope.Only) > 0 || len(scope.Exclude) > 0 {
 		return false
 	}
@@ -133,7 +129,7 @@ func IsDirectModeEligible(invocation Invocation, scope ExecutionScope) bool {
 			// (paths / lines) don't change the file set.
 		default:
 			// Any narrowing stage (Recent / Size / Depth / Only /
-			// Exclude / Include / git variants) means the scope's
+			// Exclude / NoIgnore / git variants) means the scope's
 			// file set is not directly expressible as
 			// `rg PATTERN <target>`.
 			return false

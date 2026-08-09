@@ -25,7 +25,6 @@ type startupInteractiveFrame struct {
 	PendingArgs                []string
 	EscHint                    string
 	TargetTokens               []string
-	IncludeQueries             []string
 	TargetPrompt               string
 	ChoiceArgs                 []string
 	AllowInteractiveCompletion bool
@@ -181,6 +180,9 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 		}
 
 		arg := pending[0]
+		if cli.IsUnsupportedIncludeOption(arg) {
+			return startupInteractiveFrame{}, nil, false, cli.IncludeUnsupportedError()
+		}
 		if !startupFrameCurrentScopeHasInput(args) && startupLeadingModifierNeedsInitialScope(arg) {
 			return startupInteractiveFrame{
 				Kind:         startupInteractiveFrameTarget,
@@ -205,7 +207,7 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 				StartArgs:   cloneStringSlice(args),
 				PendingArgs: cloneStringSlice(pending[1:]),
 			}, nil, false, nil
-		case "--no-ignore", "--include", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines",
+		case "--no-ignore", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines",
 			"--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff":
 			return startupInteractiveFrame{
 				Kind:                       startupInteractiveFrameStage,
@@ -335,14 +337,17 @@ func runStartupLinesEndFrame(frame startupInteractiveFrame) (startupInteractiveF
 func runStartupTargetFrame(resolver *discovery.Resolver, frame startupInteractiveFrame) (startupInteractiveFrameResult, error) {
 	currentScopeTargets, currentScopeExplicitTargets := startupFrameCurrentScopeSelections(frame.StartArgs)
 	oldEscHint := resolver.StartupEscHint
+	oldNoIgnore := resolver.NoIgnore
 	resolver.StartupEscHint = frame.EscHint
+	resolver.NoIgnore = startupTargetFrameUsesNoIgnore(frame)
 	defer func() {
 		resolver.StartupEscHint = oldEscHint
+		resolver.NoIgnore = oldNoIgnore
 	}()
 	resolvedArgs, resolvedTargets, _, usedFzf, err := resolveStartupScopeInputsWithPrompt(
 		resolver,
 		frame.TargetTokens,
-		frame.IncludeQueries,
+		nil,
 		currentScopeTargets,
 		currentScopeExplicitTargets,
 		frame.TargetPrompt,
@@ -357,6 +362,21 @@ func runStartupTargetFrame(resolver *discovery.Resolver, frame startupInteractiv
 		UsedFzf:    usedFzf,
 		ScopePaths: append(currentScopeTargets, resolvedTargets...),
 	}, nil
+}
+
+func startupTargetFrameUsesNoIgnore(frame startupInteractiveFrame) bool {
+	args := make([]string, 0, len(frame.StartArgs)+len(frame.TargetTokens)+len(frame.PendingArgs))
+	args = append(args, frame.StartArgs...)
+	targetAt := len(args)
+	args = append(args, frame.TargetTokens...)
+	args = append(args, frame.PendingArgs...)
+	if len(args) == 0 {
+		return false
+	}
+	if targetAt >= len(args) {
+		targetAt = len(args) - 1
+	}
+	return startupScopeContainsNoIgnore(args, targetAt)
 }
 
 func runStartupModifierFrame(frame startupInteractiveFrame) (startupInteractiveFrameResult, error) {
@@ -494,11 +514,6 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 			continue
 		case "--no-ignore":
 			inModifierMode = true
-		case "--include":
-			inModifierMode = true
-			values, next := cli.ConsumeModifierValues(args, i+1)
-			selected = append(selected, values...)
-			i = next - 1
 		case "--only", "--exclude":
 			inModifierMode = true
 			_, next := cli.ConsumeModifierValues(args, i+1)
@@ -558,7 +573,7 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 			continue
 		case "--no-ignore":
 			inModifierMode = true
-		case "--include", "--only", "--exclude":
+		case "--only", "--exclude":
 			inModifierMode = true
 			_, next := cli.ConsumeModifierValues(args, i+1)
 			i = next - 1

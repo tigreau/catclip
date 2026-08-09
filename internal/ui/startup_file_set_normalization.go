@@ -8,7 +8,10 @@ import (
 	"github.com/tigreau/catclip/internal/discovery"
 )
 
-const dynamicFileSetInferenceThreshold = 2
+const (
+	dynamicFileSetInferenceThreshold     = 2
+	largeFileSetSubtreeFastPathThreshold = 128
+)
 
 type interactiveFileSetSelectedValue struct {
 	raw         string
@@ -43,7 +46,10 @@ func normalizeInteractiveFileSetStageValues(currentArgs []string, values []strin
 	if len(relPaths) == 0 {
 		return dedupeInteractiveFileSetValues(values), nil
 	}
+	return normalizeInteractiveFileSetStageValuesForPaths(relPaths, values)
+}
 
+func normalizeInteractiveFileSetStageValuesForPaths(relPaths, values []string) ([]string, error) {
 	exactFiles := make(map[string]struct{}, len(relPaths))
 	for _, relPath := range relPaths {
 		normalized := normalizeRelPath(relPath)
@@ -75,28 +81,51 @@ func normalizeInteractiveFileSetStageValues(currentArgs []string, values []strin
 		})
 	}
 
-	survivors := make([]interactiveFileSetSelectedValue, 0, len(selected))
-	for i, value := range selected {
-		if value.isExactFile && interactiveExactFileCoveredByOtherSelection(selected, i) {
+	nonExactSelections := make([]interactiveFileSetSelectedValue, 0, len(selected))
+	selectedExactSet := make(map[string]struct{}, len(selected))
+	for _, value := range selected {
+		if value.isExactFile {
+			selectedExactSet[value.normalized] = struct{}{}
 			continue
 		}
-		survivors = append(survivors, value)
+		nonExactSelections = append(nonExactSelections, value)
 	}
-	selectedRelPaths := selectedStageRelPathSet(selected, relPaths)
 
-	nonExact := make([]string, 0, len(survivors))
-	exact := make([]string, 0, len(survivors))
-	for _, value := range survivors {
+	nonExact := make([]string, 0, len(nonExactSelections))
+	exact := make([]string, 0, len(selectedExactSet))
+	for _, value := range selected {
 		if value.isExactFile {
+			if matchesAnyInteractiveFileSetSelection(value.normalized, nonExactSelections) {
+				continue
+			}
 			exact = append(exact, value.raw)
 			continue
 		}
 		nonExact = append(nonExact, value.raw)
 	}
 
-	inferred, remainingExact, err := inferDynamicFileSetPatterns(exact, relPaths, selectedRelPaths)
+	subtrees, subtreeRemaining, err := inferCompleteSelectedSubtrees(exact, relPaths)
 	if err != nil {
 		return nil, err
+	}
+
+	var inferred, remainingExact []string
+	if len(exact) >= largeFileSetSubtreeFastPathThreshold && len(subtrees)+len(subtreeRemaining) == 1 {
+		// One complete directory selector is already the shortest possible
+		// non-empty representation. Avoid basename inference entirely: on a
+		// dependency tree this is the confirmation-time fast path that prevents
+		// thousands of exact selections from delaying the output picker.
+		inferred, remainingExact = subtrees, subtreeRemaining
+	} else {
+		selectedRelPaths := selectedStageRelPathSet(selectedExactSet, nonExactSelections, relPaths)
+		inferred, remainingExact, err = inferDynamicFileSetPatterns(exact, relPaths, selectedRelPaths)
+		if err != nil {
+			return nil, err
+		}
+		if len(subtrees)+len(subtreeRemaining) < len(inferred)+len(remainingExact) {
+			inferred = subtrees
+			remainingExact = subtreeRemaining
+		}
 	}
 	nonExact, err = removeNonExactValuesCoveredByInferredPatterns(nonExact, relPaths, inferred)
 	if err != nil {
@@ -109,24 +138,115 @@ func normalizeInteractiveFileSetStageValues(currentArgs []string, values []strin
 	return out, nil
 }
 
-func interactiveExactFileCoveredByOtherSelection(values []interactiveFileSetSelectedValue, current int) bool {
-	target := values[current]
-	if !target.isExactFile || target.normalized == "" {
-		return false
+// inferCompleteSelectedSubtrees replaces exact files with directory selectors
+// only when every scope file below that directory was selected. It is the
+// directory-shaped counterpart to basename pattern inference and prevents a
+// large heterogeneous tree (node_modules is the canonical case) from becoming
+// thousands of argv values.
+func inferCompleteSelectedSubtrees(selectedExact, scopeFiles []string) ([]string, []string, error) {
+	if len(selectedExact) < dynamicFileSetInferenceThreshold || len(scopeFiles) == 0 {
+		return nil, append([]string(nil), selectedExact...), nil
 	}
-	for i, other := range values {
-		if i == current {
+
+	scopeCounts := make(map[string]int)
+	selectedCounts := make(map[string]int)
+	countAncestors := func(counts map[string]int, relPath string) {
+		for dir := path.Dir(normalizeRelPath(relPath)); dir != "." && dir != "" && dir != "/"; dir = path.Dir(dir) {
+			counts[dir]++
+		}
+	}
+	for _, relPath := range scopeFiles {
+		countAncestors(scopeCounts, relPath)
+	}
+	for _, relPath := range selectedExact {
+		countAncestors(selectedCounts, relPath)
+	}
+
+	candidates := make([]string, 0, len(selectedCounts))
+	for dir, selectedCount := range selectedCounts {
+		if selectedCount < dynamicFileSetInferenceThreshold || selectedCount != scopeCounts[dir] {
 			continue
 		}
-		if discovery.MatchesStageValue(target.normalized, other.matcher) {
+		if strings.ContainsAny(dir, "*?[") {
+			continue
+		}
+		candidates = append(candidates, dir)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		leftDepth := strings.Count(candidates[i], "/")
+		rightDepth := strings.Count(candidates[j], "/")
+		if leftDepth != rightDepth {
+			return leftDepth < rightDepth
+		}
+		return candidates[i] < candidates[j]
+	})
+
+	selectedDirs := make(map[string]struct{}, len(candidates))
+	selectors := make([]string, 0, len(candidates))
+	for _, dir := range candidates {
+		if directoryHasSelectedAncestor(dir, selectedDirs) {
+			continue
+		}
+
+		selector := dir + "/"
+		if !strings.Contains(dir, "/") {
+			// A one-segment trailing-slash selector floats to same-named nested
+			// directories. Use the anchored glob form for an exact root subtree;
+			// Catclip filter '*' crosses folders, so this still covers descendants.
+			selector = dir + "/*"
+		}
+		if _, err := discovery.ClassifyStageValue(selector); err != nil {
+			return nil, nil, err
+		}
+		selectedDirs[dir] = struct{}{}
+		selectors = append(selectors, selector)
+	}
+
+	remaining := make([]string, 0, len(selectedExact))
+	seen := make(map[string]struct{}, len(selectedExact))
+	for _, relPath := range selectedExact {
+		normalized := normalizeRelPath(relPath)
+		if pathHasSelectedAncestor(normalized, selectedDirs) {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		remaining = append(remaining, relPath)
+	}
+	return selectors, remaining, nil
+}
+
+func directoryHasSelectedAncestor(dir string, selectedDirs map[string]struct{}) bool {
+	for ancestor := path.Dir(dir); ancestor != "." && ancestor != "" && ancestor != "/"; ancestor = path.Dir(ancestor) {
+		if _, ok := selectedDirs[ancestor]; ok {
 			return true
 		}
 	}
 	return false
 }
 
-func selectedStageRelPathSet(selected []interactiveFileSetSelectedValue, relPaths []string) map[string]struct{} {
-	if len(selected) == 0 || len(relPaths) == 0 {
+func pathHasSelectedAncestor(relPath string, selectedDirs map[string]struct{}) bool {
+	for dir := path.Dir(relPath); dir != "." && dir != "" && dir != "/"; dir = path.Dir(dir) {
+		if _, ok := selectedDirs[dir]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAnyInteractiveFileSetSelection(relPath string, values []interactiveFileSetSelectedValue) bool {
+	for _, value := range values {
+		if discovery.MatchesStageValue(relPath, value.matcher) {
+			return true
+		}
+	}
+	return false
+}
+
+func selectedStageRelPathSet(selectedExact map[string]struct{}, nonExact []interactiveFileSetSelectedValue, relPaths []string) map[string]struct{} {
+	if (len(selectedExact) == 0 && len(nonExact) == 0) || len(relPaths) == 0 {
 		return nil
 	}
 	out := make(map[string]struct{})
@@ -135,11 +255,12 @@ func selectedStageRelPathSet(selected []interactiveFileSetSelectedValue, relPath
 		if normalized == "" {
 			continue
 		}
-		for _, value := range selected {
-			if discovery.MatchesStageValue(normalized, value.matcher) {
-				out[normalized] = struct{}{}
-				break
-			}
+		if _, ok := selectedExact[normalized]; ok {
+			out[normalized] = struct{}{}
+			continue
+		}
+		if matchesAnyInteractiveFileSetSelection(normalized, nonExact) {
+			out[normalized] = struct{}{}
 		}
 	}
 	return out

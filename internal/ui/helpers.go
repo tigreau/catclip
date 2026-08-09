@@ -96,7 +96,7 @@ func rawArgsRequestQuiet(args []string) bool {
 func rawArgsUseStdinPathValues(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
-		case "--include", "--only", "--exclude":
+		case "--only", "--exclude":
 			values, next := cli.ConsumeModifierValues(args, i+1)
 			if len(values) == 1 && values[0] == "-" {
 				return true

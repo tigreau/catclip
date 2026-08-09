@@ -161,9 +161,8 @@ func TestRunRipgrepDirectMatchLinesBadPattern(t *testing.T) {
 }
 
 // TestRunRipgrepDirectNoIgnoreSurfacesGitignored asserts that DirectNoIgnore
-// causes rg to walk paths a .gitignore would otherwise hide. Mirrors the
-// picker-include flow: parent had --include, so the picker subprocess sets
-// CheckpointData.NoIgnore=true and direct rg follows suit.
+// causes rg to walk paths a .gitignore would otherwise hide. Picker preview
+// subprocesses inherit CheckpointData.NoIgnore from their parent scope.
 func TestRunRipgrepDirectNoIgnoreSurfacesGitignored(t *testing.T) {
 	dir := t.TempDir()
 	if err := writeFile(filepath.Join(dir, ".gitignore"), "ignored/\n"); err != nil {

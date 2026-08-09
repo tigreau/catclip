@@ -45,7 +45,6 @@ func TestRunInternalTreePreviewOutputsNoTextChildrenDirectoryState(t *testing.T)
 		"--internal-tree-kind", "dir",
 		"--internal-tree-state", "no_text_children",
 		"blocked",
-		"--include", "blocked",
 	})
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

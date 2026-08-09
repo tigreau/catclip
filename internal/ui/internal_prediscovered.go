@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 
@@ -19,18 +22,22 @@ import (
 // internal/discovery; this struct is just the runtime wrapper that
 // glues a parsed command to a checkpoint path.
 type prediscoveredCommandConfig struct {
-	CheckpointPath string
-	Invocation     command.Invocation
-	Render         RenderConfig
-	Scopes         []command.ExecutionScope
+	CheckpointPath        string
+	FileSetSelectionPath  string
+	FileSetSelectionStage string
+	Invocation            command.Invocation
+	Render                RenderConfig
+	Scopes                []command.ExecutionScope
 }
 
 func PrediscoveredCommandConfigFromParsedCommand(cfg command.Parsed) prediscoveredCommandConfig {
 	return prediscoveredCommandConfig{
-		CheckpointPath: cfg.PrediscoveredPath,
-		Invocation:     invocationConfigFromParsedCommand(cfg),
-		Render:         RenderConfigFromParsedCommand(cfg),
-		Scopes:         command.ExecutionScopesFromSpec(cfg.Command),
+		CheckpointPath:        cfg.PrediscoveredPath,
+		FileSetSelectionPath:  cfg.FileSetSelectionPath,
+		FileSetSelectionStage: cfg.FileSetSelectionStage,
+		Invocation:            invocationConfigFromParsedCommand(cfg),
+		Render:                RenderConfigFromParsedCommand(cfg),
+		Scopes:                command.ExecutionScopesFromSpec(cfg.Command),
 	}
 }
 
@@ -73,6 +80,17 @@ func buildPrediscoveredTreePlan(cfg prediscoveredCommandConfig) (output.Plan, di
 	if len(cfg.Scopes) == 1 {
 		scope = cfg.Scopes[0]
 	}
+	if cfg.FileSetSelectionPath != "" {
+		values, err := readFzfFileSetSelection(cfg.FileSetSelectionPath)
+		if err != nil {
+			return output.Plan{}, discovery.CheckpointData{}, err
+		}
+		kind := command.StageOnly
+		if cfg.FileSetSelectionStage == "exclude" {
+			kind = command.StageExclude
+		}
+		scope.Stages = append(scope.Stages, command.Stage{Kind: kind, Values: values})
+	}
 
 	finishTailBench := platform.InternalBenchSpan("ui.internal.prediscovered.apply_tail",
 		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
@@ -102,6 +120,38 @@ func buildPrediscoveredTreePlan(cfg prediscoveredCommandConfig) (output.Plan, di
 		return output.Plan{}, discovery.CheckpointData{}, err
 	}
 	return plan, checkpoint, nil
+}
+
+func readFzfFileSetSelection(selectionPath string) ([]string, error) {
+	f, err := os.Open(selectionPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	values := make([]string, 0, 16)
+	seen := make(map[string]struct{})
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) < 2 || fields[1] == "" {
+			return nil, fmt.Errorf("invalid fzf file-set selection row")
+		}
+		if _, ok := seen[fields[1]]; ok {
+			continue
+		}
+		seen[fields[1]] = struct{}{}
+		values = append(values, fields[1])
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if len(values) == 0 {
+		return nil, fmt.Errorf("empty fzf file-set selection")
+	}
+	return values, nil
 }
 
 func FzfFilterTreeRenderOptions() treeRenderOptions {

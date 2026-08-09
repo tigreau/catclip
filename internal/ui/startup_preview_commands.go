@@ -115,20 +115,17 @@ func startupFileSetPreviewCommand(currentArgs []string, flag string, diffPreview
 	if activeDiffFlag := currentScopeDiffPreviewFlag(currentArgs); activeDiffFlag != "" {
 		return discovery.FzfDiffFilePreviewCommand(currentArgs)
 	}
-	previewFlag := flag
-	switch flag {
-	case "--changed", "--staged", "--unstaged", "--untracked":
-		// Git file pickers narrow the already-selected git set. Preview should
-		// mirror the final lowering to `--only`, not append a bogus value to the
-		// git selector itself.
-		previewFlag = "--only"
-	}
-	return discovery.FzfFileSetPreviewCommand(currentArgs, previewFlag)
+	// Non-diff file-set previews require a checkpoint so fzf can hand the
+	// selected rows to one bounded file argument. If checkpoint setup fails,
+	// omit the preview instead of falling back to expanding every marked path
+	// into argv and risking E2BIG.
+	return ""
 }
 
 // startupCheckpointFileSetPreviewCommand is the SCC path for free-form file-set
-// picker previews. It falls back to startupFileSetPreviewCommand only when a
-// short-lived checkpoint cannot be written.
+// picker previews. If a short-lived checkpoint cannot be written, the picker
+// remains usable without a live preview; it must not fall back to an
+// unbounded selected-path argument list.
 func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, diffPreview bool) (string, func()) {
 	fallback := func() string {
 		return startupFileSetPreviewCommand(currentArgs, flag, diffPreview)
@@ -188,9 +185,15 @@ func buildFileSetCheckpointPreview(view resolvedScopeView, previewFlag string) (
 		return "", ""
 	}
 
-	parts := []string{discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview", "--internal-prediscovered", discovery.ShellQuoteArg(checkpointPath)}
+	parts := []string{
+		discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
+		"--internal-prediscovered", discovery.ShellQuoteArg(checkpointPath),
+	}
 	if previewFlag != "" {
-		parts = append(parts, previewFlag, "{+2}")
+		parts = append(parts,
+			"--internal-file-set-selection", "{+f}",
+			"--internal-file-set-stage", strings.TrimPrefix(previewFlag, "--"),
+		)
 	}
 	parts = append(parts,
 		"--internal-tree-target", "{3}",

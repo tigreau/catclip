@@ -60,6 +60,8 @@ type Parsed struct {
 	TreeTarget             string
 	TreeKind               string
 	TreeState              string
+	FileSetSelectionPath   string
+	FileSetSelectionStage  string
 	FilePreview            bool
 	FileSearchingPreview   bool
 	FilePath               string
@@ -99,5 +101,6 @@ func (p Parsed) IsInternalKind() bool {
 		p.ContentMatchList || p.SnippetBoundaryPreview || p.RecentPreview ||
 		p.LinesPreview ||
 		p.PrediscoveredPath != "" || p.TreeInputDir != "" ||
+		p.FileSetSelectionPath != "" || p.FileSetSelectionStage != "" ||
 		p.SinkTogglePath != "" || p.SinkPreviewModePath != ""
 }

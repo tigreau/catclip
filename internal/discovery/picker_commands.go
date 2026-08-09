@@ -16,7 +16,7 @@ import (
 // FzfPreviewCommand is used by target-selection pickers before a parent scope
 // has settled entries. SCC does not apply there; modifier previews use the
 // checkpoint wrappers in startup_picker.go / fzfCheckpointContentMatchListCommand.
-func FzfPreviewCommand(includeTarget bool, withBinaries ...bool) string {
+func FzfPreviewCommand(_ bool, withBinaries ...bool) string {
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
 		return ""
@@ -30,11 +30,6 @@ func FzfPreviewCommand(includeTarget bool, withBinaries ...bool) string {
 
 	// {+2} passes all selected targets (falls back to focused when none selected).
 	// {2}/{3}/{4} are the focused entry's metadata for tree highlight.
-	if includeTarget {
-		return selfQ + ` --quiet` + binaryFlag + ` {+2} --internal-tree-preview` +
-			` --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4}` +
-			` --include {+2}`
-	}
 	return selfQ + ` --quiet` + binaryFlag + ` --internal-tree-preview` +
 		` --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4}` +
 		` {+2}`
@@ -143,7 +138,7 @@ func currentScopeNeedsNoIgnoreCheckpoint(args []string) bool {
 		switch a {
 		case "--then":
 			needNoIgnore = false
-		case "--include", "--no-ignore":
+		case "--no-ignore":
 			needNoIgnore = true
 		}
 	}
@@ -318,8 +313,8 @@ func (r *Resolver) fuzzySearchTargetMatches(baseRel, query string) ([]TargetMatc
 }
 
 // fuzzyFilterTargetMatches applies the target picker's fzf query grammar to
-// an already-built candidate set. Visible and ignored fallback inventories use
-// the same row shape, search field, and ranking as the interactive picker.
+// an already-built candidate set. Visible-only and combined no-ignore
+// inventories use the same row shape, search field, and ranking.
 func fuzzyFilterTargetMatches(query string, candidates []TargetMatch) ([]TargetMatch, error) {
 	bin, err := FuzzyResolverBinary()
 	if err != nil {
@@ -379,10 +374,9 @@ func TargetMatchLabels(matches []TargetMatch) ([]string, map[string]TargetMatch)
 			label = "\x1b[1m" + plain + "\x1b[0m"
 		} else if match.Ignored {
 			source := strings.TrimSpace(match.IgnoreSource)
-			if source == "" {
-				source = "ignored"
+			if source != "" {
+				label = fmt.Sprintf("[%s %s]", match.Kind, source)
 			}
-			label = fmt.Sprintf("[ignored %s %s]", match.Kind, source)
 		}
 		labels = append(labels, strings.Join([]string{
 			label,

@@ -49,8 +49,8 @@ func AddGitStatusPathspec(set map[string]struct{}, gitCtx git.Context, entry Ent
 type textClassifier func(relPath, absPath string) (bool, error)
 
 // discoverFilesUnder enumerates text files under rootRel using ripgrep.
-// When rootBypass is set the call switches to --no-ignore so callers acting
-// on an --include'd subtree can recover paths blocked by .hiss/.gitignore.
+// When rootBypass is set the call switches to --no-ignore so callers can
+// recover paths blocked by .hiss/.gitignore while retaining attribution.
 // When baseName is non-empty, only files whose basename equals baseName are
 // returned; pass "" to skip the filter.
 func discoverFilesUnder(workingDir, rootRel, baseName string, classifyText textClassifier, rootBypass *BlockInfo) ([]Entry, error) {
@@ -77,7 +77,7 @@ func discoverFilesUnder(workingDir, rootRel, baseName string, classifyText textC
 			RelPath: rel,
 		}
 		if rootBypass != nil {
-			entry = withAllowedByInclude(entry, *rootBypass)
+			entry = withIgnoreBypassed(entry, *rootBypass)
 		}
 		files = append(files, entry)
 	}
@@ -249,8 +249,8 @@ func MergeFileEntry(dst *Entry, incoming Entry) {
 	if incoming.GitVisible && !dst.GitVisible {
 		dst.GitVisible = true
 	}
-	if incoming.AllowedByInclude && !dst.AllowedByInclude {
-		dst.AllowedByInclude = true
+	if incoming.IgnoreBypassed && !dst.IgnoreBypassed {
+		dst.IgnoreBypassed = true
 		dst.BlockSource = incoming.BlockSource
 	}
 	if dst.TargetRoot == "" && incoming.TargetRoot != "" {

@@ -8,7 +8,6 @@ package command
 // command:" header.
 var stageFlags = map[StageKind]string{
 	StageNoIgnore:     "--no-ignore",
-	StageInclude:      "--include",
 	StageOnly:         "--only",
 	StageExclude:      "--exclude",
 	StageRecent:       "--recent",

@@ -90,7 +90,7 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: "catclip internal/handler/user.go --lines 40 80", Right: "Read lines 40-80 with line numbers"},
 	})
 
-	fmt.Fprintf(&b, "\n  You can give %s, %s, and %s more than one value.\n", flag("--only"), flag("--exclude"), flag("--include"))
+	fmt.Fprintf(&b, "\n  You can give %s and %s more than one value.\n", flag("--only"), flag("--exclude"))
 	fmt.Fprintf(&b, "  Examples: %s   %s\n", flag(`--only "*.ts" "*.tsx"`), flag(`--exclude "*.css" "*.scss"`))
 	fmt.Fprintf(&b, "  In %s and %s, filename patterns and single directory names match anywhere below the targets:\n", flag("--only"), flag("--exclude"))
 	fmt.Fprintf(&b, "    %s keeps TSX files in nested folders too.\n", flag(`--only "*.tsx"`))
@@ -133,22 +133,19 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 	fmt.Fprintf(&b, "  catclip skips .gitignored paths and paths matched by %s (catclip's own ignore rules, on top of .gitignore).\n", flag(".hiss"))
 	fmt.Fprintf(&b, "\n")
 	writeAlignedHelpRows(&b, "  ", example, []helpRow{
-		{Left: "catclip dist --include dist", Right: "Allow the ignored React build output for this run"},
+		{Left: "catclip src/generated", Right: "Read a nested ignored directory by its exact path"},
 		{Left: "catclip src --no-ignore", Right: "Include every ignored text file below src"},
 		{Left: "catclip --hiss", Right: fmt.Sprintf("Edit catclip's ignore rules (%s)", flag(hissDisplayPath))},
 	})
 	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "  %s allows named ignored paths; %s allows every ignored path below the targets.\n", flag("--include"), flag("--no-ignore"))
-	b.WriteString("  Write specific include paths from the directory where you run catclip; targets do not shorten them.\n")
+	b.WriteString("  Name an ignored file or directory by its complete relative path.\n")
+	fmt.Fprintf(&b, "  Use %s when you want all ignored paths below the selected targets.\n", flag("--no-ignore"))
 	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "  %s\n", example(`catclip . --include dist --only src dist`))
-	fmt.Fprintf(&b, "    Works — '.' covers the whole project, %s keeps src and dist.\n", flag("--only"))
-	fmt.Fprintf(&b, "\n")
-	fmt.Fprintf(&b, "  %s\n", badExample(`catclip internal --include dist`))
-	fmt.Fprintf(&b, "    Doesn't find dist because it's outside internal/.\n")
+	fmt.Fprintf(&b, "  %s\n", example(`catclip src/generated`))
+	fmt.Fprintf(&b, "    Reads that ignored directory while nested ignore rules still apply.\n")
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Piping:"))
-	fmt.Fprintf(&b, "  Use %s, %s, or %s to read exact relative paths from stdin.\n", flag("--only -"), flag("--exclude -"), flag("--include -"))
+	fmt.Fprintf(&b, "  Use %s or %s to read exact relative paths from stdin.\n", flag("--only -"), flag("--exclude -"))
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", example(`git diff --name-only --relative main | catclip . --only -`))
 	fmt.Fprintf(&b, "    Copy files changed from main in the current folder and its subfolders.\n")
@@ -180,6 +177,29 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: "--hiss", Right: "Edit catclip's own ignore rules (applied on top of .gitignore)"},
 		{Left: "--hiss-reset", Right: "Reset catclip's ignore rules to defaults"},
 		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — your .gitignore(s) + .hiss, merged"},
+	})
+
+	fmt.Fprintf(&b, "\n%s\n", bold("Filters and modifiers:"))
+	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
+		{Left: "--no-ignore", Right: "Include ignored files below the targets (put this first)"},
+		{Left: "--only VALUE...", Right: "Keep matching files"},
+		{Left: "--exclude VALUE...", Right: "Remove matching files"},
+		{Left: "--recent [N]", Right: "Newest files first; optionally keep N"},
+		{Left: "--size [MIN [MAX]]", Right: "Largest files first; optionally keep a KiB range"},
+		{Left: "--depth N", Right: "Keep files up to N levels below each target"},
+		{Left: "--contains REGEX", Right: "Keep files whose contents match"},
+		{Left: "--not-contains REGEX", Right: "Remove files whose contents match"},
+		{Left: "--snippet REGEX [N]", Right: "Copy a smart block, or N nearby lines, around each match"},
+		{Left: "--lines [START [END]]", Right: "Add line numbers; optionally keep a line range"},
+		{Left: "--paths", Right: "Copy file paths instead of file contents"},
+		{Left: "--changed", Right: "Keep all changed Git files"},
+		{Left: "--staged", Right: "Keep staged Git files"},
+		{Left: "--unstaged", Right: "Keep unstaged Git files"},
+		{Left: "--untracked", Right: "Keep new untracked Git files"},
+		{Left: "--changed-diff", Right: "Copy patches for all changed Git files"},
+		{Left: "--staged-diff", Right: "Copy patches for staged Git files"},
+		{Left: "--unstaged-diff", Right: "Copy patches for unstaged Git files"},
+		{Left: "--then", Right: "Start another target and filter group"},
 	})
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Full reference manual: catclip --help-all"))
@@ -405,12 +425,11 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	// ── Pipeline model ──────────────────────────────────────────────────
 	head("PIPELINE MODEL")
 	b.WriteString("  Stages run left to right. Each stage receives only what the previous stage kept.\n")
-	fmt.Fprintf(&b, "  The set can only shrink after %s or %s adds authorized ignored files.\n\n", flag("--include"), flag("--no-ignore"))
+	fmt.Fprintf(&b, "  The set can only shrink after %s broadens discovery to ignored files.\n\n", flag("--no-ignore"))
 	b.WriteString("  When the result is the same, narrow by file name, path, or depth before\n")
 	b.WriteString("  searching file contents, so fewer files need to be read.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("[all discovered files under TARGET]"))
 	fmt.Fprintf(&b, "    → %s          adds every ignored path below the targets (must be first)\n", flag("--no-ignore"))
-	fmt.Fprintf(&b, "    → %s      adds authorized ignored files (must be first, once per scope)\n", flag("--include PATH"))
 	fmt.Fprintf(&b, "    → %s      keeps files matching PATTERN; discards rest\n", flag("--only PATTERN"))
 	fmt.Fprintf(&b, "    → %s   removes files matching PATTERN; keeps rest\n", flag("--exclude PATTERN"))
 	fmt.Fprintf(&b, "    → %s          sorts by mtime, keeps top N\n", flag("--recent N"))
@@ -420,7 +439,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	fmt.Fprintf(&b, "    → %s removes files whose contents DO match\n", flag("--not-contains REGEX"))
 	fmt.Fprintf(&b, "    → %s           removes files not changed in git\n", flag("--changed"))
 	fmt.Fprintf(&b, "    → output shape        %s | %s | %s\n\n", flag("--paths"), flag("--snippet REGEX"), flag("--*-diff"))
-	fmt.Fprintf(&b, "  %s and %s must be the first modifier; choose one per scope.\n", flag("--include"), flag("--no-ignore"))
+	fmt.Fprintf(&b, "  %s must be the first modifier in its scope.\n", flag("--no-ignore"))
 	b.WriteString("  Other modifiers can appear multiple times. Each occurrence\n")
 	b.WriteString("  is a separate step.\n\n")
 	fmt.Fprintf(&b, "    %s\n", example(`catclip src --only "*.tsx" --exclude "*.test.tsx" --recent 3`))
@@ -457,46 +476,42 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	fmt.Fprintf(&b, "  Without %s, all targets share the same modifiers.\n", flag("--then"))
 	b.WriteString("  Overlapping scopes are deduplicated by path in output.\n\n")
 
-	// ── Authorization ───────────────────────────────────────────────────
-	head("AUTHORIZATION (--include, --no-ignore)")
+	// ── Ignored paths ───────────────────────────────────────────────────
+	head("IGNORED PATHS (--no-ignore)")
 	b.WriteString("  catclip only discovers files visible to git (.gitignore) and its own .hiss config.\n")
-	fmt.Fprintf(&b, "  Ignored paths require %s or %s authorization.\n\n", flag("--include"), flag("--no-ignore"))
-	fmt.Fprintf(&b, "  %s\n\n", bold("There are two commands:"))
-	fmt.Fprintf(&b, "  %s    Authorize a specific ignored path.\n", flag("--include PATH"))
-	b.WriteString("                    Names an ignored directory or file relative to cwd.\n")
-	b.WriteString("                    Including a directory authorizes all descendants under it.\n")
-	b.WriteString("                    Including a parent authorizes descendant targets:\n")
-	fmt.Fprintf(&b, "                      %s    (parent authorizes child)\n\n", example("catclip dist/assets --include dist"))
+	b.WriteString("  An exact ignored file or directory can be named directly as a target.\n")
+	b.WriteString("  An exact ignored directory becomes a traversal root; ignore files nested\n")
+	b.WriteString("  below that root still apply. This stays fast because catclip stats the path\n")
+	b.WriteString("  and walks only that target instead of inventorying every ignored path.\n\n")
+	fmt.Fprintf(&b, "  %s\n", example("catclip src/generated --paths"))
+	fmt.Fprintf(&b, "  %s\n\n", example("catclip src/generated/client.ts -r"))
 	fmt.Fprintf(&b, "  %s          Disable ignore rules within the selected targets.\n", flag("--no-ignore"))
 	b.WriteString("                    Uses target-bounded no-ignore discovery.\n")
 	b.WriteString("                    Text/binary filtering still applies unless --with-binaries is set.\n")
-	b.WriteString("                    Authorizes any selected target, even if gitignored.\n")
+	b.WriteString("                    Makes ignored paths available to fuzzy target selection.\n")
 	fmt.Fprintf(&b, "                    Pair with %s for inventory; avoid combining with\n", flag("--paths"))
 	b.WriteString("                    body emit on uncurated repos. On a project with a full\n")
 	b.WriteString("                    node_modules/build tree this can mean megabytes of\n")
 	b.WriteString("                    payload and thousands of files — far more than you want\n")
 	b.WriteString("                    on a clipboard or in a prompt.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("Rules:"))
-	fmt.Fprintf(&b, "    1. %s or %s must be the first modifier in a scope\n", flag("--include"), flag("--no-ignore"))
-	fmt.Fprintf(&b, "    2. Choose one authorization command per scope; use %s for another\n", flag("--then"))
-	b.WriteString("    3. Both commands are scoped to the target paths (not the whole project)\n")
-	b.WriteString("    4. Specific paths are written from cwd; targets never rebase them\n")
-	fmt.Fprintf(&b, "    5. %s is the broad form; %s accepts specific paths only\n\n", flag("--no-ignore"), flag("--include"))
+	fmt.Fprintf(&b, "    1. %s must be the first modifier in a scope\n", flag("--no-ignore"))
+	fmt.Fprintf(&b, "    2. It applies only below that scope's targets; use %s for another policy\n", flag("--then"))
+	b.WriteString("    3. Filters such as --only and --exclude do not bypass ignore rules\n")
+	b.WriteString("    4. A fuzzy query sees ignored candidates only with --no-ignore\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("Examples:"))
-	fmt.Fprintf(&b, "  %s\n", example("catclip dist --include dist --paths"))
-	fmt.Fprintf(&b, "  %s\n", example("catclip dist/assets --include dist --paths"))
-	fmt.Fprintf(&b, "  %s\n", example("catclip .env.example --include .env.example -r"))
+	fmt.Fprintf(&b, "  %s    # exact nested ignored directory\n", example("catclip src/generated --paths"))
+	fmt.Fprintf(&b, "  %s    # exact ignored file\n", example("catclip .env.local -r"))
 	fmt.Fprintf(&b, "  %s    # all text files under src/, ignore rules disabled\n\n", example("catclip src --no-ignore --paths"))
-	b.WriteString("  In a TTY, an unresolved include query may open the ignored-path picker.\n")
-	b.WriteString("  Headless runs keep it exact and may suggest complete paths without choosing one.\n\n")
-	fmt.Fprintf(&b, "  Cross-scope includes use %s:\n", flag("--then"))
-	fmt.Fprintf(&b, "    %s\n\n", example("catclip src --then node_modules/react --include node_modules --paths"))
+	fmt.Fprintf(&b, "  %s opens one picker containing visible and ignored files and folders.\n", flag("catclip --no-ignore"))
+	b.WriteString("  A fuzzy query with --no-ignore uses that same combined visible and ignored\n")
+	b.WriteString("  target universe. Without --no-ignore, fuzzy target search stays visible-only.\n\n")
 	fmt.Fprintf(&b, "  catclip's own ignore rules: %s (%s to edit; applied on top of .gitignore)\n\n", flag(hissDisplayPath), flag("--hiss"))
 
 	// ── Pipelines ───────────────────────────────────────────────────────
 	head("PIPELINES")
 	fmt.Fprintf(&b, "  %s produces one path per line on stdout.\n", flag("--paths --headless"))
-	fmt.Fprintf(&b, "  %s, %s, and %s read exact relative paths from stdin.\n", flag("--only -"), flag("--exclude -"), flag("--include -"))
+	fmt.Fprintf(&b, "  %s and %s read exact relative paths from stdin.\n", flag("--only -"), flag("--exclude -"))
 	b.WriteString("  Combined, catclip plugs into either side of a shell pipeline.\n\n")
 	fmt.Fprintf(&b, "  %s\n\n", bold("Catclip as input source (stdout → tool):"))
 	b.WriteString("    # Line counts per file, biggest first:\n")
@@ -603,7 +618,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	// ── Common errors ───────────────────────────────────────────────────
 	head("COMMON ERRORS")
 	fmt.Fprintf(&b, "  %s\n", bad("\"No text files found matching your criteria.\""))
-	fmt.Fprintf(&b, "    → Target may be ignored. Use the canonical form: %s.\n", example("catclip TARGET --include TARGET"))
+	fmt.Fprintf(&b, "    → If the target is ignored, name its complete relative path or add %s.\n", flag("--no-ignore"))
 	b.WriteString("    → Target may be empty or contain only binary files.\n")
 	b.WriteString("    → Check for typos in the target path.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bad("\"no files at depth N\""))
@@ -639,7 +654,6 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	fmt.Fprintf(&b, "  %s\n", bold("Scope modifiers (per-scope, left to right):"))
 	writeAlignedHelpRows(&b, "    ", flag, []helpRow{
 		{Left: "--no-ignore", Right: "Include every ignored path below targets (must be first)"},
-		{Left: "--include VALUE...", Right: "Authorize ignored paths (must be first, once per scope)"},
 		{Left: "--only VALUE...", Right: "Keep matches by name, path, subtree, or glob"},
 		{Left: "--exclude VALUE...", Right: "Remove matches by name, path, subtree, or glob"},
 		{Left: "--recent [N]", Right: "Sort by mtime; optional top-N"},

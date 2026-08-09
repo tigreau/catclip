@@ -156,17 +156,19 @@ func TestPickerHeadersCanShowEscExitAndUndo(t *testing.T) {
 		}
 	}
 }
-func TestTargetMatchLabelsShowIgnoredSourceTemporarily(t *testing.T) {
+func TestTargetMatchLabelsShowCompactIgnoredSource(t *testing.T) {
 	labels, index := discovery.TargetMatchLabels([]discovery.TargetMatch{
 		{Path: "src/components", Kind: "dir", State: treeTargetStateOK},
 		{Path: "node_modules", Kind: "dir", State: TreeTargetStateNoTextChildren, Ignored: true, IgnoreSource: ".hiss"},
 		{Path: "coverage-final.json", Kind: "file", State: TreeTargetStateText, Ignored: true, IgnoreSource: ".gitignore"},
+		{Path: "generated.txt", Kind: "file", State: TreeTargetStateText, Ignored: true},
 	})
 
 	want := []string{
 		"[dir]\tsrc/components\tdir\tok",
-		"[ignored dir .hiss]\tnode_modules\tdir\tno_text_children",
-		"[ignored file .gitignore]\tcoverage-final.json\tfile\ttext",
+		"[dir .hiss]\tnode_modules\tdir\tno_text_children",
+		"[file .gitignore]\tcoverage-final.json\tfile\ttext",
+		"[file]\tgenerated.txt\tfile\ttext",
 	}
 	if strings.Join(labels, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("expected labels %v, got %v", want, labels)
@@ -216,8 +218,8 @@ if [ "$prompt" = "only> " ]; then
 		echo "preview command leaked typed target shared: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--only {+2}' >/dev/null || {
-		echo "preview command missing --only stage: $preview" >&2
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection {+f} --internal-file-set-stage only' >/dev/null || {
+		echo "preview command missing file-backed --only stage: $preview" >&2
 		exit 91
 	}
 	printf '%s\n' "$input" | grep -F "shared/util.ts" | head -n 1
@@ -278,8 +280,8 @@ if [ "$prompt" = "only> " ]; then
 		echo "preview command leaked typed target src: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--only {+2}' >/dev/null || {
-		echo "preview command missing --only stage: $preview" >&2
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection {+f} --internal-file-set-stage only' >/dev/null || {
+		echo "preview command missing file-backed --only stage: $preview" >&2
 		exit 91
 	}
 	printf '%s\n' "$input" | grep -F "src/main.ts" | head -n 1
@@ -338,8 +340,8 @@ if [ "$prompt" = "exclude> " ]; then
 		echo "preview command leaked typed target src: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--exclude {+2}' >/dev/null || {
-		echo "preview command missing --exclude stage: $preview" >&2
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection {+f} --internal-file-set-stage exclude' >/dev/null || {
+		echo "preview command missing file-backed --exclude stage: $preview" >&2
 		exit 91
 	}
 	printf '%s\n' "$input" | grep -F "skip.test" | head -n 1
@@ -359,7 +361,7 @@ exit 91
 	}
 }
 func TestStartupFileSetPreviewCommandKeepsDiffPreviewAfterDiffModeChosen(t *testing.T) {
-	command := startupFileSetPreviewCommand([]string{"cmd", "--include", "Formula", "--changed-diff"}, "--only", false)
+	command := startupFileSetPreviewCommand([]string{"cmd", "--no-ignore", "--changed-diff"}, "--only", false)
 	if !strings.Contains(command, "--internal-file-preview") {
 		t.Fatalf("expected --only after diff mode to keep diff preview, got %q", command)
 	}
@@ -367,13 +369,10 @@ func TestStartupFileSetPreviewCommandKeepsDiffPreviewAfterDiffModeChosen(t *test
 		t.Fatalf("expected --only after diff mode to inherit current diff scope, got %q", command)
 	}
 }
-func TestStartupFileSetPreviewCommandUsesOnlyRefinementForGitSelectors(t *testing.T) {
+func TestStartupFileSetPreviewCommandDoesNotUseUnboundedArgvFallback(t *testing.T) {
 	command := startupFileSetPreviewCommand([]string{"cmd", "--changed"}, "--changed", false)
-	if !strings.Contains(command, "--only {+2}") {
-		t.Fatalf("expected git file-set preview to refine with --only, got %q", command)
-	}
-	if strings.Contains(command, "--changed {+2}") {
-		t.Fatalf("git file-set preview appended value to --changed instead of --only: %q", command)
+	if command != "" {
+		t.Fatalf("expected non-checkpoint fallback to omit preview, got %q", command)
 	}
 }
 func TestResolveStartupGitScopeArgsUsesCheckpointPreviewCommand(t *testing.T) {
@@ -414,8 +413,8 @@ if [ "$prompt" = "changed> " ]; then
 		echo "preview command did not use prediscovered checkpoint: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--only {+2}' >/dev/null || {
-		echo "preview command did not lower git picker preview to --only: $preview" >&2
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection {+f} --internal-file-set-stage only' >/dev/null || {
+		echo "preview command did not lower git picker preview to a file-backed --only stage: $preview" >&2
 		exit 91
 	}
 	if printf '%s\n' "$preview" | grep -F -- '--changed {+2}' >/dev/null; then
@@ -607,11 +606,11 @@ func TestAllIgnoredTargetsTracksNoTextDirectoryState(t *testing.T) {
 		t.Fatalf("expected blocked-binary to be marked no_text_children, got %#v (present=%v)", got, ok)
 	}
 }
-func TestAllowedByIncludeDirectoryLabelColorsEntireIncludedSubtree(t *testing.T) {
+func TestIgnoreBypassedDirectoryLabelColorsEntireBypassedSubtree(t *testing.T) {
 	entry := discovery.Entry{
-		RelPath:          "node_modules/.cache/babel-loader/abc123.json",
-		TargetRoot:       "node_modules",
-		AllowedByInclude: true,
+		RelPath:        "node_modules/.cache/babel-loader/abc123.json",
+		TargetRoot:     "node_modules",
+		IgnoreBypassed: true,
 	}
 
 	for _, relDir := range []string{
@@ -619,8 +618,8 @@ func TestAllowedByIncludeDirectoryLabelColorsEntireIncludedSubtree(t *testing.T)
 		"node_modules/.cache",
 		"node_modules/.cache/babel-loader",
 	} {
-		if !allowedByIncludeDirectoryLabel(entry, relDir) {
-			t.Fatalf("expected %q to inherit include coloring", relDir)
+		if !ignoreBypassedDirectoryLabel(entry, relDir) {
+			t.Fatalf("expected %q to inherit ignore-bypass coloring", relDir)
 		}
 	}
 }
@@ -628,19 +627,148 @@ func TestTargetMatchArgsBatchesIgnoredOnlySelection(t *testing.T) {
 	got := targetMatchArgs([]discovery.TargetMatch{
 		{Path: "node_modules", Ignored: true},
 		{Path: "coverage", Ignored: true},
-	})
-	want := []string{"--include", "node_modules", "coverage"}
+	}, false)
+	want := []string{"node_modules", "coverage"}
 	if fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
 		t.Fatalf("unexpected ignored-only target args: got %q want %q", got, want)
 	}
 }
-func TestStartupResolvedTargetPathsSupportsMultiValueInclude(t *testing.T) {
-	got := startupResolvedTargetPaths([]string{"src", "--include", "node_modules", "coverage"})
-	want := []string{"src", "node_modules", "coverage"}
+
+func TestTargetMatchArgsKeepsIgnoredSelectionPositionalWithNoIgnore(t *testing.T) {
+	got := targetMatchArgs([]discovery.TargetMatch{
+		{Path: "vendor-a/node_modules", Kind: "dir", Ignored: true},
+	}, true)
+	want := []string{"vendor-a/node_modules"}
 	if fmt.Sprintf("%q", got) != fmt.Sprintf("%q", want) {
-		t.Fatalf("unexpected startup resolved target paths: got %q want %q", got, want)
+		t.Fatalf("unexpected no-ignore target args: got %q want %q", got, want)
 	}
 }
+
+func TestStartupTargetFrameUsesNoIgnoreOnlyWithinCurrentScope(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame startupInteractiveFrame
+		want  bool
+	}{
+		{
+			name: "later modifier in same scope",
+			frame: startupInteractiveFrame{
+				TargetTokens: []string{"node_modules"},
+				PendingArgs:  []string{"--no-ignore", "--only", "*.js"},
+			},
+			want: true,
+		},
+		{
+			name: "policy from previous scope does not leak",
+			frame: startupInteractiveFrame{
+				StartArgs:    []string{"src", "--no-ignore", "--then"},
+				TargetTokens: []string{"docs"},
+			},
+			want: false,
+		},
+		{
+			name: "policy from later scope does not leak",
+			frame: startupInteractiveFrame{
+				TargetTokens: []string{"src"},
+				PendingArgs:  []string{"--then", "docs", "--no-ignore"},
+			},
+			want: false,
+		},
+		{
+			name: "implicit target before leading modifier",
+			frame: startupInteractiveFrame{
+				PendingArgs: []string{"--no-ignore"},
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := startupTargetFrameUsesNoIgnore(tt.frame); got != tt.want {
+				t.Fatalf("startupTargetFrameUsesNoIgnore() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveInteractiveStartupArgsNoIgnoreReachesIgnoredTargetPicker(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":                         "vendor-a/\nvendor-b/\n",
+		"src/Button.tsx":                     "export const Button = () => null\n",
+		"vendor-a/node_modules/pkg/index.js": "export const a = true\n",
+		"vendor-b/node_modules/pkg/index.js": "export const b = true\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+input=$(cat)
+printf '%s\n' "$input" | grep -F $'\tvendor-a/node_modules\t' >/dev/null || {
+	echo "missing vendor-a ignored target" >&2
+	exit 91
+}
+printf '%s\n' "$input" | grep -F $'\tvendor-b/node_modules\t' >/dev/null || {
+	echo "missing vendor-b ignored target" >&2
+	exit 91
+}
+if printf '%s\n' "$input" | grep -F $'\tsrc/Button.tsx\t' >/dev/null; then
+	echo "exact basename picker leaked weaker fuzzy path matches" >&2
+	exit 91
+fi
+printf '%s\n' "$input" | grep -F $'\tvendor-a/node_modules\t' | head -n 1
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{"node_modules", "--no-ignore"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected ambiguous ignored target identities to open fzf")
+	}
+	if got, want := strings.Join(args, "\n"), "vendor-a/node_modules\n--no-ignore"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
+func TestResolveInteractiveStartupArgsBareNoIgnoreOpensCombinedTargetPicker(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":          "generated/\n",
+		"src/Button.tsx":      "export const Button = () => null\n",
+		"generated/Login.tsx": "export const Login = () => null\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+input=$(cat)
+printf '%s\n' "$input" | grep -F $'\tsrc/Button.tsx\t' >/dev/null || {
+	echo "missing visible target" >&2
+	exit 91
+}
+printf '%s\n' "$input" | grep -F $'\tgenerated/Login.tsx\t' >/dev/null || {
+	echo "missing ignored target" >&2
+	exit 91
+}
+printf '%s\n' "$input" | grep -F $'\tgenerated/Login.tsx\t' | head -n 1
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatalf("newStartupPickerResolver returned error: %v", err)
+	}
+	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{"--no-ignore"})
+	if err != nil {
+		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
+	}
+	if !usedFzf {
+		t.Fatal("expected bare --no-ignore to open the target picker")
+	}
+	if got, want := strings.Join(args, "\n"), "generated/Login.tsx\n--no-ignore"; got != want {
+		t.Fatalf("expected resolved args %q, got %q", want, got)
+	}
+}
+
 func TestResolveStartupScopeInputsNoArgsOpensCopyAllPicker(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('ok')\n",
@@ -687,120 +815,7 @@ func TestStartupCommandCanRunDirectlyForUniqueBasenameFile(t *testing.T) {
 		t.Fatal("expected unique basename file target to bypass startup fzf")
 	}
 }
-func TestStartupCommandCanRunDirectlyRejectsExplicitIncludeQueries(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"dummy-react-project/package.json":      "{}\n",
-		"dummy-react-project/node_modules/a.js": "console.log('a')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
 
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"--include", "node_modules"})
-	if err != nil {
-		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
-	}
-	if direct {
-		t.Fatal("expected explicit --include query to stay on startup resolution path")
-	}
-}
-func TestResolveStartupArgsRejectsInvalidIncludeValue(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"src/main.ts": "console.log('src')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	_, _, _, err = resolveStartupArgs(resolver, []string{".", "--include", "src/../vendor"})
-	if err == nil {
-		t.Fatal("expected invalid startup include value to fail")
-	}
-	if !strings.Contains(err.Error(), "--include cannot traverse above the current directory") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-func TestStartupCommandCanRunDirectlyAllowsExactTargetEqualsIncludeIgnoredDirectory(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
-	project := setupTestProject(t, map[string]string{
-		".gitignore":        "ignored/\n",
-		"ignored/common.ts": "export const ok = true\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"ignored", "--include", "ignored"})
-	if err != nil {
-		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
-	}
-	if !direct {
-		t.Fatal("expected exact ignored target==include command to bypass startup fzf")
-	}
-}
-func TestStartupCommandCanRunDirectlyAllowsDescendantOfIncludedIgnoredDirectory(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
-	project := setupTestProject(t, map[string]string{
-		".gitignore":                "ignored/\n",
-		"ignored/deep/path/main.ts": "export const ok = true\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"ignored/deep/path", "--include", "ignored"})
-	if err != nil {
-		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
-	}
-	if !direct {
-		t.Fatal("expected included ignored directory ancestor to bypass startup fzf for descendant target")
-	}
-}
-func TestStartupCommandCanRunDirectlyAllowsExactTargetEqualsIncludeIgnoredFile(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
-	project := setupTestProject(t, map[string]string{
-		".gitignore":        "ignored/\n",
-		"ignored/secret.ts": "console.log('ignored')\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"ignored/secret.ts", "--include", "ignored/secret.ts"})
-	if err != nil {
-		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
-	}
-	if !direct {
-		t.Fatal("expected exact ignored file target==include command to bypass startup fzf")
-	}
-}
 func TestStartupCommandCanRunDirectlyRejectsNonExactOnlyQuery(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('src')\n",
@@ -902,78 +917,7 @@ printf '%s\n' "$input" | grep -F "$value" || exit 1
 		t.Fatalf("expected resolved targets %q, got %q", want, got)
 	}
 }
-func TestResolveStartupScopeInputsEmptyIncludeQueryOpensIgnoredPicker(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"node_modules/pkg/index.js": "export const x = 1\n",
-		"src/main.ts":               "console.log('ok')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
-query=""
-prompt=""
-header=""
-print_query=0
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--print-query)
-			print_query=1
-			shift
-			;;
-		--header)
-			header="$2"
-			shift 2
-			;;
-		--query)
-			query="$2"
-			shift 2
-			;;
-		--prompt)
-			prompt="$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
 
-input="$(cat)"
-
-if [ "$prompt" = "include> " ] && [ -z "$query" ]; then
-	printf '%s\n' "$header" | grep -F "Add files and folders ignored by .gitignore or .hiss." >/dev/null || {
-		echo "missing include header" >&2
-		exit 91
-	}
-	printf '%s\n' "$header" | grep -F "Type to search by name." >/dev/null || {
-		echo "missing include enter help" >&2
-		exit 91
-	}
-	printf '%s\n' "$input" | awk -F '\t' '$2 == "node_modules"' | head -n 1
-	exit 0
-fi
-
-printf '%s\n' "$input" | head -n 1
-`)
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	args, targets, _, usedPicker, err := resolveStartupScopeInputs(resolver, nil, []string{""}, nil, nil)
-	if err != nil {
-		t.Fatalf("resolveStartupScopeInputs returned error: %v", err)
-	}
-	if !usedPicker {
-		t.Fatal("expected the synthetic empty include query to use the ignored picker")
-	}
-	if got, want := strings.Join(args, "\n"), "--include\nnode_modules"; got != want {
-		t.Fatalf("expected resolved args %q, got %q", want, got)
-	}
-	if got, want := strings.Join(targets, "\n"), "node_modules"; got != want {
-		t.Fatalf("expected resolved targets %q, got %q", want, got)
-	}
-}
 func TestResolveStartupScopeInputsExcludePreviouslySelectedTargets(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":      "console.log('src')\n",
@@ -1052,230 +996,13 @@ printf '%s\n' "$input" | head -n 1
 		t.Fatalf("expected resolved targets %q, got %q", want, got)
 	}
 }
-func TestResolveStartupScopeInputsBatchesAdjacentIncludeSelections(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"config/catclip/.hiss":      "node_modules/\ncoverage/\n",
-		"node_modules/pkg/index.js": "export const x = 1\n",
-		"coverage/lcov.info":        "TN:\n",
-		"src/main.ts":               "console.log('ok')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
-query=""
-prompt=""
-filter=""
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--filter)
-			filter="$2"
-			shift 2
-			;;
-		--query)
-			query="$2"
-			shift 2
-			;;
-		--prompt)
-			prompt="$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
 
-input="$(cat)"
+// Scope target is src/vendor/lib, include query is "ext" for src/vendor/extras.
+// src/vendor is an authorization-only ancestor and should be hidden.
+// src/vendor/extras is a sibling under the same ignored tree — but with
+// scoping, it's outside scope target src/vendor/lib and should not appear.
+// This means selection is cancelled (no options in scope).
 
-if [ -n "$filter" ]; then
-	printf '%s\n' "$input" | grep -i -F "$filter"
-	exit 0
-fi
-
-if [ "$prompt" = "include> " ]; then
-	case "$query" in
-		node)
-			printf '%s\n' "$input" | awk -F '\t' '$2 == "node_modules"' | head -n 1
-			exit 0
-			;;
-		cov)
-			printf '%s\n' "$input" | awk -F '\t' '$2 == "coverage"' | head -n 1
-			exit 0
-			;;
-	esac
-fi
-
-echo "unexpected prompt/query: $prompt / $query" >&2
-exit 91
-`)
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	args, targets, _, usedPicker, err := resolveStartupScopeInputs(resolver, nil, []string{"node", "cov"}, nil, nil)
-	if err != nil {
-		t.Fatalf("resolveStartupScopeInputs returned error: %v", err)
-	}
-	if !usedPicker {
-		t.Fatal("expected ignored-target resolution to use the picker")
-	}
-	if got, want := strings.Join(args, "\n"), "--include\nnode_modules\ncoverage"; got != want {
-		t.Fatalf("expected batched include args %q, got %q", want, got)
-	}
-	if got, want := strings.Join(targets, "\n"), "node_modules\ncoverage"; got != want {
-		t.Fatalf("expected resolved targets %q, got %q", want, got)
-	}
-}
-func TestResolveStartupArgsIncludePickerHidesAuthorizationOnlyAncestorForExplicitDescendantTarget(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"config/catclip/.hiss":            "vendor/\n",
-		"src/vendor/lib/util.ts":          "export const util = true\n",
-		"src/vendor/lib/internal/deep.ts": "export const deep = true\n",
-		"src/vendor/extras/bonus.ts":      "export const bonus = true\n",
-		"src/main.ts":                     "console.log('src')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
-query=""
-prompt=""
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--query)
-			query="$2"
-			shift 2
-			;;
-		--prompt)
-			prompt="$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
-
-input="$(cat)"
-
-if [ "$prompt" = "include> " ] && [ "$query" = "ext" ]; then
-	if printf '%s\n' "$input" | grep -F "src/vendor	" >/dev/null; then
-		echo "authorization-only ancestor unexpectedly shown in include picker" >&2
-		exit 91
-	fi
-	printf '%s\n' "$input" | grep -F "src/vendor/extras" | head -n 1
-	exit 0
-fi
-
-echo "unexpected prompt/query: $prompt / $query" >&2
-exit 91
-`)
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	// Scope target is src/vendor/lib, include query is "ext" for src/vendor/extras.
-	// src/vendor is an authorization-only ancestor and should be hidden.
-	// src/vendor/extras is a sibling under the same ignored tree — but with
-	// scoping, it's outside scope target src/vendor/lib and should not appear.
-	// This means selection is cancelled (no options in scope).
-	_, _, _, err = resolveStartupArgs(resolver, []string{"src/vendor/lib", "--include", "ext"})
-	if err == nil {
-		t.Fatal("expected no include options in scope for src/vendor/lib with query ext")
-	}
-}
-func TestResolveStartupArgsIncludeErrorsWhenNoScopedIgnoredTargets(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
-	project := setupTestProject(t, map[string]string{
-		".gitignore":             "vendor/\n",
-		"cmd/catclip/main.go":    "package main\n",
-		"vendor/lodash/index.js": "module.exports = {}\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	// "cmd" has no ignored targets under it, so --include should error.
-	_, _, _, err = resolveStartupArgs(resolver, []string{"cmd", "--include", "a"})
-	if err == nil {
-		t.Fatal("expected error when no ignored targets under scope target")
-	}
-	var noScoped discovery.ErrNoScopedIgnoredTargets
-	if !errors.As(err, &noScoped) {
-		t.Fatalf("expected discovery.ErrNoScopedIgnoredTargets, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "cmd") {
-		t.Fatalf("expected error to mention scope target, got: %v", err)
-	}
-}
-func TestResolveModifierMenuIncludeReusesIgnoredPicker(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"node_modules/pkg/index.js": "export const x = 1\n",
-		"src/main.ts":               "console.log('ok')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
-prompt=""
-bindings=""
-header=""
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--prompt)
-			prompt="$2"
-			shift 2
-			;;
-		--header)
-			header="$2"
-			shift 2
-			;;
-		--bind)
-			bindings="$bindings
-$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
-
-input="$(cat)"
-
-if [ "$prompt" = "filter> " ]; then
-	printf '%s\n' "$input" | grep -F -- "--include" | head -n 1
-	exit 0
-fi
-
-if [ "$prompt" = "include> " ]; then
-	printf '%s\n' "$input" | awk -F '\t' '$2 == "node_modules"' | head -n 1
-	exit 0
-fi
-
-echo "unexpected prompt: $prompt" >&2
-exit 91
-`)
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	args, _, err := resolveBareStartupModifierArgs(resolver)
-	if err != nil {
-		t.Fatalf("resolveBareStartupModifierArgs returned error: %v", err)
-	}
-	if got, want := strings.Join(args, "\n"), "--include\nnode_modules"; got != want {
-		t.Fatalf("expected resolved args %q, got %q", want, got)
-	}
-}
 func TestResolveBareStartupModifierArgsChangedDoesNotOpenSecondPicker(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('ok')\n",
@@ -1897,7 +1624,7 @@ func TestStartupAvailableModifierChoicesHideGitRowsWhenScopeIsNotGitBacked(t *te
 			t.Fatalf("%s should be hidden when current scope is not git-backed: %#v", key, startupModifierChoiceKeys(choices))
 		}
 	}
-	// --include is hidden because this project has no ignored targets at all.
+	// The removed selective include row must never return.
 	if startupModifierChoiceKeysContain(choices, "include") {
 		t.Fatalf("include should be hidden when there are no ignored targets: %#v", startupModifierChoiceKeys(choices))
 	}
@@ -2023,73 +1750,7 @@ exit 91
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
-func TestResolveInteractiveStartupArgsIgnoredExplicitTargetAllowsIncludeModifier(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"config/catclip/.hiss":                        "docs/\n",
-		"docs/versions/v0.4.0/ACTIVE_NOTE_version.md": "version\n",
-		"docs/policy/ACTIVE_NOTE_report_format.md":    "policy\n",
-		"src/main.ts": "console.log('src')\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
-prompt=""
-query=""
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--prompt)
-			prompt="$2"
-			shift 2
-			;;
-		--query)
-			query="$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
 
-input="$(cat)"
-
-if [ "$prompt" = "filter> " ]; then
-	printf '%s\n' "$input" | grep -F -- "--include" | head -n 1
-	exit 0
-fi
-
-if [ "$prompt" = "include> " ]; then
-	if printf '%s\n' "$input" | awk -F '\t' '$2 == "docs" && $3 == "dir"' | grep -q .; then
-		echo "ancestor docs unexpectedly shown in include picker" >&2
-		exit 91
-	fi
-	if printf '%s\n' "$input" | awk -F '\t' '$2 == "docs/versions" && $3 == "dir"' | grep -q .; then
-		echo "ancestor docs/versions unexpectedly shown in include picker" >&2
-		exit 91
-	fi
-	printf '%s\n' "$input" | awk -F '\t' '$2 == "docs/versions/v0.4.0"' | head -n 1
-	exit 0
-fi
-
-echo "unexpected prompt/query: $prompt / $query" >&2
-exit 91
-`)
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	args, _, usedFzf, err := resolveInteractiveStartupArgs(resolver, []string{"docs/versions/v0.4.0", "--"})
-	if err != nil {
-		t.Fatalf("resolveInteractiveStartupArgs returned error: %v", err)
-	}
-	if !usedFzf {
-		t.Fatal("expected ignored explicit target modifier flow to use fzf")
-	}
-	if got, want := strings.Join(args, "\n"), "docs/versions/v0.4.0\n--include\ndocs/versions/v0.4.0"; got != want {
-		t.Fatalf("expected resolved args %q, got %q", want, got)
-	}
-}
 func TestResolveInteractiveStartupArgsEscFromStageReopensModifierMenu(t *testing.T) {
 	if !platform.CanPromptInteractively() {
 		t.Skip("interactive terminal not available")
@@ -2433,33 +2094,7 @@ exit 91
 		t.Fatalf("expected headless recent command to bypass startup picker, got %#v", result)
 	}
 }
-func TestMaybeResolveStartupPickerArgsHeadlessExactIncludeSkipsStartupPicker(t *testing.T) {
-	if !platform.CanPromptInteractively() {
-		t.Skip("interactive terminal not available")
-	}
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
 
-	project := setupTestProject(t, map[string]string{
-		".gitignore":        "ignored/\n",
-		"ignored/common.ts": "export const ok = true\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
-echo "fzf should not be called in headless include startup" >&2
-exit 91
-`)
-
-	result, handled, err := maybeResolveStartupPickerArgs([]string{"-q", "-p", "ignored", "--include", "ignored"})
-	if err != nil {
-		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
-	}
-	if handled {
-		t.Fatalf("expected exact headless include command to bypass startup picker, got %#v", result)
-	}
-}
 func TestMaybeResolveStartupPickerArgsStdinModifierSkipsStartupPicker(t *testing.T) {
 	if !platform.CanPromptInteractively() {
 		t.Skip("interactive terminal not available")
@@ -2482,66 +2117,7 @@ exit 91
 		t.Fatalf("expected stdin modifier command to bypass startup picker, got %#v", result)
 	}
 }
-func TestResolveStartupArgsKeepsExactIncludeWhenLaterOnlyNeedsResolution(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
 
-	project := setupTestProject(t, map[string]string{
-		".gitignore":        "ignored/\n",
-		"ignored/common.ts": "export const ok = true\n",
-		"ignored/other.ts":  "export const other = true\n",
-		"src/main.ts":       "console.log('ok')\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
-prompt=""
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--prompt)
-			prompt="$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
-
-input="$(cat)"
-
-case "$prompt" in
-	"include> ")
-		echo "exact include unexpectedly opened include picker" >&2
-		exit 91
-		;;
-	"only> ")
-		printf '%s\n' "$input" | grep -F "ignored/common.ts" | head -n 1
-		exit 0
-		;;
-esac
-
-echo "unexpected prompt: $prompt" >&2
-exit 91
-`)
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	args, _, usedFzf, err := resolveStartupArgs(resolver, []string{"ignored", "--include", "ignored", "--only", "common"})
-	if err != nil {
-		t.Fatalf("resolveStartupArgs returned error: %v", err)
-	}
-	if !usedFzf {
-		t.Fatal("expected only-stage resolution to use fzf")
-	}
-	if got, want := strings.Join(args, "\n"), "ignored\n--include\nignored\n--only\nignored/common.ts"; got != want {
-		t.Fatalf("expected resolved args %q, got %q", want, got)
-	}
-}
 func TestMaybeResolveStartupPickerArgsLeadingOnlyRequiresPattern(t *testing.T) {
 	if !platform.CanPromptInteractively() {
 		t.Skip("interactive terminal not available")
@@ -5026,90 +4602,6 @@ esac
 	}
 }
 
-func TestResolveStartupArgsPlaceholderIncludeOnlyOnlyKeepsDotScope(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"src/main.ts":               "console.log('main')\n",
-		"src/util.ts":               "console.log('util')\n",
-		"node_modules/pkg/index.js": "export const pkg = 1\n",
-	})
-	_ = parseInProject(t, project, []string{"."})
-	stateFile := filepath.Join(t.TempDir(), "modifier-count")
-	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
-prompt=""
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-		--prompt)
-			prompt="$2"
-			shift 2
-			;;
-		*)
-			shift
-			;;
-	esac
-done
-
-input="$(cat)"
-
-if [ "$prompt" = "filter> " ]; then
-	count=0
-	if [ -f %q ]; then
-		count="$(cat %q)"
-	fi
-	count=$((count + 1))
-	printf '%%s' "$count" > %q
-	case "$count" in
-		1)
-			printf '%%s\n' 'selected	include'
-			;;
-		2)
-			printf '%%s\n' 'selected	only'
-			;;
-		3)
-			printf '%%s\n' 'selected	only'
-			;;
-		*)
-			echo "unexpected modifier count: $count" >&2
-			exit 91
-			;;
-	esac
-	exit 0
-fi
-
-if [ "$prompt" = "only> " ]; then
-	if printf '%%s\n' "$input" | grep -F "node_modules/pkg/index.js" >/dev/null; then
-		if ! printf '%%s\n' "$input" | grep -F "src/main.ts" >/dev/null; then
-			echo "src/main.ts missing from second only picker" >&2
-			exit 91
-		fi
-		printf '%%s\n' "$input" | grep -F "src/main.ts" | head -n 1
-		exit 0
-	fi
-	printf '%%s\n' "$input" | grep -F "src/main.ts" | head -n 1
-	exit 0
-fi
-
-if [ "$prompt" = "include> " ]; then
-	printf '%%s\n' "$input" | awk -F '\t' '$2 == "node_modules"' | head -n 1
-	exit 0
-fi
-
-echo "unexpected prompt: $prompt" >&2
-exit 91
-`, stateFile, stateFile, stateFile))
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver returned error: %v", err)
-	}
-
-	args, _, _, err := resolveStartupArgs(resolver, []string{"--", "--", "--"})
-	if err != nil {
-		t.Fatalf("resolveStartupArgs returned error: %v", err)
-	}
-	if got, want := strings.Join(args, "\n"), "--include\nnode_modules\n--only\nsrc/main.ts\n--only\nsrc/main.ts"; got != want {
-		t.Fatalf("expected resolved args %q, got %q", want, got)
-	}
-}
 func TestResolveStartupArgsPlaceholderContainsRejectsExtraValue(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "TODO: src\n",

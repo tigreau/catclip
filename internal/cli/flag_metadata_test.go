@@ -103,7 +103,6 @@ func TestScopeModifierFlagSpecsClassifyContentFamily(t *testing.T) {
 
 func TestIsValueTakingFlag(t *testing.T) {
 	cases := []string{
-		"--include",
 		"--only",
 		"--exclude",
 		"--depth",

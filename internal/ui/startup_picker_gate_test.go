@@ -10,9 +10,8 @@ import (
 	"github.com/tigreau/catclip/internal/discovery"
 )
 
-// Tests for the startup-picker gate that distinguishes "multi-hit ambiguous"
-// (open picker) from "zero matches anywhere" / "uniquely resolvable via
-// --include" (skip picker, let normal flow run).
+// Tests for the startup-picker gate that distinguishes multi-hit ambiguity
+// from zero matches and uniquely resolvable targets.
 // See docs/versions/v0.5.7/reports/ACTIVE_PLAN_startup_picker_gated_on_ambiguity.md.
 
 func setupStartupGateXDG(t *testing.T) {
@@ -118,32 +117,6 @@ func TestStartupCommandCanRunDirectlyForWrapperStarGlob(t *testing.T) {
 	}
 	if !direct {
 		t.Fatal("wrapper-star glob must bypass fuzzy target selection")
-	}
-}
-
-func TestStartupCommandCanRunDirectlySkipsPickerForBasenameResolvedByInclude(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	setupStartupGateXDG(t)
-	project := setupTestProject(t, map[string]string{
-		".gitignore":       "blocked/\n",
-		"blocked/agent.md": "hi\n",
-		"visible.go":       "ok\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver: %v", err)
-	}
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"agent.md", "--include", "blocked"})
-	if err != nil {
-		t.Fatalf("startupCommandCanRunDirectly: %v", err)
-	}
-	if !direct {
-		t.Fatal("expected basename + --include parent (1 authorized hit) to bypass the picker")
 	}
 }
 
@@ -260,59 +233,8 @@ func TestStartupCommandCanRunDirectlyOpensPickerForFuzzyDirAndDescendantFiles(t 
 	}
 }
 
-func TestStartupCommandCanRunDirectlySkipsPickerForZeroMatchesWithInclude(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	setupStartupGateXDG(t)
-	project := setupTestProject(t, map[string]string{
-		".gitignore":           "blocked/\n",
-		"blocked/something.go": "ok\n",
-		"visible.go":           "ok\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver: %v", err)
-	}
-	// "nothing" matches neither visible content nor the authorized "blocked"
-	// subtree — picker can't help, should skip.
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"nothing", "--include", "blocked"})
-	if err != nil {
-		t.Fatalf("startupCommandCanRunDirectly: %v", err)
-	}
-	if !direct {
-		t.Fatal("expected zero-match target with --include to bypass the picker")
-	}
-}
-
-func TestStartupCommandCanRunDirectlyLetsIncludePickerAuthorizeBlockedTarget(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	setupStartupGateXDG(t)
-	project := setupTestProject(t, map[string]string{
-		".gitignore":    "docs/\n",
-		"docs/guide.md": "ignored documentation\n",
-		"visible.go":    "package visible\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver: %v", err)
-	}
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"docs", "--include", "doc"})
-	if err != nil {
-		t.Fatalf("startupCommandCanRunDirectly: %v", err)
-	}
-	if direct {
-		t.Fatal("unresolved include query must be allowed to authorize an existing blocked target")
-	}
-}
+// "nothing" matches neither visible content nor the authorized "blocked"
+// subtree — picker can't help, should skip.
 
 func TestNoIgnoreAuthorizesBlockedTargetWithoutIncludeOrNarrowPicker(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
@@ -350,66 +272,7 @@ func TestNoIgnoreAuthorizesBlockedTargetWithoutIncludeOrNarrowPicker(t *testing.
 	}
 }
 
-func TestResolveStartupArgsIncludePickerCanSelectBlockedTargetItAuthorizes(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	setupStartupGateXDG(t)
-	project := setupTestProject(t, map[string]string{
-		".gitignore":    "docs/\n",
-		"docs/guide.md": "ignored documentation\n",
-		"visible.go":    "package visible\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-	installScriptFzf(t, `#!/bin/sh
-query=""
-prompt=""
-while [ "$#" -gt 0 ]; do
-	case "$1" in
-	--query)
-		query="$2"
-		shift 2
-		;;
-	--prompt)
-		prompt="$2"
-		shift 2
-		;;
-	*)
-		shift
-		;;
-	esac
-done
-input="$(cat)"
-if [ "$prompt" = "include> " ] && [ "$query" = "doc" ]; then
-	printf '%s\n' "$input" | awk -F '\t' '$2 == "docs"' | head -n 1
-	exit 0
-fi
-echo "unexpected prompt/query: $prompt / $query" >&2
-exit 91
-`)
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver: %v", err)
-	}
-	args, _, usedPicker, err := resolveStartupArgs(resolver, []string{"docs", "--include", "doc"})
-	if err != nil {
-		t.Fatalf("resolveStartupArgs: %v", err)
-	}
-	if !usedPicker {
-		t.Fatal("expected unresolved include to use the ignored-target picker")
-	}
-	if got, want := strings.Join(args, "\n"), "docs\n--include\ndocs"; got != want {
-		t.Fatalf("resolved args = %q, want %q", got, want)
-	}
-}
-
-// The reachability pre-check: when the target is gitignored and there is no
-// --include query that could authorize it, a modifier picker should NOT open —
-// let the normal flow surface the ignored-target error. See
-// ACTIVE_BUG_filter_picker_fires_before_target_check.md.
-func TestStartupCommandCanRunDirectlySkipsFilterPickerForIgnoredTarget(t *testing.T) {
+func TestStartupCommandCanRunDirectlyOpensFilterPickerForExactIgnoredTarget(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -427,9 +290,8 @@ func TestStartupCommandCanRunDirectlySkipsFilterPickerForIgnoredTarget(t *testin
 		t.Fatalf("newStartupPickerResolver: %v", err)
 	}
 
-	// --only with a non-precise value would normally trigger a filter-value
-	// picker, but the target "blocked" is gitignored with no --include
-	// covering it. Skip the picker — let the ignored-target error fire.
+	// An exact ignored directory is a valid direct target, so non-precise
+	// filter values still use the ordinary interactive picker.
 	for _, modifierAndValue := range [][]string{
 		{"--only", "x"},
 		{"--exclude", "x"},
@@ -439,38 +301,9 @@ func TestStartupCommandCanRunDirectlySkipsFilterPickerForIgnoredTarget(t *testin
 		if err != nil {
 			t.Fatalf("%v: startupCommandCanRunDirectly: %v", args, err)
 		}
-		if !direct {
-			t.Errorf("%v: expected picker to be skipped for unreachable target", args)
+		if direct {
+			t.Errorf("%v: expected filter picker for exact ignored target", args)
 		}
-	}
-}
-
-func TestStartupCommandCanRunDirectlyOpensFilterPickerWhenTargetIsAuthorized(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	setupStartupGateXDG(t)
-	project := setupTestProject(t, map[string]string{
-		".gitignore":      "blocked/\n",
-		"blocked/file.md": "hi\n",
-		"visible.go":      "ok\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver: %v", err)
-	}
-
-	// With --include covering the target, reachability passes; the filter
-	// value picker for --only's non-precise value should fire as today.
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"blocked", "--include", "blocked", "--only", "x"})
-	if err != nil {
-		t.Fatalf("startupCommandCanRunDirectly: %v", err)
-	}
-	if direct {
-		t.Fatal("expected filter picker to fire when target is reachable via --include")
 	}
 }
 
@@ -512,8 +345,8 @@ func TestStartupCommandCanRunDirectlySkipsFilterPickerForTrulyMissingTarget(t *t
 		t.Fatalf("newStartupPickerResolver: %v", err)
 	}
 
-	// Truly absent target: no visible match, no fuzzy match, no --include
-	// subtree. Skip the picker — let the not-found warning fire.
+	// Truly absent target: no visible or fuzzy match. Skip the picker and let
+	// the not-found warning fire.
 	direct, err := startupCommandCanRunDirectly(resolver, []string{"definitely_not_a_real_target", "--only", "x"})
 	if err != nil {
 		t.Fatalf("startupCommandCanRunDirectly: %v", err)
@@ -523,34 +356,8 @@ func TestStartupCommandCanRunDirectlySkipsFilterPickerForTrulyMissingTarget(t *t
 	}
 }
 
-func TestStartupCommandCanRunDirectlyOpensPickerForMultiHitAuthorizedBasename(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-	setupStartupGateXDG(t)
-	// Two basename hits inside the authorized subtree → genuine ambiguity,
-	// picker is the right response.
-	project := setupTestProject(t, map[string]string{
-		".gitignore":          "blocked/\n",
-		"blocked/a/needle.md": "hi\n",
-		"blocked/b/needle.md": "hi\n",
-		"visible.go":          "ok\n",
-	})
-	initGitRepo(t, project)
-	_ = parseInProject(t, project, []string{"."})
-
-	resolver, err := newStartupPickerResolver()
-	if err != nil {
-		t.Fatalf("newStartupPickerResolver: %v", err)
-	}
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"needle.md", "--include", "blocked"})
-	if err != nil {
-		t.Fatalf("startupCommandCanRunDirectly: %v", err)
-	}
-	if direct {
-		t.Fatal("expected multi-hit basename in --include'd subtree to require the picker")
-	}
-}
+// Two basename hits inside the authorized subtree → genuine ambiguity,
+// picker is the right response.
 
 func TestStartupCommandNoIgnoreRoutesIgnoredFuzzyTargetsByAmbiguity(t *testing.T) {
 	t.Run("unique ignored fuzzy target runs without startup picker", func(t *testing.T) {

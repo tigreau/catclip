@@ -88,36 +88,23 @@ func TestValidateStartupPreflightArgsExamples(t *testing.T) {
 	}
 }
 
-// TestIncludePublicCommandShapeContract is the executable owner for the
-// public --include entry grammar documented in INCLUDE_REFERENCE.md. It keeps
-// missing values, modifier-menu placeholders, concrete/query-shaped values,
-// broad authorization, and fresh --then scopes from being conflated by
-// higher-level picker helpers.
-func TestIncludePublicCommandShapeContract(t *testing.T) {
+func TestNoIgnoreAndRemovedIncludeCommandShapeContract(t *testing.T) {
 	tests := []struct {
 		name       string
 		args       []string
 		wantReason Reason
 		wantText   string
 	}{
-		{name: "missing value is not an unseeded picker", args: []string{"src", "--include"}, wantReason: ReasonRequiredValue},
 		{name: "modifier menu is the unseeded interactive entry", args: []string{"src", "--"}},
-		{name: "concrete or unresolved value is valid startup syntax", args: []string{"src", "--include", "src/build"}},
 		{name: "no ignore is valid", args: []string{"src", "--no-ignore"}},
-		{name: "include wildcard points to no ignore", args: []string{"src", "--include", "*"}, wantText: "--include accepts specific ignored paths"},
-		{name: "stdin sentinel is valid startup syntax", args: []string{"src", "--include", "-"}},
-		{name: "value still requires a positional target", args: []string{"--include", "node_modules"}, wantReason: ReasonIncludeMissingPositionalTarget},
-		{name: "no ignore requires a positional target", args: []string{"--no-ignore"}, wantReason: ReasonNoIgnoreMissingPositionalTarget},
-		{name: "parent traversal is rejected", args: []string{"src", "--include", "src/../vendor"}, wantText: "--include cannot traverse above the current directory"},
-		{name: "dot is not a target-root alias", args: []string{"src", "--include", "."}, wantText: "--include '.' is not supported"},
-		{name: "ordinary globs are rejected", args: []string{"src", "--include", "*.js"}, wantText: "--include does not accept glob patterns"},
-		{name: "include must lead its scope", args: []string{"src", "--only", "*.ts", "--include", "src/build"}, wantReason: ReasonIncludeAfterModifier},
+		{name: "bare no ignore is the combined interactive entry", args: []string{"--no-ignore"}},
 		{name: "no ignore must lead its scope", args: []string{"src", "--only", "*.ts", "--no-ignore"}, wantReason: ReasonNoIgnoreAfterModifier},
-		{name: "include conflicts with no ignore", args: []string{"src", "--include", "src/build", "--no-ignore"}, wantReason: ReasonIncludeNoIgnoreConflict},
-		{name: "no ignore conflicts with include", args: []string{"src", "--no-ignore", "--include", "src/build"}, wantReason: ReasonIncludeNoIgnoreConflict},
 		{name: "no ignore cannot repeat", args: []string{"src", "--no-ignore", "--no-ignore"}, wantReason: ReasonRepeatedNoIgnore},
-		{name: "then starts a fresh include scope", args: []string{"src", "--only", "*.ts", "--then", "docs", "--include", "docs"}},
 		{name: "then starts a fresh no ignore scope", args: []string{"src", "--no-ignore", "--then", "docs", "--no-ignore"}},
+		{name: "include alone is removed", args: []string{"src", "--include"}, wantText: "--include is not a supported option"},
+		{name: "include with value is removed", args: []string{"src", "--include", "src/build"}, wantText: "--include is not a supported option"},
+		{name: "include equals value is removed", args: []string{"src", "--include=src/build"}, wantText: "--include is not a supported option"},
+		{name: "include after modifier is still removed", args: []string{"src", "--only", "*.ts", "--include", "src/build"}, wantText: "--include is not a supported option"},
 	}
 
 	for _, tt := range tests {

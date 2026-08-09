@@ -424,7 +424,7 @@ func BenchmarkFormatInteractiveFilterProgress(b *testing.B) {
 	extras := interactiveProgressExtrasFromParsed(command.Parsed{Quiet: true, Raw: true})
 	scopes := []command.ExecutionScope{
 		{Stages: []command.Stage{
-			{Kind: command.StageInclude, Values: []string{"generated"}},
+			{Kind: command.StageNoIgnore},
 			{Kind: command.StageOnly, Values: []string{"*.tsx"}},
 			{Kind: command.StageExclude, Values: []string{"*.test.tsx"}},
 			{Kind: command.StageRecent, Limit: &limit},

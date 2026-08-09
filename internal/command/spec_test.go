@@ -2,7 +2,6 @@ package command
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -86,47 +85,6 @@ func TestCloneStagesPreservesExactValues(t *testing.T) {
 		if got[i].ExactValues != in[i].ExactValues {
 			t.Errorf("stage[%d].ExactValues: got %v, want %v", i, got[i].ExactValues, in[i].ExactValues)
 		}
-	}
-}
-
-// v0.6.4 include-as-authorization update (was
-// TestDeepIncludeCanonicalRenderAuthorizesParentAndNarrowsToFiles):
-//
-// Under the walker's per-entry check (§B of the include-as-authorization
-// plan), the deep-include shape no longer needs the parser-side
-// rewrite that produced "--include <ancestor> --only <deep files>".
-// The user's original argv (--include of specific file paths) is now
-// the canonical form; the walker's walkAuthorizedByInclude ancestor
-// authorization enters the parent, and per-entry targetIncluded emits
-// only the file-path matches. The canonical rendered command should
-// therefore preserve the original --include values verbatim, NOT
-// synthesize a broader --include + narrower --only pair.
-func TestDeepIncludeCanonicalRenderKeepsUserIncludesVerbatim(t *testing.T) {
-	spec := FinalizedSpecFromExecutionScopes([]ExecutionScope{{
-		Targets:         []string{"architecture"},
-		IncludedTargets: []string{"architecture/TEST_CONTRACTS.md", "architecture/MODIFIER_INDEX.md"},
-		Stages: []Stage{{
-			Kind:   StageInclude,
-			Values: []string{"architecture/TEST_CONTRACTS.md", "architecture/MODIFIER_INDEX.md"},
-		}},
-	}})
-	resolved := Resolved{
-		Config: Invocation{},
-		Scopes: ExecutionScopesFromSpec(spec),
-	}
-
-	got := CanonicalResolvedInvocationCommand(resolved, RenderFlags{})
-	wantParts := []string{
-		"catclip architecture",
-		"--include architecture/TEST_CONTRACTS.md architecture/MODIFIER_INDEX.md",
-	}
-	for _, want := range wantParts {
-		if !strings.Contains(got, want) {
-			t.Fatalf("canonical command missing %q:\n%s", want, got)
-		}
-	}
-	if strings.Contains(got, "--only ") {
-		t.Fatalf("canonical command should NOT synthesize --only under v0.6.4 walker semantic:\n%s", got)
 	}
 }
 

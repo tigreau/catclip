@@ -53,12 +53,12 @@ func treeEntriesFromPlan(plan output.Plan, report output.Report) []treeDocumentE
 	out := make([]treeDocumentEntry, 0, len(merged))
 	for _, entry := range merged {
 		row := treeDocumentEntry{
-			Path:             entry.RelPath,
-			GitStatus:        report.Statuses[entry.RelPath],
-			ModeTag:          report.ModeTags[entry.RelPath],
-			TargetRoot:       entry.TargetRoot,
-			AllowedByInclude: entry.AllowedByInclude,
-			BlockSource:      entry.BlockSource,
+			Path:           entry.RelPath,
+			GitStatus:      report.Statuses[entry.RelPath],
+			ModeTag:        report.ModeTags[entry.RelPath],
+			TargetRoot:     entry.TargetRoot,
+			IgnoreBypassed: entry.IgnoreBypassed,
+			BlockSource:    entry.BlockSource,
 		}
 		if size, ok := report.Sizes[entry.RelPath]; ok {
 			sizeCopy := size
@@ -141,8 +141,8 @@ func renderTreeSummarySection(w io.Writer, summary *treeDocumentSummary, opts tr
 	return renderpkg.RenderSummarySection(w, summary, opts, treePalette(colors))
 }
 
-func allowedByIncludeTreeDirectoryLabel(entry treeDocumentEntry, relDir string) bool {
-	return renderpkg.AllowedByIncludeDirectoryLabel(entry, relDir)
+func ignoreBypassedTreeDirectoryLabel(entry treeDocumentEntry, relDir string) bool {
+	return renderpkg.IgnoreBypassedDirectoryLabel(entry, relDir)
 }
 
 func treePalette(colors platform.Palette) renderpkg.Palette {

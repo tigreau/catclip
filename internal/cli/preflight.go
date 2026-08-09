@@ -54,15 +54,6 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		if s.Staged || s.Unstaged || s.Untracked {
 			s.Changed = true
 		}
-		// Effect 5: --include with no positional target. See the twin
-		// check in parse.go for the rationale (ambiguity between
-		// "just <include>" and "everything + <include>").
-		if len(s.Targets) == 0 && s.NoIgnore {
-			return NoIgnoreMissingPositionalTargetError()
-		}
-		if len(s.Targets) == 0 && len(s.IncludedTargets) > 0 {
-			return IncludeMissingPositionalTargetError(s.IncludedTargets[0])
-		}
 		if len(s.Targets) == 0 {
 			s.Targets = []string{"."}
 		}
@@ -73,6 +64,9 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if IsUnsupportedIncludeOption(arg) {
+			return command.Spec{}, IncludeUnsupportedError()
+		}
 
 		switch arg {
 		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules":
@@ -108,23 +102,6 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 				return command.Spec{}, BareModifierPlaceholderOrderError()
 			}
 			return command.PartialSpecFromExecutionScopes(executionScopes), nil
-		case "--include":
-			inModifierMode = true
-			if err := stageState.apply(command.StageInclude); err != nil {
-				return command.Spec{}, err
-			}
-			next, err := preflightConsumeRequiredStageValues(args, i, arg)
-			if err != nil {
-				return command.Spec{}, err
-			}
-			values := cloneSliceStrings(args[i+1 : next])
-			if err := ValidateIncludeValues(values); err != nil {
-				return command.Spec{}, err
-			}
-			current.IncludedTargets = append(current.IncludedTargets, values...)
-			current.Stages = append(current.Stages, command.Stage{Kind: command.StageInclude, Values: values})
-			i = next - 1
-			continue
 		case "--no-ignore":
 			inModifierMode = true
 			if err := stageState.apply(command.StageNoIgnore); err != nil {

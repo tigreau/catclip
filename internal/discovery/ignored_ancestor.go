@@ -58,12 +58,6 @@ func (r *Resolver) findIgnoredAncestors(target string) []ignoredAncestorCandidat
 	if strings.ContainsAny(target, "*?[") {
 		return nil
 	}
-	// If the user already named this target via --include, they know it's
-	// blocked — the ancestor "hidden by ignore" framing is just noise. Skip.
-	if r.targetIncluded(target) {
-		return nil
-	}
-
 	base := path.Base(target)
 	parent := path.Dir(target)
 	if parent == "" || parent == "." {
@@ -102,9 +96,6 @@ func (r *Resolver) findIgnoredAncestors(target string) []ignoredAncestorCandidat
 		if candidatePath == "" || seen[candidatePath] {
 			continue
 		}
-		if r.targetIncluded(candidatePath) {
-			continue
-		}
 		seen[candidatePath] = true
 		block := r.findBlockerForPath(candidatePath, isDir)
 		if block == nil {
@@ -128,7 +119,7 @@ func (r *Resolver) ignoredExactFileCandidates(matches []SkippedMatch) []ignoredA
 	out := make([]ignoredAncestorCandidate, 0, len(matches))
 	for _, match := range matches {
 		rel := normalizeRelPath(match.RelPath)
-		if rel == "" || r.targetIncluded(rel) {
+		if rel == "" {
 			continue
 		}
 		if _, ok := seen[rel]; ok {
@@ -173,7 +164,8 @@ func classifyAncestorCandidate(rel, target string) (string, bool) {
 // `dummy-react-project/node_modules/...`, fileBlockedBy on the file says
 // ".gitignore" — but only because the file lives under a gitignored dir.
 // The *rule* matches `dummy-react-project/`, not the file. Surfacing the
-// topmost blocked dir is what makes the --include suggestion useful.
+// topmost blocked dir explains why the exact target is absent from normal
+// discovery.
 func (r *Resolver) findBlockerForPath(rel string, isDir bool) *ignoredAncestorCandidate {
 	var initial *BlockInfo
 	var err error
@@ -206,8 +198,8 @@ func (r *Resolver) findBlockerForPath(rel string, isDir bool) *ignoredAncestorCa
 }
 
 // ignoredAncestorMessage renders the candidates list as a tailored error,
-// pointing at --include of the blocker (the ancestor or the file itself) and
-// at --all-ignore-rules for the full picture. Empty candidates → empty string;
+// pointing at the exact ignored target and --no-ignore alternatives, plus
+// --all-ignore-rules for the full picture. Empty candidates → empty string;
 // caller falls back to the existing not-found warning.
 func ignoredAncestorMessage(target string, scopeIndex int, candidates []ignoredAncestorCandidate, colors platform.Palette) string {
 	if len(candidates) == 0 {
@@ -235,9 +227,11 @@ func ignoredAncestorMessage(target string, scopeIndex int, candidates []ignoredA
 				colors.Dim, c.Path, colors.Reset,
 				colors.Dim, c.Blocker, colors.Reset, c.Source)
 		}
-		fmt.Fprintf(&b, "\n  %sUse --include to access for this run:%s\n    %scatclip %s --include %s%s\n",
+		fmt.Fprintf(&b, "\n  %sName the ignored path directly:%s\n    %scatclip %s%s\n\n  %sOr disable ignore rules below a target:%s\n    %scatclip . --no-ignore%s\n",
 			colors.Dim, colors.Reset,
-			colors.OK, SingleQuoted(target), SingleQuoted(c.Blocker), colors.Reset)
+			colors.OK, SingleQuoted(c.Path), colors.Reset,
+			colors.Dim, colors.Reset,
+			colors.OK, colors.Reset)
 	} else {
 		fmt.Fprintf(&b, "\n%s%sError:%s%s %s is hidden by ignore rules. Found in (scope %d):%s\n\n",
 			colors.Bold, colors.Err, colors.Reset, colors.Err,
@@ -255,10 +249,10 @@ func ignoredAncestorMessage(target string, scopeIndex int, candidates []ignoredA
 		if truncated > 0 {
 			fmt.Fprintf(&b, "  %s…and %d more%s\n", colors.Dim, truncated, colors.Reset)
 		}
-		firstBlocker := candidates[0].Blocker
-		fmt.Fprintf(&b, "\n  %sUse --include to access for this run:%s\n    %scatclip %s --include %s%s\n",
+		fmt.Fprintf(&b, "\n  %sName one of the complete paths above, or disable ignore rules:%s\n    %scatclip %s%s\n    %scatclip . --no-ignore%s\n",
 			colors.Dim, colors.Reset,
-			colors.OK, SingleQuoted(target), SingleQuoted(firstBlocker), colors.Reset)
+			colors.OK, SingleQuoted(candidates[0].Path), colors.Reset,
+			colors.OK, colors.Reset)
 	}
 	fmt.Fprintf(&b, "\n  %sSee every active rule:%s   %scatclip --all-ignore-rules%s",
 		colors.Dim, colors.Reset, colors.OK, colors.Reset)

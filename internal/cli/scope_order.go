@@ -114,9 +114,6 @@ func (s scopeStageTransitionState) validate(kind command.StageKind, semantics sc
 		if s.authorizationKind == kind {
 			return repeatedAuthorizationError(kind)
 		}
-		if s.authorizationKind != "" {
-			return includeNoIgnoreConflictError()
-		}
 		if s.hasRegularStage {
 			return authorizationAfterModifierError(kind)
 		}
@@ -165,7 +162,7 @@ func isDiffOutputStage(kind command.StageKind) bool {
 }
 
 func isAuthorizationStage(kind command.StageKind) bool {
-	return kind == command.StageInclude || kind == command.StageNoIgnore
+	return kind == command.StageNoIgnore
 }
 
 func outputModeConflictError(currentFlag, nextFlag string) error {
@@ -203,7 +200,7 @@ func currentScopeStagesFromArgsLegacy(args []string) []command.Stage {
 			stages = stages[:0]
 		case "--":
 			return stages
-		case "--include", "--only", "--exclude":
+		case "--only", "--exclude":
 			if kind, ok := ScopeStageKindForFlag(args[i]); ok {
 				stages = append(stages, command.Stage{Kind: kind})
 			}
@@ -310,29 +307,9 @@ func terminalBoundaryOrderError(boundaryFlag, nextFlag string) error {
 }
 
 func authorizationAfterModifierError(kind command.StageKind) error {
-	if kind == command.StageInclude {
-		return ValidationFailure{Reason: ReasonIncludeAfterModifier}
-	}
 	return ValidationFailure{Reason: ReasonNoIgnoreAfterModifier}
 }
 
 func repeatedAuthorizationError(kind command.StageKind) error {
-	if kind == command.StageInclude {
-		return ValidationFailure{Reason: ReasonRepeatedInclude}
-	}
 	return ValidationFailure{Reason: ReasonRepeatedNoIgnore}
-}
-
-func includeNoIgnoreConflictError() error {
-	return ValidationFailure{Reason: ReasonIncludeNoIgnoreConflict}
-}
-
-// Retained as test-facing shims while include and no-ignore share the
-// authorization-stage ordering implementation.
-func includeAfterModifierError() error {
-	return authorizationAfterModifierError(command.StageInclude)
-}
-
-func repeatedIncludeError() error {
-	return repeatedAuthorizationError(command.StageInclude)
 }

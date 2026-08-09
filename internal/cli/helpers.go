@@ -184,23 +184,6 @@ func singleQuoted(value string) string {
 	return "'" + value + "'"
 }
 
-// containsParentTraversal is a private dup of root discovery.go's
-// containsParentTraversal. Used by the parser's --include validation.
-// Root also uses this in resolver.go and startup_picker.go, so it
-// stays at root with a dup here per reviewer guidance.
-func containsParentTraversal(value string) bool {
-	if value == ".." {
-		return true
-	}
-	if strings.HasPrefix(value, "../") {
-		return true
-	}
-	if strings.HasSuffix(value, "/..") {
-		return true
-	}
-	return strings.Contains(value, "/../")
-}
-
 // intPtr is a tiny dup of the root recent_stage.go helper. Parser uses
 // it for --depth's Stage.Limit.
 func intPtr(v int) *int {
@@ -225,7 +208,7 @@ func consumeDepthLimit(args []string, start int) (*int, int, error) {
 // EqualsFormRejectionError rejects "--flag=value" spellings for
 // value-taking scope modifiers with a flag-appropriate hint. Returns
 // nil when arg isn't an equals form of a spec flag with scalar arity —
-// many-valued flags (--include=x, --only=x, --exclude=x) deliberately
+// many-valued flags (--only=x, --exclude=x) deliberately
 // keep falling through to the unknown-option error, matching the
 // hand-written ladders this replaces. Shared verbatim by both parsers;
 // a new scalar-arity flag gets equals rejection with the generic

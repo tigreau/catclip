@@ -71,13 +71,6 @@ var scopeModifierFlagSpecTable = []flagSpec{
 		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
-		StageKind:      command.StageInclude,
-		Arity:          flagArityMany,
-		Family:         flagFamilyFileSetRefinement,
-		BoundaryPolicy: scopeStageBoundaryNone,
-		Recoverability: flagRecoverabilityRequiredValue,
-	},
-	{
 		StageKind:      command.StageOnly,
 		Arity:          flagArityMany,
 		Family:         flagFamilyFileSetRefinement,
@@ -255,6 +248,7 @@ func (f flagSemanticFamily) scopeStageCategory() (scopeStageCategory, bool) {
 // non-spec flags belong here.
 var extraValueTakingFlags = []string{
 	"--internal-tree-target", "--internal-tree-kind", "--internal-tree-state",
+	"--internal-file-set-selection", "--internal-file-set-stage",
 	"--internal-file-path", "--input-dir", "--input-stem",
 }
 

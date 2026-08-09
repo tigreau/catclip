@@ -41,52 +41,6 @@ func TestCheckpointNoIgnoreRoundtrip(t *testing.T) {
 	}
 }
 
-func TestApplyPrediscoveredScopeTailExpandsIncludedVisibleTarget(t *testing.T) {
-	project := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(project, "config"))
-	for rel, contents := range map[string]string{
-		".gitignore":                    "src/build/\n",
-		"src/main.ts":                   "export const main = true\n",
-		"src/build/generated/client.ts": "export const generated = true\n",
-	} {
-		abs := filepath.Join(project, filepath.FromSlash(rel))
-		if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-			t.Fatalf("mkdir %s: %v", rel, err)
-		}
-		if err := os.WriteFile(abs, []byte(contents), 0o644); err != nil {
-			t.Fatalf("write %s: %v", rel, err)
-		}
-	}
-	if err := os.Mkdir(filepath.Join(project, ".git"), 0o755); err != nil {
-		t.Fatalf("mkdir .git: %v", err)
-	}
-
-	scope := command.ExecutionScope{
-		Targets:         []string{"src"},
-		IncludedTargets: []string{"src"},
-		Stages:          []command.Stage{{Kind: command.StageInclude, Values: []string{"src"}}},
-	}
-	entries, err := ApplyPrediscoveredScopeTail(
-		command.Invocation{WorkingDir: project},
-		git.Context{},
-		scope,
-		[]Entry{{RelPath: "src/main.ts"}},
-	)
-	if err != nil {
-		t.Fatalf("ApplyPrediscoveredScopeTail: %v", err)
-	}
-	paths := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		paths = append(paths, entry.RelPath)
-	}
-	if got, want := paths, []string{"src/main.ts", "src/build/generated/client.ts"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("checkpoint include expansion = %v, want %v", got, want)
-	}
-	if !entries[1].AllowedByInclude {
-		t.Fatalf("ignored checkpoint addition was not marked include-authorized: %+v", entries[1])
-	}
-}
-
 func TestApplyPrediscoveredScopeTailNoIgnorePreservesIgnoreAttribution(t *testing.T) {
 	project := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(project, "config"))
@@ -127,11 +81,11 @@ func TestApplyPrediscoveredScopeTailNoIgnorePreservesIgnoreAttribution(t *testin
 		attribution[entry.RelPath] = entry
 	}
 	visible := attribution["src/main.ts"]
-	if visible.AllowedByInclude || visible.BlockSource != "" {
+	if visible.IgnoreBypassed || visible.BlockSource != "" {
 		t.Fatalf("visible checkpoint entry was marked ignored: %+v", visible)
 	}
 	ignored := attribution["src/build/generated/client.ts"]
-	if !ignored.AllowedByInclude || ignored.BlockSource != ".gitignore" {
+	if !ignored.IgnoreBypassed || ignored.BlockSource != ".gitignore" {
 		t.Fatalf("ignored checkpoint entry attribution = %+v", ignored)
 	}
 	if outside, ok := attribution["outside/secret.txt"]; ok {
@@ -170,7 +124,7 @@ func TestApplyPrediscoveredScopeTailNoIgnoreRecoversEmptyIgnoredTarget(t *testin
 	if len(entries) != 1 || entries[0].RelPath != "secret/config.txt" {
 		t.Fatalf("empty checkpoint no-ignore recovery = %+v", entries)
 	}
-	if !entries[0].AllowedByInclude || entries[0].BlockSource != ".gitignore" {
+	if !entries[0].IgnoreBypassed || entries[0].BlockSource != ".gitignore" {
 		t.Fatalf("recovered ignored attribution = %+v", entries[0])
 	}
 }
@@ -217,7 +171,7 @@ func TestApplyPrediscoveredScopeTailNoIgnoreRespectsGlobTarget(t *testing.T) {
 	if got, want := paths, []string{"src/main.ts", "generated/hidden.ts"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("no-ignore glob checkpoint expansion = %v, want %v", got, want)
 	}
-	if !entries[1].AllowedByInclude || entries[1].BlockSource != ".gitignore" {
+	if !entries[1].IgnoreBypassed || entries[1].BlockSource != ".gitignore" {
 		t.Fatalf("glob-recovered ignored attribution = %+v", entries[1])
 	}
 }
@@ -259,7 +213,7 @@ func TestApplyPrediscoveredScopeTailNoIgnoreAppliesLaterStagesFromEmptyCheckpoin
 	if len(entries) != 1 || entries[0].RelPath != "secret/keep.md" {
 		t.Fatalf("empty checkpoint stage replay = %+v, want only secret/keep.md", entries)
 	}
-	if !entries[0].AllowedByInclude || entries[0].BlockSource != ".gitignore" {
+	if !entries[0].IgnoreBypassed || entries[0].BlockSource != ".gitignore" {
 		t.Fatalf("filtered ignored entry attribution = %+v", entries[0])
 	}
 }
@@ -313,7 +267,7 @@ func TestApplyPrediscoveredScopeTailNoIgnoreKeepsMultipleTargetsBounded(t *testi
 		t.Fatalf("multi-target no-ignore replay = %v, want %v", paths, want)
 	}
 	for _, entry := range entries[2:] {
-		if !entry.AllowedByInclude || entry.BlockSource != ".gitignore" {
+		if !entry.IgnoreBypassed || entry.BlockSource != ".gitignore" {
 			t.Fatalf("ignored multi-target entry attribution = %+v", entry)
 		}
 	}
@@ -348,7 +302,7 @@ func TestApplyPrediscoveredScopeTailNoIgnoreSupportsIgnoredFileTarget(t *testing
 	if len(entries) != 1 || entries[0].RelPath != "secret.txt" {
 		t.Fatalf("ignored file target replay = %+v", entries)
 	}
-	if !entries[0].AllowedByInclude || entries[0].BlockSource != ".gitignore" {
+	if !entries[0].IgnoreBypassed || entries[0].BlockSource != ".gitignore" {
 		t.Fatalf("ignored file target attribution = %+v", entries[0])
 	}
 }
@@ -398,10 +352,10 @@ func TestApplyPrediscoveredScopeTailNoIgnoreKeepsCaseCollidingFilesDistinct(t *t
 	for _, entry := range entries {
 		byPath[entry.RelPath] = entry
 	}
-	if got := byPath["case.txt"]; got.AllowedByInclude || got.BlockSource != "" {
+	if got := byPath["case.txt"]; got.IgnoreBypassed || got.BlockSource != "" {
 		t.Fatalf("visible lowercase path attribution = %+v", got)
 	}
-	if got := byPath["Case.txt"]; !got.AllowedByInclude || got.BlockSource != ".gitignore" {
+	if got := byPath["Case.txt"]; !got.IgnoreBypassed || got.BlockSource != ".gitignore" {
 		t.Fatalf("ignored uppercase path attribution = %+v", got)
 	}
 }

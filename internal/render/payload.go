@@ -15,29 +15,29 @@ const payloadVersion = 1
 var ErrEmptyPayload = errors.New("empty tree payload")
 
 type payloadRecord struct {
-	Type             string `json:"type"`
-	Version          int    `json:"version,omitempty"`
-	Mode             string `json:"mode,omitempty"`
-	Root             string `json:"root,omitempty"`
-	Path             string `json:"path,omitempty"`
-	Kind             string `json:"kind,omitempty"`
-	State            string `json:"state,omitempty"`
-	Size             *int64 `json:"size,omitempty"`
-	Git              string `json:"git,omitempty"`
-	Tag              string `json:"tag,omitempty"`
-	TargetRoot       string `json:"target_root,omitempty"`
-	AllowedByInclude bool   `json:"allowed_by_include,omitempty"`
-	BlockSource      string `json:"block_source,omitempty"`
-	Content          string `json:"content,omitempty"`
-	Highlight        string `json:"highlight,omitempty"`
-	Focus            []int  `json:"focus,omitempty"`
-	Pattern          string `json:"pattern,omitempty"`
-	Truncated        bool   `json:"truncated,omitempty"`
-	Count            *int   `json:"count,omitempty"`
-	Bytes            *int64 `json:"bytes,omitempty"`
-	HumanSize        string `json:"human_size,omitempty"`
-	Tokens           *int64 `json:"tokens,omitempty"`
-	FileWord         string `json:"file_word,omitempty"`
+	Type           string `json:"type"`
+	Version        int    `json:"version,omitempty"`
+	Mode           string `json:"mode,omitempty"`
+	Root           string `json:"root,omitempty"`
+	Path           string `json:"path,omitempty"`
+	Kind           string `json:"kind,omitempty"`
+	State          string `json:"state,omitempty"`
+	Size           *int64 `json:"size,omitempty"`
+	Git            string `json:"git,omitempty"`
+	Tag            string `json:"tag,omitempty"`
+	TargetRoot     string `json:"target_root,omitempty"`
+	IgnoreBypassed bool   `json:"ignore_bypassed,omitempty"`
+	BlockSource    string `json:"block_source,omitempty"`
+	Content        string `json:"content,omitempty"`
+	Highlight      string `json:"highlight,omitempty"`
+	Focus          []int  `json:"focus,omitempty"`
+	Pattern        string `json:"pattern,omitempty"`
+	Truncated      bool   `json:"truncated,omitempty"`
+	Count          *int   `json:"count,omitempty"`
+	Bytes          *int64 `json:"bytes,omitempty"`
+	HumanSize      string `json:"human_size,omitempty"`
+	Tokens         *int64 `json:"tokens,omitempty"`
+	FileWord       string `json:"file_word,omitempty"`
 }
 
 // EncodePayload writes a tree document as newline-delimited JSON records.
@@ -89,14 +89,14 @@ func EncodePayload(w io.Writer, doc Document) error {
 		}
 		for _, entry := range entries {
 			record := payloadRecord{
-				Type:             "entry",
-				Path:             entry.Path,
-				Kind:             "file",
-				Git:              entry.GitStatus,
-				Tag:              entry.ModeTag,
-				TargetRoot:       entry.TargetRoot,
-				AllowedByInclude: entry.AllowedByInclude,
-				BlockSource:      entry.BlockSource,
+				Type:           "entry",
+				Path:           entry.Path,
+				Kind:           "file",
+				Git:            entry.GitStatus,
+				Tag:            entry.ModeTag,
+				TargetRoot:     entry.TargetRoot,
+				IgnoreBypassed: entry.IgnoreBypassed,
+				BlockSource:    entry.BlockSource,
 			}
 			if entry.Size != nil {
 				sizeCopy := *entry.Size
@@ -185,13 +185,13 @@ func DecodePayload(r io.Reader) (Document, error) {
 				return Document{}, fmt.Errorf("tree payload entry on line %d is missing a file path", lineNo)
 			}
 			doc.Entries = append(doc.Entries, DocumentEntry{
-				Path:             relPath,
-				Size:             record.Size,
-				GitStatus:        record.Git,
-				ModeTag:          record.Tag,
-				TargetRoot:       normalizeRelPath(record.TargetRoot),
-				AllowedByInclude: record.AllowedByInclude,
-				BlockSource:      record.BlockSource,
+				Path:           relPath,
+				Size:           record.Size,
+				GitStatus:      record.Git,
+				ModeTag:        record.Tag,
+				TargetRoot:     normalizeRelPath(record.TargetRoot),
+				IgnoreBypassed: record.IgnoreBypassed,
+				BlockSource:    record.BlockSource,
 			})
 		case "summary":
 			summary := DocumentSummary{

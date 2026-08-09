@@ -440,6 +440,8 @@ type internalCommandConfig struct {
 	PrediscoveredPath      string
 	TreeInputDir           string
 	TreeInputStem          string
+	FileSetSelectionPath   string
+	FileSetSelectionStage  string
 	FilePreview            bool
 	FileSearchingPreview   bool
 	ContentMatchList       bool
@@ -456,6 +458,8 @@ func internalCommandConfigFromParsedCommand(cfg command.Parsed) internalCommandC
 		PrediscoveredPath:      cfg.PrediscoveredPath,
 		TreeInputDir:           cfg.TreeInputDir,
 		TreeInputStem:          cfg.TreeInputStem,
+		FileSetSelectionPath:   cfg.FileSetSelectionPath,
+		FileSetSelectionStage:  cfg.FileSetSelectionStage,
 		FilePreview:            cfg.FilePreview,
 		FileSearchingPreview:   cfg.FileSearchingPreview,
 		ContentMatchList:       cfg.ContentMatchList,
@@ -472,6 +476,7 @@ func (cfg internalCommandConfig) isInternalKind() bool {
 		cfg.ContentMatchList || cfg.SnippetBoundaryPreview || cfg.RecentPreview ||
 		cfg.LinesPreview ||
 		cfg.PrediscoveredPath != "" || cfg.TreeInputDir != "" ||
+		cfg.FileSetSelectionPath != "" || cfg.FileSetSelectionStage != "" ||
 		cfg.SinkTogglePath != "" || cfg.SinkPreviewModePath != ""
 }
 
@@ -493,6 +498,12 @@ func validateImplementedFeatureSet(cfg internalCommandConfig) error {
 	}
 	if cfg.PrediscoveredPath != "" && cfg.TreeInputDir != "" {
 		return newUsageError("Error: --internal-tree-preview accepts either --internal-prediscovered or --input-dir/--input-stem, not both.")
+	}
+	if (cfg.FileSetSelectionPath != "" || cfg.FileSetSelectionStage != "") && (cfg.PrediscoveredPath == "" || !cfg.TreePreview) {
+		return newUsageError("Error: --internal-file-set-selection requires --internal-prediscovered and --internal-tree-preview.")
+	}
+	if (cfg.FileSetSelectionPath == "") != (cfg.FileSetSelectionStage == "") {
+		return newUsageError("Error: --internal-file-set-selection and --internal-file-set-stage must be used together.")
 	}
 	if cfg.LinesPreview && cfg.PrediscoveredPath == "" {
 		return newUsageError("Error: --internal-lines-preview requires --internal-prediscovered.")

@@ -37,7 +37,7 @@ type Entry struct {
 	LinesEnd          int
 	DiffWantStaged    bool
 	DiffWantUnstaged  bool
-	AllowedByInclude  bool
+	IgnoreBypassed    bool
 	BlockSource       string
 }
 
@@ -51,14 +51,14 @@ type Discovered struct {
 }
 
 // BlockInfo describes the ignore-source that blocked a path during
-// discovery. Used by ancestor-probe messages and basename-include
+// discovery. Used by ancestor-probe messages and no-ignore basename
 // lookup, and propagated onto Entry.BlockSource.
 type BlockInfo struct {
 	Rule   string
 	Source string
 }
 
-// SkippedMatch records a basename-include lookup hit that was rejected
+// SkippedMatch records a basename lookup hit that was rejected
 // because the path is blocked by an ignore rule. Surfaces in
 // "skipped because ignored" warnings.
 type SkippedMatch struct {
@@ -67,7 +67,7 @@ type SkippedMatch struct {
 }
 
 // TargetMatch is the structured candidate produced by interactive
-// target pickers (--include selection, root-target fzf). Carries
+// target pickers (including the --no-ignore mixed picker). Carries
 // enough state for the picker UI and headless-ambiguity Diagnostics.
 type TargetMatch struct {
 	Path         string
@@ -89,12 +89,10 @@ const (
 	StartupTargetMissing
 	StartupTargetUniqueFuzzy
 	StartupTargetAmbiguousFuzzy
-	StartupTargetIncludedUnique
-	StartupTargetIncludedAmbiguous
 )
 
 // StartupTargetProbe is the structured result of probing one startup target.
-// Matches is populated for fuzzy and include-subtree outcomes so diagnostics
+// Matches is populated for fuzzy outcomes so diagnostics
 // and future callers can retain the evidence behind the routing decision.
 type StartupTargetProbe struct {
 	Outcome StartupTargetOutcome
@@ -109,7 +107,7 @@ func (p StartupTargetProbe) BypassesPicker() bool {
 
 // RequiresPicker reports whether the target has more than one valid answer.
 func (p StartupTargetProbe) RequiresPicker() bool {
-	return p.Outcome == StartupTargetAmbiguousFuzzy || p.Outcome == StartupTargetIncludedAmbiguous
+	return p.Outcome == StartupTargetAmbiguousFuzzy
 }
 
 // Diagnostic is a single user-facing message plus the independent effects

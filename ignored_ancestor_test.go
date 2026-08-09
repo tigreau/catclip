@@ -48,7 +48,8 @@ func TestRunSurfacesIgnoredAncestorForBasenameTarget(t *testing.T) {
 		"hidden by an ignored ancestor",
 		"./myblocked/target.md",
 		"parent ./myblocked ignored by .gitignore",
-		"--include 'myblocked'",
+		"catclip 'myblocked/target.md'",
+		"catclip . --no-ignore",
 		"catclip --all-ignore-rules",
 	} {
 		if !strings.Contains(out, want) {
@@ -76,7 +77,8 @@ func TestRunSurfacesIgnoredAncestorForDirTarget(t *testing.T) {
 		"hidden by an ignored ancestor",
 		"./myblocked/somedir",
 		"parent ./myblocked ignored by .gitignore",
-		"--include 'myblocked'",
+		"catclip 'myblocked/somedir'",
+		"catclip . --no-ignore",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -95,7 +97,7 @@ func TestRunHiddenExactFileBeatsUnrelatedVisibleFuzzyMatch(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"nested.ts", "--headless", "--quiet", "--print", "--paths"})
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err == nil {
-		t.Fatal("expected hidden exact basename to require authorization")
+		t.Fatal("expected hidden basename shorthand to require a complete path")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("hidden exact basename must not fall through to fuzzy output:\n%s", stdout.String())
@@ -103,7 +105,8 @@ func TestRunHiddenExactFileBeatsUnrelatedVisibleFuzzyMatch(t *testing.T) {
 	for _, want := range []string{
 		"hidden by an ignored ancestor",
 		"./src/build/nested.ts",
-		"--include 'src/build'",
+		"catclip 'src/build/nested.ts'",
+		"catclip . --no-ignore",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("hidden exact diagnostic missing %q:\n%s", want, stderr.String())
@@ -125,7 +128,7 @@ func TestRunHiddenExactDirectoryBeatsUnrelatedVisibleFuzzyMatch(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"secret", "--headless", "--quiet", "--print", "--paths"})
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err == nil {
-		t.Fatal("expected hidden exact directory basename to require authorization")
+		t.Fatal("expected hidden directory shorthand to require a complete path")
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("hidden exact directory must not fall through to fuzzy output:\n%s", stdout.String())
@@ -133,7 +136,8 @@ func TestRunHiddenExactDirectoryBeatsUnrelatedVisibleFuzzyMatch(t *testing.T) {
 	for _, want := range []string{
 		"hidden by an ignored ancestor",
 		"./blocked/secret",
-		"--include 'blocked'",
+		"catclip 'blocked/secret'",
+		"catclip . --no-ignore",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("hidden exact directory diagnostic missing %q:\n%s", want, stderr.String())

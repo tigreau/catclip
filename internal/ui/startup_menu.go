@@ -107,13 +107,6 @@ var startupModifierChoices = []StartupModifierChoice{
 		Mode:        startupModifierModeFlags,
 	},
 	{
-		Key:         "include",
-		Label:       "--include",
-		Description: "Allow ignored files or folders",
-		Args:        []string{"--include"},
-		Mode:        startupModifierModeInclude,
-	},
-	{
 		Key:         "changed",
 		Label:       "--changed",
 		Description: "Keep only git-changed files",
@@ -267,7 +260,7 @@ func startupAvailableModifierChoices(currentArgs []string) []StartupModifierChoi
 
 func startupAvailableModifierChoicesWithState(currentArgs []string, state startupCurrentScopeState) []StartupModifierChoice {
 	if state.Known && state.Empty {
-		if !state.NeedsInclude {
+		if !state.HasScopedIgnoredTargets {
 			return nil
 		}
 		return []StartupModifierChoice{
@@ -277,13 +270,6 @@ func startupAvailableModifierChoicesWithState(currentArgs []string, state startu
 				Description: "Include everything hidden by ignore rules",
 				Args:        []string{"--no-ignore"},
 				Mode:        startupModifierModeFlags,
-			},
-			{
-				Key:         "include",
-				Label:       "--include",
-				Description: "Allow ignored files or folders",
-				Args:        []string{"--include"},
-				Mode:        startupModifierModeInclude,
 			},
 		}
 	}
@@ -415,7 +401,7 @@ func startupModifierChoiceMeaningful(choice StartupModifierChoice, state startup
 			return false
 		}
 		return state.AnyUnstaged
-	case "--include", "--no-ignore":
+	case "--no-ignore":
 		return state.HasScopedIgnoredTargets
 	default:
 		return true

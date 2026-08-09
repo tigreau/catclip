@@ -36,10 +36,9 @@ func (r *Resolver) allVisibleTargets() ([]TargetMatch, error) {
 }
 
 // AdoptVisibleTargetInventoryFrom publishes a complete target inventory built
-// by a compatible resolver copy. Startup probing uses shallow per-scope copies
-// to isolate include state; adopting only this immutable base inventory lets
-// the eventual interactive picker avoid rebuilding it without sharing any
-// mutable include or scope state.
+// by a compatible resolver copy. Startup probing uses shallow per-scope copies;
+// adopting only this immutable base inventory lets the eventual interactive
+// picker avoid rebuilding it without sharing mutable scope state.
 func (r *Resolver) AdoptVisibleTargetInventoryFrom(source *Resolver) bool {
 	if source == nil || !source.interactiveTargetsOk ||
 		r.Cfg.WorkingDir != source.Cfg.WorkingDir ||
@@ -106,13 +105,19 @@ func narrowableScopeTargets(workingDir string, targets []string) []string {
 	return out
 }
 
-func (r *Resolver) ignoredTargetsCached(scopeTargets []string) bool {
-	key := ignoredTargetsCacheKey(narrowableScopeTargets(r.Cfg.WorkingDir, scopeTargets))
-	_, ok := r.ignoredTargetsByScope[key]
-	return ok
+func (r *Resolver) AllIgnoredTargets(scopeTargets []string) ([]TargetMatch, error) {
+	return r.targetInventoryUnderNoIgnore(scopeTargets, true)
 }
 
-func (r *Resolver) AllIgnoredTargets(scopeTargets []string) ([]TargetMatch, error) {
+// AllNoIgnoreTargets returns the complete file-and-directory target universe
+// under --no-ignore. Visible rows and rows normally blocked by .gitignore or
+// .hiss share one inventory so the flag has the same meaning in traversal,
+// interactive selection, and headless fuzzy resolution.
+func (r *Resolver) AllNoIgnoreTargets(scopeTargets []string) ([]TargetMatch, error) {
+	return r.targetInventoryUnderNoIgnore(scopeTargets, false)
+}
+
+func (r *Resolver) targetInventoryUnderNoIgnore(scopeTargets []string, ignoredOnly bool) ([]TargetMatch, error) {
 	// Narrow the enumeration universe to the scope targets when they are
 	// literal on-disk paths: the downstream
 	// filterIgnoredTargetsByScopeTargets keeps ONLY entries under a
@@ -126,8 +131,12 @@ func (r *Resolver) AllIgnoredTargets(scopeTargets []string) ([]TargetMatch, erro
 	// targets, where the filter keeps everything and wide is right-sized
 	// by definition.
 	narrowed := narrowableScopeTargets(r.Cfg.WorkingDir, scopeTargets)
-	cacheKey := ignoredTargetsCacheKey(narrowed)
-	if cached, ok := r.ignoredTargetsByScope[cacheKey]; ok {
+	cacheKind := "all\x00"
+	if ignoredOnly {
+		cacheKind = "ignored\x00"
+	}
+	cacheKey := cacheKind + ignoredTargetsCacheKey(narrowed)
+	if cached, ok := r.targetInventoriesByScope[cacheKey]; ok {
 		return append([]TargetMatch(nil), cached...), nil
 	}
 
@@ -225,7 +234,7 @@ func (r *Resolver) AllIgnoredTargets(scopeTargets []string) ([]TargetMatch, erro
 		if !dirHasText[rel] {
 			match.State = treeTargetStateNoTextChildren
 		}
-		if match.Ignored {
+		if !ignoredOnly || match.Ignored {
 			targets = append(targets, match)
 		}
 	}
@@ -235,7 +244,7 @@ func (r *Resolver) AllIgnoredTargets(scopeTargets []string) ([]TargetMatch, erro
 			match.Ignored = true
 			match.IgnoreSource = source
 		}
-		if match.Ignored {
+		if !ignoredOnly || match.Ignored {
 			targets = append(targets, match)
 		}
 	}
@@ -250,10 +259,10 @@ func (r *Resolver) AllIgnoredTargets(scopeTargets []string) ([]TargetMatch, erro
 		return targets[i].Path < targets[j].Path
 	})
 
-	if r.ignoredTargetsByScope == nil {
-		r.ignoredTargetsByScope = make(map[string][]TargetMatch, 2)
+	if r.targetInventoriesByScope == nil {
+		r.targetInventoriesByScope = make(map[string][]TargetMatch, 4)
 	}
-	r.ignoredTargetsByScope[cacheKey] = targets
+	r.targetInventoriesByScope[cacheKey] = targets
 	return append([]TargetMatch(nil), targets...), nil
 }
 

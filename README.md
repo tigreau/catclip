@@ -193,12 +193,13 @@ catclip skips `.gitignored` paths and paths matched by `.hiss` (the ignore confi
 ```bash
 catclip --hiss             # edit ignore rules
 catclip --hiss-reset       # restore defaults
-catclip dist --include dist # allow the ignored React build for this run
-catclip src --include src/generated # allow one ignored folder under src
-catclip src --no-ignore    # include every ignored text file under src
+catclip src/generated      # read this exact ignored folder
+catclip src --no-ignore    # read visible and ignored text files under src
 ```
 
-Named `--include` paths start from the folder where you run catclip.
+An exact ignored file or folder can be named directly. Ignore rules nested
+inside an explicitly named folder still apply. Use `--no-ignore` when you want
+to disable `.gitignore` and `.hiss` filtering throughout the selected targets.
 
 ---
 

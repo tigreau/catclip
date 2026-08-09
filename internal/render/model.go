@@ -45,13 +45,13 @@ type DocumentTarget struct {
 
 // DocumentEntry is a single file row in a tree payload.
 type DocumentEntry struct {
-	Path             string
-	Size             *int64
-	GitStatus        string
-	ModeTag          string
-	TargetRoot       string
-	AllowedByInclude bool
-	BlockSource      string
+	Path           string
+	Size           *int64
+	GitStatus      string
+	ModeTag        string
+	TargetRoot     string
+	IgnoreBypassed bool
+	BlockSource    string
 }
 
 // FilePreview holds the text payload for file-preview mode.

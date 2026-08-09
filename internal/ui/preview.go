@@ -216,7 +216,7 @@ func repoHasGitIgnore(gitCtx git.Context) bool {
 }
 
 // printPreviewTree renders the compact directory tree shown before clipboard or
-// stdout emission, including include-allowed coloring and target path hints.
+// stdout emission, including ignore-bypass coloring and target path hints.
 func printPreviewTree(w io.Writer, plan output.Plan, report output.Report, colors platform.Palette) error {
 	return renderTreeDocument(w, treeDocument{
 		Mode:    treeDocumentModeTree,
@@ -230,11 +230,11 @@ func printPreviewTree(w io.Writer, plan output.Plan, report output.Report, color
 	}, colors)
 }
 
-func allowedByIncludeDirectoryLabel(entry discovery.Entry, relDir string) bool {
-	return allowedByIncludeTreeDirectoryLabel(treeDocumentEntry{
-		Path:             entry.RelPath,
-		TargetRoot:       entry.TargetRoot,
-		AllowedByInclude: entry.AllowedByInclude,
-		BlockSource:      entry.BlockSource,
+func ignoreBypassedDirectoryLabel(entry discovery.Entry, relDir string) bool {
+	return ignoreBypassedTreeDirectoryLabel(treeDocumentEntry{
+		Path:           entry.RelPath,
+		TargetRoot:     entry.TargetRoot,
+		IgnoreBypassed: entry.IgnoreBypassed,
+		BlockSource:    entry.BlockSource,
 	}, relDir)
 }

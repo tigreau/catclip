@@ -1,6 +1,6 @@
 package command
 
-// StageKind identifies one scope-stage transform (--include, --only, …).
+// StageKind identifies one scope-stage transform (--only, --exclude, …).
 // Stages run left-to-right in scope.Stages order so reordering them
 // produces different results — see RULES.md and command_spec.go for the
 // canonical order rules.
@@ -8,7 +8,6 @@ type StageKind string
 
 const (
 	StageNoIgnore     StageKind = "no-ignore"
-	StageInclude      StageKind = "include"
 	StageOnly         StageKind = "only"
 	StageExclude      StageKind = "exclude"
 	StageRecent       StageKind = "recent"

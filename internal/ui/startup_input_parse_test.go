@@ -84,24 +84,24 @@ func TestParseStartupInputTokensKeepsSnippetContext(t *testing.T) {
 	}
 }
 
-func TestParseStartupInputTokensRejectsInvalidIncludeValue(t *testing.T) {
-	_, err := parseStartupInputTokens([]string{"--include", "src/../vendor"})
-	if err == nil {
-		t.Fatal("expected invalid startup include value to fail")
-	}
-	if !strings.Contains(err.Error(), "--include cannot traverse above the current directory") {
-		t.Fatalf("unexpected error: %v", err)
+func TestParseStartupInputTokensRejectsRemovedInclude(t *testing.T) {
+	for _, args := range [][]string{{"--include", "src/generated"}, {"--include=src/generated"}} {
+		_, err := parseStartupInputTokens(args)
+		if err == nil {
+			t.Fatalf("expected invalid startup include value to fail: %v", args)
+		}
+		if !strings.Contains(err.Error(), "--include is not a supported option") {
+			t.Fatalf("unexpected error for %v: %v", args, err)
+		}
 	}
 }
 
-func TestParseStartupInputTokensNamesMisorderedAuthorizationFlag(t *testing.T) {
-	for _, flag := range []string{"--include", "--no-ignore"} {
-		_, err := parseStartupInputTokens([]string{"src", "--only", "*.go", flag})
-		if err == nil {
-			t.Fatalf("%s after a narrowing modifier unexpectedly succeeded", flag)
-		}
-		if !strings.Contains(err.Error(), "Error: "+flag+" must come before modifiers.") {
-			t.Fatalf("%s error did not name the flag: %v", flag, err)
-		}
+func TestParseStartupInputTokensNamesMisorderedNoIgnore(t *testing.T) {
+	_, err := parseStartupInputTokens([]string{"src", "--only", "*.go", "--no-ignore"})
+	if err == nil {
+		t.Fatal("--no-ignore after a narrowing modifier unexpectedly succeeded")
+	}
+	if !strings.Contains(err.Error(), "Error: --no-ignore must come before modifiers.") {
+		t.Fatalf("--no-ignore error did not name the flag: %v", err)
 	}
 }

@@ -459,9 +459,8 @@ func TextClassificationResidue() (paths []string, textCount int) {
 // Symlinks are excluded by policy (discovery doesn't emit symlink
 // entries). Individual Lstat failures skip the file (it stays binary).
 //
-// allPaths is the already-enumerated --no-ignore universe — required so
-// an --include-authorized empty file in a blocked subtree is considered
-// too; reusing the enumeration avoids a second rg walk.
+// allPaths is the already-enumerated --no-ignore universe, so empty files in
+// blocked subtrees are considered too without a second rg walk.
 func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[string]struct{}) (statCount, admittedCount int) {
 	for _, rel := range allPaths {
 		if _, ok := set[rel]; ok {
@@ -985,8 +984,7 @@ func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[s
 // DirectOption configures one of the boolean knobs on the direct rg
 // helpers (RunRipgrepDirect, RunRipgrepDirectMatchLines). Use
 // DirectInvert() for --files-without-match (--not-contains direct
-// mode) and DirectNoIgnore() to bypass .gitignore when the parent
-// scope had --include (see ACTIVE_PLAN_picker_no_ignore_for_include).
+// mode) and DirectNoIgnore() to mirror a parent --no-ignore scope.
 type DirectOption func(*directOptions)
 
 type directOptions struct {
@@ -1017,7 +1015,7 @@ func directOptionsFrom(opts []DirectOption) directOptions {
 // paths) using the same map[string]struct{} shape as RunRipgrepMatches.
 //
 // Options: DirectInvert switches to --files-without-match (drops -m 1).
-// DirectNoIgnore appends --no-ignore for parent-include flows.
+// DirectNoIgnore appends --no-ignore for scopes that disabled ignore rules.
 //
 // Eligibility: callers must verify the scope qualifies via
 // command.IsDirectModeEligible. This helper does not check eligibility
@@ -1079,9 +1077,8 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...Dire
 		args = append(args, "-m", "1")
 	}
 	if cfg.noIgnore {
-		// Picker subprocesses inherit --no-ignore from the parent's
-		// --include via the checkpoint's NoIgnore flag; --ignore-file
-		// still applies, so .hiss continues to filter.
+		// Picker subprocesses inherit --no-ignore through the checkpoint.
+		// --ignore-file still applies, so .hiss continues to filter.
 		args = append(args, "--no-ignore")
 	}
 	if hissPath != "" {
@@ -1343,8 +1340,7 @@ func chunkExecArgs(paths []string, maxCount, maxBytes int) [][]string {
 //
 // A previous version of this helper used a `--max-depth 3` cap on
 // both rg invocations as a perf optimization. The cap was removed
-// because it produced false negatives (deep ignored entries hid
-// `--include` from the modifier menu). See
+// because it produced false negatives for deep ignored entries. See
 // docs/versions/v0.5.0/reports/ACTIVE_PLAN_modifier_menu_performance.md.
 func HasScopedIgnoredTargetsStreaming(ctx context.Context, workingDir string, scopeTargets []string, hissPath string) (bool, error) {
 	bin, ok := RipgrepBinary()

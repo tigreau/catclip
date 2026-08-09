@@ -137,13 +137,16 @@ func prepareHelpExampleFixture(t *testing.T, project string) {
 	// the fixture project itself. Construct them here so a clean checkout does
 	// not depend on force-added ignored test data.
 	for rel, content := range map[string]string{
-		".gitignore":                    "dist/\nnode_modules/\n",
+		".gitignore":                    "dist/\nnode_modules/\nsrc/generated/\n",
 		"docs/api.md":                   "# API\n\nThe API serves profile data.\n",
 		"docs/User Guide.md":            "# User Guide\n\nOpen the profile page and select the Button.\n",
 		"docs/architecture/overview.md": "# Architecture\n\nThe React application calls the Go API.\n",
 		"dist/index.html":               "<div id=\"root\"></div>\n",
 		"dist/assets/index.js":          "console.log(\"built\");\n",
+		"dist/assets/app.js":            "console.log(\"app\");\n",
+		".env.local":                    "API_URL=https://example.test\n",
 		"node_modules/react/index.js":   "export const createElement = () => null;\n",
+		"src/generated/client.ts":       "export const generated = true;\n",
 	} {
 		writeProjectFile(t, project, rel, content)
 	}
@@ -235,10 +238,9 @@ func helpExampleExpectations() map[string]helpExampleExpectation {
 		"not-contains.todo":                   {contains: []string{"src/App.tsx"}, excludes: []string{"src/hooks/useAuth.ts"}},
 		"snippet.use-auth-smart":              {contains: []string{"src/hooks/useAuth.ts", "func"}},
 		"snippet.use-auth-context":            {contains: []string{"src/hooks/useAuth.ts", `lines="`}},
-		"include.dist-paths":                  {contains: []string{"dist/index.html", "dist/assets/index.js"}},
-		"include.dist-assets-paths":           {contains: []string{"dist/assets/index.js"}, excludes: []string{"dist/index.html"}},
-		"include.dist-and-src":                {contains: []string{"src/App.tsx", "dist/index.html"}, excludes: []string{"docs/api.md"}},
-		"include.env-raw":                     {contains: []string{"API_URL="}, excludes: []string{"<file"}},
+		"ignored.generated-target":            {contains: []string{"src/generated/client.ts"}, excludes: []string{"src/App.tsx"}},
+		"ignored.generated-paths":             {contains: []string{"src/generated/client.ts"}, excludes: []string{"src/App.tsx"}},
+		"ignored.generated-file":              {contains: []string{"generated = true"}, excludes: []string{"<file"}},
 		"git.changed-src":                     {contains: []string{"src/components/Button.tsx", "src/pages/Profile.tsx"}, excludes: []string{"src/App.tsx"}},
 		"git.unstaged-tsx-diff":               {contains: []string{`type="unstaged-diff"`, "Button.tsx"}},
 		"template.changed-diff":               {contains: []string{"Button.tsx", "Profile.tsx"}},

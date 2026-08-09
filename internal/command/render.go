@@ -117,7 +117,7 @@ func canonicalScopeArgs(s ExecutionScope, quoteArg, quoteRegex func(string) stri
 		}
 		parts = append(parts, flag)
 		switch stage.Kind {
-		case StageInclude, StageOnly, StageExclude:
+		case StageOnly, StageExclude:
 			for _, value := range stage.Values {
 				parts = append(parts, quoteArg(value))
 			}

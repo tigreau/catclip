@@ -1,6 +1,9 @@
 package cli
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Reason identifies the specific validation rule the parser violated.
 // Used to dispatch error messages and to drive structured shell
@@ -25,13 +28,9 @@ const (
 	ReasonSnippetContentFilterOrder       Reason = "snippet_content_filter_order"
 	ReasonRepeatedOutputMode              Reason = "repeated_output_mode"
 	ReasonTerminalBoundaryOrder           Reason = "terminal_boundary_order"
-	ReasonIncludeAfterModifier            Reason = "include_after_modifier"
-	ReasonRepeatedInclude                 Reason = "repeated_include"
-	ReasonIncludeMissingPositionalTarget  Reason = "include_missing_positional_target"
 	ReasonNoIgnoreAfterModifier           Reason = "no_ignore_after_modifier"
 	ReasonRepeatedNoIgnore                Reason = "repeated_no_ignore"
 	ReasonNoIgnoreMissingPositionalTarget Reason = "no_ignore_missing_positional_target"
-	ReasonIncludeNoIgnoreConflict         Reason = "include_no_ignore_conflict"
 	ReasonUnsupportedDoubleStar           Reason = "unsupported_double_star"
 )
 
@@ -76,7 +75,7 @@ func renderValidationFailure(e ValidationFailure) string {
 	case ReasonUntrackedDiff:
 		return "Error: --untracked-diff doesn't make sense (untracked files have no diff).\n  Try: catclip src --changed-diff    (includes untracked as full content)\n  Try: catclip src --staged-diff     (only staged patches)"
 	case ReasonPositionalAfterModifier:
-		return "Error: positional targets must come before modifiers.\n  Add targets first, use --include, or use --then for a new scope."
+		return "Error: positional targets must come before modifiers.\n  Add targets first, or use --then for a new scope."
 	case ReasonOutputModeConflict:
 		return fmt.Sprintf("Error: %s and %s cannot be combined in the same scope.\n  Use --then to start a new scope for a different output mode.", e.BoundaryFlag, e.Flag)
 	case ReasonDiffSnippetConflict:
@@ -91,27 +90,12 @@ func renderValidationFailure(e ValidationFailure) string {
 		return fmt.Sprintf("Error: %s cannot be repeated in the same scope.\n  %s already commits the scope to an output mode.\n  Start a new scope with --then.", e.Flag, e.Flag)
 	case ReasonTerminalBoundaryOrder:
 		return fmt.Sprintf("Error: %s finalizes the current scope.\n  No later same-scope modifiers are allowed after %s.\n  Start a new scope with --then.", e.BoundaryFlag, e.BoundaryFlag)
-	case ReasonIncludeAfterModifier:
-		return "Error: --include must come before other modifiers in the same scope.\n  --include adds files, so it must appear before filters that narrow them.\n  Move --include before other modifiers, or start a new scope with --then."
-	case ReasonRepeatedInclude:
-		return "Error: --include can only appear once per scope.\n  Combine targets in a single --include, or start a new scope with --then."
-	case ReasonIncludeMissingPositionalTarget:
-		return fmt.Sprintf("Error: --include %s requires a positional target.\n\n"+
-			"  --include is authorization-only — it authorizes gitignored paths WITHIN a\n"+
-			"  walk scope. With no positional target, there's no walk scope for the\n"+
-			"  authorization to apply to. Add the path as a positional target too:\n\n"+
-			"    catclip %s --include %s\n\n"+
-			"  Interactive tip: bare `catclip` (no args) opens the target picker;\n"+
-			"  selecting an ignored entry writes the target+include pair for you.",
-			singleQuoted(e.Flag), e.Flag, e.Flag)
 	case ReasonNoIgnoreAfterModifier:
 		return "Error: --no-ignore must come before other modifiers in the same scope.\n  It changes which files enter the scope, so filters must come after it.\n  Move --no-ignore before other modifiers, or start a new scope with --then."
 	case ReasonRepeatedNoIgnore:
 		return "Error: --no-ignore can only appear once per scope.\n  Remove the duplicate, or start a new scope with --then."
 	case ReasonNoIgnoreMissingPositionalTarget:
 		return "Error: --no-ignore requires a positional target.\n\n  Add the folder whose ignored files should be included:\n    catclip . --no-ignore\n    catclip src --no-ignore"
-	case ReasonIncludeNoIgnoreConflict:
-		return "Error: --include and --no-ignore cannot be combined in the same scope.\n  Use --include for specific ignored paths, or --no-ignore for every ignored path below the selected targets."
 	case ReasonUnsupportedDoubleStar:
 		return renderUnsupportedDoubleStarValidationFailure(e.Flag, e.Value)
 	default:
@@ -121,8 +105,6 @@ func renderValidationFailure(e ValidationFailure) string {
 
 func renderRequiredValueValidationFailure(e ValidationFailure) string {
 	switch e.Flag {
-	case "--include":
-		return "Error: --include requires a target query.\n  Example: catclip . --include node_modules\n  Example: catclip src --include vendor"
 	case "--exclude":
 		return "Error: --exclude requires a pattern.\n  Example: catclip src --exclude '*.test.*'"
 	case "--contains":
@@ -173,17 +155,20 @@ func LinesInvalidValueError(value string) error {
 	return newUsageError("Error: --lines expects line numbers: --lines [START [END]]\n  START and END must be integers (got %q).", value)
 }
 
-// IncludeMissingPositionalTargetError fires for effect 5 of the
-// include-as-authorization design: `--include <path>` with no positional
-// target. sampleInclude carries the first --include value so the message can
-// show the canonical double-syntax fix. See
-// ACTIVE_NOTE_include_double_syntax_rationale.md, effect 5.
-func IncludeMissingPositionalTargetError(sampleInclude string) error {
-	return ValidationFailure{Reason: ReasonIncludeMissingPositionalTarget, Flag: sampleInclude}
-}
-
 func NoIgnoreMissingPositionalTargetError() error {
 	return ValidationFailure{Reason: ReasonNoIgnoreMissingPositionalTarget, Flag: "--no-ignore"}
+}
+
+func IncludeUnsupportedError() error {
+	return newUsageError("Error: --include is not a supported option.\n\n" +
+		"  Name an ignored file or directory as a target:\n" +
+		"    catclip src/generated\n\n" +
+		"  To disable ignore rules below a target:\n" +
+		"    catclip src --no-ignore")
+}
+
+func IsUnsupportedIncludeOption(token string) bool {
+	return token == "--include" || strings.HasPrefix(token, "--include=")
 }
 
 func UnsupportedDoubleStarError(surface, value string) error {

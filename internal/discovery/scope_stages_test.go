@@ -555,86 +555,6 @@ func TestApplyScopeStagesKeepsDepthOrderingSemanticWithRecent(t *testing.T) {
 	}
 }
 
-func TestBuildIncludedTargetSetUsesExactCWDRelativeIdentity(t *testing.T) {
-	wd := t.TempDir()
-	for _, dir := range []string{"build", "src/build"} {
-		if err := os.MkdirAll(filepath.Join(wd, filepath.FromSlash(dir)), 0o755); err != nil {
-			t.Fatalf("mkdir %q: %v", dir, err)
-		}
-	}
-
-	set := BuildIncludedTargetSet(wd, []string{"build", "src/build"})
-	if got, want := set.paths, []string{"build", "src/build"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("concrete include paths = %v, want %v", got, want)
-	}
-	if got, want := set.dirs, []string{"build", "src/build"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("concrete include dirs = %v, want %v", got, want)
-	}
-}
-
-func TestBuildIncludedTargetSetDoesNotAuthorizeMissingPath(t *testing.T) {
-	set := BuildIncludedTargetSet(t.TempDir(), []string{"generated"})
-	if len(set.exact) != 0 || len(set.paths) != 0 || len(set.dirs) != 0 {
-		t.Fatalf("missing include entered authorization set: %#v", set)
-	}
-	if got, want := set.unresolved, []string{"generated"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("unresolved includes = %v, want %v", got, want)
-	}
-}
-
-func TestBuildIncludedTargetSetNormalizesPowerShellSeparators(t *testing.T) {
-	wd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(wd, "src", "build"), 0o755); err != nil {
-		t.Fatalf("mkdir src/build: %v", err)
-	}
-	set := BuildIncludedTargetSet(wd, []string{`src\build`})
-	if got, want := set.paths, []string{"src/build"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("PowerShell-style include paths = %v, want %v", got, want)
-	}
-}
-
-func TestResolveExactIgnoredIncludeTargetsKeepsConcreteCWDPath(t *testing.T) {
-	wd := t.TempDir()
-	for _, dir := range []string{"src", "build", "src/build"} {
-		if err := os.MkdirAll(filepath.Join(wd, filepath.FromSlash(dir)), 0o755); err != nil {
-			t.Fatalf("mkdir %q: %v", dir, err)
-		}
-	}
-	resolver := Resolver{Cfg: command.Invocation{WorkingDir: wd}}
-	exact, unresolved, err := resolver.ResolveExactIgnoredIncludeTargets([]string{"build"}, []string{"src"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, want := exact, []string{"build"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("exact paths = %v, want %v", got, want)
-	}
-	if len(unresolved) != 0 {
-		t.Fatalf("concrete cwd path was incorrectly sent to picker: %v", unresolved)
-	}
-}
-
-func TestIncludePathRelatedToScopeTargets(t *testing.T) {
-	tests := []struct {
-		name    string
-		include string
-		targets []string
-		want    bool
-	}{
-		{name: "root scope", include: "build", targets: []string{"."}, want: true},
-		{name: "descendant", include: "src/build", targets: []string{"src"}, want: true},
-		{name: "ancestor", include: "src", targets: []string{"src/build"}, want: true},
-		{name: "unrelated root collision", include: "build", targets: []string{"src"}, want: false},
-		{name: "file target does not invent child", include: "blocked", targets: []string{"agent.md"}, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := includePathRelatedToScopeTargets(tt.include, tt.targets); got != tt.want {
-				t.Fatalf("includePathRelatedToScopeTargets(%q, %v) = %v, want %v", tt.include, tt.targets, got, tt.want)
-			}
-		})
-	}
-}
-
 // Every command.StageKind must have a stageApplierTable entry so the
 // pipeline can dispatch the kind without falling through to the
 // unknown-kind no-op branch. Adding a new kind without registering
@@ -645,7 +565,6 @@ func TestIncludePathRelatedToScopeTargets(t *testing.T) {
 // the no-op aliases.
 func TestStageApplierTableCoversEveryStageKind(t *testing.T) {
 	allKinds := []command.StageKind{
-		command.StageInclude,
 		command.StageOnly,
 		command.StageExclude,
 		command.StageRecent,

@@ -14,7 +14,6 @@ func TestValidationFailureConstructors(t *testing.T) {
 	}{
 		{name: "required only", err: RequiredStageValueError("--only"), want: ValidationFailure{Reason: ReasonRequiredValue, Flag: "--only"}},
 		{name: "required exclude", err: RequiredStageValueError("--exclude"), want: ValidationFailure{Reason: ReasonRequiredValue, Flag: "--exclude"}},
-		{name: "required include", err: RequiredStageValueError("--include"), want: ValidationFailure{Reason: ReasonRequiredValue, Flag: "--include"}},
 		{name: "required contains", err: RequiredStageValueError("--contains"), want: ValidationFailure{Reason: ReasonRequiredValue, Flag: "--contains"}},
 		{name: "required not-contains", err: RequiredStageValueError("--not-contains"), want: ValidationFailure{Reason: ReasonRequiredValue, Flag: "--not-contains"}},
 		{name: "required snippet", err: RequiredStageValueError("--snippet"), want: ValidationFailure{Reason: ReasonRequiredValue, Flag: "--snippet"}},
@@ -30,9 +29,6 @@ func TestValidationFailureConstructors(t *testing.T) {
 		{name: "output conflict", err: outputModeConflictError("--snippet", "--changed-diff"), want: ValidationFailure{Reason: ReasonOutputModeConflict, Flag: "--changed-diff", BoundaryFlag: "--snippet"}},
 		{name: "diff snippet conflict", err: diffSnippetConflictError(), want: ValidationFailure{Reason: ReasonDiffSnippetConflict}},
 		{name: "terminal boundary", err: terminalBoundaryOrderError("--paths", "--contains"), want: ValidationFailure{Reason: ReasonTerminalBoundaryOrder, BoundaryFlag: "--paths", NextFlag: "--contains"}},
-		{name: "include after modifier", err: includeAfterModifierError(), want: ValidationFailure{Reason: ReasonIncludeAfterModifier}},
-		{name: "repeated include", err: repeatedIncludeError(), want: ValidationFailure{Reason: ReasonRepeatedInclude}},
-		{name: "include missing target", err: IncludeMissingPositionalTargetError("cmd"), want: ValidationFailure{Reason: ReasonIncludeMissingPositionalTarget, Flag: "cmd"}},
 		{name: "no ignore missing target", err: NoIgnoreMissingPositionalTargetError(), want: ValidationFailure{Reason: ReasonNoIgnoreMissingPositionalTarget, Flag: "--no-ignore"}},
 	}
 
@@ -58,13 +54,10 @@ func TestValidationFailureRendering(t *testing.T) {
 	}{
 		{name: "required only", err: RequiredStageValueError("--only"), want: "Error: --only requires a pattern.\n  Example: catclip src --only '*.ts'"},
 		{name: "required exclude", err: RequiredStageValueError("--exclude"), want: "Error: --exclude requires a pattern.\n  Example: catclip src --exclude '*.test.*'"},
-		{name: "required include", err: RequiredStageValueError("--include"), want: "Error: --include requires a target query.\n  Example: catclip . --include node_modules\n  Example: catclip src --include vendor"},
 		{name: "required snippet", err: RequiredStageValueError("--snippet"), want: "Error: --snippet requires a regex pattern.\n  Example: catclip src --snippet 'TODO'"},
 		{name: "required depth", err: RequiredStageValueError("--depth"), want: "Error: --depth requires a positive integer.\n  Example: catclip src --depth 2"},
 		{name: "contains suggestion", err: ContainsMissingPatternError([]string{"--contains", "--snippet", "a"}, 0), want: "Error: --contains requires a regex pattern.\n  Example: catclip src --contains 'TODO'\n  Did you mean: catclip . --snippet 'a'"},
-		{name: "include after modifier", err: includeAfterModifierError(), wantContains: "--include must come before other modifiers"},
-		{name: "repeated include", err: repeatedIncludeError(), wantContains: "--include can only appear once per scope"},
-		{name: "include missing target", err: IncludeMissingPositionalTargetError("cmd"), wantContains: "catclip cmd --include cmd"},
+		{name: "include unsupported", err: IncludeUnsupportedError(), want: "Error: --include is not a supported option.\n\n  Name an ignored file or directory as a target:\n    catclip src/generated\n\n  To disable ignore rules below a target:\n    catclip src --no-ignore"},
 		{name: "no ignore missing target", err: NoIgnoreMissingPositionalTargetError(), wantContains: "catclip src --no-ignore"},
 	}
 

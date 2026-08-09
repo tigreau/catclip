@@ -28,6 +28,8 @@ func TestParsedIsInternalKindCoversEveryInternalField(t *testing.T) {
 		{name: "LinesPreview", cfg: Parsed{LinesPreview: true}},
 		{name: "PrediscoveredPath", cfg: Parsed{PrediscoveredPath: "/tmp/ck.json"}},
 		{name: "TreeInputDir", cfg: Parsed{TreeInputDir: "/tmp"}},
+		{name: "FileSetSelectionPath", cfg: Parsed{FileSetSelectionPath: "/tmp/selected"}},
+		{name: "FileSetSelectionStage", cfg: Parsed{FileSetSelectionStage: "exclude"}},
 		{name: "SinkTogglePath", cfg: Parsed{SinkTogglePath: "/tmp/toggle"}},
 		{name: "SinkPreviewModePath", cfg: Parsed{SinkPreviewModePath: "/tmp/mode"}},
 	}

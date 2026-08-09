@@ -35,35 +35,25 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 			5*time.Second,
 		)
 	}
-	allTargets, err := r.allVisibleTargets()
+	var allTargets []TargetMatch
+	var err error
+	if r.NoIgnore {
+		allTargets, err = r.AllNoIgnoreTargets(nil)
+		allTargets = eligibleTargetMatches(allTargets)
+	} else {
+		allTargets, err = r.allVisibleTargets()
+	}
 	stopSpinner()
 	if err != nil {
 		return nil, err
 	}
+	// Startup probing and headless resolution already give exact basenames
+	// priority over fuzzy path matches. Preserve that same candidate set when
+	// the no-ignore picker opens; otherwise a query such as "src" unexpectedly
+	// shows thousands of weaker dependency-path matches.
 	if r.NoIgnore && query != "" {
-		if len(exactBasenameTargetMatches(allTargets, query)) == 0 {
-			exactIgnored, err := r.ignoredExactBasenameTargetMatches(query)
-			if err != nil {
-				return nil, err
-			}
-			switch {
-			case len(exactIgnored) > 0:
-				// Exact ignored identity outranks lower-quality visible fuzzy
-				// candidates once --no-ignore explicitly authorizes it.
-				allTargets = exactIgnored
-			default:
-				visibleMatches, err := fuzzyFilterTargetMatches(query, allTargets)
-				if err != nil {
-					return nil, err
-				}
-				if len(visibleMatches) == 0 {
-					ignoredTargets, err := r.AllIgnoredTargets(nil)
-					if err != nil {
-						return nil, err
-					}
-					allTargets = eligibleTargetMatches(ignoredTargets)
-				}
-			}
+		if exact := exactBasenameTargetMatches(allTargets, query); len(exact) > 0 {
+			allTargets = exact
 		}
 	}
 	options := make([]TargetMatch, 0, len(allTargets))
@@ -110,212 +100,6 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 		return nil, ErrSelectionCancelled
 	}
 	return selected, nil
-}
-
-func (r *Resolver) chooseIgnoredTargetMatches(query, prompt string, selectedPaths, explicitTargets, scopeTargets []string) ([]TargetMatch, int, error) {
-	query = NormalizeInteractivePickerQuery(query)
-	stopSpinner := func() {}
-	if !r.ignoredTargetsCached(scopeTargets) {
-		stopSpinner = platform.StartLoadingSpinner(os.Stderr, "Loading ignored targets...")
-	}
-	allTargets, err := r.AllIgnoredTargets(scopeTargets)
-	stopSpinner()
-	if err != nil {
-		return nil, 0, err
-	}
-	allTargets = filterIgnoredTargetsByScopeTargets(allTargets, scopeTargets)
-	if len(allTargets) == 0 && len(scopeTargets) > 0 {
-		return nil, 0, ErrNoScopedIgnoredTargets{ScopeTargets: scopeTargets}
-	}
-	options := FilterRedundantTargetMatches(allTargets, SelectionPathsForIgnoredTargets(selectedPaths))
-	options = filterAuthorizationOnlyIncludeMatches(options, explicitTargets)
-	totalOptions := len(options)
-	if totalOptions == 0 {
-		return nil, 0, ErrSelectionCancelled
-	}
-	if match, ok := exactTargetPathMatch(options, query); ok {
-		return []TargetMatch{match}, totalOptions, nil
-	}
-
-	path, err := FuzzyResolverBinary()
-	if err != nil {
-		return nil, 0, err
-	}
-	labels, index := TargetMatchLabels(options)
-	selectedLabels, err := chooseManyTargetMatchesWithFzfHeader(path, query, prompt, IgnoredTargetPickerHeaderWithEscHint(r.StartupEscHint), labels, true, r.WithBinaries)
-	if err != nil {
-		return nil, 0, err
-	}
-
-	selected := make([]TargetMatch, 0, len(selectedLabels))
-	for _, key := range selectedLabels {
-		match, ok := index[key]
-		if ok {
-			selected = append(selected, match)
-		}
-	}
-	if len(selected) == 0 {
-		return nil, 0, ErrSelectionCancelled
-	}
-	return selected, totalOptions, nil
-}
-
-func SelectionPathsForIgnoredTargets(selectedPaths []string) []string {
-	filtered := make([]string, 0, len(selectedPaths))
-	for _, selected := range selectedPaths {
-		if normalizeRelPath(selected) == "." {
-			continue
-		}
-		filtered = append(filtered, selected)
-	}
-	return filtered
-}
-
-type InteractiveIncludeSelection struct {
-	Paths []string
-	All   bool
-}
-
-func (r *Resolver) ResolveInteractiveIncludeTargets(query string, selectedPaths, explicitTargets, scopeTargets []string) (InteractiveIncludeSelection, error) {
-	matches, totalOptions, err := r.chooseIgnoredTargetMatches(query, "include> ", selectedPaths, explicitTargets, scopeTargets)
-	if err != nil {
-		return InteractiveIncludeSelection{}, err
-	}
-	// Selecting every available ignored path is the interactive form of
-	// --no-ignore. Keep that policy distinct from concrete --include paths.
-	if totalOptions > 1 && len(matches) == totalOptions {
-		return InteractiveIncludeSelection{All: true}, nil
-	}
-	return InteractiveIncludeSelection{Paths: TargetMatchPaths(matches)}, nil
-}
-
-// InteractiveIgnoredQueryCoveredBySelection reports whether an include query
-// has nothing new to select because every candidate it resolves to is already
-// covered. It uses the same exact-path priority and fzf filter semantics as
-// the picker; treating an exhausted query as picker cancellation would make a
-// repeated value look like the user pressed Esc.
-func (r *Resolver) InteractiveIgnoredQueryCoveredBySelection(query string, selectedPaths, explicitTargets, scopeTargets []string) (bool, error) {
-	selectedPaths = SelectionPathsForIgnoredTargets(selectedPaths)
-	if len(selectedPaths) == 0 {
-		return false, nil
-	}
-	allTargets, err := r.AllIgnoredTargets(scopeTargets)
-	if err != nil {
-		return false, err
-	}
-	allTargets = filterIgnoredTargetsByScopeTargets(allTargets, scopeTargets)
-	allTargets = filterAuthorizationOnlyIncludeMatches(allTargets, explicitTargets)
-	if len(allTargets) == 0 {
-		return false, nil
-	}
-	if len(FilterRedundantTargetMatches(allTargets, selectedPaths)) == 0 {
-		return true, nil
-	}
-
-	query = NormalizeInteractivePickerQuery(query)
-	if match, ok := exactTargetPathMatch(allTargets, query); ok {
-		return CoveredBySelection(match.Path, selectedPaths), nil
-	}
-	bin, err := FuzzyResolverBinary()
-	if err != nil {
-		return false, err
-	}
-	labels, index := TargetMatchLabels(allTargets)
-	filtered, err := runFzfTargetFilterLines(bin, query, labels)
-	if err != nil || len(filtered) == 0 {
-		return false, err
-	}
-	for _, key := range filtered {
-		match, ok := index[key]
-		if !ok {
-			return false, nil
-		}
-		if !CoveredBySelection(match.Path, selectedPaths) {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
-func (r *Resolver) resolveExactIgnoredIncludeTarget(query string, scopeTargets []string) (string, bool, error) {
-	options, err := r.AllIgnoredTargets(scopeTargets)
-	if err != nil {
-		return "", false, err
-	}
-	options = filterIgnoredTargetsByScopeTargets(options, scopeTargets)
-	match, ok := exactTargetPathMatch(options, query)
-	if !ok {
-		return "", false, nil
-	}
-	return match.Path, true, nil
-}
-
-func (r *Resolver) ResolveExactIgnoredIncludeTargets(queries []string, scopeTargets []string) ([]string, []string, error) {
-	exact := make([]string, 0, len(queries))
-	remaining := make([]string, 0, len(queries))
-	for _, query := range queries {
-		if concrete, _, ok := resolveConcreteIncludePath(r.Cfg.WorkingDir, query); ok {
-			exact = append(exact, concrete)
-			continue
-		}
-		path, ok, err := r.resolveExactIgnoredIncludeTarget(query, scopeTargets)
-		if err != nil {
-			return nil, nil, err
-		}
-		if ok {
-			exact = append(exact, path)
-			continue
-		}
-		remaining = append(remaining, query)
-	}
-	return DedupePreserveOrder(exact), remaining, nil
-}
-
-// filterIgnoredTargetsByScopeTargets filters ignored targets to only those
-// that fall under any scope target OR are ancestors of any scope target.
-// Ancestors are included because --include authorizes discovery of an ignored
-// directory, which may contain the scope target itself. If any scope target is
-// "." (root), all targets are returned.
-func filterIgnoredTargetsByScopeTargets(targets []TargetMatch, scopeTargets []string) []TargetMatch {
-	if len(scopeTargets) == 0 {
-		return targets
-	}
-	for _, st := range scopeTargets {
-		if normalizeRelPath(st) == "." || normalizeRelPath(st) == "" {
-			return targets
-		}
-	}
-
-	out := make([]TargetMatch, 0, len(targets))
-	for _, target := range targets {
-		rel := normalizeRelPath(target.Path)
-		for _, st := range scopeTargets {
-			st = normalizeRelPath(st)
-			// Descendant or exact match: ignored target is under scope target.
-			if rel == st || strings.HasPrefix(rel, st+"/") {
-				out = append(out, target)
-				break
-			}
-			// Ancestor: ignored target is a parent of scope target.
-			// This authorizes discovery of the scope target itself.
-			if strings.HasPrefix(st, rel+"/") {
-				out = append(out, target)
-				break
-			}
-		}
-	}
-	return out
-}
-
-func TargetMatchPaths(matches []TargetMatch) []string {
-	paths := make([]string, 0, len(matches))
-	for _, match := range matches {
-		if match.Kind == "done" {
-			continue
-		}
-		paths = append(paths, match.Path)
-	}
-	return paths
 }
 
 func exactInteractiveTargetMatch(options []TargetMatch, query string) (TargetMatch, bool) {
@@ -429,37 +213,6 @@ func FilterRedundantTargetMatches(candidates []TargetMatch, selectedPaths []stri
 		filtered = append(filtered, candidate)
 	}
 	return filtered
-}
-
-func filterAuthorizationOnlyIncludeMatches(candidates []TargetMatch, explicitTargets []string) []TargetMatch {
-	if len(explicitTargets) == 0 {
-		return candidates
-	}
-	filtered := make([]TargetMatch, 0, len(candidates))
-	for _, candidate := range candidates {
-		if candidate.Kind == "dir" && includeTargetIsAncestorOnlyForTargets(explicitTargets, candidate.Path) {
-			continue
-		}
-		filtered = append(filtered, candidate)
-	}
-	return filtered
-}
-
-func includeTargetIsAncestorOnlyForTargets(targets []string, includeTarget string) bool {
-	includeTarget = normalizeRelPath(includeTarget)
-	if includeTarget == "" || includeTarget == "." {
-		return false
-	}
-	for _, target := range targets {
-		target = normalizeRelPath(target)
-		if target == "" || target == "." {
-			continue
-		}
-		if strings.HasPrefix(target, includeTarget+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 func CoveredBySelection(path string, selectedPaths []string) bool {
@@ -671,35 +424,10 @@ func runFzfFilterLines(bin, query string, lines []string) ([]string, error) {
 
 // TargetMatchLabels keeps presentation metadata in column 1 and the actual
 // cwd-relative path in column 2. Search only the path: words such as
-// "ignored", "file", and ".gitignore" describe a row but are not target
-// names and must not make an unrelated query match.
+// "file" and ".gitignore" describe a row but are not target names and must
+// not make an unrelated query match.
 func runFzfTargetFilterLines(bin, query string, lines []string) ([]string, error) {
 	return picker.FilterByNth(bin, query, lines, "2")
-}
-
-// FzfFileSetPreviewCommand is the legacy fallback command for free-form
-// file-set previews. Normal modifier pickers use
-// startupCheckpointFileSetPreviewCommand so preview keystrokes load entries[N]
-// instead of rediscovering the project.
-func FzfFileSetPreviewCommand(currentArgs []string, previewFlag string) string {
-	self, err := os.Executable()
-	if err != nil || strings.TrimSpace(self) == "" {
-		return ""
-	}
-
-	parts := []string{ShellQuoteArg(self), "--quiet", "--internal-tree-preview"}
-	for _, arg := range currentArgs {
-		parts = append(parts, ShellQuoteArg(arg))
-	}
-	if previewFlag != "" {
-		parts = append(parts, previewFlag, "{+2}")
-	}
-	parts = append(parts,
-		"--internal-tree-target", "{3}",
-		"--internal-tree-kind", "{4}",
-		"--internal-tree-state", "{5}",
-	)
-	return strings.Join(parts, " ")
 }
 
 // FzfDiffFilePreviewCommand is intentionally not checkpoint-backed: diff
@@ -770,10 +498,6 @@ func contentMatchReloadBindings(reloadCommand, searchingPreviewCommand string) [
 
 func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind, state string, includeTarget, withBinaries bool) ([]string, error) {
 	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", "", FzfPreviewCommand(includeTarget, withBinaries), formatFzfCandidates(candidates, kind, state))
-}
-
-func chooseManyTargetMatchesWithFzfHeader(bin, query, prompt, header string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", header, "", FzfPreviewCommand(includeTarget, withBinaries), candidates)
 }
 
 func chooseManyTargetMatchesWithFzfChrome(bin, query, prompt, header, revealedHeader string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
