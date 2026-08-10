@@ -307,46 +307,91 @@ func runRipgrepTextFiles(workingDir string, targets []string) (map[string]struct
 		return nil, fmt.Errorf("text classification: no-ignore enumeration under %q failed: %w", workingDir, err)
 	}
 
+	set, stats, err := classifyEnumeratedTextPaths(workingDir, allPaths)
+	if err != nil {
+		finishBench("err", "true", "residue_err", "true")
+		return nil, err
+	}
+
+	finishBench("err", "false",
+		"results", platform.InternalBenchInt(len(set)),
+		"name_text", platform.InternalBenchInt(stats.nameText),
+		"name_binary", platform.InternalBenchInt(stats.nameBinary),
+		"residue_scan_count", platform.InternalBenchInt(stats.residueCount),
+		"residue_text_count", platform.InternalBenchInt(stats.residueText),
+		"residue_stat_count", platform.InternalBenchInt(stats.statCount),
+		"residue_admitted_count", platform.InternalBenchInt(stats.admitted),
+	)
+	return set, nil
+}
+
+// ClassifyTextPaths applies Catclip's hybrid NUL classifier to an already
+// enumerated path set. Discovery uses this after a visibility-aware rg walk so
+// a small visible project does not pay to enumerate and classify a large
+// ignored dependency tree merely to build an interactive picker.
+func ClassifyTextPaths(workingDir string, relPaths []string) (map[string]struct{}, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.text_paths",
+		"paths", platform.InternalBenchInt(len(relPaths)),
+		"classifier", "hybrid",
+	)
+	set, stats, err := classifyEnumeratedTextPaths(workingDir, relPaths)
+	if err != nil {
+		finishBench("err", "true", "residue_err", "true")
+		return nil, err
+	}
+	finishBench("err", "false",
+		"results", platform.InternalBenchInt(len(set)),
+		"name_text", platform.InternalBenchInt(stats.nameText),
+		"name_binary", platform.InternalBenchInt(stats.nameBinary),
+		"residue_scan_count", platform.InternalBenchInt(stats.residueCount),
+		"residue_text_count", platform.InternalBenchInt(stats.residueText),
+		"residue_stat_count", platform.InternalBenchInt(stats.statCount),
+		"residue_admitted_count", platform.InternalBenchInt(stats.admitted),
+	)
+	return set, nil
+}
+
+type textClassificationStats struct {
+	nameText     int
+	nameBinary   int
+	residueCount int
+	residueText  int
+	statCount    int
+	admitted     int
+}
+
+func classifyEnumeratedTextPaths(workingDir string, allPaths []string) (map[string]struct{}, textClassificationStats, error) {
+	stats := textClassificationStats{}
+
 	set := make(map[string]struct{}, len(allPaths))
 	residue := make([]string, 0, 32)
-	nameBinary := 0
 	for _, rel := range allPaths {
 		switch classifyPathByName(rel) {
 		case nameClassText:
 			set[rel] = struct{}{}
 		case nameClassBinary:
-			nameBinary++
+			stats.nameBinary++
 		default:
 			residue = append(residue, rel)
 		}
 	}
 
-	residueText := 0
+	stats.residueCount = len(residue)
 	if len(residue) > 0 {
 		scanned, scanErr := runRipgrepNulScanFiles(workingDir, residue)
 		if scanErr != nil {
-			finishBench("err", "true", "residue_err", "true")
-			return nil, scanErr
+			return nil, stats, scanErr
 		}
-		residueText = len(scanned)
+		stats.residueText = len(scanned)
 		for rel := range scanned {
 			set[rel] = struct{}{}
 		}
 	}
 
-	statCount, admitted := admitEmptyFilesToTextSet(workingDir, allPaths, set)
-	recordTextClassificationResidue(residue, residueText)
-
-	finishBench("err", "false",
-		"results", platform.InternalBenchInt(len(set)),
-		"name_text", platform.InternalBenchInt(len(set)-residueText-admitted),
-		"name_binary", platform.InternalBenchInt(nameBinary),
-		"residue_scan_count", platform.InternalBenchInt(len(residue)),
-		"residue_text_count", platform.InternalBenchInt(residueText),
-		"residue_stat_count", platform.InternalBenchInt(statCount),
-		"residue_admitted_count", platform.InternalBenchInt(admitted),
-	)
-	return set, nil
+	stats.statCount, stats.admitted = admitEmptyFilesToTextSet(workingDir, allPaths, set)
+	stats.nameText = len(set) - stats.residueText - stats.admitted
+	recordTextClassificationResidue(residue, stats.residueText)
+	return set, stats, nil
 }
 
 // runRipgrepNulScanFiles runs the definitional full-file NUL scan

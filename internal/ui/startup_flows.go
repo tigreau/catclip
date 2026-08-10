@@ -785,6 +785,27 @@ func startupStageSelectionCoversAll(selected, candidates []string) bool {
 }
 
 func resolveStartupModifierStageValuesWithEscHint(currentArgs []string, flag, prompt string, values []string, allowInteractiveEmpty bool, previewCommand string, escHint string) ([]string, bool, error) {
+	benchEnabled := platform.InternalBenchEnabled()
+	finishBench := func(...string) {}
+	if benchEnabled {
+		finishBench = platform.InternalBenchSpan("ui.startup.file_set_picker.resolve",
+			"flag", flag,
+			"values", platform.InternalBenchInt(len(values)),
+			"allow_empty", platform.InternalBenchBool(allowInteractiveEmpty),
+			"preview_supplied", platform.InternalBenchBool(previewCommand != ""),
+		)
+	}
+	finish := func(selected []string, usedFzf bool, err error) ([]string, bool, error) {
+		if benchEnabled {
+			finishBench(
+				"selected", platform.InternalBenchInt(len(selected)),
+				"used_fzf", platform.InternalBenchBool(usedFzf),
+				"err", platform.InternalBenchError(err),
+				"cancelled", platform.InternalBenchCancelled(err, discovery.ErrSelectionCancelled),
+			)
+		}
+		return selected, usedFzf, err
+	}
 	cleanupPreview := func() {}
 	defer func() {
 		cleanupPreview()
@@ -800,20 +821,28 @@ func resolveStartupModifierStageValuesWithEscHint(currentArgs []string, flag, pr
 	}
 	if len(values) == 0 {
 		if !allowInteractiveEmpty {
-			return nil, false, discovery.ErrSelectionCancelled
+			return finish(nil, false, discovery.ErrSelectionCancelled)
 		}
 		relPaths, err := startupScopeFileSetPaths(currentArgs)
 		if err != nil {
-			return nil, false, err
+			return finish(nil, false, err)
 		}
 		if len(relPaths) == 0 {
-			return nil, false, discovery.ErrSelectionCancelled
+			return finish(nil, false, discovery.ErrSelectionCancelled)
 		}
-		selected, err := chooseManyStartupFileSetRowsWithFzf("", prompt, startupFileSetPickerHeaderWithEscHint(flag, escHint), ensurePreviewCommand(), startupFileSetRows(flag, relPaths))
+		rows := startupFileSetRows(flag, relPaths)
+		if benchEnabled {
+			platform.InternalBenchLog("ui.startup.file_set_picker.rows_ready",
+				"flag", flag,
+				"paths", platform.InternalBenchInt(len(relPaths)),
+				"rows", platform.InternalBenchInt(len(rows)),
+			)
+		}
+		selected, err := chooseManyStartupFileSetRowsWithFzf("", prompt, startupFileSetPickerHeaderWithEscHint(flag, escHint), ensurePreviewCommand(), rows)
 		if err != nil {
-			return nil, false, err
+			return finish(nil, false, err)
 		}
-		return selected, true, nil
+		return finish(selected, true, nil)
 	}
 
 	resolvedValues := make([]string, 0, len(values))
@@ -822,7 +851,7 @@ func resolveStartupModifierStageValuesWithEscHint(currentArgs []string, flag, pr
 	for _, value := range values {
 		keepLiteral, err := startupFileSetValueShouldStayLiteral(currentArgs, flag, value)
 		if err != nil {
-			return nil, false, err
+			return finish(nil, false, err)
 		}
 		if keepLiteral {
 			resolvedValues = append(resolvedValues, value)
@@ -831,19 +860,26 @@ func resolveStartupModifierStageValuesWithEscHint(currentArgs []string, flag, pr
 		if rows == nil {
 			relPaths, err := startupScopeFileSetPaths(currentArgs)
 			if err != nil {
-				return nil, false, err
+				return finish(nil, false, err)
 			}
 			rows = startupFileSetRows(flag, relPaths)
+			if benchEnabled {
+				platform.InternalBenchLog("ui.startup.file_set_picker.rows_ready",
+					"flag", flag,
+					"paths", platform.InternalBenchInt(len(relPaths)),
+					"rows", platform.InternalBenchInt(len(rows)),
+				)
+			}
 		}
 		selected, err := chooseManyStartupFileSetRowsWithFzf(value, prompt, startupFileSetPickerHeaderWithEscHint(flag, escHint), ensurePreviewCommand(), rows)
 		if err != nil {
-			return nil, false, err
+			return finish(nil, false, err)
 		}
 		resolvedValues = append(resolvedValues, selected...)
 		usedFzf = true
 	}
 
-	return resolvedValues, usedFzf, nil
+	return finish(resolvedValues, usedFzf, nil)
 }
 
 func startupFileSetValueShouldStayLiteral(currentArgs []string, flag, value string) (bool, error) {

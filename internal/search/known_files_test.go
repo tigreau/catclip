@@ -252,6 +252,30 @@ func TestHybridKnownTextNameDivergence(t *testing.T) {
 	}
 }
 
+func TestClassifyTextPathsDoesNotExpandBeyondProvidedPaths(t *testing.T) {
+	if _, ok := RipgrepBinary(); !ok {
+		t.Skip("rg not available")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "visible.ts"), []byte("export const visible = true;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ignored.xyz"), []byte("ignored residue text\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	set, err := ClassifyTextPaths(dir, []string{"visible.ts"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := set["visible.ts"]; !ok {
+		t.Fatalf("provided text path was not classified as text: %v", set)
+	}
+	if _, ok := set["ignored.xyz"]; ok {
+		t.Fatalf("classifier expanded beyond the provided path set: %v", set)
+	}
+}
+
 // TestHybridResidueRecording pins the verbose feedback loop: residue
 // paths (name-undecidable) are recorded with their text-classification
 // count for TextClassificationResidue consumers.

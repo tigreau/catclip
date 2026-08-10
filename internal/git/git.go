@@ -21,18 +21,13 @@ type Context struct {
 // and prefix. Returns a zero-value Context when workingDir is not inside a
 // git repo or git is not on PATH.
 func Detect(workingDir string) Context {
-	root, err := Capture(workingDir, "rev-parse", "--show-toplevel")
+	rootAndPrefix, err := Capture(workingDir, "rev-parse", "--show-toplevel", "--show-prefix")
 	if err != nil {
 		return Context{}
 	}
-	root = strings.TrimSpace(root)
+	root, prefix := parseRootAndPrefix(rootAndPrefix)
 	if root == "" {
 		return Context{}
-	}
-
-	prefix, err := Capture(workingDir, "rev-parse", "--show-prefix")
-	if err != nil {
-		prefix = ""
 	}
 	hasHead := NoOutput(root, "rev-parse", "--verify", "HEAD") == nil
 
@@ -42,6 +37,17 @@ func Detect(workingDir string) Context {
 		WorkPrefix: normalizeGitPrefix(prefix),
 		HasHead:    hasHead,
 	}
+}
+
+func parseRootAndPrefix(output string) (root, prefix string) {
+	output = strings.ReplaceAll(output, "\r\n", "\n")
+	output = strings.TrimSuffix(output, "\n")
+	parts := strings.SplitN(output, "\n", 2)
+	root = strings.TrimSpace(parts[0])
+	if len(parts) == 2 {
+		prefix = strings.TrimSpace(parts[1])
+	}
+	return root, prefix
 }
 
 func normalizeGitPrefix(prefix string) string {

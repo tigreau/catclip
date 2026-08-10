@@ -68,7 +68,7 @@ func InternalBenchLog(event string, fields ...string) {
 	defer f.Close()
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "ts=%s pid=%d event=%s", time.Now().Format(time.RFC3339Nano), os.Getpid(), strconv.Quote(event))
+	fmt.Fprintf(&b, "ts=%s pid=%d ppid=%d event=%s", time.Now().Format(time.RFC3339Nano), os.Getpid(), os.Getppid(), strconv.Quote(event))
 	for i := 0; i+1 < len(fields); i += 2 {
 		key := benchFieldKey(fields[i])
 		if key == "" {

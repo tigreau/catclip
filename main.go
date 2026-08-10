@@ -152,6 +152,26 @@ func Main() {
 }
 
 func internalBenchCommandKind(args []string) string {
+	hasArg := func(want string) bool {
+		for _, arg := range args {
+			if arg == want {
+				return true
+			}
+		}
+		return false
+	}
+	if hasArg("--internal-tree-preview") {
+		switch {
+		case hasArg("--internal-prediscovered"):
+			return "internal-tree-preview-checkpoint"
+		case hasArg("--input-dir"):
+			return "internal-tree-preview-payload"
+		case hasArg("--internal-tree-target"):
+			return "internal-tree-preview-target"
+		default:
+			return "internal-tree-preview"
+		}
+	}
 	for _, arg := range args {
 		switch arg {
 		case "--internal-content-match-list":
@@ -164,8 +184,6 @@ func internalBenchCommandKind(args []string) string {
 			return "internal-snippet-boundary-preview"
 		case "--internal-recent-preview":
 			return "internal-recent-preview"
-		case "--internal-tree-preview":
-			return "internal-tree-preview"
 		case "--internal-sink-preview":
 			return "internal-sink-preview"
 		case "--internal-sink-toggle":

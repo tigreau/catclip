@@ -1,6 +1,7 @@
 package picker
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -99,19 +100,50 @@ func Run(bin string, req Request) (Result, error) {
 	// picker input has already been prepared, and preview child processes log
 	// separately via CATCLIP_INTERNAL_BENCH_LOG. Do not log query text,
 	// preview commands, or row contents here.
-	finishBench := platform.InternalBenchSpan("picker.fzf.run",
-		"lines", platform.InternalBenchInt(len(req.Lines)),
-		"preview", platform.InternalBenchBool(req.PreviewCommand != "" || req.PreviewWindow != ""),
-		"bindings", platform.InternalBenchInt(len(req.Bindings)),
-		"disabled", platform.InternalBenchBool(req.Disabled),
-		"multi", platform.InternalBenchBool(req.Multi),
-		"print_query", platform.InternalBenchBool(req.PrintQuery),
-	)
+	benchEnabled := platform.InternalBenchEnabled()
+	benchFields := []string(nil)
+	finishBench := func(...string) {}
+	finishPrepareBench := func(...string) {}
+	if benchEnabled {
+		benchFields = pickerBenchFields(req)
+		finishBench = platform.InternalBenchSpan("picker.fzf.run", benchFields...)
+		finishPrepareBench = platform.InternalBenchSpan("picker.fzf.prepare", benchFields...)
+	}
 	args := buildArgs(req)
+	input := strings.Join(req.Lines, "\n") + "\n"
+	if benchEnabled {
+		finishPrepareBench(
+			"args", platform.InternalBenchInt(len(args)),
+			"input_bytes", platform.InternalBenchInt(len(input)),
+		)
+	}
 	cmd := exec.Command(bin, args...)
-	cmd.Stdin = strings.NewReader(strings.Join(req.Lines, "\n") + "\n")
+	cmd.Stdin = strings.NewReader(input)
 	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
+	if benchEnabled {
+		platform.InternalBenchLog("picker.fzf.ready", append(benchFields,
+			"args", platform.InternalBenchInt(len(args)),
+			"input_bytes", platform.InternalBenchInt(len(input)),
+		)...)
+	}
+
+	var out []byte
+	var err error
+	if benchEnabled {
+		// Split process creation from the complete interactive lifetime only in
+		// diagnostic mode. The normal path keeps exec.Cmd.Output unchanged.
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		finishStartBench := platform.InternalBenchSpan("picker.fzf.start", benchFields...)
+		err = cmd.Start()
+		finishStartBench("err", platform.InternalBenchError(err))
+		if err == nil {
+			err = cmd.Wait()
+		}
+		out = stdout.Bytes()
+	} else {
+		out, err = cmd.Output()
+	}
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 130) {
 			finishBench("err", "false", "cancelled", "true")
@@ -153,6 +185,26 @@ func Run(bin string, req Request) (Result, error) {
 		"matches", platform.InternalBenchInt(len(result.Matches)),
 	)
 	return result, nil
+}
+
+func pickerBenchFields(req Request) []string {
+	previewMode := "none"
+	if req.PreviewCommand != "" {
+		previewMode = "focus"
+	} else if req.PreviewWindow != "" {
+		previewMode = "binding"
+	}
+	return []string{
+		"prompt", strings.TrimSpace(req.Prompt),
+		"lines", platform.InternalBenchInt(len(req.Lines)),
+		"preview_mode", previewMode,
+		"bindings", platform.InternalBenchInt(len(req.Bindings)),
+		"disabled", platform.InternalBenchBool(req.Disabled),
+		"multi", platform.InternalBenchBool(req.Multi),
+		"no_sort", platform.InternalBenchBool(req.NoSort),
+		"exact", platform.InternalBenchBool(req.Exact),
+		"print_query", platform.InternalBenchBool(req.PrintQuery),
+	}
 }
 
 func buildArgs(req Request) []string {

@@ -899,17 +899,6 @@ func (r *Resolver) ensureTextFileSet() error {
 	return nil
 }
 
-// isTextFromSet reports whether rel is in the rg-derived text-file set.
-// Short-circuits on --with-binaries; otherwise defers to rg's
-// NUL-detection scan via the cached set.
-func (r *Resolver) isTextFromSet(rel string) bool {
-	if r.WithBinaries {
-		return true
-	}
-	_, ok := r.textFileSet[rel]
-	return ok
-}
-
 func (r *Resolver) classifyTextFile(relPath, absPath string) (bool, error) {
 	if r.WithBinaries {
 		return true, nil
@@ -1259,8 +1248,13 @@ func (r *Resolver) BuildVisibleFileList() error {
 }
 
 func (r *Resolver) textEntriesFromRipgrepPaths(relPaths []string) ([]Entry, error) {
-	if err := r.ensureTextFileSet(); err != nil {
-		return nil, err
+	var textSet map[string]struct{}
+	if !r.WithBinaries {
+		var err error
+		textSet, err = search.ClassifyTextPaths(r.Cfg.WorkingDir, relPaths)
+		if err != nil {
+			return nil, err
+		}
 	}
 	entries := make([]Entry, 0, len(relPaths))
 	for _, rel := range relPaths {
@@ -1268,8 +1262,10 @@ func (r *Resolver) textEntriesFromRipgrepPaths(relPaths []string) ([]Entry, erro
 		if rel == "" || rel == "." || CoveredBySelection(rel, r.VisibleDirs.SymlinkDirs) {
 			continue
 		}
-		if !r.isTextFromSet(rel) {
-			continue
+		if !r.WithBinaries {
+			if _, ok := textSet[rel]; !ok {
+				continue
+			}
 		}
 
 		entries = append(entries, Entry{RelPath: rel})

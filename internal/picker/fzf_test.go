@@ -1,10 +1,25 @@
 package picker
 
 import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 )
+
+const pickerBenchHelperEnv = "CATCLIP_TEST_PICKER_BENCH_HELPER"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(pickerBenchHelperEnv) == "1" {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		fmt.Fprintln(os.Stdout, "chosen\tchosen/path.ts")
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func TestBuildArgsUsesLargerLabeledPreviewPane(t *testing.T) {
 	args := buildArgs(Request{
@@ -114,6 +129,75 @@ func TestFilterArgsUseRequestedSearchFields(t *testing.T) {
 	}
 	if !containsArgPair(args, "--filter", "doc") {
 		t.Fatalf("expected filter query, got %#v", args)
+	}
+}
+
+func TestPickerBenchFieldsIdentifyPromptAndPreviewModeWithoutQuery(t *testing.T) {
+	fields := pickerBenchFields(Request{
+		Query:          "private search text",
+		Prompt:         "only> ",
+		PreviewCommand: "catclip --internal-tree-preview private/path",
+		Bindings:       []string{"change:reload(private command)"},
+		Lines:          []string{"private row"},
+		Multi:          true,
+		NoSort:         true,
+	})
+	joined := strings.Join(fields, " ")
+	for _, want := range []string{"prompt only>", "preview_mode focus", "lines 1", "multi true", "no_sort true"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("bench fields missing %q in %#v", want, fields)
+		}
+	}
+	for _, private := range []string{"private search text", "private/path", "private command", "private row"} {
+		if strings.Contains(joined, private) {
+			t.Fatalf("bench fields leaked %q in %#v", private, fields)
+		}
+	}
+}
+
+func TestPickerBenchFieldsDistinguishBindingPreview(t *testing.T) {
+	fields := pickerBenchFields(Request{PreviewWindow: DefaultPreviewWindow})
+	joined := strings.Join(fields, " ")
+	if !strings.Contains(joined, "preview_mode binding") {
+		t.Fatalf("expected binding preview mode, got %#v", fields)
+	}
+}
+
+func TestRunBenchModeLogsFzfLifecycleWithReexecHelper(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "picker-bench.log")
+	t.Setenv(pickerBenchHelperEnv, "1")
+	t.Setenv("CATCLIP_INTERNAL_BENCH_LOG", logPath)
+
+	result, err := Run(os.Args[0], Request{
+		Prompt:  "only> ",
+		WithNth: "1",
+		Nth:     "1",
+		Lines:   []string{"chosen\tchosen/path.ts"},
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0] != "chosen/path.ts" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read bench log: %v", err)
+	}
+	log := string(data)
+	for _, want := range []string{
+		`event="picker.fzf.prepare"`,
+		`event="picker.fzf.ready"`,
+		`event="picker.fzf.start"`,
+		`event="picker.fzf.run"`,
+		`prompt="only>"`,
+		`preview_mode="none"`,
+		`input_bytes="22"`,
+	} {
+		if !strings.Contains(log, want) {
+			t.Fatalf("bench log missing %q:\n%s", want, log)
+		}
 	}
 }
 

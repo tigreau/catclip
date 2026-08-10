@@ -68,3 +68,25 @@ func TestParseStatusMapHandlesRenames(t *testing.T) {
 		t.Fatalf("old path should not appear in status map; got %v", got)
 	}
 }
+
+func TestParseRootAndPrefix(t *testing.T) {
+	tests := []struct {
+		name       string
+		output     string
+		wantRoot   string
+		wantPrefix string
+	}{
+		{name: "repo root LF", output: "/repo\n\n", wantRoot: "/repo"},
+		{name: "nested LF", output: "/repo\nsrc/app/\n", wantRoot: "/repo", wantPrefix: "src/app/"},
+		{name: "nested CRLF", output: "C:\\repo\r\nsrc/app/\r\n", wantRoot: `C:\repo`, wantPrefix: "src/app/"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root, prefix := parseRootAndPrefix(tc.output)
+			if root != tc.wantRoot || prefix != tc.wantPrefix {
+				t.Fatalf("parseRootAndPrefix(%q) = (%q, %q), want (%q, %q)", tc.output, root, prefix, tc.wantRoot, tc.wantPrefix)
+			}
+		})
+	}
+}

@@ -127,22 +127,53 @@ func startupFileSetPreviewCommand(currentArgs []string, flag string, diffPreview
 // remains usable without a live preview; it must not fall back to an
 // unbounded selected-path argument list.
 func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, diffPreview bool) (string, func()) {
+	benchEnabled := platform.InternalBenchEnabled()
+	finishBench := func(...string) {}
+	if benchEnabled {
+		finishBench = platform.InternalBenchSpan("ui.startup.file_set_preview.prepare",
+			"flag", flag,
+			"argc", platform.InternalBenchInt(len(currentArgs)),
+			"diff", platform.InternalBenchBool(diffPreview),
+		)
+	}
+	finish := func(fields ...string) {
+		if benchEnabled {
+			finishBench(fields...)
+		}
+	}
 	fallback := func() string {
 		return startupFileSetPreviewCommand(currentArgs, flag, diffPreview)
 	}
 	if diffPreview || currentScopeDiffPreviewFlag(currentArgs) != "" {
-		return fallback(), func() {}
+		cmd := fallback()
+		if benchEnabled {
+			finish("route", "diff-fallback", "preview", platform.InternalBenchBool(cmd != ""))
+		}
+		return cmd, func() {}
 	}
 	switch flag {
 	case "--only", "--exclude":
 	case "--changed", "--staged", "--unstaged", "--untracked":
 	default:
-		return fallback(), func() {}
+		cmd := fallback()
+		if benchEnabled {
+			finish("route", "unsupported-fallback", "preview", platform.InternalBenchBool(cmd != ""))
+		}
+		return cmd, func() {}
 	}
 
 	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
 	if err != nil || len(view.Entries) == 0 {
-		return fallback(), func() {}
+		cmd := fallback()
+		if benchEnabled {
+			finish(
+				"route", "scope-fallback",
+				"err", platform.InternalBenchError(err),
+				"entries", platform.InternalBenchInt(len(view.Entries)),
+				"preview", platform.InternalBenchBool(cmd != ""),
+			)
+		}
+		return cmd, func() {}
 	}
 	previewFlag := flag
 	switch flag {
@@ -151,7 +182,22 @@ func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, d
 	}
 	cmd, tmpdir := buildFileSetCheckpointPreview(view, previewFlag)
 	if cmd == "" {
-		return fallback(), func() {}
+		cmd = fallback()
+		if benchEnabled {
+			finish(
+				"route", "checkpoint-fallback",
+				"entries", platform.InternalBenchInt(len(view.Entries)),
+				"preview", platform.InternalBenchBool(cmd != ""),
+			)
+		}
+		return cmd, func() {}
+	}
+	if benchEnabled {
+		finish(
+			"route", "checkpoint",
+			"entries", platform.InternalBenchInt(len(view.Entries)),
+			"preview", "true",
+		)
 	}
 	return cmd, func() {
 		_ = os.RemoveAll(tmpdir)

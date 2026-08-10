@@ -57,6 +57,26 @@ func skipUnlessLinux(t *testing.T, feature string) {
 	}
 }
 
+func TestInternalBenchCommandKindDistinguishesTreePreviewRoutes(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "target", args: []string{"--internal-tree-preview", "--internal-tree-target", "src"}, want: "internal-tree-preview-target"},
+		{name: "checkpoint", args: []string{"--internal-tree-preview", "--internal-prediscovered", "scope.json", "--internal-tree-target", "src"}, want: "internal-tree-preview-checkpoint"},
+		{name: "payload", args: []string{"--internal-tree-preview", "--input-dir", "payload"}, want: "internal-tree-preview-payload"},
+		{name: "generic", args: []string{"--internal-tree-preview"}, want: "internal-tree-preview"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := internalBenchCommandKind(test.args); got != test.want {
+				t.Fatalf("internalBenchCommandKind(%#v) = %q, want %q", test.args, got, test.want)
+			}
+		})
+	}
+}
+
 type errAfterReader struct {
 	data []byte
 	err  error

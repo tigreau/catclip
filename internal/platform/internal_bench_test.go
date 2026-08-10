@@ -21,6 +21,7 @@ func TestInternalBenchLogWritesQuotedFields(t *testing.T) {
 	line := string(data)
 	for _, want := range []string{
 		`event="test.event"`,
+		`ppid=`,
 		`bad_key="value with spaces"`,
 		`count="3"`,
 	} {
