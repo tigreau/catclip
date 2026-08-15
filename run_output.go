@@ -34,10 +34,19 @@ type outputExecutionState struct {
 }
 
 func executeTreePreview(ctx outputExecutionContext, state outputExecutionState) error {
+	finishBench := platform.InternalBenchSpan("output.tree_preview.render",
+		"items", platform.InternalBenchInt(state.Plan.Len()),
+	)
 	if state.Summary.HasError {
-		return newExitError(1, "")
+		err := newExitError(1, "")
+		finishBench("err", "true", "summary_error", "true")
+		return err
 	}
 	err := ui.RenderTreePreviewFromPlan(ctx.Stdout, ctx.Render, ctx.Git, state.Plan, state.Notices, ui.FzfFilterTreeRenderOptions())
+	finishBench(
+		"err", platform.InternalBenchError(err),
+		"empty", platform.InternalBenchBool(errors.Is(err, ui.ErrTreePayloadEmptyNoTarget)),
+	)
 	if err != nil {
 		if errors.Is(err, ui.ErrTreePayloadEmptyNoTarget) {
 			return nil
@@ -137,7 +146,7 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 		fmt.Fprintln(ctx.Stderr)
 	}
 	outputStarted := time.Now()
-	emitStats, err := output.EmitOutputPlan(ctx.Emit, emitEnvironmentFromInvocationConfig(ctx.Invocation), state.Plan, ctx.Stdout, ctx.Colors)
+	emitStats, err := output.EmitOutputPlan(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), state.Plan, ctx.Stdout, ctx.Colors)
 	if err != nil {
 		outputSpinnerStop()
 		return err

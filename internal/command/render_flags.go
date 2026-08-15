@@ -3,8 +3,7 @@ package command
 // RenderFlags carries the boolean / mode toggles that canonical command
 // rendering needs from the runtime emit config and the parsed Invocation.
 // It detaches the canonical-render layer from emit.go's emitConfig (a
-// root/runtime concern), so the render functions can stay command-local
-// in the upcoming move of command_render.go into internal/command.
+// root/runtime concern), so the render functions stay command-local.
 //
 // Fields map 1:1 from root emitConfig + command.Parsed toggles:
 //   - OutputMode: emitConfig.OutputMode
@@ -39,10 +38,8 @@ func RenderFlagsFromParsed(cfg Parsed) RenderFlags {
 }
 
 // InvocationFromParsed packs the runtime-wide toggles out of a Parsed
-// argv model. Internal is derived from Parsed.IsInternalKind() so
-// internal preview/reload commands suppress prompts (parity with root
-// invocationConfigFromParsedCommand, which uses the equivalent root
-// predicate internalCommandConfig.isInternalKind).
+// argv model. Internal is derived from Parsed.IsInternalKind() so internal
+// preview/reload commands suppress prompts.
 func InvocationFromParsed(cfg Parsed) Invocation {
 	return Invocation{
 		Version:      cfg.Version,

@@ -101,27 +101,22 @@ func TestScopeModifierFlagSpecsClassifyContentFamily(t *testing.T) {
 	}
 }
 
-func TestIsValueTakingFlag(t *testing.T) {
-	cases := []string{
-		"--only",
-		"--exclude",
-		"--depth",
-		"--contains",
-		"--snippet",
-		"--internal-tree-target",
-		"--internal-tree-kind",
-		"--internal-tree-state",
-		"--internal-file-path",
-		"--input-dir",
-		"--input-stem",
-	}
-	for _, arg := range cases {
-		if !IsValueTakingFlag(arg) {
-			t.Fatalf("expected %s to be value-taking", arg)
+func TestFixedValueCount(t *testing.T) {
+	for _, test := range []struct {
+		flag string
+		want int
+	}{
+		{flag: "--contains", want: 1},
+		{flag: "--input-dir", want: 1},
+		{flag: "--internal-prediscovered", want: 1},
+		{flag: "--internal-sink-preview", want: 3},
+		{flag: "--only", want: 0},
+		{flag: "--recent", want: 0},
+		{flag: "--changed", want: 0},
+	} {
+		if got := FixedValueCount(test.flag); got != test.want {
+			t.Errorf("FixedValueCount(%q) = %d, want %d", test.flag, got, test.want)
 		}
-	}
-	if IsValueTakingFlag("--changed") {
-		t.Fatal("did not expect --changed to be value-taking")
 	}
 }
 

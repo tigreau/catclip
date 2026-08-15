@@ -32,6 +32,12 @@ RIPGREP_VERSION="${RIPGREP_VERSION:-14.1.1}"
 FZF_VERSION="${FZF_VERSION:-0.74.1}"
 DIST_DIR="${DIST_DIR:-dist}"
 CATCLIP_VERSION="${CATCLIP_VERSION:-$(cat VERSION)}"
+SOURCE_VERSION="$(tr -d '\r' < VERSION | head -n 1)"
+
+if [ "$CATCLIP_VERSION" != "$SOURCE_VERSION" ]; then
+  printf 'Error: CATCLIP_VERSION %s does not match repository VERSION %s\n' "$CATCLIP_VERSION" "$SOURCE_VERSION" >&2
+  exit 1
+fi
 
 artifact_base="catclip_${goos}_${goarch}"
 case "$archive_kind" in
@@ -48,7 +54,9 @@ mkdir -p "$stage/bin" "$work"
 
 printf '[%s/%s] building catclip\n' "$goos" "$goarch"
 GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
-  go build -trimpath -ldflags '-s -w' -o "${stage}/catclip${bin_ext}" ./cmd/catclip
+  go build -trimpath \
+    -ldflags "-s -w -X github.com/tigreau/catclip.releaseVersion=${CATCLIP_VERSION}" \
+    -o "${stage}/catclip${bin_ext}" ./cmd/catclip
 
 printf '[%s/%s] downloading rg %s\n' "$goos" "$goarch" "$RIPGREP_VERSION"
 rg_dir="ripgrep-${RIPGREP_VERSION}-${rg_triple}"

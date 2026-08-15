@@ -79,7 +79,15 @@ jobs:
 
       - name: Resolve version from tag
         shell: bash
-        run: echo "CATCLIP_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+        run: |
+          set -euo pipefail
+          tag_version="${GITHUB_REF_NAME#v}"
+          source_version="$(tr -d '\r' < VERSION | head -n 1)"
+          if [[ "$tag_version" != "$source_version" ]]; then
+            echo "ERROR: release tag $tag_version does not match repository VERSION $source_version" >&2
+            exit 1
+          fi
+          echo "CATCLIP_VERSION=$tag_version" >> "$GITHUB_ENV"
 
       - name: Build catclip
         shell: bash
@@ -90,7 +98,9 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p stage stage/bin
-          go build -trimpath -ldflags '-s -w' -o "stage/catclip${{ matrix.bin_ext }}" ./cmd/catclip
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/tigreau/catclip.releaseVersion=$CATCLIP_VERSION" \
+            -o "stage/catclip${{ matrix.bin_ext }}" ./cmd/catclip
 
       - name: Stage bundled tools (rg, fzf)
         shell: bash
@@ -200,7 +210,18 @@ jobs:
           set -euo pipefail
           cd extracted
           ext="${{ matrix.bin_ext }}"
-          ./catclip${ext} --version
+          expected_version="${GITHUB_REF_NAME#v}"
+          archive_version="$(tr -d '\r' < VERSION | head -n 1)"
+          version_output="$(./catclip${ext} --version)"
+          binary_version="${version_output%%$'\n'*}"
+          if [[ "$archive_version" != "$expected_version" ]]; then
+            echo "archive VERSION $archive_version does not match tag $expected_version" >&2
+            exit 1
+          fi
+          if [[ "$binary_version" != "catclip $expected_version" ]]; then
+            echo "binary version '$binary_version' does not match tag $expected_version" >&2
+            exit 1
+          fi
           ./catclip${ext} --help-all >/dev/null
           ./catclip${ext} . --paths -q -p --headless >/dev/null
           ./catclip${ext} . --depth 1 --paths -q -p --headless >/dev/null
@@ -291,6 +312,7 @@ jobs:
           sed -i "s|^  url \".*\"|  url \"${TARBALL_URL}\"|" "$formula"
           sed -i "s|^  sha256 \".*\"|  sha256 \"${TARBALL_SHA}\"|" "$formula"
           sed -i '/catclip-tree/d; /CATCLIP_TREE/d' "$formula"
+          sed -i '/pkgshare\.install "VERSION"/d' "$formula"
           sed -i 's|^\(.*CATCLIP_RG:.*\),[[:space:]]*$|\1|' "$formula"
           ruby -e '
             path = ARGV.fetch(0)
@@ -311,10 +333,17 @@ jobs:
             marker = "\n  test do\n"
             abort "ERROR: Homebrew formula has no test block" unless source.include?(marker)
             source.sub!(marker, "#{caveats}#{marker}")
+            test_start = source.index(marker)
+            test_end = source.index("\n  end", test_start + marker.length)
+            abort "ERROR: Homebrew formula test block has no end" unless test_end
+            version_assertion = %q{    assert_match "catclip #{version}", shell_output("#{bin}/catclip --version")}
+            unless source[test_start...test_end].include?("catclip --version")
+              source.insert(test_end, "\n#{version_assertion}")
+            end
             File.write(path, source)
           ' "$formula"
-          if grep -Eq 'catclip-tree|CATCLIP_TREE' "$formula"; then
-            echo "ERROR: generated Homebrew formula still references catclip-tree" >&2
+          if grep -Eq 'catclip-tree|CATCLIP_TREE|pkgshare\.install "VERSION"' "$formula"; then
+            echo "ERROR: generated Homebrew formula still references retired install artifacts" >&2
             exit 1
           fi
           ruby -c "$formula"

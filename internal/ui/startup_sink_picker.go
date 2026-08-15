@@ -249,7 +249,7 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 	// later sees on stderr after picker confirmation.
 	colors := platform.ActivePalette()
 
-	resolved := resolvedInvocationFromParsedCommand(cfg)
+	resolved := command.ResolvedFromParsed(cfg)
 	discoveryResult, err := discovery.DiscoverInvocation(resolved, gitCtx, io.Discard, colors)
 	if err != nil {
 		return StartupSinkPickerContext{}, err

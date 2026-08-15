@@ -72,6 +72,8 @@ catclip src --only "*.tsx" --recent 10  # TSX first, then 10 newest of those
 ```
 
 For the full command reference: `catclip --help` or `catclip --help-all`.
+Run `catclip --check-update` to check for a newer release and show the update
+command for the current installation.
 For smart snippet boundaries, see
 [Snippet Smart Block Rules](SNIPPET_SMART_BLOCK_RULES.md).
 
@@ -131,7 +133,8 @@ New-Item -ItemType Directory -Force -Path $BinDir, $ToolsDir | Out-Null
 Expand-Archive -LiteralPath .\catclip_windows_amd64.zip -DestinationPath .
 Copy-Item .\catclip.exe (Join-Path $BinDir "catclip.exe") -Force
 Remove-Item (Join-Path $BinDir "catclip-tree.exe") -Force -ErrorAction SilentlyContinue
-Copy-Item .\VERSION (Join-Path $ShareDir "VERSION") -Force
+Remove-Item (Join-Path $ShareDir "VERSION") -Force -ErrorAction SilentlyContinue
+Set-Content (Join-Path $ShareDir "INSTALL_METHOD") "direct-release" -Encoding ASCII
 Copy-Item .\bin\rg.exe (Join-Path $ToolsDir "rg.exe") -Force
 Copy-Item .\bin\fzf.exe (Join-Path $ToolsDir "fzf.exe") -Force
 ```
@@ -148,7 +151,8 @@ mkdir -p "$PREFIX/bin" "$PREFIX/share/catclip/bin"
 tar -xzf catclip_linux_amd64.tar.gz
 install -m 755 catclip "$PREFIX/bin/"
 rm -f "$PREFIX/bin/catclip-tree"
-install -m 644 VERSION "$PREFIX/share/catclip/"
+rm -f "$PREFIX/share/catclip/VERSION"
+printf '%s\n' direct-release > "$PREFIX/share/catclip/INSTALL_METHOD"
 install -m 755 bin/rg bin/fzf "$PREFIX/share/catclip/bin/"
 ```
 
@@ -163,7 +167,8 @@ Requires Go (version in `go.mod`), `rg`, and `fzf` at install time.
 
 #### Updating & uninstalling
 
-To update, re-run the install one-liner — it always fetches the latest release.
+Run `catclip --check-update` to compare your version with the latest release
+and show the correct update command. Catclip does not run that command for you.
 
 Uninstall (Homebrew):
 ```bash

@@ -30,7 +30,7 @@ func TestRunInternalPrediscoveredTreePreviewMatchesPayloadRenderer(t *testing.T)
 	})
 	parentCfg := parseInProject(t, project, []string{"src"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}

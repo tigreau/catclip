@@ -78,6 +78,24 @@ jobs:
       - name: go test
         run: go test ./...
 
+      - name: Embedded version smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin_ext=""
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin_ext=".exe"
+          fi
+          version_bin="$RUNNER_TEMP/catclip-version${bin_ext}"
+          go build -trimpath -o "$version_bin" ./cmd/catclip
+          expected="catclip $(tr -d '\r' < VERSION | head -n 1)"
+          version_output="$("$version_bin" --version)"
+          actual="${version_output%%$'\n'*}"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "embedded version mismatch: got '$actual', want '$expected'" >&2
+            exit 1
+          fi
+
       - name: Dead-code ratchet
         if: runner.os == 'Linux'
         shell: bash

@@ -351,7 +351,7 @@ func TestEmitFullOutputUsesPreparedPayloadWithoutRebuilding(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	_, err := output.EmitFullOutput(output.EmitConfig{OutputMode: command.OutputModeStdout}, output.EmitEnvironment{}, []output.PreparedFileUnit{unit}, &stdout, platform.Palette{})
+	_, err := output.EmitFullOutput(output.EmitConfig{OutputMode: command.OutputModeStdout}, output.RuntimeEnvironment{}, []output.PreparedFileUnit{unit}, &stdout, platform.Palette{})
 	if err != nil {
 		t.Fatalf("output.EmitFullOutput returned error: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestEmitFullOutputReadsFullFilesFromDiskAfterPrepare(t *testing.T) {
 	t.Setenv("CATCLIP_READ_WORKERS", "1")
 
 	var stdout bytes.Buffer
-	_, err = output.EmitFullOutput(output.EmitConfig{OutputMode: command.OutputModeStdout}, output.EmitEnvironment{}, units, &stdout, platform.Palette{})
+	_, err = output.EmitFullOutput(output.EmitConfig{OutputMode: command.OutputModeStdout}, output.RuntimeEnvironment{}, units, &stdout, platform.Palette{})
 	if err != nil {
 		t.Fatalf("output.EmitFullOutput returned error: %v", err)
 	}

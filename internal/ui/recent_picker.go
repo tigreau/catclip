@@ -64,7 +64,7 @@ func startupRecentPickerEntries(currentArgs []string) ([]discovery.Entry, error)
 	scopeIndex := len(scopeSpecs) - 1
 	currentScope := command.ExecutionScopeFromScopeSpec(scopeSpecs[scopeIndex])
 
-	invocationCfg := invocationConfigFromParsedCommand(cfg)
+	invocationCfg := command.InvocationFromParsed(cfg)
 	gitCtx := git.Detect(invocationCfg.WorkingDir)
 	discovered, err := discovery.EvaluateScope(invocationCfg, gitCtx, scopeIndex, currentScope, io.Discard, platform.Palette{})
 	if err != nil {

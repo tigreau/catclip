@@ -43,7 +43,7 @@ type contentMatchListConfig struct {
 
 func ContentMatchListConfigFromParsedCommand(cfg command.Parsed) contentMatchListConfig {
 	return contentMatchListConfig{
-		Invocation: invocationConfigFromParsedCommand(cfg),
+		Invocation: command.InvocationFromParsed(cfg),
 		Scopes:     command.ExecutionScopesFromSpec(cfg.Command),
 	}
 }
@@ -468,4 +468,3 @@ func contentMatchPathsForArgs(currentArgs []string, flag, query string) ([]strin
 	}
 	return relPaths, nil
 }
-

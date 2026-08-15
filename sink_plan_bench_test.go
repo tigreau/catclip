@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tigreau/catclip/internal/cli"
+	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/output"
@@ -54,7 +55,7 @@ func BenchmarkSinkPlanBuildByFlag(b *testing.B) {
 			b.Fatalf("%s parse: %v", name, err)
 		}
 		cfg.WorkingDir = mustGetwd(b)
-		disc, err := discovery.DiscoverInvocation(resolvedInvocationFromParsedCommand(cfg), gitCtx, io.Discard, platform.Palette{})
+		disc, err := discovery.DiscoverInvocation(command.ResolvedFromParsed(cfg), gitCtx, io.Discard, platform.Palette{})
 		if err != nil {
 			b.Fatalf("%s discover: %v", name, err)
 		}

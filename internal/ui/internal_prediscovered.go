@@ -35,7 +35,7 @@ func PrediscoveredCommandConfigFromParsedCommand(cfg command.Parsed) prediscover
 		CheckpointPath:        cfg.PrediscoveredPath,
 		FileSetSelectionPath:  cfg.FileSetSelectionPath,
 		FileSetSelectionStage: cfg.FileSetSelectionStage,
-		Invocation:            invocationConfigFromParsedCommand(cfg),
+		Invocation:            command.InvocationFromParsed(cfg),
 		Render:                RenderConfigFromParsedCommand(cfg),
 		Scopes:                command.ExecutionScopesFromSpec(cfg.Command),
 	}

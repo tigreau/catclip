@@ -364,7 +364,7 @@ func TestEmitOutputPlanUsesPreparedPayload(t *testing.T) {
 	}
 
 	var stdout bytes.Buffer
-	_, err := EmitOutputPlan(EmitConfig{OutputMode: command.OutputModeStdout}, EmitEnvironment{}, BuildPlan([]PreparedFileUnit{unit}), &stdout, platform.Palette{})
+	_, err := EmitOutputPlan(EmitConfig{OutputMode: command.OutputModeStdout}, RuntimeEnvironment{}, BuildPlan([]PreparedFileUnit{unit}), &stdout, platform.Palette{})
 	if err != nil {
 		t.Fatalf("EmitOutputPlan returned error: %v", err)
 	}

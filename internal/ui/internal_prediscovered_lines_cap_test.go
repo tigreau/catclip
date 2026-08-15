@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tigreau/catclip/internal/cli"
+	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/output"
@@ -31,7 +32,7 @@ func TestRunInternalLinesPreviewCapsLargePayload(t *testing.T) {
 
 	parentCfg := parseInProject(t, project, []string{"src/huge.txt"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
@@ -95,7 +96,7 @@ func TestRunInternalLinesPreviewPassesThroughUnderCap(t *testing.T) {
 
 	parentCfg := parseInProject(t, project, []string{"src/small.txt"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}

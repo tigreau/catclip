@@ -11,6 +11,7 @@ TOOLS_DIR="$SHARE_DIR/bin"
 TARGET="$BIN_DIR/catclip"
 TREE_TARGET="$BIN_DIR/catclip-tree"
 VERSION_FILE="$SHARE_DIR/VERSION"
+METHOD_FILE="$SHARE_DIR/INSTALL_METHOD"
 RG_FILE="$TOOLS_DIR/rg"
 FZF_FILE="$TOOLS_DIR/fzf"
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/catclip"
@@ -103,6 +104,11 @@ fi
 if [[ -e "$VERSION_FILE" ]]; then
   printf 'Removing %s%s%s\n' "$CYAN" "$VERSION_FILE" "$RESET"
   remove_path "$VERSION_FILE"
+fi
+
+if [[ -e "$METHOD_FILE" ]]; then
+  printf 'Removing %s%s%s\n' "$CYAN" "$METHOD_FILE" "$RESET"
+  remove_path "$METHOD_FILE"
 fi
 
 for tool in "$RG_FILE" "$FZF_FILE"; do

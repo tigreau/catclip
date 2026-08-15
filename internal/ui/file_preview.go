@@ -126,7 +126,7 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 		FocusedLabel:   cfg.TreeTarget,
 		Scopes:         command.ExecutionScopesFromSpec(cfg.Command),
 		CheckpointPath: cfg.PrediscoveredPath,
-		Invocation:     invocationConfigFromParsedCommand(cfg),
+		Invocation:     command.InvocationFromParsed(cfg),
 		Render:         RenderConfigFromParsedCommand(cfg),
 	}
 }

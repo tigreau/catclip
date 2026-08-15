@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"testing"
 
+	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/platform"
@@ -17,7 +18,7 @@ func TestDiscoverInvocationAggregatesScopes(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"--print", "src", "--then", "docs"})
 
 	result, err := discovery.DiscoverInvocation(
-		resolvedInvocationFromParsedCommand(cfg),
+		command.ResolvedFromParsed(cfg),
 		git.Detect(cfg.WorkingDir),
 		&bytes.Buffer{},
 		platform.Palette{},

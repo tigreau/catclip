@@ -150,6 +150,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 		case "--version", "-V":
 			cfg.Action = command.ActionVersion
 			return cfg, nil
+		case "--check-update":
+			cfg.Action = command.ActionCheckUpdate
+			return cfg, nil
 		case "--hiss":
 			cfg.Action = command.ActionEditHiss
 		case "--hiss-reset":
@@ -730,7 +733,7 @@ func FormatResolvedStartupCommand(args []string) string {
 	return strings.Join(parts, " ")
 }
 
-// HasGlobChars / IsModifierBoundaryToken / IsValueTakingFlag /
+// HasGlobChars / IsModifierBoundaryToken / FixedValueCount /
 // IsKnownScopeModifierToken are exported wrappers so root callers
 // (resolver, startup_picker, positional_glob_normalization, etc.) can
 // share these stateless checks without duplicating them N times.

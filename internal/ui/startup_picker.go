@@ -180,9 +180,14 @@ func newStartupPickerResolver() (*discovery.Resolver, error) {
 	if err != nil {
 		return nil, err
 	}
+	finishGitBench := platform.InternalBenchSpan("ui.startup.target_picker.git_detect")
 	gitCtx := git.Detect(cfg.WorkingDir)
+	finishGitBench(
+		"enabled", platform.InternalBenchBool(gitCtx.Enabled),
+		"has_head", platform.InternalBenchBool(gitCtx.HasHead),
+	)
 	return &discovery.Resolver{
-		Cfg:               invocationConfigFromParsedCommand(cfg),
+		Cfg:               command.InvocationFromParsed(cfg),
 		GitCtx:            gitCtx,
 		AllowFileSymlinks: false,
 	}, nil
@@ -400,7 +405,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 			return false, nil
 		}
 		switch arg {
-		case "-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules",
+		case "-h", "--help", "--help-all", "--version", "-V", "--check-update", "--hiss", "--hiss-reset", "--all-ignore-rules",
 			"--input-dir", "--input-stem":
 			return false, nil
 		case "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--depth":

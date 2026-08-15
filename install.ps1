@@ -505,6 +505,22 @@ function Remove-FileIfExists {
     }
 }
 
+function Confirm-BinaryVersion {
+    param(
+        [string]$BinaryFile,
+        [string]$ExpectedVersion
+    )
+
+    $versionOutput = @(& $BinaryFile --version 2>$null)
+    if ($LASTEXITCODE -ne 0 -or $versionOutput.Count -eq 0) {
+        Fail 'installed binary could not report its version'
+    }
+    $reported = ([string]$versionOutput[0]).Trim()
+    if ($reported -ne "catclip $ExpectedVersion") {
+        Fail "binary version '$reported' does not match release metadata '$ExpectedVersion'"
+    }
+}
+
 # When the script is invoked via `irm ... | iex`, $MyInvocation.MyCommand is
 # an InternalCommand with no Path property — under Set-StrictMode -Version
 # Latest, dotting into it throws PropertyNotFoundStrict. Guard the lookup so
@@ -531,9 +547,11 @@ if (Test-Path -LiteralPath (Join-Path $BinDir "$ProgramName.exe")) {
 
 $tmpRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("catclip-install-" + [System.Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
+$installMethod = 'direct-release'
 
 try {
     if ($sourceDir) {
+        $installMethod = 'source'
         Ensure-GoForSourceBuild $sourceDir
 
         Write-Host "Source:   $sourceDir"
@@ -610,9 +628,15 @@ try {
         }
     }
 
+    Confirm-BinaryVersion $binaryFile $versionText
+
+    $methodFile = Join-Path $tmpRoot 'INSTALL_METHOD'
+    Set-Content -LiteralPath $methodFile -Value $installMethod -Encoding ASCII
+
     Install-File $binaryFile (Join-Path $BinDir "$ProgramName.exe")
     Remove-FileIfExists (Join-Path $BinDir "$TreeProgramName.exe")
-    Install-File $versionFile (Join-Path $ShareDir 'VERSION')
+    Remove-FileIfExists (Join-Path $ShareDir 'VERSION')
+    Install-File $methodFile (Join-Path $ShareDir 'INSTALL_METHOD')
     Install-File $rgFile (Join-Path $ToolsDir 'rg.exe')
     Install-File $fzfFile (Join-Path $ToolsDir 'fzf.exe')
 

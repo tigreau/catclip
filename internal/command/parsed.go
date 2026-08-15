@@ -11,6 +11,7 @@ const (
 	ActionHelp            Action = "help"
 	ActionHelpAll         Action = "help-all"
 	ActionVersion         Action = "version"
+	ActionCheckUpdate     Action = "check-update"
 	ActionEditHiss        Action = "hiss"
 	ActionResetHiss       Action = "hiss-reset"
 	ActionListIgnoreRules Action = "list-ignore-rules"
@@ -90,12 +91,9 @@ type Parsed struct {
 // suppress interactive prompts (canPromptForChoice consumes this via
 // Invocation.Internal).
 //
-// Mirror of internalCommandConfig.isInternalKind() at root. The two
-// must compute the same value for every Parsed; root's
-// invocationConfigFromParsedCommand sets Invocation.Internal via the
-// root predicate today, and InvocationFromParsed in this package sets
-// it via this method. Both kept until the cli/ parser extraction
-// retires the root wrapper.
+// This is the sole internal-kind predicate. Root dispatch and
+// InvocationFromParsed both consume it so preview helpers cannot drift from
+// prompt-suppression behavior when a new internal command is added.
 func (p Parsed) IsInternalKind() bool {
 	return p.TreePreview || p.FilePreview || p.FileSearchingPreview ||
 		p.ContentMatchList || p.SnippetBoundaryPreview || p.RecentPreview ||

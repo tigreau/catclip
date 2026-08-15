@@ -67,6 +67,13 @@ func TestInternalBenchCommandKindDistinguishesTreePreviewRoutes(t *testing.T) {
 		{name: "checkpoint", args: []string{"--internal-tree-preview", "--internal-prediscovered", "scope.json", "--internal-tree-target", "src"}, want: "internal-tree-preview-checkpoint"},
 		{name: "payload", args: []string{"--internal-tree-preview", "--input-dir", "payload"}, want: "internal-tree-preview-payload"},
 		{name: "generic", args: []string{"--internal-tree-preview"}, want: "internal-tree-preview"},
+		{name: "check update", args: []string{"--check-update"}, want: "check-update"},
+		{name: "check update after target", args: []string{"src", "--check-update"}, want: "check-update"},
+		{name: "check update regex", args: []string{"src", "--contains", "--check-update"}, want: "run"},
+		{name: "version regex", args: []string{"src", "--snippet", "--version"}, want: "run"},
+		{name: "internal flag regex", args: []string{"src", "--not-contains", "--internal-tree-preview"}, want: "run"},
+		{name: "internal value", args: []string{"--input-dir", "--check-update", "--internal-tree-preview"}, want: "internal-tree-preview-payload"},
+		{name: "internal sink values", args: []string{"--internal-sink-preview", "mode", "--check-update", "tree"}, want: "internal-sink-preview"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -808,6 +815,7 @@ func TestParseArgsImmediateActionsReturnEarly(t *testing.T) {
 		want command.Action
 	}{
 		{name: "version", args: []string{"--version", "src", "--changed"}, want: command.ActionVersion},
+		{name: "check update", args: []string{"--check-update", "src", "--changed"}, want: command.ActionCheckUpdate},
 		{name: "short help", args: []string{"--help", "src", "--changed"}, want: command.ActionHelp},
 		{name: "full help", args: []string{"--help-all", "src", "--changed"}, want: command.ActionHelpAll},
 	}
@@ -824,6 +832,21 @@ func TestParseArgsImmediateActionsReturnEarly(t *testing.T) {
 				t.Fatalf("expected no scopes for immediate action, got %d", got)
 			}
 		})
+	}
+}
+
+func TestParseArgsInternalSinkPreviewConsumesActionLookingValues(t *testing.T) {
+	cfg, err := cli.ParseArgs([]string{
+		"--internal-sink-preview", "mode", "--check-update", "tree",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Action != command.ActionRun {
+		t.Fatalf("Action = %q, want run", cfg.Action)
+	}
+	if cfg.SinkPreviewModePath != "mode" || cfg.SinkPreviewOutputPath != "--check-update" || cfg.SinkPreviewTreePath != "tree" {
+		t.Fatalf("sink preview paths = %q, %q, %q", cfg.SinkPreviewModePath, cfg.SinkPreviewOutputPath, cfg.SinkPreviewTreePath)
 	}
 }
 
@@ -1541,7 +1564,7 @@ func TestEmitFullOutputPrefetchMatchesSequential(t *testing.T) {
 	cfg := output.EmitConfig{OutputMode: command.OutputModeStdout}
 
 	var sequential bytes.Buffer
-	if _, err := output.EmitFullOutput(cfg, output.EmitEnvironment{}, units, &sequential, platform.Palette{}); err != nil {
+	if _, err := output.EmitFullOutput(cfg, output.RuntimeEnvironment{}, units, &sequential, platform.Palette{}); err != nil {
 		t.Fatalf("sequential output.EmitFullOutput returned error: %v", err)
 	}
 
@@ -1549,7 +1572,7 @@ func TestEmitFullOutputPrefetchMatchesSequential(t *testing.T) {
 	t.Setenv("CATCLIP_PREFETCH_FILE_KIB", "64")
 
 	var prefetched bytes.Buffer
-	if _, err := output.EmitFullOutput(cfg, output.EmitEnvironment{}, units, &prefetched, platform.Palette{}); err != nil {
+	if _, err := output.EmitFullOutput(cfg, output.RuntimeEnvironment{}, units, &prefetched, platform.Palette{}); err != nil {
 		t.Fatalf("prefetch output.EmitFullOutput returned error: %v", err)
 	}
 
@@ -2383,7 +2406,7 @@ func TestAllIgnoredTargetsIncludesGitignoreEntriesWithoutGitRepo(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "."})
 
 	resolver := discovery.Resolver{
-		Cfg:               invocationConfigFromParsedCommand(cfg),
+		Cfg:               command.InvocationFromParsed(cfg),
 		GitCtx:            git.Detect(project),
 		AllowFileSymlinks: false,
 	}
@@ -4462,7 +4485,7 @@ func TestEmitBundleSurfacesMultiDistroHintOnToolNotFound(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
 
-	_, err := output.EmitBundle(output.EmitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, platform.Palette{})
+	_, err := output.EmitBundle(output.RuntimeEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, platform.Palette{})
 	if err == nil {
 		t.Fatal("expected output.EmitBundle to surface tool-not-found error")
 	}
@@ -4497,7 +4520,7 @@ func TestEmitBundleSurfacesWaylandRequiredOnUnknownSession(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
 
-	_, err := output.EmitBundle(output.EmitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, platform.Palette{})
+	_, err := output.EmitBundle(output.RuntimeEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, platform.Palette{})
 	if err == nil {
 		t.Fatal("expected output.EmitBundle to surface Wayland-required error")
 	}
@@ -4538,7 +4561,7 @@ func TestEmitBundleSurfacesWlCopyExitedError(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
 
-	_, err := output.EmitBundle(output.EmitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, platform.Palette{})
+	_, err := output.EmitBundle(output.RuntimeEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, platform.Palette{})
 	if err == nil {
 		t.Fatal("expected output.EmitBundle to surface wl-copy exited error")
 	}
@@ -4583,7 +4606,7 @@ func TestEmitBundleKeepsGenericFramingForToolFailures(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
 
-	_, err := output.EmitBundle(output.EmitEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, platform.Palette{})
+	_, err := output.EmitBundle(output.RuntimeEnvironment{Platform: "linux", WorkingDir: dir}, []byte("bundle payload"), 0, platform.Palette{})
 	if err == nil {
 		t.Fatal("expected output.EmitBundle to surface tool-failed error")
 	}
@@ -4611,7 +4634,7 @@ func TestWithPayloadWriterDoesNotBlockOnResidentWaylandClipboard(t *testing.T) {
 	t.Setenv("CATCLIP_CLIPBOARD_WAIT_MS", "10")
 
 	cfg := output.EmitConfig{OutputMode: command.OutputModeClipboard}
-	env := output.EmitEnvironment{Platform: "linux"}
+	env := output.RuntimeEnvironment{Platform: "linux"}
 	started := time.Now()
 	stats, err := output.WithPayloadWriter(cfg, env, io.Discard, platform.Palette{}, func(w io.Writer) error {
 		_, err := io.WriteString(w, "hello")
@@ -5420,7 +5443,7 @@ func TestRunInternalFilePreviewEmitsTreeFromCheckpointForAllMatches(t *testing.T
 	// take when chooseContentMatchesWithFzf runs.
 	parentCfg := parseInProject(t, project, []string{"src"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}

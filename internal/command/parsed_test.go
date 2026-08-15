@@ -1,19 +1,13 @@
 package command
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
-// TestParsedIsInternalKindCoversEveryInternalField pins the contract
-// that Parsed.IsInternalKind returns true for every field the root
-// internalCommandConfig.isInternalKind predicate watches. Caught in
-// review of 3905793: command.InvocationFromParsed initially dropped
-// Internal, so internal preview/reload commands would have lost prompt
-// suppression once the parser extraction switched callers to the
-// command-side mapper. The fix added IsInternalKind here; this test
-// prevents the field set from drifting out of sync with the root
-// predicate.
-//
-// Update both predicates together when a new internal-kind field is
-// added to Parsed.
+// TestParsedIsInternalKindCoversEveryInternalField pins both the predicate and
+// the command-owned Parsed -> Invocation mapper for every internal command
+// field. A missing field could otherwise re-enable prompts in an fzf child.
 func TestParsedIsInternalKindCoversEveryInternalField(t *testing.T) {
 	cases := []struct {
 		name string
@@ -37,6 +31,9 @@ func TestParsedIsInternalKindCoversEveryInternalField(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if !tc.cfg.IsInternalKind() {
 				t.Fatalf("IsInternalKind() = false; expected true when %s is set", tc.name)
+			}
+			if !InvocationFromParsed(tc.cfg).Internal {
+				t.Fatalf("InvocationFromParsed().Internal = false; expected true when %s is set", tc.name)
 			}
 		})
 	}
@@ -72,5 +69,49 @@ func TestInvocationFromParsedSetsInternalKind(t *testing.T) {
 	inv = InvocationFromParsed(userCfg)
 	if inv.Internal {
 		t.Fatalf("InvocationFromParsed: Internal = true for plain ActionRun; want false")
+	}
+}
+
+func TestInvocationFromParsedCopiesRuntimeFields(t *testing.T) {
+	cfg := Parsed{
+		Version:      "1.2.3",
+		Platform:     "windows",
+		WorkingDir:   `C:\work\project`,
+		Verbose:      true,
+		Quiet:        true,
+		Headless:     true,
+		WithBinaries: true,
+		LinesPreview: true,
+	}
+	want := Invocation{
+		Version:      "1.2.3",
+		Platform:     "windows",
+		WorkingDir:   `C:\work\project`,
+		Verbose:      true,
+		Quiet:        true,
+		Headless:     true,
+		WithBinaries: true,
+		Internal:     true,
+	}
+	if got := InvocationFromParsed(cfg); !reflect.DeepEqual(got, want) {
+		t.Fatalf("InvocationFromParsed() = %#v, want %#v", got, want)
+	}
+}
+
+func TestResolvedFromParsedUsesCanonicalScopes(t *testing.T) {
+	scopes := []ExecutionScope{
+		{Targets: []string{"src"}, NoIgnore: true, Stages: []Stage{{Kind: StageOnly, Values: []string{"*.tsx"}}}},
+		{Targets: []string{"docs"}, Paths: true},
+	}
+	cfg := Parsed{
+		Version: "1.2.3",
+		Command: FinalizedSpecFromExecutionScopes(scopes),
+	}
+	got := ResolvedFromParsed(cfg)
+	if got.Config.Version != "1.2.3" {
+		t.Fatalf("ResolvedFromParsed().Config.Version = %q, want 1.2.3", got.Config.Version)
+	}
+	if !reflect.DeepEqual(got.Scopes, scopes) {
+		t.Fatalf("ResolvedFromParsed().Scopes = %#v, want %#v", got.Scopes, scopes)
 	}
 }

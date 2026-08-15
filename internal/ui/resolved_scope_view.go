@@ -85,7 +85,7 @@ func resolvedCurrentScopeViewForArgs(args []string) (resolvedScopeView, error) {
 	if err != nil {
 		return resolvedScopeView{}, err
 	}
-	invocation := resolvedInvocationFromParsedCommand(cfg)
+	invocation := command.ResolvedFromParsed(cfg)
 	view, err := resolvedCurrentScopeView(invocation, RenderConfigFromParsedCommand(cfg))
 	if err != nil {
 		return view, err

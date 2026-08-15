@@ -1,15 +1,20 @@
 package catclip
 
 import (
-	"os"
+	_ "embed"
 	"path"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
-
-	"github.com/tigreau/catclip/internal/platform"
 )
+
+// sourceVersion is the repository release metadata used by ordinary source
+// builds. Published release builds set releaseVersion with -ldflags -X so the
+// tag remains the final authority for shipped binaries.
+//
+//go:embed VERSION
+var sourceVersion string
+
+var releaseVersion string
 
 // normalizeRelPath is a root dup of discovery.normalizeRelPath (private).
 // Kept here so the wide constellation of root files (pickers, output
@@ -30,41 +35,25 @@ func normalizeRelPath(value string) string {
 	return value
 }
 
-// loadVersion resolves the bundled VERSION file: cwd, the dir holding
-// this source file (dev runs), the executable's directory tree, and
-// finally a "dev" fallback. Used both by --version output and the
-// missing-tool discovery.Diagnostic in required_tools.go.
+// loadVersion resolves Catclip's version entirely from data compiled into the
+// binary. It performs no runtime filesystem lookup, so project and installed
+// VERSION files cannot redefine the running executable.
 func loadVersion() string {
-	const fallback = "dev"
-
-	candidates := []string{"VERSION"}
-	if _, file, _, ok := runtime.Caller(0); ok {
-		candidates = append(candidates, filepath.Join(filepath.Dir(file), "VERSION"))
-	}
-	for _, dir := range platform.ExecutableCandidateDirs() {
-		candidates = append(candidates,
-			filepath.Join(dir, "VERSION"),
-			filepath.Join(dir, "..", "share", "catclip", "VERSION"),
-		)
-	}
-
-	for _, candidate := range candidates {
-		data, err := os.ReadFile(candidate)
-		if err != nil {
-			continue
-		}
-		version := strings.TrimSpace(string(data))
-		if version != "" {
-			return version
-		}
-	}
-
-	return fallback
+	return resolvedVersion(releaseVersion, sourceVersion)
 }
 
-// formatDuration is a root dup of internal/ui's formatDuration (was in
-// root date_format.go before the v0.6.0 ui extraction). Kept here so
-// cli.go's verbose timing logging stays render-free.
+func resolvedVersion(release, source string) string {
+	if version := strings.TrimSpace(release); version != "" {
+		return version
+	}
+	if version := strings.TrimSpace(source); version != "" {
+		return version
+	}
+	return "dev"
+}
+
+// formatDuration keeps verbose runtime timings compact without making root
+// depend on a presentation package.
 func formatDuration(d time.Duration) string {
 	if d < time.Millisecond {
 		return d.Round(time.Microsecond).String()

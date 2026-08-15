@@ -242,14 +242,26 @@ func (f flagSemanticFamily) scopeStageCategory() (scopeStageCategory, bool) {
 	}
 }
 
-// extraValueTakingFlags lists value-taking flags OUTSIDE the
+// extraFixedValueCounts lists fixed-arity value flags OUTSIDE the
 // scope-modifier spec table: internal preview plumbing and tree payload
 // inputs. Scope-modifier membership derives from spec arity below; only
 // non-spec flags belong here.
-var extraValueTakingFlags = []string{
-	"--internal-tree-target", "--internal-tree-kind", "--internal-tree-state",
-	"--internal-file-set-selection", "--internal-file-set-stage",
-	"--internal-file-path", "--input-dir", "--input-stem",
+var extraFixedValueCounts = map[string]int{
+	"--input-dir":                   1,
+	"--input-stem":                  1,
+	"--internal-prediscovered":      1,
+	"--internal-tree-target":        1,
+	"--internal-tree-kind":          1,
+	"--internal-tree-state":         1,
+	"--internal-file-set-selection": 1,
+	"--internal-file-set-stage":     1,
+	"--internal-file-path":          1,
+	"--internal-boundary-source":    1,
+	"--internal-boundary-key":       1,
+	"--internal-recent-data":        1,
+	"--internal-sink-toggle":        1,
+	"--internal-sink-preview":       3,
+	"--internal-recent-selection":   1,
 }
 
 // globalBoundaryFlags lists the non-stage flags that terminate
@@ -258,7 +270,7 @@ var extraValueTakingFlags = []string{
 var globalBoundaryFlags = []string{
 	"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
 	"--no-bundle", "--preview", "--with-binaries",
-	"-h", "--help", "--help-all", "--version", "-V", "--hiss", "--hiss-reset", "--all-ignore-rules",
+	"-h", "--help", "--help-all", "--version", "-V", "--check-update", "--hiss", "--hiss-reset", "--all-ignore-rules",
 }
 
 // valueTakingFlags derives from spec arity (one/many) plus the explicit
@@ -268,13 +280,13 @@ var globalBoundaryFlags = []string{
 var valueTakingFlags = buildValueTakingFlags()
 
 func buildValueTakingFlags() map[string]struct{} {
-	out := make(map[string]struct{}, len(ScopeModifierFlagSpecs)+len(extraValueTakingFlags))
+	out := make(map[string]struct{}, len(ScopeModifierFlagSpecs)+len(extraFixedValueCounts))
 	for _, spec := range ScopeModifierFlagSpecs {
 		if spec.Arity == flagArityOne || spec.Arity == flagArityMany {
 			out[spec.Flag] = struct{}{}
 		}
 	}
-	for _, flag := range extraValueTakingFlags {
+	for flag := range extraFixedValueCounts {
 		out[flag] = struct{}{}
 	}
 	return out
@@ -291,7 +303,7 @@ func buildValueTakingFlags() map[string]struct{} {
 var modifierBoundaryTokens = buildModifierBoundaryTokens()
 
 func buildModifierBoundaryTokens() map[string]struct{} {
-	out := make(map[string]struct{}, len(ScopeModifierFlagSpecs)+len(extraValueTakingFlags)+len(globalBoundaryFlags)+2)
+	out := make(map[string]struct{}, len(ScopeModifierFlagSpecs)+len(extraFixedValueCounts)+len(globalBoundaryFlags)+2)
 	out["--then"] = struct{}{}
 	out["--"] = struct{}{}
 	for _, spec := range ScopeModifierFlagSpecs {
@@ -306,9 +318,16 @@ func buildModifierBoundaryTokens() map[string]struct{} {
 	return out
 }
 
-func IsValueTakingFlag(arg string) bool {
-	_, ok := valueTakingFlags[arg]
-	return ok
+// FixedValueCount reports how many following argv tokens a flag always
+// consumes. Many-value and optional-value scope modifiers return zero because
+// their consumers decide where to stop from the following tokens.
+func FixedValueCount(arg string) int {
+	for _, spec := range ScopeModifierFlagSpecs {
+		if spec.Flag == arg && spec.Arity == flagArityOne {
+			return 1
+		}
+	}
+	return extraFixedValueCounts[arg]
 }
 
 func IsModifierBoundaryToken(arg string) bool {

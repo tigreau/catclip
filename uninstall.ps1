@@ -19,6 +19,7 @@ $ToolsDir = Join-Path $ShareDir 'bin'
 $Target = Join-Path $BinDir 'catclip.exe'
 $TreeTarget = Join-Path $BinDir 'catclip-tree.exe'
 $VersionFile = Join-Path $ShareDir 'VERSION'
+$MethodFile = Join-Path $ShareDir 'INSTALL_METHOD'
 $RgFile = Join-Path $ToolsDir 'rg.exe'
 $FzfFile = Join-Path $ToolsDir 'fzf.exe'
 $ConfigDir = if ($env:XDG_CONFIG_HOME) {
@@ -150,7 +151,7 @@ if (Test-Path -LiteralPath $Target) {
     Write-Host "Notice: $Target not found"
 }
 
-foreach ($path in @($TreeTarget, $VersionFile, $RgFile, $FzfFile)) {
+foreach ($path in @($TreeTarget, $VersionFile, $MethodFile, $RgFile, $FzfFile)) {
     if (Test-Path -LiteralPath $path) {
         Write-Host "Removing $path"
         Remove-PathIfPresent $path

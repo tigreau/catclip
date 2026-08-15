@@ -299,17 +299,26 @@ find_local_source_dir() {
 
 warn_existing_target_install() {
   local target="$1"
-  local version_file="$2"
 
   if [[ ! -e "$target" ]]; then
     return 0
   fi
 
   note "Existing catclip installation detected at $target."
-  if [[ -f "$version_file" ]]; then
-    note "Existing version metadata found at $version_file."
-  fi
   note "This install will replace the direct-install binary in place and keep ~/.config/catclip/.hiss."
+}
+
+validate_binary_version() {
+  local binary_file="$1"
+  local expected="$2"
+  local output
+  local reported
+
+  output="$("$binary_file" --version 2>/dev/null)" || die "installed binary could not report its version"
+  reported="${output%%$'\n'*}"
+  if [[ "$reported" != "catclip $expected" ]]; then
+    die "binary version '$reported' does not match release metadata '$expected'"
+  fi
 }
 
 install_file() {
@@ -488,11 +497,12 @@ if homebrew_manages_catclip; then
   die "catclip appears to be managed by Homebrew; use 'brew upgrade catclip' instead."
 fi
 
-warn_existing_target_install "$BIN_DIR/$PROGRAM_NAME" "$SHARE_DIR/VERSION"
+warn_existing_target_install "$BIN_DIR/$PROGRAM_NAME"
 
 TMP_ROOT="$(mktemp -d)"
 
 if SOURCE_DIR="$(find_local_source_dir)"; then
+  INSTALL_METHOD='source'
   need_go_for_source_build "$SOURCE_DIR"
 
   printf 'Source:   %s%s%s\n' "$CYAN" "$SOURCE_DIR" "$RESET"
@@ -521,6 +531,7 @@ if SOURCE_DIR="$(find_local_source_dir)"; then
   Ensure Go $(required_go_version_from_source "$SOURCE_DIR") or newer is installed, then try again."
   fi
 else
+  INSTALL_METHOD='direct-release'
   ARCHIVE_PATH="$TMP_ROOT/$ASSET_NAME"
   CHECKSUMS_PATH="$TMP_ROOT/$CHECKSUMS_NAME"
 
@@ -552,9 +563,15 @@ else
   [[ -n "$VERSION" ]] || die "VERSION file is empty"
 fi
 
+validate_binary_version "$BINARY_FILE" "$VERSION"
+
+METHOD_FILE="$TMP_ROOT/INSTALL_METHOD"
+printf '%s\n' "$INSTALL_METHOD" > "$METHOD_FILE"
+
 install_file 755 "$BINARY_FILE" "$BIN_DIR/$PROGRAM_NAME"
 remove_file_if_exists "$BIN_DIR/$TREE_PROGRAM_NAME"
-install_file 644 "$VERSION_FILE" "$SHARE_DIR/VERSION"
+remove_file_if_exists "$SHARE_DIR/VERSION"
+install_file 644 "$METHOD_FILE" "$SHARE_DIR/INSTALL_METHOD"
 install_file 755 "$RG_FILE" "$TOOLS_DIR/rg"
 install_file 755 "$FZF_FILE" "$TOOLS_DIR/fzf"
 

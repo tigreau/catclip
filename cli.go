@@ -52,6 +52,8 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		return err
 	case command.ActionVersion:
 		return ui.RenderVersionOutput(cfg.Version, stdout)
+	case command.ActionCheckUpdate:
+		return runCheckUpdate(checkUpdateConfigFromParsedCommand(cfg), stdout)
 	case command.ActionEditHiss:
 		return runEditHiss(hissConfigFromParsedCommand(cfg), stderr)
 	case command.ActionResetHiss:
@@ -63,9 +65,9 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		if err := validateImplementedFeatureSet(internalCfg); err != nil {
 			return err
 		}
-		restorePromptGuard := ui.PushHeadlessPromptGuard(cfg.Headless || internalCfg.isInternalKind())
+		restorePromptGuard := ui.PushHeadlessPromptGuard(cfg.Headless || cfg.IsInternalKind())
 		defer restorePromptGuard()
-		if internalCfg.isInternalKind() {
+		if cfg.IsInternalKind() {
 			// Internal reload/preview commands are short-lived fzf-spawned
 			// helpers. Arm signal-driven cancellation so a superseded reload's
 			// rg child is killed when fzf terminates this process, instead of
@@ -129,17 +131,16 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 
 		colors := platform.ActivePalette()
 		started := time.Now()
-		resolved := resolvedInvocationFromParsedCommand(cfg)
+		resolved := command.ResolvedFromParsed(cfg)
 		invocationCfg := resolved.Config
 		emitCfg := emitConfigFromParsedCommand(cfg)
 		renderCfg := ui.RenderConfigFromParsedCommand(cfg)
+		finishGitBench := platform.InternalBenchSpan("cli.run.git_detect")
 		gitCtx := git.Detect(invocationCfg.WorkingDir)
-		if proceed, err := warnDirectoryPatternSemantics(stderr, colors); err != nil {
-			return err
-		} else if !proceed {
-			return nil
-		}
-
+		finishGitBench(
+			"enabled", platform.InternalBenchBool(gitCtx.Enabled),
+			"has_head", platform.InternalBenchBool(gitCtx.HasHead),
+		)
 		commandScopes := resolved.Scopes
 		if cfg.Verbose {
 			fmt.Fprintf(stderr, "[verbose] parsed %d scope(s)\n", len(commandScopes))
@@ -173,13 +174,31 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 				)
 			}
 			var err error
+			finishDiscoveryBench := platform.InternalBenchSpan("cli.run.discovery",
+				"scopes", platform.InternalBenchInt(len(resolved.Scopes)),
+			)
 			discoveryResult, err = discovery.DiscoverInvocation(resolved, gitCtx, stderr, colors)
+			discoveredEntries := 0
+			for _, scope := range discoveryResult.Invocation.Scopes {
+				discoveredEntries += len(scope.Entries)
+			}
+			finishDiscoveryBench(
+				"err", platform.InternalBenchError(err),
+				"entries", platform.InternalBenchInt(discoveredEntries),
+			)
 			if err != nil {
 				discoverySpinnerStop()
 				return err
 			}
 			discoverySpinnerStop()
+			finishPlanBench := platform.InternalBenchSpan("cli.run.build_plan",
+				"scopes", platform.InternalBenchInt(len(discoveryResult.Invocation.Scopes)),
+			)
 			outputPlan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+			finishPlanBench(
+				"err", platform.InternalBenchError(err),
+				"items", platform.InternalBenchInt(outputPlan.Len()),
+			)
 			if err != nil {
 				return err
 			}
@@ -471,15 +490,6 @@ func internalCommandConfigFromParsedCommand(cfg command.Parsed) internalCommandC
 	}
 }
 
-func (cfg internalCommandConfig) isInternalKind() bool {
-	return cfg.TreePreview || cfg.FilePreview || cfg.FileSearchingPreview ||
-		cfg.ContentMatchList || cfg.SnippetBoundaryPreview || cfg.RecentPreview ||
-		cfg.LinesPreview ||
-		cfg.PrediscoveredPath != "" || cfg.TreeInputDir != "" ||
-		cfg.FileSetSelectionPath != "" || cfg.FileSetSelectionStage != "" ||
-		cfg.SinkTogglePath != "" || cfg.SinkPreviewModePath != ""
-}
-
 func validateImplementedFeatureSet(cfg internalCommandConfig) error {
 	if cfg.PrediscoveredPath != "" && !cfg.TreePreview && !cfg.ContentMatchList && !cfg.LinesPreview && !cfg.FilePreview {
 		return newUsageError("Error: --internal-prediscovered requires --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview.")
@@ -511,26 +521,6 @@ func validateImplementedFeatureSet(cfg internalCommandConfig) error {
 	return nil
 }
 
-func invocationConfigFromParsedCommand(cfg command.Parsed) command.Invocation {
-	return command.Invocation{
-		Version:      cfg.Version,
-		Platform:     cfg.Platform,
-		WorkingDir:   cfg.WorkingDir,
-		Verbose:      cfg.Verbose,
-		Quiet:        cfg.Quiet,
-		Headless:     cfg.Headless,
-		WithBinaries: cfg.WithBinaries,
-		Internal:     internalCommandConfigFromParsedCommand(cfg).isInternalKind(),
-	}
-}
-
-func resolvedInvocationFromParsedCommand(cfg command.Parsed) command.Resolved {
-	return command.Resolved{
-		Config: invocationConfigFromParsedCommand(cfg),
-		Scopes: command.ExecutionScopesFromSpec(cfg.Command),
-	}
-}
-
 func emitConfigFromParsedCommand(cfg command.Parsed) output.EmitConfig {
 	return output.EmitConfig{
 		OutputMode: cfg.OutputMode,
@@ -539,19 +529,11 @@ func emitConfigFromParsedCommand(cfg command.Parsed) output.EmitConfig {
 	}
 }
 
-func emitEnvironmentFromInvocationConfig(cfg command.Invocation) output.EmitEnvironment {
-	return output.EmitEnvironment{
+func outputEnvironmentFromInvocation(cfg command.Invocation) output.RuntimeEnvironment {
+	return output.RuntimeEnvironment{
 		Platform:   cfg.Platform,
 		WorkingDir: cfg.WorkingDir,
 	}
-}
-
-// warnDirectoryPatternSemantics is a stub the runtime dispatcher
-// retained from the legacy parser-warning surface. Always returns
-// (true, nil) today; left here so adding a new warning is a one-file
-// edit at run-time entry.
-func warnDirectoryPatternSemantics(stderr io.Writer, colors platform.Palette) (bool, error) {
-	return true, nil
 }
 
 // printTextClassificationResidue reports, under --verbose, which files

@@ -109,14 +109,8 @@ func normalizePositionalGlobArgs(args []string) (positionalGlobNormalizationResu
 func splitPositionalGlobScopes(args []string) []positionalGlobScope {
 	rawScopes := make([][]string, 0, 4)
 	current := make([]string, 0, len(args))
-	consumeNext := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if consumeNext {
-			current = append(current, arg)
-			consumeNext = false
-			continue
-		}
 		if arg == "--" {
 			current = append(current, args[i:]...)
 			rawScopes = append(rawScopes, current)
@@ -128,8 +122,10 @@ func splitPositionalGlobScopes(args []string) []positionalGlobScope {
 			continue
 		}
 		current = append(current, arg)
-		if cli.IsValueTakingFlag(arg) {
-			consumeNext = true
+		if count := cli.FixedValueCount(arg); count > 0 {
+			end := min(i+count, len(args)-1)
+			current = append(current, args[i+1:end+1]...)
+			i = end
 		}
 	}
 	rawScopes = append(rawScopes, current)

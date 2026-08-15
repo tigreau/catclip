@@ -64,9 +64,8 @@ func Main() {
 	)
 	defer finishMainBench()
 
-	// Wire the version resolver into the cli parser. cli/ can't import root,
-	// so the version-file lookup logic (which uses platform.ExecutableCandidateDirs
-	// + project-root VERSION lookup) is provided here at process start.
+	// Wire the binary's embedded version into the cli parser. cli/ cannot import
+	// root, so the resolved build identity is provided here at process start.
 	cli.SetVersionLoader(loadVersion)
 	// Wire the args -> view callback into the discovery resolver. Used
 	// by the content-match picker's checkpoint preview path (see
@@ -89,11 +88,10 @@ func Main() {
 	finishGateBench("err", "false")
 
 	finishToolsBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "ensure_required_tools")
-	// --version bypasses the required-tools gate: its whole purpose
-	// is to diagnose which bundled tool is missing, so failing hard
-	// before we can print anything defeats the diagnostic. --help
-	// stays gated (users typing --help don't need tool provenance).
-	if commandKind != "version" {
+	// --version and --check-update do not need the bundled search or picker
+	// tools. Keeping these actions available also helps diagnose incomplete
+	// installations. --help stays gated because it documents the runnable tool.
+	if commandKind != "version" && commandKind != "check-update" {
 		if err := ensureRequiredTools(os.Stderr); err != nil {
 			finishToolsBench("err", platform.InternalBenchError(err))
 			os.Exit(1)
@@ -152,8 +150,20 @@ func Main() {
 }
 
 func internalBenchCommandKind(args []string) string {
+	// Immediate actions and internal flags may also appear as literal values for
+	// regex/internal plumbing options. Build the flag view with those consumed
+	// values removed so an input such as `--contains --check-update` remains a
+	// normal run instead of bypassing the required-tool gate.
+	flags := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		flags = append(flags, arg)
+		if count := cli.FixedValueCount(arg); count > 0 {
+			i += min(count, len(args)-i-1)
+		}
+	}
 	hasArg := func(want string) bool {
-		for _, arg := range args {
+		for _, arg := range flags {
 			if arg == want {
 				return true
 			}
@@ -172,7 +182,7 @@ func internalBenchCommandKind(args []string) string {
 			return "internal-tree-preview"
 		}
 	}
-	for _, arg := range args {
+	for _, arg := range flags {
 		switch arg {
 		case "--internal-content-match-list":
 			return "internal-content-match-list"
@@ -194,6 +204,8 @@ func internalBenchCommandKind(args []string) string {
 			return "help-all"
 		case "--version", "-V":
 			return "version"
+		case "--check-update":
+			return "check-update"
 		}
 	}
 	return "run"

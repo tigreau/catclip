@@ -49,9 +49,9 @@ func BuildReportForPlan(gitCtx git.Context, plan Plan, opts ReportOptions) (Repo
 	return report, nil
 }
 
-// formatSizeAndTokens duplicates internal/render/model.go's
-// FormatSizeAndTokens. Local so output never imports render. The math
-// is stable — sync if either side changes (no churn expected).
+// formatSizeAndTokens intentionally remains output-local: importing render
+// would invert the output/render package boundary. The display calculation is
+// small and stable; tests on both packages pin it independently.
 func formatSizeAndTokens(totalBytes int64, fileCount int) (string, int64) {
 	const (
 		kb = 1024

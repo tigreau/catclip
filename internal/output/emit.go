@@ -44,9 +44,11 @@ type EmitConfig struct {
 	NoBundle   bool
 }
 
-// EmitEnvironment is the temporary Phase 8 stand-in for command.Invocation's
-// environment fields. Phase 9 should replace this with command.Invocation.
-type EmitEnvironment struct {
+// RuntimeEnvironment is the narrow process context needed by output sinks.
+// Keep this output-owned value smaller than command.Invocation: emission only
+// depends on platform behavior and the working directory used for bundle
+// placement and path handling.
+type RuntimeEnvironment struct {
 	Platform   string
 	WorkingDir string
 }
@@ -59,7 +61,7 @@ func bundleTempDir() string {
 	return filepath.Join(os.TempDir(), "catclip")
 }
 
-func BundleDirForEnv(env EmitEnvironment) string {
+func BundleDirForEnv(env RuntimeEnvironment) string {
 	if dir := strings.TrimSpace(os.Getenv("CATCLIP_BUNDLE_DIR")); dir != "" {
 		return dir
 	}
@@ -206,11 +208,11 @@ func (w *countingWriter) Write(p []byte) (int, error) {
 
 // EmitFullOutput writes every prepared output unit either to stdout or through
 // the platform clipboard command.
-func EmitFullOutput(cfg EmitConfig, env EmitEnvironment, units []PreparedFileUnit, stdout io.Writer, colors platform.Palette) (EmitStats, error) {
+func EmitFullOutput(cfg EmitConfig, env RuntimeEnvironment, units []PreparedFileUnit, stdout io.Writer, colors platform.Palette) (EmitStats, error) {
 	return EmitOutputPlan(cfg, env, BuildPlan(units), stdout, colors)
 }
 
-func EmitOutputPlan(cfg EmitConfig, env EmitEnvironment, plan Plan, stdout io.Writer, colors platform.Palette) (EmitStats, error) {
+func EmitOutputPlan(cfg EmitConfig, env RuntimeEnvironment, plan Plan, stdout io.Writer, colors platform.Palette) (EmitStats, error) {
 	return WithPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
 		return WriteOutputPlanPayload(w, cfg, plan)
 	})
@@ -875,7 +877,7 @@ func DiffEntryOutput(gitCtx git.Context, entry discovery.Entry) (string, string,
 	return diffOutput, diffType, true, nil
 }
 
-func WithPayloadWriter(cfg EmitConfig, env EmitEnvironment, stdout io.Writer, colors platform.Palette, fn func(io.Writer) error) (EmitStats, error) {
+func WithPayloadWriter(cfg EmitConfig, env RuntimeEnvironment, stdout io.Writer, colors platform.Palette, fn func(io.Writer) error) (EmitStats, error) {
 	bufferSize := outputBufferSize()
 
 	if cfg.OutputMode == command.OutputModeStdout {
@@ -927,7 +929,7 @@ func WithPayloadWriter(cfg EmitConfig, env EmitEnvironment, stdout io.Writer, co
 	return emitBufferedToTextClipboard(env, payload, generateDuration, colors)
 }
 
-func streamToTextClipboard(env EmitEnvironment, fn func(io.Writer) error, colors platform.Palette, bufferSize int) (EmitStats, error) {
+func streamToTextClipboard(env RuntimeEnvironment, fn func(io.Writer) error, colors platform.Palette, bufferSize int) (EmitStats, error) {
 	cmd, err := ClipboardCommand(env.Platform, colors)
 	if err != nil {
 		return EmitStats{}, err
@@ -977,7 +979,7 @@ func streamToTextClipboard(env EmitEnvironment, fn func(io.Writer) error, colors
 	}, nil
 }
 
-func emitBufferedToTextClipboard(env EmitEnvironment, payload []byte, generateDuration time.Duration, colors platform.Palette) (EmitStats, error) {
+func emitBufferedToTextClipboard(env RuntimeEnvironment, payload []byte, generateDuration time.Duration, colors platform.Palette) (EmitStats, error) {
 	cmd, err := ClipboardCommand(env.Platform, colors)
 	if err != nil {
 		return EmitStats{}, err
@@ -1049,7 +1051,7 @@ func clipboardWaitFailureError(cmd *exec.Cmd, rawStderr string, waitErr error) e
 	return fmt.Errorf("Error: clipboard command failed: %w", waitErr)
 }
 
-func EmitBundle(env EmitEnvironment, payload []byte, generateDuration time.Duration, colors platform.Palette) (EmitStats, error) {
+func EmitBundle(env RuntimeEnvironment, payload []byte, generateDuration time.Duration, colors platform.Palette) (EmitStats, error) {
 	dir := BundleDirForEnv(env)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return EmitStats{}, fmt.Errorf("Error: bundle directory: %w", err)
@@ -1112,7 +1114,7 @@ func EmitBundle(env EmitEnvironment, payload []byte, generateDuration time.Durat
 	}, nil
 }
 
-func BundleWarnings(env EmitEnvironment) []string {
+func BundleWarnings(env RuntimeEnvironment) []string {
 	if env.Platform != "linux" {
 		return nil
 	}

@@ -36,6 +36,20 @@ func TestNormalizePositionalGlobArgsPassesValidArgsThroughUnchanged(t *testing.T
 	}
 }
 
+func TestNormalizePositionalGlobArgsKeepsFixedArityInternalValuesOpaque(t *testing.T) {
+	args := []string{
+		"--internal-sink-preview", "mode", "--then", "*.txt",
+		"--internal-tree-preview",
+	}
+	result, err := normalizePositionalGlobArgs(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Args, args) {
+		t.Fatalf("normalized args = %#v, want %#v", result.Args, args)
+	}
+}
+
 func TestNormalizePositionalGlobArgsBareExtensionFixIt(t *testing.T) {
 	_, err := normalizePositionalGlobArgs([]string{"src", ".tsx", "--changed"})
 	if err == nil {

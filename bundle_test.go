@@ -63,7 +63,7 @@ func TestBundleDirDefaultsToDocumentsForSnapReadableFiles(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", config)
 
-	got := output.BundleDirForEnv(output.EmitEnvironment{Platform: "linux"})
+	got := output.BundleDirForEnv(output.RuntimeEnvironment{Platform: "linux"})
 	want := filepath.Join(home, "My Documents", "catclip")
 	if got != want {
 		t.Fatalf("output.BundleDirForEnv = %q, want %q", got, want)
@@ -77,7 +77,7 @@ func TestBundleDirDefaultsToDocumentsForNonLinuxPlatforms(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	got := output.BundleDirForEnv(output.EmitEnvironment{Platform: "macos"})
+	got := output.BundleDirForEnv(output.RuntimeEnvironment{Platform: "macos"})
 	want := filepath.Join(home, "Documents", "catclip")
 	if got != want {
 		t.Fatalf("output.BundleDirForEnv = %q, want %q", got, want)
@@ -100,7 +100,7 @@ func TestBundleDirFallsBackToDefaultDocuments(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", config)
 
-	got := output.BundleDirForEnv(output.EmitEnvironment{Platform: "linux"})
+	got := output.BundleDirForEnv(output.RuntimeEnvironment{Platform: "linux"})
 	want := filepath.Join(home, "Documents", "catclip")
 	if got != want {
 		t.Fatalf("output.BundleDirForEnv = %q, want %q", got, want)
@@ -111,7 +111,7 @@ func TestBundleDirOverrideWins(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "custom-bundles")
 	t.Setenv("CATCLIP_BUNDLE_DIR", dir)
 
-	if got := output.BundleDirForEnv(output.EmitEnvironment{Platform: "linux"}); got != dir {
+	if got := output.BundleDirForEnv(output.RuntimeEnvironment{Platform: "linux"}); got != dir {
 		t.Fatalf("output.BundleDirForEnv override = %q, want %q", got, dir)
 	}
 }
@@ -174,7 +174,7 @@ func TestBundleAtOrAboveThresholdCreatesFile(t *testing.T) {
 	cfg := output.EmitConfig{
 		OutputMode: command.OutputModeClipboard,
 	}
-	env := output.EmitEnvironment{
+	env := output.RuntimeEnvironment{
 		WorkingDir: t.TempDir(),
 	}
 
@@ -217,7 +217,7 @@ func TestBundleWarnsForOldPortalOnWayland(t *testing.T) {
 	cfg := output.EmitConfig{
 		OutputMode: command.OutputModeClipboard,
 	}
-	env := output.EmitEnvironment{
+	env := output.RuntimeEnvironment{
 		Platform:   "linux",
 		WorkingDir: t.TempDir(),
 	}
@@ -248,7 +248,7 @@ func TestBundleWarnsWhenPortalVersionCannotBeDetectedOnWayland(t *testing.T) {
 	t.Setenv("XDG_CURRENT_DESKTOP", "")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_BIN", filepath.Join(t.TempDir(), "missing-portal"))
 
-	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
+	warnings := output.BundleWarnings(output.RuntimeEnvironment{Platform: "linux"})
 	if len(warnings) != 1 {
 		t.Fatalf("expected one portal warning, got %#v", warnings)
 	}
@@ -268,7 +268,7 @@ func TestBundleDoesNotWarnForNewPortalOnWayland(t *testing.T) {
 	t.Setenv("XDG_CURRENT_DESKTOP", "")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.21.0")
 
-	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
+	warnings := output.BundleWarnings(output.RuntimeEnvironment{Platform: "linux"})
 	if len(warnings) != 0 {
 		t.Fatalf("expected no portal warnings, got %#v", warnings)
 	}
@@ -290,7 +290,7 @@ func TestBundleWarnsForLegacyGNOMEOnWayland(t *testing.T) {
 	cfg := output.EmitConfig{
 		OutputMode: command.OutputModeClipboard,
 	}
-	env := output.EmitEnvironment{
+	env := output.RuntimeEnvironment{
 		Platform:   "linux",
 		WorkingDir: t.TempDir(),
 	}
@@ -324,7 +324,7 @@ func TestBundleWarnsForLegacyGNOMEAndOldPortalTogether(t *testing.T) {
 	t.Setenv("CATCLIP_GNOME_VERSION", "GNOME Shell 42.9")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.14.0")
 
-	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
+	warnings := output.BundleWarnings(output.RuntimeEnvironment{Platform: "linux"})
 	if len(warnings) != 2 {
 		t.Fatalf("expected GNOME and portal warnings, got %#v", warnings)
 	}
@@ -343,7 +343,7 @@ func TestBundleDoesNotWarnForModernGNOMEOnWayland(t *testing.T) {
 	t.Setenv("CATCLIP_GNOME_VERSION", "GNOME Shell 48.1")
 	t.Setenv("CATCLIP_XDG_DESKTOP_PORTAL_VERSION", "xdg-desktop-portal 1.21.0")
 
-	warnings := output.BundleWarnings(output.EmitEnvironment{Platform: "linux"})
+	warnings := output.BundleWarnings(output.RuntimeEnvironment{Platform: "linux"})
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings on modern GNOME, got %#v", warnings)
 	}
@@ -394,7 +394,7 @@ func TestBundleFilePermissionsAre0600(t *testing.T) {
 	cfg := output.EmitConfig{
 		OutputMode: command.OutputModeClipboard,
 	}
-	env := output.EmitEnvironment{
+	env := output.RuntimeEnvironment{
 		WorkingDir: t.TempDir(),
 	}
 	big := strings.Repeat("z", 5000)
@@ -427,7 +427,7 @@ func TestBundleFilenameMatchesProjectAndTimestamp(t *testing.T) {
 	cfg := output.EmitConfig{
 		OutputMode: command.OutputModeClipboard,
 	}
-	env := output.EmitEnvironment{
+	env := output.RuntimeEnvironment{
 		WorkingDir: wd,
 	}
 	_, err := output.WithPayloadWriter(cfg, env, io.Discard, platform.Palette{}, func(w io.Writer) error {
@@ -454,7 +454,7 @@ func TestBundleClearsPriorBundles(t *testing.T) {
 	_, restore := withBundleStub(t)
 	defer restore()
 
-	env := output.EmitEnvironment{
+	env := output.RuntimeEnvironment{
 		WorkingDir: t.TempDir(),
 	}
 	dir := output.BundleDirForEnv(env)
@@ -523,7 +523,7 @@ func TestBundleNoBundleSkipsBundleBranchAtLargePayload(t *testing.T) {
 		OutputMode: command.OutputModeClipboard,
 		NoBundle:   true,
 	}
-	env := output.EmitEnvironment{
+	env := output.RuntimeEnvironment{
 		Platform:   platform.Detect(),
 		WorkingDir: t.TempDir(),
 	}

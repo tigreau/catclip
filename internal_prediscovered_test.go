@@ -318,7 +318,7 @@ func TestRunInternalPrediscoveredTreePreviewMatchesFreshEvaluation(t *testing.T)
 	})
 	parentCfg := parseInProject(t, project, []string{"src"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
@@ -419,7 +419,7 @@ func TestRunInternalPrediscoveredContentMatchListMatchesFreshEvaluation(t *testi
 	})
 	parentCfg := parseInProject(t, project, []string{"src", "--only", "*.go"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
@@ -467,7 +467,7 @@ func TestRunInternalPrediscoveredContentMatchListShortCircuitsEmptyPattern(t *te
 	})
 	parentCfg := parseInProject(t, project, []string{"src", "--only", "*.go"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
@@ -541,7 +541,7 @@ func TestRunInternalPrediscoveredContentMatchListDirectModeMatchesChunked(t *tes
 	})
 	parentCfg := parseInProject(t, project, []string{"."})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
@@ -591,7 +591,7 @@ func TestRunInternalPrediscoveredContentMatchListHonorsNoIgnore(t *testing.T) {
 
 	parentCfg := parseInProject(t, project, []string{"docs", "--no-ignore", "--contains", "fzf"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("discovery.EvaluateScope returned error: %v", err)
 	}
@@ -648,7 +648,7 @@ func TestRunInternalPrediscoveredContentMatchListLiveNotContains(t *testing.T) {
 	})
 	parentCfg := parseInProject(t, project, []string{"."})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("EvaluateScope: %v", err)
 	}
@@ -704,7 +704,7 @@ func TestRunInternalPrediscoveredContentMatchListAppliesNotContains(t *testing.T
 	})
 	parentCfg := parseInProject(t, project, []string{".", "--not-contains", "TODO"})
 	gitCtx := git.Detect(parentCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationConfigFromParsedCommand(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
+	discovered, err := discovery.EvaluateScope(command.InvocationFromParsed(parentCfg), gitCtx, 0, parsedExecutionScope(t, parentCfg), io.Discard, platform.Palette{})
 	if err != nil {
 		t.Fatalf("EvaluateScope: %v", err)
 	}

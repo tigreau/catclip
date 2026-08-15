@@ -18,6 +18,7 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	searchFiles := parseSearchGoFiles(t)
 	gitFiles := parseGitGoFiles(t)
 	commandFiles := parseCommandGoFiles(t)
+	updateCheckFiles := parseUpdateCheckGoFiles(t)
 	cliFiles := parseCLIGoFiles(t)
 	discoveryFiles := parseDiscoveryGoFiles(t)
 
@@ -39,6 +40,11 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	// catches calls of the form search.RipgrepBinary().
 	requireCallOnlyInAllowedFiles(t, files, "search.RipgrepBinary",
 		[]string{"required_tools.go"})
+	// Release checks are explicit-only. Keeping the sole call in the dedicated
+	// action prevents network work from drifting into startup, discovery,
+	// pickers, or clipboard completion.
+	requireCallOnlyInAllowedFiles(t, files, "updatecheck.Check",
+		[]string{"run_update_check.go"})
 
 	// fzf execution is confined to interactive_choose.go (the v0.6.6
 	// discovery file split), so the resolver core and other discovery files
@@ -61,6 +67,7 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	requireSearchPackageAvoidDomainDeps(t, searchFiles)
 	requireGitPackageAvoidDomainDeps(t, gitFiles)
 	requireCommandPackageAvoidDomainDeps(t, commandFiles)
+	requireUpdateCheckPackageAvoidDomainDeps(t, updateCheckFiles)
 	requireCLIPackageAllowedImports(t, cliFiles)
 	requirePreviewPlaceholdersStayStandalone(t, append(files, uiFiles...))
 }
@@ -514,6 +521,23 @@ func requirePlatformPackageAvoidDomainDeps(t *testing.T, files []parsedGoFile) {
 	}
 }
 
+// requireUpdateCheckPackageAvoidDomainDeps keeps the explicit release checker
+// independent of Catclip's discovery, output, picker, and rendering graph.
+func requireUpdateCheckPackageAvoidDomainDeps(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if strings.HasPrefix(importPath, "github.com/tigreau/catclip/") {
+				t.Errorf("%s imports %s; internal/updatecheck must stay a stdlib-only leaf", parsed.name, importPath)
+			}
+		}
+	}
+}
+
 // requireCLIPackageAllowedImports enforces the cli package boundary:
 // internal/cli is the parser / help / flag / validation layer, sitting
 // just above the leaf model packages. Per the v0.6.0 DAG it may import
@@ -727,6 +751,11 @@ func parseRenderGoFiles(t *testing.T) []parsedGoFile {
 func parsePlatformGoFiles(t *testing.T) []parsedGoFile {
 	t.Helper()
 	return parsePackageGoFiles(t, filepath.Join("internal", "platform"), "internal/platform")
+}
+
+func parseUpdateCheckGoFiles(t *testing.T) []parsedGoFile {
+	t.Helper()
+	return parsePackageGoFiles(t, filepath.Join("internal", "updatecheck"), "internal/updatecheck")
 }
 
 func parseSearchGoFiles(t *testing.T) []parsedGoFile {

@@ -540,7 +540,7 @@ func TestAllIgnoredTargetsIncludesIgnoredEntries(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "."})
 
 	resolver := discovery.Resolver{
-		Cfg:               invocationConfigFromParsedCommand(cfg),
+		Cfg:               command.InvocationFromParsed(cfg),
 		AllowFileSymlinks: false,
 	}
 
@@ -584,7 +584,7 @@ func TestAllIgnoredTargetsTracksNoTextDirectoryState(t *testing.T) {
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "."})
 
 	resolver := discovery.Resolver{
-		Cfg:               invocationConfigFromParsedCommand(cfg),
+		Cfg:               command.InvocationFromParsed(cfg),
 		GitCtx:            git.Detect(project),
 		AllowFileSymlinks: false,
 	}
@@ -4957,7 +4957,7 @@ func TestAllIgnoredTargetsNarrowsToScopeTargets(t *testing.T) {
 
 	cfg := parseInProject(t, project, []string{"--quiet", "--print", "repo"})
 	resolver := discovery.Resolver{
-		Cfg:               invocationConfigFromParsedCommand(cfg),
+		Cfg:               command.InvocationFromParsed(cfg),
 		AllowFileSymlinks: false,
 	}
 
@@ -4986,7 +4986,7 @@ func TestAllIgnoredTargetsNarrowsToScopeTargets(t *testing.T) {
 	})
 	ancestorCfg := parseInProject(t, ancestorProject, []string{"--quiet", "--print", "."})
 	ancestorResolver := discovery.Resolver{
-		Cfg:               invocationConfigFromParsedCommand(ancestorCfg),
+		Cfg:               command.InvocationFromParsed(ancestorCfg),
 		AllowFileSymlinks: false,
 	}
 	ancestors, err := ancestorResolver.AllIgnoredTargets([]string{"blocked/sub"})

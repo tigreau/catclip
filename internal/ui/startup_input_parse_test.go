@@ -51,6 +51,16 @@ func TestStartupValidationUsesCanonicalCLIMessages(t *testing.T) {
 	}
 }
 
+func TestCheckUpdateBypassesStartupPicker(t *testing.T) {
+	usePicker, err := shouldUseStartupPicker([]string{"--check-update"})
+	if err != nil {
+		t.Fatalf("shouldUseStartupPicker returned error: %v", err)
+	}
+	if usePicker {
+		t.Fatal("--check-update requested the startup picker")
+	}
+}
+
 func TestTargetBoundaryValidationParityAcrossStartupAndDiscovery(t *testing.T) {
 	abs := filepath.Join(string(filepath.Separator), "tmp", "project")
 	if runtime.GOOS == "windows" {

@@ -14,24 +14,6 @@ const (
 	tokenWarnThreshold = 100000
 )
 
-// invocationConfigFromParsedCommand is a dup of root catclip's
-// invocationConfigFromParsedCommand. UI can't import root, so the
-// constructor that builds command.Invocation from command.Parsed is
-// duplicated here. The two copies must stay in lockstep when new
-// invocation fields are added.
-func invocationConfigFromParsedCommand(cfg command.Parsed) command.Invocation {
-	return command.Invocation{
-		Version:      cfg.Version,
-		Platform:     cfg.Platform,
-		WorkingDir:   cfg.WorkingDir,
-		Verbose:      cfg.Verbose,
-		Quiet:        cfg.Quiet,
-		Headless:     cfg.Headless,
-		WithBinaries: cfg.WithBinaries,
-		Internal:     cfg.IsInternalKind(),
-	}
-}
-
 // normalizeRelPath is a dup of root catclip's normalizeRelPath and
 // discovery's private normalizeRelPath. UI uses it for path comparison
 // and display formatting.
@@ -46,16 +28,6 @@ func normalizeRelPath(value string) string {
 		return "."
 	}
 	return value
-}
-
-// resolvedInvocationFromParsedCommand duplicates the root constructor
-// so UI runners (internal_prediscovered, startup_sink_picker) can build
-// a Resolved invocation without importing root.
-func resolvedInvocationFromParsedCommand(cfg command.Parsed) command.Resolved {
-	return command.Resolved{
-		Config: invocationConfigFromParsedCommand(cfg),
-		Scopes: command.ExecutionScopesFromSpec(cfg.Command),
-	}
 }
 
 // emitConfigFromParsedCommand duplicates the root constructor so UI

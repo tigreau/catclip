@@ -174,6 +174,7 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: "-h, --help", Right: "Show this help"},
 		{Left: "--help-all", Right: "Full reference manual (every flag, every rule)"},
 		{Left: "--version", Right: "Show version"},
+		{Left: "--check-update", Right: "Check for a newer release and show how to update"},
 		{Left: "--hiss", Right: "Edit catclip's own ignore rules (applied on top of .gitignore)"},
 		{Left: "--hiss-reset", Right: "Reset catclip's ignore rules to defaults"},
 		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — your .gitignore(s) + .hiss, merged"},
@@ -689,6 +690,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 		{Left: "--hiss", Right: "Edit catclip's own ignore rules (on top of .gitignore)"},
 		{Left: "--hiss-reset", Right: "Reset catclip's ignore rules to defaults"},
 		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — .gitignore(s) + .hiss, merged"},
+		{Left: "--check-update", Right: "Check for a newer release and show the update command"},
 	})
 
 	return b.String()
