@@ -218,7 +218,10 @@ func installRoot(platform, executable string) string {
 		}
 		return root
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(executable), ".."))
+	// The command's target platform, not the host running Catclip's tests or
+	// tooling, determines path syntax. path keeps Unix update instructions
+	// slash-based even when this code executes on Windows.
+	return path.Clean(path.Join(path.Dir(executable), ".."))
 }
 
 func defaultWindowsInstallRoot() string {
