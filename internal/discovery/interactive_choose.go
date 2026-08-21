@@ -6,12 +6,15 @@ import (
 	"io"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/search"
 )
 
 func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll bool, selectedPaths []string) ([]TargetMatch, error) {
@@ -37,6 +40,10 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	}
 	var allTargets []TargetMatch
 	var err error
+	// A bare target picker already has to classify the complete visible file
+	// universe. Queue exact-size capture with that classifier, then begin its
+	// metadata reads after classification instead of in the first preview child.
+	r.CaptureTargetPreviewSizes = query == ""
 	if r.NoIgnore {
 		allTargets, err = r.AllNoIgnoreTargets(nil)
 		allTargets = eligibleTargetMatches(allTargets)
@@ -51,11 +58,7 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	// priority over fuzzy path matches. Preserve that same candidate set when
 	// the no-ignore picker opens; otherwise a query such as "src" unexpectedly
 	// shows thousands of weaker dependency-path matches.
-	if r.NoIgnore && query != "" {
-		if exact := exactBasenameTargetMatches(allTargets, query); len(exact) > 0 {
-			allTargets = exact
-		}
-	}
+	allTargets, previewInventory := targetPickerMatchSets(allTargets, r.NoIgnore, query)
 	options := make([]TargetMatch, 0, len(allTargets))
 	for _, target := range allTargets {
 		if CoveredBySelection(target.Path, selectedPaths) {
@@ -72,6 +75,12 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	if match, ok := exactInteractiveTargetMatch(options, query); ok {
 		return []TargetMatch{match}, nil
 	}
+	sizeCapture := r.ensureTargetPreviewSizeCapture(previewInventory)
+	// The picker-specific setup also stops the capture so it can join its
+	// sidecar writer before removing the session directory. This outer guard
+	// covers failures that happen before that setup exists (missing fzf or an
+	// unavailable temporary directory). Stop is idempotent.
+	defer sizeCapture.Stop()
 
 	path, err := FuzzyResolverBinary()
 	if err != nil {
@@ -81,7 +90,7 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	labels, index := TargetMatchLabels(options)
 	header := TargetPickerHeaderWithEscHint(prompt, r.StartupEscHint)
 	revealedHeader := styledTargetPickerHeaderWithSymbols(prompt, r.StartupEscHint, platform.ActivePalette())
-	selectedLabels, err := chooseManyTargetMatchesWithFzfChrome(path, query, prompt, header, revealedHeader, labels, false, r.WithBinaries)
+	selectedLabels, err := chooseManyTargetMatchesWithFzfChrome(path, query, prompt, header, revealedHeader, labels, previewInventory, r.GitCtx, sizeCapture, false, r.WithBinaries)
 	if err != nil {
 		return nil, err
 	}
@@ -100,6 +109,20 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 		return nil, ErrSelectionCancelled
 	}
 	return selected, nil
+}
+
+func targetPickerMatchSets(allTargets []TargetMatch, noIgnore bool, query string) (candidates, previewInventory []TargetMatch) {
+	// Candidate narrowing changes only what fzf offers. The preview inventory
+	// must retain the complete classified universe so a selected directory can
+	// still project all of its descendant files.
+	previewInventory = allTargets
+	candidates = allTargets
+	if noIgnore && query != "" {
+		if exact := exactBasenameTargetMatches(allTargets, query); len(exact) > 0 {
+			candidates = exact
+		}
+	}
+	return candidates, previewInventory
 }
 
 func exactInteractiveTargetMatch(options []TargetMatch, query string) (TargetMatch, bool) {
@@ -497,15 +520,77 @@ func contentMatchReloadBindings(reloadCommand, searchingPreviewCommand string) [
 }
 
 func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind, state string, includeTarget, withBinaries bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", "", FzfPreviewCommand(includeTarget, withBinaries), formatFzfCandidates(candidates, kind, state))
+	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", "", staticPreviewCommand(FzfPreviewCommand(includeTarget, withBinaries)), formatFzfCandidates(candidates, kind, state))
 }
 
-func chooseManyTargetMatchesWithFzfChrome(bin, query, prompt, header, revealedHeader string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", header, revealedHeader, FzfPreviewCommand(includeTarget, withBinaries), candidates)
+func chooseManyTargetMatchesWithFzfChrome(bin, query, prompt, header, revealedHeader string, candidates []string, inventory []TargetMatch, gitCtx git.Context, sizeCapture *search.TextSizeCapture, includeTarget, withBinaries bool) ([]string, error) {
+	previewBuilder := func(sessionDir string) previewCommandSetup {
+		inventoryPath := filepath.Join(sessionDir, "targets.bin")
+		sizesPending := !sizeCapture.Complete()
+		// Check completion before taking the snapshot. If capture finishes after
+		// this check, the inventory may conservatively stay pending and the
+		// sidecar writer will publish the same final snapshot. Checking in the
+		// opposite order could mark an incomplete snapshot final.
+		currentInventory := ApplyTargetPreviewSizes(inventory, sizeCapture.Snapshot())
+		finishBench := platform.InternalBenchSpan("discovery.target_picker.write_preview_inventory",
+			"matches", platform.InternalBenchInt(len(inventory)),
+			"sizes_pending", platform.InternalBenchBool(sizesPending),
+		)
+		err := WriteTargetPreviewInventoryWithOptions(inventoryPath, gitCtx, currentInventory, TargetPreviewInventoryWriteOptions{
+			SizesPending: sizesPending,
+		})
+		finishBench("err", platform.InternalBenchError(err))
+		if err != nil {
+			return previewCommandSetup{
+				Command: FzfPreviewCommand(includeTarget, withBinaries),
+				Cleanup: sizeCapture.Stop,
+			}
+		}
+		if !sizesPending {
+			return previewCommandSetup{
+				Command: FzfPreviewCommandWithInventory(inventoryPath, withBinaries),
+				Cleanup: sizeCapture.Stop,
+			}
+		}
+
+		writerDone := make(chan struct{})
+		go func() {
+			defer close(writerDone)
+			<-sizeCapture.Done()
+			if sizeCapture.Cancelled() {
+				// The picker is closing, so no future preview can consume a full
+				// sidecar. Wake any current waiter without delaying the next
+				// interactive screen on a large, now-useless serialization pass.
+				_ = os.WriteFile(TargetPreviewSizedInventoryDonePath(inventoryPath), nil, 0o600)
+				return
+			}
+			completed := ApplyTargetPreviewSizes(inventory, sizeCapture.Snapshot())
+			finishFinal := platform.InternalBenchSpan("discovery.target_picker.write_sized_preview_inventory",
+				"matches", platform.InternalBenchInt(len(inventory)),
+			)
+			writeErr := WriteTargetPreviewInventory(
+				TargetPreviewSizedInventoryPath(inventoryPath),
+				gitCtx,
+				completed,
+			)
+			finishFinal("err", platform.InternalBenchError(writeErr))
+			// The done marker is best-effort. It prevents a child waiting on a
+			// failed sized-inventory write from blocking for the picker lifetime.
+			_ = os.WriteFile(TargetPreviewSizedInventoryDonePath(inventoryPath), nil, 0o600)
+		}()
+		return previewCommandSetup{
+			Command: FzfPreviewCommandWithInventory(inventoryPath, withBinaries),
+			Cleanup: func() {
+				sizeCapture.Stop()
+				<-writerDone
+			},
+		}
+	}
+	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", header, revealedHeader, previewBuilder, candidates)
 }
 
 func chooseManyTargetMatchesWithFzf(bin, query, prompt string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
-	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", "", "", FzfPreviewCommand(includeTarget, withBinaries), candidates)
+	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", "", "", staticPreviewCommand(FzfPreviewCommand(includeTarget, withBinaries)), candidates)
 }
 
 type fzfChooseResult struct {
@@ -514,18 +599,39 @@ type fzfChooseResult struct {
 	Matches []string
 }
 
-func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, revealedHeader, previewCommand string, candidates []string) ([]string, error) {
+type previewCommandSetup struct {
+	Command string
+	Cleanup func()
+}
+
+func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, revealedHeader string, previewCommandBuilder func(string) previewCommandSetup, candidates []string) ([]string, error) {
 	platform.StopActiveSpinner()
+	previewSession, err := os.MkdirTemp("", "catclip-target-preview-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		picker.StopPreviewProcess(previewSession, picker.TargetPreviewPIDFile)
+		_ = os.RemoveAll(previewSession)
+	}()
+	setup := previewCommandSetup{}
+	if previewCommandBuilder != nil {
+		setup = previewCommandBuilder(previewSession)
+	}
+	if setup.Cleanup != nil {
+		defer setup.Cleanup()
+	}
 	req := picker.Request{
 		Query:          query,
 		Prompt:         prompt,
 		WithNth:        withNth,
 		Nth:            nth,
 		Header:         header,
-		PreviewCommand: previewCommand,
+		PreviewCommand: setup.Command,
 		Multi:          true,
 		Bindings:       MultiSelectPickerBindings(),
 		Lines:          candidates,
+		Env:            environmentWithValue(picker.TargetPreviewSessionEnv, previewSession),
 	}
 	if revealedHeader != "" {
 		req.Bindings = append(req.Bindings, targetPickerRevealHeaderBinding(revealedHeader))
@@ -541,6 +647,24 @@ func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, revealed
 		return nil, ErrSelectionCancelled
 	}
 	return result.Matches, nil
+}
+
+func staticPreviewCommand(command string) func(string) previewCommandSetup {
+	return func(string) previewCommandSetup { return previewCommandSetup{Command: command} }
+}
+
+func environmentWithValue(name, value string) []string {
+	prefix := name + "="
+	env := os.Environ()
+	out := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		key, _, ok := strings.Cut(item, "=")
+		if ok && strings.EqualFold(key, name) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return append(out, prefix+value)
 }
 
 func targetPickerRevealHeaderBinding(header string) string {

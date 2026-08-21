@@ -34,6 +34,7 @@ type Request struct {
 	ExpectKeys     []string
 	Bindings       []string
 	Lines          []string
+	Env            []string
 }
 
 // Result contains the query and selected item keys returned by fzf.
@@ -120,6 +121,9 @@ func Run(bin string, req Request) (Result, error) {
 	cmd := exec.Command(bin, args...)
 	cmd.Stdin = strings.NewReader(input)
 	cmd.Stderr = os.Stderr
+	if req.Env != nil {
+		cmd.Env = req.Env
+	}
 	if benchEnabled {
 		platform.InternalBenchLog("picker.fzf.ready", append(benchFields,
 			"args", platform.InternalBenchInt(len(args)),

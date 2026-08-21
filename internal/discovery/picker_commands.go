@@ -17,6 +17,17 @@ import (
 // has settled entries. SCC does not apply there; modifier previews use the
 // checkpoint wrappers in startup_picker.go / fzfCheckpointContentMatchListCommand.
 func FzfPreviewCommand(_ bool, withBinaries ...bool) string {
+	return fzfPreviewCommand("", withBinaries...)
+}
+
+// FzfPreviewCommandWithInventory makes target preview children project their
+// selection from the parent picker's compact inventory instead of rediscovering
+// and reclassifying the project on every focus change.
+func FzfPreviewCommandWithInventory(inventoryPath string, withBinaries ...bool) string {
+	return fzfPreviewCommand(inventoryPath, withBinaries...)
+}
+
+func fzfPreviewCommand(inventoryPath string, withBinaries ...bool) string {
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
 		return ""
@@ -30,7 +41,11 @@ func FzfPreviewCommand(_ bool, withBinaries ...bool) string {
 
 	// {+2} passes all selected targets (falls back to focused when none selected).
 	// {2}/{3}/{4} are the focused entry's metadata for tree highlight.
-	return selfQ + ` --quiet` + binaryFlag + ` --internal-tree-preview` +
+	command := selfQ + ` --quiet` + binaryFlag + ` --internal-tree-preview`
+	if inventoryPath != "" {
+		command += ` --internal-target-inventory ` + ShellQuoteArg(inventoryPath)
+	}
+	return command +
 		` --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4}` +
 		` {+2}`
 }

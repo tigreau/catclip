@@ -1,6 +1,7 @@
 package catclip
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,8 +12,26 @@ import (
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/output"
 	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/search"
 	"github.com/tigreau/catclip/internal/ui"
 )
+
+func executeFreshTargetTreePreview(
+	stdout io.Writer,
+	renderCfg ui.RenderConfig,
+	gitCtx git.Context,
+	entries []discovery.Entry,
+	summary DiagnosticSummary,
+) error {
+	if summary.HasError {
+		return newExitError(1, "")
+	}
+	err := ui.RenderFreshTargetTreePreview(search.ReloadCancelContext(), stdout, renderCfg, gitCtx, entries)
+	if errors.Is(err, ui.ErrTreePayloadEmptyNoTarget) || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
 
 type outputExecutionContext struct {
 	Invocation command.Invocation

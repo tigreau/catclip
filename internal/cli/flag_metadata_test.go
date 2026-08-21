@@ -109,6 +109,7 @@ func TestFixedValueCount(t *testing.T) {
 		{flag: "--contains", want: 1},
 		{flag: "--input-dir", want: 1},
 		{flag: "--internal-prediscovered", want: 1},
+		{flag: "--internal-target-inventory", want: 1},
 		{flag: "--internal-sink-preview", want: 3},
 		{flag: "--only", want: 0},
 		{flag: "--recent", want: 0},

@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/tigreau/catclip/internal/picker"
 )
 
 // Predecessor-kill identifiers. Each preview handler that wants the
@@ -17,6 +19,24 @@ const (
 	predecessorBucketContentMatch = "content-match-pid.txt"
 	predecessorBucketFilePreview  = "file-preview-pid.txt"
 )
+
+// KillSupersededTargetTreePreview stops the previous focus-preview helper in
+// this target picker session. fzf terminates superseded helpers on Unix; this
+// explicit coordination supplies the equivalent behavior on Windows.
+func KillSupersededTargetTreePreview() {
+	sessionDir := strings.TrimSpace(os.Getenv(picker.TargetPreviewSessionEnv))
+	if sessionDir == "" {
+		return
+	}
+	picker.ClaimPreviewProcess(sessionDir, picker.TargetPreviewPIDFile)
+}
+
+// TargetTreePreviewSessionActive reports whether this helper was launched by
+// a live target picker rather than invoked directly for a diagnostic/test
+// preview command.
+func TargetTreePreviewSessionActive() bool {
+	return strings.TrimSpace(os.Getenv(picker.TargetPreviewSessionEnv)) != ""
+}
 
 // killSupersededPredecessor is the Windows orphan-child workaround for
 // preview handlers fzf re-spawns on every keystroke / focus change.

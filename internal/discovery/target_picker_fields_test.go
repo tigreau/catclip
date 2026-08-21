@@ -1,12 +1,58 @@
 package discovery
 
 import (
+	"os"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 )
+
+func TestNoIgnoreCandidateNarrowingKeepsFullPreviewInventory(t *testing.T) {
+	all := []TargetMatch{
+		{Path: "src", Kind: treeTargetKindDir},
+		{Path: "src/a.ts", Kind: treeTargetKindFile},
+		{Path: "other/src", Kind: treeTargetKindDir},
+		{Path: "other/src/b.ts", Kind: treeTargetKindFile},
+	}
+	candidates, inventory := targetPickerMatchSets(all, true, "src")
+	if got, want := targetMatchPaths(candidates), []string{"src", "other/src"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidate paths = %v, want %v", got, want)
+	}
+	if got, want := targetMatchPaths(inventory), targetMatchPaths(all); !reflect.DeepEqual(got, want) {
+		t.Fatalf("preview inventory paths = %v, want %v", got, want)
+	}
+}
+
+func targetMatchPaths(matches []TargetMatch) []string {
+	out := make([]string, len(matches))
+	for index := range matches {
+		out[index] = matches[index].Path
+	}
+	return out
+}
+
+func TestTargetPickerSessionEnvironmentReplacesInheritedValue(t *testing.T) {
+	t.Setenv(picker.TargetPreviewSessionEnv, "stale-session")
+	env := environmentWithValue(picker.TargetPreviewSessionEnv, "current-session")
+	want := picker.TargetPreviewSessionEnv + "=current-session"
+	count := 0
+	for _, item := range env {
+		key, _, ok := strings.Cut(item, "=")
+		if ok && strings.EqualFold(key, picker.TargetPreviewSessionEnv) {
+			count++
+			if item != want {
+				t.Fatalf("target preview environment = %q, want %q", item, want)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("target preview environment entries = %d, want 1 (process env had %d entries)", count, len(os.Environ()))
+	}
+}
 
 func TestStyledTargetPickerHeaderAccentsOnlyMatchSymbols(t *testing.T) {
 	plain := strings.TrimSuffix(TargetPickerHeaderWithEscHint("select> ", ""), "\n") + "\n" + TargetPickerSymbolsHint()

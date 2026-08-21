@@ -75,6 +75,8 @@ type TargetMatch struct {
 	State        string
 	Ignored      bool
 	IgnoreSource string
+	SizeBytes    int64
+	SizeKnown    bool
 }
 
 // StartupTargetOutcome describes the routing decision established by the

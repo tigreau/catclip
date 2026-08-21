@@ -250,6 +250,7 @@ var extraFixedValueCounts = map[string]int{
 	"--input-dir":                   1,
 	"--input-stem":                  1,
 	"--internal-prediscovered":      1,
+	"--internal-target-inventory":   1,
 	"--internal-tree-target":        1,
 	"--internal-tree-kind":          1,
 	"--internal-tree-state":         1,

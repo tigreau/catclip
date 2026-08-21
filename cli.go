@@ -77,6 +77,68 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		if cfg.TreePreview && cfg.TreeInputDir != "" {
 			return ui.RunInternalTreePayloadFilePreview(cfg.TreeInputDir, cfg.TreeInputStem, stdout)
 		}
+		if cfg.TreePreview && cfg.TargetPreviewInventory != "" {
+			ui.KillSupersededTargetTreePreview()
+			resolved := command.ResolvedFromParsed(cfg)
+			if !freshTargetTreePreviewScopesEligible(resolved.Scopes) || len(resolved.Scopes) != 1 {
+				return fmt.Errorf("target inventory preview does not accept filter or output stages")
+			}
+			finishRead := platform.InternalBenchSpan("ui.target_tree_preview.inventory_read")
+			inventory, err := discovery.ReadTargetPreviewInventory(cfg.TargetPreviewInventory, resolved.Config.WorkingDir)
+			finishRead(
+				"err", platform.InternalBenchError(err),
+				"entries", platform.InternalBenchInt(len(inventory.Entries)),
+			)
+			if err != nil {
+				return err
+			}
+			// Prefer the completed session snapshot when it already exists. The
+			// base inventory remains the immediate path that lets fzf open while
+			// the parent-owned size capture is still finishing.
+			if inventory.SizesPending {
+				if sized, sizedErr := discovery.ReadTargetPreviewInventory(
+					discovery.TargetPreviewSizedInventoryPath(cfg.TargetPreviewInventory),
+					resolved.Config.WorkingDir,
+				); sizedErr == nil {
+					inventory = sized
+				} else if !os.IsNotExist(sizedErr) {
+					return sizedErr
+				}
+			}
+			finishSelect := platform.InternalBenchSpan("ui.target_tree_preview.inventory_select",
+				"entries", platform.InternalBenchInt(len(inventory.Entries)),
+			)
+			entries := discovery.SelectTargetPreviewEntries(inventory.Entries, resolved.Scopes[0].Targets)
+			finishSelect("selected", platform.InternalBenchInt(len(entries)))
+			if inventory.SizesPending && targetPreviewUnknownSizeCount(entries) >= targetPreviewSharedSizeWaitThreshold {
+				finishWait := platform.InternalBenchSpan("ui.target_tree_preview.inventory_size_wait",
+					"selected", platform.InternalBenchInt(len(entries)),
+				)
+				sized, ok, waitErr := discovery.WaitForTargetPreviewSizedInventory(
+					search.ReloadCancelContext(),
+					cfg.TargetPreviewInventory,
+					resolved.Config.WorkingDir,
+				)
+				finishWait("err", platform.InternalBenchError(waitErr), "ready", platform.InternalBenchBool(ok))
+				if waitErr != nil {
+					if search.ReloadWasCancelled() {
+						return nil
+					}
+					return waitErr
+				}
+				if ok {
+					inventory = sized
+					entries = discovery.SelectTargetPreviewEntries(inventory.Entries, resolved.Scopes[0].Targets)
+				}
+			}
+			return executeFreshTargetTreePreview(
+				stdout,
+				ui.RenderConfigFromParsedCommand(cfg),
+				inventory.GitContext,
+				entries,
+				DiagnosticSummary{},
+			)
+		}
 		if cfg.PrediscoveredPath != "" {
 			prediscoveredCfg := ui.PrediscoveredCommandConfigFromParsedCommand(cfg)
 			if cfg.ContentMatchList {
@@ -128,6 +190,9 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		if cfg.SinkPreviewModePath != "" {
 			return ui.RunInternalSinkPreview(cfg.SinkPreviewModePath, cfg.SinkPreviewOutputPath, cfg.SinkPreviewTreePath, stdout)
 		}
+		if cfg.TreePreview {
+			ui.KillSupersededTargetTreePreview()
+		}
 
 		colors := platform.ActivePalette()
 		started := time.Now()
@@ -142,6 +207,10 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 			"has_head", platform.InternalBenchBool(gitCtx.HasHead),
 		)
 		commandScopes := resolved.Scopes
+		freshTargetScopesEligible := freshTargetTreePreviewScopesEligible(commandScopes)
+		if cfg.TreePreview && prepared == nil && ui.TargetTreePreviewSessionActive() && !freshTargetScopesEligible {
+			return fmt.Errorf("fresh target preview does not accept filter or output stages")
+		}
 		if cfg.Verbose {
 			fmt.Fprintf(stderr, "[verbose] parsed %d scope(s)\n", len(commandScopes))
 			for i, s := range commandScopes {
@@ -152,6 +221,7 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 			discoveryResult discovery.Result
 			outputPlan      output.Plan
 		)
+		freshTargetTreePreview := cfg.TreePreview && prepared == nil && freshTargetScopesEligible
 		if prepared != nil {
 			gitCtx = prepared.Git
 			discoveryResult = prepared.Discovery
@@ -191,16 +261,18 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 				return err
 			}
 			discoverySpinnerStop()
-			finishPlanBench := platform.InternalBenchSpan("cli.run.build_plan",
-				"scopes", platform.InternalBenchInt(len(discoveryResult.Invocation.Scopes)),
-			)
-			outputPlan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
-			finishPlanBench(
-				"err", platform.InternalBenchError(err),
-				"items", platform.InternalBenchInt(outputPlan.Len()),
-			)
-			if err != nil {
-				return err
+			if !freshTargetTreePreview {
+				finishPlanBench := platform.InternalBenchSpan("cli.run.build_plan",
+					"scopes", platform.InternalBenchInt(len(discoveryResult.Invocation.Scopes)),
+				)
+				outputPlan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+				finishPlanBench(
+					"err", platform.InternalBenchError(err),
+					"items", platform.InternalBenchInt(outputPlan.Len()),
+				)
+				if err != nil {
+					return err
+				}
 			}
 		}
 		if cfg.Verbose {
@@ -216,6 +288,17 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		diagnostics = append(diagnostics, discoveryResult.Diagnostics...)
 		notices := discoveryResult.Notices
 		diagnosticSummary := summarizeDiagnostics(diagnostics, discoveryResult.HadSelectionCancel)
+		if freshTargetTreePreview {
+			entries := make([]discovery.Entry, 0)
+			for _, scope := range discoveryResult.Invocation.Scopes {
+				entries = append(entries, scope.Entries...)
+			}
+			err := executeFreshTargetTreePreview(stdout, renderCfg, gitCtx, entries, diagnosticSummary)
+			if err != nil && search.ReloadWasCancelled() {
+				return nil
+			}
+			return err
+		}
 		outputCtx := outputExecutionContext{
 			Invocation: invocationCfg,
 			Render:     renderCfg,
@@ -240,6 +323,29 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 	default:
 		return fmt.Errorf("unknown action %q", cfg.Action)
 	}
+}
+
+const targetPreviewSharedSizeWaitThreshold = 4096
+
+func targetPreviewUnknownSizeCount(entries []discovery.Entry) int {
+	unknown := 0
+	for index := range entries {
+		if !entries[index].SizeKnown {
+			unknown++
+		}
+	}
+	return unknown
+}
+
+func freshTargetTreePreviewScopesEligible(scopes []command.ExecutionScope) bool {
+	if len(scopes) != 1 {
+		return false
+	}
+	scope := scopes[0]
+	if len(scope.Stages) != 0 || scope.Paths || scope.OutputMode() != command.EntryModeFull {
+		return false
+	}
+	return true
 }
 
 func shouldSeparateStdoutPayload(emitCfg output.EmitConfig, invocationCfg command.Invocation, stdout, stderr io.Writer) bool {
@@ -457,6 +563,7 @@ func runResetHiss(cfg hissConfig, stderr io.Writer) error {
 type internalCommandConfig struct {
 	TreePreview            bool
 	PrediscoveredPath      string
+	TargetPreviewInventory string
 	TreeInputDir           string
 	TreeInputStem          string
 	FileSetSelectionPath   string
@@ -475,6 +582,7 @@ func internalCommandConfigFromParsedCommand(cfg command.Parsed) internalCommandC
 	return internalCommandConfig{
 		TreePreview:            cfg.TreePreview,
 		PrediscoveredPath:      cfg.PrediscoveredPath,
+		TargetPreviewInventory: cfg.TargetPreviewInventory,
 		TreeInputDir:           cfg.TreeInputDir,
 		TreeInputStem:          cfg.TreeInputStem,
 		FileSetSelectionPath:   cfg.FileSetSelectionPath,
@@ -494,6 +602,9 @@ func validateImplementedFeatureSet(cfg internalCommandConfig) error {
 	if cfg.PrediscoveredPath != "" && !cfg.TreePreview && !cfg.ContentMatchList && !cfg.LinesPreview && !cfg.FilePreview {
 		return newUsageError("Error: --internal-prediscovered requires --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview.")
 	}
+	if cfg.TargetPreviewInventory != "" && !cfg.TreePreview {
+		return newUsageError("Error: --internal-target-inventory requires --internal-tree-preview.")
+	}
 	if cfg.FileSearchingPreview && !cfg.FilePreview {
 		return newUsageError("Error: --internal-searching-preview requires --internal-file-preview.")
 	}
@@ -508,6 +619,9 @@ func validateImplementedFeatureSet(cfg internalCommandConfig) error {
 	}
 	if cfg.PrediscoveredPath != "" && cfg.TreeInputDir != "" {
 		return newUsageError("Error: --internal-tree-preview accepts either --internal-prediscovered or --input-dir/--input-stem, not both.")
+	}
+	if cfg.TargetPreviewInventory != "" && (cfg.PrediscoveredPath != "" || cfg.TreeInputDir != "") {
+		return newUsageError("Error: --internal-target-inventory cannot be combined with another tree preview input.")
 	}
 	if (cfg.FileSetSelectionPath != "" || cfg.FileSetSelectionStage != "") && (cfg.PrediscoveredPath == "" || !cfg.TreePreview) {
 		return newUsageError("Error: --internal-file-set-selection requires --internal-prediscovered and --internal-tree-preview.")

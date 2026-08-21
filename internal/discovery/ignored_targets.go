@@ -27,12 +27,32 @@ func (r *Resolver) allVisibleTargets() ([]TargetMatch, error) {
 		targets = append(targets, TargetMatch{Path: rel, Kind: "dir", State: treeTargetStateOK})
 	}
 	for _, entry := range r.VisibleFileList {
-		targets = append(targets, TargetMatch{Path: entry.RelPath, Kind: "file", State: treeTargetStateText})
+		targets = append(targets, TargetMatch{
+			Path:      entry.RelPath,
+			Kind:      "file",
+			State:     treeTargetStateText,
+			SizeBytes: entry.SizeBytes,
+			SizeKnown: entry.SizeKnown,
+		})
 	}
 
 	r.interactiveTargets = targets
 	r.interactiveTargetsOk = true
 	return append([]TargetMatch(nil), targets...), nil
+}
+
+func (r *Resolver) ensureTargetPreviewSizeCapture(matches []TargetMatch) *search.TextSizeCapture {
+	if r.targetPreviewSizes != nil && !r.targetPreviewSizes.Cancelled() {
+		return r.targetPreviewSizes
+	}
+	paths := make([]string, 0, len(matches))
+	for _, match := range matches {
+		if match.Kind == treeTargetKindFile {
+			paths = append(paths, match.Path)
+		}
+	}
+	r.targetPreviewSizes = search.StartTextSizeCapture(r.Cfg.WorkingDir, paths)
+	return r.targetPreviewSizes
 }
 
 // AdoptVisibleTargetInventoryFrom publishes a complete target inventory built

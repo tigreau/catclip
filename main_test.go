@@ -2309,6 +2309,14 @@ func TestFzfPreviewCommandIncludesBinaryPolicy(t *testing.T) {
 	}
 }
 
+func TestFzfPreviewCommandIncludesTargetInventory(t *testing.T) {
+	inventoryPath := "/tmp/catclip target inventory.bin"
+	command := discovery.FzfPreviewCommandWithInventory(inventoryPath, false)
+	if !strings.Contains(command, "--internal-target-inventory "+discovery.ShellQuoteArg(inventoryPath)) {
+		t.Fatalf("expected target inventory handoff, got %q", command)
+	}
+}
+
 func TestFzfContentPreviewCommandUsesFilePreviewRenderer(t *testing.T) {
 	command := discovery.FzfContentPreviewCommand("--contains", "")
 	self, err := os.Executable()

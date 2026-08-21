@@ -351,6 +351,36 @@ func ClassifyTextPaths(workingDir string, relPaths []string) (map[string]struct{
 	return set, nil
 }
 
+// ClassifyTextPathsWithSizeCapture applies the same classifier as
+// ClassifyTextPaths while opportunistically collecting Lstat sizes for files
+// that classify as text. Known-text names enter the bounded size queue before
+// the residue NUL scan, but metadata workers start only after classification
+// so fzf list readiness never competes with speculative Lstat work.
+// Known-binary files are never queued; when the
+// existing empty-file admission pass proves one is an empty text file, its
+// already-known zero size is recorded directly.
+func ClassifyTextPathsWithSizeCapture(workingDir string, relPaths []string) (map[string]struct{}, *TextSizeCapture, error) {
+	finishBench := platform.InternalBenchSpan("search.rg.text_paths",
+		"paths", platform.InternalBenchInt(len(relPaths)),
+		"classifier", "hybrid+sizes",
+	)
+	set, stats, capture, err := classifyEnumeratedTextPathsWithSizeCapture(workingDir, relPaths)
+	if err != nil {
+		finishBench("err", "true", "residue_err", "true")
+		return nil, nil, err
+	}
+	finishBench("err", "false",
+		"results", platform.InternalBenchInt(len(set)),
+		"name_text", platform.InternalBenchInt(stats.nameText),
+		"name_binary", platform.InternalBenchInt(stats.nameBinary),
+		"residue_scan_count", platform.InternalBenchInt(stats.residueCount),
+		"residue_text_count", platform.InternalBenchInt(stats.residueText),
+		"residue_stat_count", platform.InternalBenchInt(stats.statCount),
+		"residue_admitted_count", platform.InternalBenchInt(stats.admitted),
+	)
+	return set, capture, nil
+}
+
 type textClassificationStats struct {
 	nameText     int
 	nameBinary   int
@@ -361,37 +391,69 @@ type textClassificationStats struct {
 }
 
 func classifyEnumeratedTextPaths(workingDir string, allPaths []string) (map[string]struct{}, textClassificationStats, error) {
+	set, stats, _, err := classifyEnumeratedTextPathsInternal(workingDir, allPaths, false)
+	return set, stats, err
+}
+
+func classifyEnumeratedTextPathsWithSizeCapture(workingDir string, allPaths []string) (map[string]struct{}, textClassificationStats, *TextSizeCapture, error) {
+	return classifyEnumeratedTextPathsInternal(workingDir, allPaths, true)
+}
+
+func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, captureSizes bool) (map[string]struct{}, textClassificationStats, *TextSizeCapture, error) {
 	stats := textClassificationStats{}
+	var capture *TextSizeCapture
+	if captureSizes {
+		capture = newTextSizeCapture(workingDir)
+	}
 
 	set := make(map[string]struct{}, len(allPaths))
 	residue := make([]string, 0, 32)
+	knownText := make([]string, 0, len(allPaths))
 	for _, rel := range allPaths {
 		switch classifyPathByName(rel) {
 		case nameClassText:
 			set[rel] = struct{}{}
+			if capture != nil {
+				knownText = append(knownText, rel)
+			}
 		case nameClassBinary:
 			stats.nameBinary++
 		default:
 			residue = append(residue, rel)
 		}
 	}
+	if capture != nil {
+		capture.add(knownText)
+	}
 
 	stats.residueCount = len(residue)
 	if len(residue) > 0 {
 		scanned, scanErr := runRipgrepNulScanFiles(workingDir, residue)
 		if scanErr != nil {
-			return nil, stats, scanErr
+			if capture != nil {
+				capture.Stop()
+			}
+			return nil, stats, nil, scanErr
 		}
 		stats.residueText = len(scanned)
+		acceptedResidue := make([]string, 0, len(scanned))
 		for rel := range scanned {
 			set[rel] = struct{}{}
+			acceptedResidue = append(acceptedResidue, rel)
+		}
+		if capture != nil {
+			capture.add(acceptedResidue)
 		}
 	}
 
-	stats.statCount, stats.admitted = admitEmptyFilesToTextSet(workingDir, allPaths, set)
+	stats.statCount, stats.admitted = admitEmptyFilesToTextSet(workingDir, allPaths, set, capture)
 	stats.nameText = len(set) - stats.residueText - stats.admitted
 	recordTextClassificationResidue(residue, stats.residueText)
-	return set, stats, nil
+	if capture != nil {
+		capture.boostWorkers()
+		capture.closeInput()
+	}
+	return set, stats, capture, nil
 }
 
 // runRipgrepNulScanFiles runs the definitional full-file NUL scan
@@ -506,7 +568,7 @@ func TextClassificationResidue() (paths []string, textCount int) {
 //
 // allPaths is the already-enumerated --no-ignore universe, so empty files in
 // blocked subtrees are considered too without a second rg walk.
-func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[string]struct{}) (statCount, admittedCount int) {
+func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[string]struct{}, capture *TextSizeCapture) (statCount, admittedCount int) {
 	for _, rel := range allPaths {
 		if _, ok := set[rel]; ok {
 			continue
@@ -519,6 +581,9 @@ func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[stri
 		}
 		if info.Size() == 0 && info.Mode().IsRegular() {
 			set[rel] = struct{}{}
+			if capture != nil {
+				capture.record(rel, 0)
+			}
 			admittedCount++
 		}
 	}

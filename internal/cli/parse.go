@@ -199,6 +199,12 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			}
 			i++
 			cfg.PrediscoveredPath = args[i]
+		case "--internal-target-inventory":
+			if i+1 >= len(args) {
+				return command.Parsed{}, newUsageError("Error: --internal-target-inventory requires an inventory path.")
+			}
+			i++
+			cfg.TargetPreviewInventory = args[i]
 		case "--internal-tree-target":
 			if i+1 >= len(args) {
 				return command.Parsed{}, newUsageError("Error: --internal-tree-target requires a path.")

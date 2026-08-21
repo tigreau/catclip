@@ -1,6 +1,7 @@
 package git
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 )
@@ -10,10 +11,19 @@ import (
 // pathspec batch would be too large for git's argv limit, falls back to a
 // full-repo scan.
 func StatusMapForPathspecs(ctx Context, pathspecs []string) (map[string]string, error) {
-	out, err := statusOutput(ctx, pathspecs)
+	return StatusMapForPathspecsContext(context.Background(), ctx, pathspecs)
+}
+
+// StatusMapForPathspecsContext is StatusMapForPathspecs with cancellation for
+// short-lived preview helpers that fzf can supersede while git is running.
+func StatusMapForPathspecsContext(cancelCtx context.Context, ctx Context, pathspecs []string) (map[string]string, error) {
+	out, err := statusOutput(cancelCtx, ctx, pathspecs)
 	if err != nil {
+		if cancelErr := cancelCtx.Err(); cancelErr != nil {
+			return nil, cancelErr
+		}
 		if len(pathspecs) > 0 {
-			out, err = statusOutput(ctx, nil)
+			out, err = statusOutput(cancelCtx, ctx, nil)
 		}
 		if err != nil {
 			return nil, err
@@ -22,13 +32,13 @@ func StatusMapForPathspecs(ctx Context, pathspecs []string) (map[string]string, 
 	return parseStatusMap(ctx, string(out)), nil
 }
 
-func statusOutput(ctx Context, pathspecs []string) ([]byte, error) {
+func statusOutput(cancelCtx context.Context, ctx Context, pathspecs []string) ([]byte, error) {
 	args := []string{"status", "--porcelain"}
 	if len(pathspecs) > 0 && canScopeStatusPathspecs(pathspecs) {
 		args = append(args, "--")
 		args = append(args, pathspecs...)
 	}
-	cmd := exec.Command("git", args...)
+	cmd := exec.CommandContext(cancelCtx, "git", args...)
 	cmd.Dir = ctx.Root
 	return cmd.Output()
 }

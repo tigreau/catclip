@@ -28,18 +28,24 @@ var ErrSelectionCancelled = errors.New("selection cancelled")
 // ApplyPrediscoveredScopeTail). All other fields are runtime-derived
 // state managed by Resolver methods, and stay lowercase.
 type Resolver struct {
-	Cfg                  command.Invocation
-	GitCtx               git.Context
-	AllowFileSymlinks    bool
-	WithBinaries         bool
-	NoIgnore             bool
-	WantedBasenames      map[string]struct{}
-	ScopeTargets         []string
-	StartupEscHint       string
-	textFileSet          map[string]struct{}
-	textFileSetReady     bool
-	interactiveTargets   []TargetMatch
-	interactiveTargetsOk bool
+	Cfg               command.Invocation
+	GitCtx            git.Context
+	AllowFileSymlinks bool
+	WithBinaries      bool
+	NoIgnore          bool
+	// CaptureTargetPreviewSizes is enabled only while constructing an
+	// interactive target picker. It lets the visible-file classifier start an
+	// opportunistic metadata snapshot without adding size work to headless or
+	// direct discovery.
+	CaptureTargetPreviewSizes bool
+	WantedBasenames           map[string]struct{}
+	ScopeTargets              []string
+	StartupEscHint            string
+	textFileSet               map[string]struct{}
+	textFileSetReady          bool
+	interactiveTargets        []TargetMatch
+	interactiveTargetsOk      bool
+	targetPreviewSizes        *search.TextSizeCapture
 	// targetInventoriesByScope caches no-ignore target inventories per narrowed
 	// scope-target key ("" = the working-dir-wide universe). Separate cache
 	// entries retain either the complete universe or only ignored rows.
@@ -1234,7 +1240,16 @@ func (r *Resolver) BuildVisibleFileList() error {
 	if err != nil {
 		return err
 	}
-	entries, err := r.textEntriesFromRipgrepPaths(paths)
+	var entries []Entry
+	if r.CaptureTargetPreviewSizes && !r.WithBinaries {
+		var textSet map[string]struct{}
+		textSet, r.targetPreviewSizes, err = search.ClassifyTextPathsWithSizeCapture(r.Cfg.WorkingDir, paths)
+		if err == nil {
+			entries = r.entriesFromClassifiedPaths(paths, textSet)
+		}
+	} else {
+		entries, err = r.textEntriesFromRipgrepPaths(paths)
+	}
 	if err != nil {
 		return err
 	}
@@ -1245,6 +1260,21 @@ func (r *Resolver) BuildVisibleFileList() error {
 	r.VisibleFileList = entries
 	r.visibleFileListReady = true
 	return nil
+}
+
+func (r *Resolver) entriesFromClassifiedPaths(relPaths []string, textSet map[string]struct{}) []Entry {
+	entries := make([]Entry, 0, len(relPaths))
+	for _, rel := range relPaths {
+		rel = normalizeRelPath(rel)
+		if rel == "" || rel == "." || CoveredBySelection(rel, r.VisibleDirs.SymlinkDirs) {
+			continue
+		}
+		if _, ok := textSet[rel]; !ok {
+			continue
+		}
+		entries = append(entries, Entry{RelPath: rel})
+	}
+	return entries
 }
 
 func (r *Resolver) textEntriesFromRipgrepPaths(relPaths []string) ([]Entry, error) {
