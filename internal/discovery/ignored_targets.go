@@ -55,6 +55,178 @@ func (r *Resolver) ensureTargetPreviewSizeCapture(matches []TargetMatch) *search
 	return r.targetPreviewSizes
 }
 
+// FinalizeTargetSelection seals the target picker's classified membership and
+// primary metadata for the selected paths. It never enumerates: the entries
+// are projected from the inventory already shown by the picker.
+func (r *Resolver) FinalizeTargetSelection(targets []string) {
+	if r != nil {
+		// A later target frame must never inherit an earlier committed projection
+		// when its own target universe cannot be represented by the picker
+		// inventory.
+		r.committedTargetEntries = nil
+		r.committedTargetMetadata = nil
+		r.committedTargetReady = false
+		r.committedTargetPreviewPath = ""
+	}
+	if r == nil || !r.targetPreviewInventoryOK || len(targets) == 0 {
+		return
+	}
+	if !r.targetSelectionRepresentableByPreviewInventory(targets) {
+		return
+	}
+	base := TargetPreviewEntries(r.Cfg.WorkingDir, r.targetPreviewInventory, nil)
+	selected := SelectTargetPreviewEntries(base, targets)
+	paths := make([]string, 0, len(selected))
+	for _, entry := range selected {
+		paths = append(paths, entry.RelPath)
+	}
+	if r.targetPreviewSizes == nil {
+		r.targetPreviewSizes = search.StartTextSizeCapture(r.Cfg.WorkingDir, paths)
+	}
+	metadata := r.targetPreviewSizes.FinalizeSelection(paths)
+	r.committedTargetEntries = SelectTargetPreviewEntries(
+		TargetPreviewEntries(r.Cfg.WorkingDir, r.targetPreviewInventory, metadata),
+		targets,
+	)
+	r.committedTargetMetadata = metadata
+	r.committedTargetReady = true
+	r.reuseCompletedTargetPreviewInventory()
+}
+
+// targetSelectionRepresentableByPreviewInventory rejects exact ignored roots
+// that are intentionally absent from the visible target inventory. The caller
+// may then seal that authorized target generation through canonical bounded
+// discovery instead of silently projecting an incomplete set. Visible roots,
+// globs, and a --no-ignore inventory are complete by construction.
+func (r *Resolver) targetSelectionRepresentableByPreviewInventory(targets []string) bool {
+	if r.NoIgnore {
+		return true
+	}
+	for _, rawTarget := range targets {
+		target := normalizeRelPath(rawTarget)
+		if target == "" || target == "." || hasGlobChars(target) {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(target)))
+		if err != nil || info.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		var block *BlockInfo
+		if info.IsDir() {
+			block, err = r.dirBlockedBy(target)
+		} else if info.Mode().IsRegular() {
+			block, err = r.fileBlockedBy(target)
+		}
+		if err != nil || block != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// CommittedTargetSelection returns detached rows and terminal metadata for the
+// most recently confirmed target generation.
+func (r *Resolver) CommittedTargetSelection() ([]Entry, map[string]search.FileMetadata, bool) {
+	if r == nil || !r.committedTargetReady {
+		return nil, nil, false
+	}
+	entries := append([]Entry(nil), r.committedTargetEntries...)
+	metadata := make(map[string]search.FileMetadata, len(r.committedTargetMetadata))
+	for path, record := range r.committedTargetMetadata {
+		metadata[path] = record
+	}
+	return entries, metadata, true
+}
+
+// RetainedTargetPreviewInventoryPath returns the compact inventory backing the
+// most recently committed interactive target picker. The path remains valid
+// until the resolver adopts another target inventory or the interactive
+// session releases it.
+func (r *Resolver) RetainedTargetPreviewInventoryPath() (string, bool) {
+	if r == nil || r.retainedTargetPreviewPath == "" {
+		return "", false
+	}
+	return r.retainedTargetPreviewPath, true
+}
+
+// CommittedTargetPreviewInventoryPath returns a compact, metadata-complete
+// artifact usable by the most recently confirmed target selection. It may be
+// the picker-wide completed inventory; the preview child still projects the
+// exact sealed membership from the scope's canonical targets.
+func (r *Resolver) CommittedTargetPreviewInventoryPath() (string, bool) {
+	if r == nil || r.committedTargetPreviewPath == "" {
+		return "", false
+	}
+	return r.committedTargetPreviewPath, true
+}
+
+func (r *Resolver) reuseCompletedTargetPreviewInventory() bool {
+	if r == nil || r.retainedTargetPreviewPath == "" {
+		return false
+	}
+	// If primary metadata completed while the picker was open, the existing
+	// broad inventory is already truthful for every possible selection. Reuse
+	// it directly instead of serializing the committed subset again. A pending
+	// base publishes its completed sidecar only after the background writer has
+	// finished, and picker cleanup joins that writer before ownership transfer.
+	if r.retainedTargetPreviewReady {
+		r.committedTargetPreviewPath = r.retainedTargetPreviewPath
+		return true
+	}
+	if sizedPath := TargetPreviewSizedInventoryPath(r.retainedTargetPreviewPath); sizedPath != "" {
+		if _, err := os.Stat(sizedPath); err == nil {
+			r.committedTargetPreviewPath = sizedPath
+			return true
+		}
+	}
+	return false
+}
+
+// beginTargetPreviewGeneration detaches the current target universe from any
+// compact artifact owned by an earlier picker generation. Retained directories
+// stay registered for session cleanup, but an exact auto-accepted target must
+// not accidentally publish an older visible/no-ignore universe as its preview.
+func (r *Resolver) beginTargetPreviewGeneration() {
+	if r == nil {
+		return
+	}
+	r.retainedTargetPreviewPath = ""
+	r.retainedTargetPreviewReady = false
+	r.committedTargetPreviewPath = ""
+}
+
+func (r *Resolver) retainTargetPreviewInventory(sessionDir, inventoryPath string, baseComplete ...bool) {
+	if r == nil || sessionDir == "" || inventoryPath == "" {
+		return
+	}
+	for _, retainedDir := range r.retainedTargetPreviewDirs {
+		if retainedDir == sessionDir {
+			r.retainedTargetPreviewPath = inventoryPath
+			r.retainedTargetPreviewReady = len(baseComplete) > 0 && baseComplete[0]
+			return
+		}
+	}
+	r.retainedTargetPreviewDirs = append(r.retainedTargetPreviewDirs, sessionDir)
+	r.retainedTargetPreviewPath = inventoryPath
+	r.retainedTargetPreviewReady = len(baseComplete) > 0 && baseComplete[0]
+}
+
+// ReleaseRetainedTargetPreviewInventory closes the target inventory's
+// interactive-session lifetime. It is safe to call on cancellation, errors,
+// and after a prior release.
+func (r *Resolver) ReleaseRetainedTargetPreviewInventory() {
+	if r == nil {
+		return
+	}
+	for _, sessionDir := range r.retainedTargetPreviewDirs {
+		_ = os.RemoveAll(sessionDir)
+	}
+	r.retainedTargetPreviewDirs = nil
+	r.retainedTargetPreviewPath = ""
+	r.retainedTargetPreviewReady = false
+	r.committedTargetPreviewPath = ""
+}
+
 // AdoptVisibleTargetInventoryFrom publishes a complete target inventory built
 // by a compatible resolver copy. Startup probing uses shallow per-scope copies;
 // adopting only this immutable base inventory lets the eventual interactive
@@ -178,9 +350,10 @@ func (r *Resolver) targetInventoryUnderNoIgnore(scopeTargets []string, ignoredOn
 	filePaths := make([]string, 0, len(rgPaths))
 	dirSet := make(map[string]struct{}, len(rgPaths)/2)
 	dirHasText := make(map[string]bool, len(rgPaths)/2)
+	hissRel := catclipControlHissRel(r.Cfg.WorkingDir)
 	for _, rel := range rgPaths {
 		rel = normalizeRelPath(rel)
-		if rel == "" || rel == "." {
+		if rel == "" || rel == "." || rel == hissRel {
 			continue
 		}
 		for d := normalizeRelPath(path.Dir(rel)); d != "" && d != "."; d = normalizeRelPath(path.Dir(d)) {

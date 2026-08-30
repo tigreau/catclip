@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -240,6 +241,56 @@ func TestStartupRecentPickerLinesUseFinderStyleModifiedCutoffs(t *testing.T) {
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("expected startup recent picker lines %q, got %q", want, got)
+	}
+}
+
+func TestStartupRecentPickerEntriesSealAndReuseRetainedMetadata(t *testing.T) {
+	scopeViewMemoReset()
+	defer scopeViewMemoReset()
+
+	project := setupTestProject(t, map[string]string{
+		"src/newest.ts": "newest\n",
+		"src/older.ts":  "older\n",
+	})
+	now := time.Now()
+	setProjectModTime(t, project, "src/newest.ts", now.Add(-time.Hour))
+	setProjectModTime(t, project, "src/older.ts", now.Add(-2*time.Hour))
+	_ = parseInProject(t, project, []string{"src"})
+
+	base, err := resolvedCurrentScopeViewForArgs([]string{"src"})
+	if err != nil {
+		t.Fatalf("resolve base scope: %v", err)
+	}
+	if base.inventory == nil {
+		t.Fatal("expected retained inventory")
+	}
+	base.inventory.mu.RLock()
+	initiallySealed := base.inventory.metadataSealed
+	base.inventory.mu.RUnlock()
+	if initiallySealed {
+		t.Fatal("fresh canonical scope unexpectedly had complete metadata")
+	}
+
+	entries, err := startupRecentPickerEntries([]string{"src"})
+	if err != nil {
+		t.Fatalf("startupRecentPickerEntries: %v", err)
+	}
+	if got, want := entryRelPaths(entries), []string{"src/newest.ts", "src/older.ts"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("recent paths = %v, want %v", got, want)
+	}
+	base.inventory.mu.RLock()
+	sealed := base.inventory.metadataSealed
+	base.inventory.mu.RUnlock()
+	if !sealed {
+		t.Fatal("recent picker did not publish completed metadata to retained inventory")
+	}
+
+	again, err := startupRecentPickerEntries([]string{"src"})
+	if err != nil {
+		t.Fatalf("second startupRecentPickerEntries: %v", err)
+	}
+	if !reflect.DeepEqual(entries, again) {
+		t.Fatalf("retained recent replay changed: first=%v second=%v", entryRelPaths(entries), entryRelPaths(again))
 	}
 }
 

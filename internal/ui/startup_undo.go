@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -83,6 +84,13 @@ type startupUndoResult struct {
 }
 
 func resolveStartupWithUndo(resolver *discovery.Resolver, args []string, opts startupUndoOptions) (startupUndoResult, error) {
+	// One process normally serves one invocation, but tests exercise many
+	// sessions in-process. Bound retained scope states to this interactive run
+	// so undo can reuse them without leaking filesystem views across sessions.
+	scopeViewMemoReset()
+	defer scopeViewMemoReset()
+	defer resolver.ReleaseRetainedTargetPreviewInventory()
+
 	currentArgs := []string{}
 	pendingArgs := cloneStringSlice(args)
 	history := make([]startupInteractiveFrame, 0, 8)
@@ -103,12 +111,29 @@ func resolveStartupWithUndo(resolver *discovery.Resolver, args []string, opts st
 				return startupUndoResult{}, err
 			}
 			if done {
-				if opts.IncludeSink && !sinkResolved && usedFzf && len(doneArgs) > 0 && !rawArgsSkipOutputSinkPicker(opts.RawArgs) {
-					frame = startupInteractiveFrame{
-						Kind:      startupInteractiveFrameSink,
-						StartArgs: cloneStringSlice(doneArgs),
+				if opts.IncludeSink && !sinkResolved && usedFzf && len(doneArgs) > 0 {
+					if !rawArgsSkipOutputSinkPicker(opts.RawArgs) {
+						frame = startupInteractiveFrame{
+							Kind:      startupInteractiveFrameSink,
+							StartArgs: cloneStringSlice(doneArgs),
+						}
+					} else {
+						// An explicit sink suppresses the picker, not the retained
+						// handoff. Prepare the exact sealed discovery/plan now so final
+						// execution cannot reconstruct the command and rediscover.
+						ctx, prepareErr := buildStartupSinkPickerContext(doneArgs)
+						if prepareErr != nil {
+							return startupUndoResult{}, prepareErr
+						}
+						preparedOutput = &StartupPreparedOutputState{
+							Git:       ctx.Git,
+							Discovery: ctx.Discovery,
+							Plan:      ctx.Plan,
+						}
+						sinkResolved = true
 					}
-				} else {
+				}
+				if frame.Kind != startupInteractiveFrameSink {
 					scopePaths, _ := startupFrameCurrentScopeSelections(doneArgs)
 					cleanupStartupFrames(history)
 					return startupUndoResult{
@@ -143,6 +168,19 @@ func resolveStartupWithUndo(resolver *discovery.Resolver, args []string, opts st
 			}
 			cleanupStartupFrames(history)
 			return startupUndoResult{}, err
+		}
+		if frame.Kind == startupInteractiveFrameTarget {
+			sealed := false
+			if entries, metadata, ok := resolver.CommittedTargetSelection(); ok {
+				targetInventoryPath, _ := resolver.CommittedTargetPreviewInventoryPath()
+				sealed = scopeViewMemoAdoptTargetSelection(result.Args, resolver.GitCtx, entries, metadata, targetInventoryPath)
+			}
+			if !sealed {
+				if sealErr := scopeViewMemoSealEvaluatedTarget(result.Args); sealErr != nil {
+					cleanupStartupFrames(history)
+					return startupUndoResult{}, fmt.Errorf("internal error: target selection could not be sealed: %w", sealErr)
+				}
+			}
 		}
 
 		if result.UsedFzf {
@@ -356,6 +394,7 @@ func runStartupTargetFrame(resolver *discovery.Resolver, frame startupInteractiv
 		return startupInteractiveFrameResult{UsedFzf: usedFzf}, err
 	}
 	finalArgs := append(cloneStringSlice(frame.StartArgs), resolvedArgs...)
+	resolver.FinalizeTargetSelection(append(currentScopeTargets, resolvedTargets...))
 	return startupInteractiveFrameResult{
 		Args:       finalArgs,
 		Pending:    cloneStringSlice(frame.PendingArgs),

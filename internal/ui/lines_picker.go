@@ -102,7 +102,12 @@ func prepareStartupLinesPickerSession(currentArgs []string) (startupLinesPickerS
 	finishSizeBench := platform.InternalBenchSpan("ui.lines_picker.prepare.fill_sizes",
 		"entries", platform.InternalBenchInt(len(entries)),
 	)
-	entries = discovery.FillEntrySizes(view.Invocation.WorkingDir, entries)
+	view.Entries = entries
+	if retained, ok := retainedScopeViewEntriesWithMetadata(view); ok {
+		entries = retained
+	} else {
+		entries = discovery.FillEntrySizes(view.Invocation.WorkingDir, entries)
+	}
 	finishSizeBench("entries", platform.InternalBenchInt(len(entries)))
 	finishMaxBench := platform.InternalBenchSpan("ui.lines_picker.prepare.max_lines",
 		"entries", platform.InternalBenchInt(len(entries)),

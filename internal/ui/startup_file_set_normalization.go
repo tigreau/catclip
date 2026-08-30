@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -38,6 +40,11 @@ func normalizeInteractiveFileSetStageValues(currentArgs []string, values []strin
 	if len(values) == 0 {
 		return nil, nil
 	}
+	if symbolic, ok, err := normalizeSymbolicInteractiveFileSetValues(values); err != nil {
+		return nil, err
+	} else if ok {
+		return symbolic, nil
+	}
 
 	relPaths, err := startupScopeFileSetPaths(currentArgs)
 	if err != nil {
@@ -47,6 +54,35 @@ func normalizeInteractiveFileSetStageValues(currentArgs []string, values []strin
 		return dedupeInteractiveFileSetValues(values), nil
 	}
 	return normalizeInteractiveFileSetStageValuesForPaths(relPaths, values)
+}
+
+// normalizeSymbolicInteractiveFileSetValues handles the common picker result
+// where every selected row is already a glob such as "*.c". Exact-file and
+// subtree inference cannot shorten an all-symbolic selection, so loading and
+// indexing the complete current scope would only reproduce these values.
+//
+// Unix permits wildcard characters in literal filenames. A cheap lstat keeps
+// such a selected file on the canonical normalization path instead of
+// reinterpreting it as a pattern.
+func normalizeSymbolicInteractiveFileSetValues(values []string) ([]string, bool, error) {
+	deduped := dedupeInteractiveFileSetValues(values)
+	for _, value := range deduped {
+		normalized := strings.ReplaceAll(value, "\\", "/")
+		if !strings.ContainsAny(normalized, "*?[") {
+			return nil, false, nil
+		}
+		if _, err := discovery.ClassifyStageValue(value); err != nil {
+			return nil, false, err
+		}
+		if _, err := os.Lstat(filepath.FromSlash(normalized)); err == nil {
+			return nil, false, nil
+		} else if !os.IsNotExist(err) {
+			// Permission and transient filesystem errors are not proof that the
+			// value is symbolic. Let canonical scope normalization decide.
+			return nil, false, nil
+		}
+	}
+	return deduped, true, nil
 }
 
 func normalizeInteractiveFileSetStageValuesForPaths(relPaths, values []string) ([]string, error) {

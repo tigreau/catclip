@@ -135,6 +135,17 @@ func resolveStartupContentArgsWithEscHint(currentArgs []string, flag string, esc
 
 	finalArgs := append([]string(nil), currentArgs...)
 	finalArgs = append(finalArgs, flag, result.Query)
+	retainedContentReady := false
+	if flag == "--contains" || flag == "--not-contains" {
+		if memo, ok := exactContentMatchMemo(result.MatchMemo, result.Query); ok {
+			kind := command.StageContains
+			if flag == "--not-contains" {
+				kind = command.StageNotContains
+			}
+			scopeViewMemoAdoptContentStage(finalArgs, kind, result.Query, memo.AbsPaths)
+			retainedContentReady = true
+		}
+	}
 
 	// matchPaths is the set of files matching the query in the current scope; it
 	// drives the --only coverage check below. For --snippet we compute the match
@@ -181,11 +192,37 @@ func resolveStartupContentArgsWithEscHint(currentArgs []string, flag string, esc
 		if boundary.SnippetContextSet {
 			finalArgs = append(finalArgs, strconv.Itoa(boundary.SnippetContextLines))
 		}
+		if scanErr == nil {
+			// The boundary setup already collected exact match-line offsets.
+			// Publish that state under the completed snippet argv and materialize
+			// it now so a later picker subset can derive its --only child without
+			// another content scan.
+			scopeViewMemoAdoptSnippetStage(finalArgs, result.Query, matched)
+			if _, resolveErr := resolvedCurrentScopeViewForArgs(finalArgs); resolveErr != nil {
+				finishBench("err", platform.InternalBenchError(resolveErr), "used_fzf", "true")
+				return nil, false, resolveErr
+			}
+			retainedContentReady = true
+		}
 	}
 
 	if contentMatchSelectionIncludesAllRow(result.Matches) {
-		finishBench("err", "false", "used_fzf", "true", "selected", "all")
+		finishBench(
+			"err", "false",
+			"used_fzf", "true",
+			"selected", "all",
+			"retained", platform.InternalBenchBool(retainedContentReady),
+		)
 		return finalArgs, true, nil
+	}
+	if retainedContentReady && !matchPathsReady {
+		retainedView, resolveErr := resolvedCurrentScopeViewForArgs(finalArgs)
+		if resolveErr != nil {
+			finishBench("err", platform.InternalBenchError(resolveErr), "used_fzf", "true")
+			return nil, false, resolveErr
+		}
+		matchPaths = entryRelPaths(retainedView.Entries)
+		matchPathsReady = true
 	}
 	if !matchPathsReady {
 		finishPathsBench := platform.InternalBenchSpan("ui.content_picker.match_paths_for_args",
@@ -232,7 +269,7 @@ func snippetBoundaryScopeMatch(currentArgs []string, pattern string) (resolvedSc
 	if len(view.Entries) == 0 {
 		return view, nil, nil
 	}
-	matched, err := discovery.FilterEntriesByContent(discovery.EnsureEntryAbsPaths(view.Entries, view.Invocation.WorkingDir), pattern)
+	matched, err := discovery.FilterEntriesBySnippetContent(discovery.EnsureEntryAbsPaths(view.Entries, view.Invocation.WorkingDir), pattern)
 	if err != nil {
 		return view, nil, err
 	}
@@ -362,7 +399,7 @@ func buildSnippetBoundaryPreviewForScope(view resolvedScopeView, pattern string,
 func snippetBoundaryPreviewMatchedEntries(view resolvedScopeView, pattern string, onlyValues []string) ([]discovery.Entry, error) {
 	entries := append([]discovery.Entry(nil), view.Entries...)
 	entries = discovery.EnsureEntryAbsPaths(entries, view.Invocation.WorkingDir)
-	entries, err := discovery.FilterEntriesByContent(entries, pattern)
+	entries, err := discovery.FilterEntriesBySnippetContent(entries, pattern)
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +447,10 @@ func buildSnippetBoundarySource(view resolvedScopeView, pattern string, matchedE
 		if e.AbsPath == "" {
 			continue
 		}
-		lines := matchCache.Lookup(pattern, e.AbsPath)
+		lines := e.SnippetMatchLines
+		if len(lines) == 0 {
+			lines = matchCache.Lookup(pattern, e.AbsPath)
+		}
 		if len(lines) == 0 {
 			continue
 		}

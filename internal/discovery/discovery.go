@@ -88,6 +88,12 @@ func discoverFilesUnder(workingDir, rootRel, baseName string, classifyText textC
 // When noIgnore is true rg ignores .gitignore/.hiss; otherwise the global
 // .hiss is layered onto the default gitignore-aware enumeration.
 func ripgrepListUnder(workingDir, rootRel string, noIgnore bool) ([]string, error) {
+	return ripgrepListUnderTargets(workingDir, []string{rootRel}, noIgnore)
+}
+
+// ripgrepListUnderTargets enumerates a union of literal roots in one rg
+// process. A dot/empty root means the working-directory-wide universe.
+func ripgrepListUnderTargets(workingDir string, roots []string, noIgnore bool) ([]string, error) {
 	opts := search.RipgrepFileOptions{NoIgnore: noIgnore}
 	if !noIgnore {
 		hissPath, err := ReadableHissPath()
@@ -96,22 +102,61 @@ func ripgrepListUnder(workingDir, rootRel string, noIgnore bool) ([]string, erro
 		}
 		opts.HissPath = hissPath
 	}
-	if rootRel != "." && rootRel != "" {
-		opts.Paths = []string{rootRel}
+	seenRoots := make(map[string]struct{}, len(roots))
+	for _, rootRel := range roots {
+		rootRel = normalizeRelPath(rootRel)
+		if rootRel == "." || rootRel == "" {
+			opts.Paths = nil
+			break
+		}
+		if _, seen := seenRoots[rootRel]; seen {
+			continue
+		}
+		seenRoots[rootRel] = struct{}{}
+		opts.Paths = append(opts.Paths, rootRel)
 	}
 	rels, err := search.RunRipgrepFiles(workingDir, opts)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]string, 0, len(rels))
+	hissRel := ""
+	if noIgnore {
+		hissRel = catclipControlHissRel(workingDir)
+	}
 	for _, rel := range rels {
 		rel = normalizeRelPath(rel)
-		if rel == "" || rel == "." {
+		if rel == "" || rel == "." || rel == hissRel {
 			continue
 		}
 		out = append(out, rel)
 	}
 	return out, nil
+}
+
+// catclipControlHissRel identifies Catclip's own ignore configuration when
+// a portable config/HOME layout places it below the current target root. That
+// file is control state, not target content. All no-ignore enumerators use the
+// same exclusion so its membership cannot depend on which picker happened to
+// materialize it first.
+func catclipControlHissRel(workingDir string) string {
+	canonicalWorkingDir := filepath.Clean(workingDir)
+	if resolved, err := filepath.EvalSymlinks(canonicalWorkingDir); err == nil {
+		canonicalWorkingDir = resolved
+	}
+	canonicalHiss := filepath.Clean(GlobalHissPath())
+	if resolved, err := filepath.EvalSymlinks(canonicalHiss); err == nil {
+		canonicalHiss = resolved
+	}
+	rel, err := filepath.Rel(canonicalWorkingDir, canonicalHiss)
+	if err != nil {
+		return ""
+	}
+	rel = normalizeRelPath(rel)
+	if rel == "" || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") {
+		return ""
+	}
+	return rel
 }
 
 // ShellStyleExtension is kept for non-classification consumers (e.g.,

@@ -2,11 +2,50 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/tigreau/catclip/internal/discovery"
 )
+
+func TestNormalizeSymbolicInteractiveFileSetValuesBypassesScopeInference(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.c": "int main(void) {}\n",
+	})
+	t.Chdir(project)
+
+	got, ok, err := normalizeSymbolicInteractiveFileSetValues([]string{"*.c", "src/*.h", "*.c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("all-symbolic selection did not take the normalization fast path")
+	}
+	if want := []string{"*.c", "src/*.h"}; strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("symbolic values = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeSymbolicInteractiveFileSetValuesRejectsLiteralWildcardFilename(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows filenames cannot contain wildcard characters")
+	}
+	project := setupTestProject(t, nil)
+	t.Chdir(project)
+	literal := "literal*.go"
+	if err := os.WriteFile(filepath.Join(project, literal), []byte("package literal\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, ok, err := normalizeSymbolicInteractiveFileSetValues([]string{literal}); err != nil {
+		t.Fatal(err)
+	} else if ok {
+		t.Fatal("literal wildcard filename was reinterpreted as a symbolic pattern")
+	}
+}
 
 func TestResolveStartupScopeFileSetArgsOnlyDropsExactFilesCoveredBySelectedPattern(t *testing.T) {
 	project := setupTestProject(t, map[string]string{

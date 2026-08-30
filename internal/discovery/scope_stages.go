@@ -83,6 +83,119 @@ func applyScopeStages(resolver *Resolver, gitCtx git.Context, s command.Executio
 	return entries, err
 }
 
+// ApplyPathOnlyStageIDs applies a stage that depends only on the current
+// ordered entry set. The immutable inventory stores Entry values once; each
+// interactive history state retains only its ordered IDs. Invalid IDs reject
+// the optimized route so a state/inventory mismatch falls back at the session
+// boundary instead of silently changing membership or panicking. Keep this
+// allowlist small: stages that read metadata, file contents, Git state, or
+// ignored inventories must continue through the canonical scope evaluator.
+func ApplyPathOnlyStageIDs(scope command.ExecutionScope, stage command.Stage, inventory []Entry, ids []uint32) ([]uint32, bool, error) {
+	for _, id := range ids {
+		if uint64(id) >= uint64(len(inventory)) {
+			return nil, false, nil
+		}
+	}
+	switch stage.Kind {
+	case command.StageOnly, command.StageExclude:
+		keepMatches := stage.Kind == command.StageOnly
+		out := make([]uint32, 0, len(ids))
+		if stage.ExactValues {
+			wanted := make(map[string]struct{}, len(stage.Values))
+			for _, value := range stage.Values {
+				normalized := normalizeRelPath(value)
+				if normalized != "" {
+					wanted[normalized] = struct{}{}
+				}
+			}
+			for _, id := range ids {
+				_, matched := wanted[normalizeRelPath(inventory[id].RelPath)]
+				if keepMatches == matched {
+					out = append(out, id)
+				}
+			}
+			return out, true, nil
+		}
+		if len(stage.Values) == 0 {
+			return append([]uint32(nil), ids...), true, nil
+		}
+		matchers := make([]StageValueMatcher, 0, len(stage.Values))
+		for _, pattern := range stage.Values {
+			matcher, err := ClassifyStageValue(pattern)
+			if err != nil {
+				return nil, true, newUsageError("Error: invalid pattern %q.", pattern)
+			}
+			matchers = append(matchers, matcher)
+		}
+		for _, id := range ids {
+			matched := MatchesStageValues(inventory[id].RelPath, matchers)
+			if keepMatches == matched {
+				out = append(out, id)
+			}
+		}
+		return out, true, nil
+
+	case command.StageDepth:
+		if stage.Limit == nil {
+			return append([]uint32(nil), ids...), true, nil
+		}
+		maxDepth := 0
+		minDepth := 0
+		for _, id := range ids {
+			depth := entryDepth(inventory[id])
+			if depth > maxDepth {
+				maxDepth = depth
+			}
+			if depth > 0 && (minDepth == 0 || depth < minDepth) {
+				minDepth = depth
+			}
+		}
+		if maxDepth > 0 && *stage.Limit > maxDepth {
+			return nil, true, DepthExceedsCurrentScopeError(*stage.Limit, maxDepth)
+		}
+		out := make([]uint32, 0, len(ids))
+		for _, id := range ids {
+			if entryDepth(inventory[id]) <= *stage.Limit {
+				out = append(out, id)
+			}
+		}
+		if len(out) == 0 && len(ids) > 0 {
+			return nil, true, depthNoFilesAtLevelError(*stage.Limit, minDepth, maxDepth)
+		}
+		return out, true, nil
+	case command.StagePaths, command.StageLines:
+		// Output-shape stages preserve membership. Return a distinct ID slice
+		// so each retained state remains immutable even if a caller reorders
+		// its materialization later.
+		return append([]uint32(nil), ids...), true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+// PathOnlyStageDiagnostics returns the diagnostics produced by a path-only
+// stage when the interactive session applies it to retained file IDs instead
+// of replaying the whole scope evaluator. Keeping this beside the canonical
+// stage runner prevents the optimized and canonical paths from teaching
+// different recovery commands.
+func PathOnlyStageDiagnostics(stage command.Stage, scopeIndex int, colors platform.Palette, resultEmpty bool) []Diagnostic {
+	deadValues := deadTrailingSlashGlobStageValues(stage)
+	if scopeIndex < 0 || len(deadValues) == 0 {
+		return nil
+	}
+	diagnostics := make([]Diagnostic, 0, len(deadValues))
+	for _, value := range deadValues {
+		diagnostics = append(diagnostics, Diagnostic{
+			Message:    trailingSlashGlobStageWarning(stage.Kind, value, scopeIndex, colors),
+			ScopeIndex: scopeIndex,
+		})
+	}
+	if resultEmpty && stage.Kind == command.StageOnly && len(deadValues) == len(stage.Values) {
+		diagnostics[0].ExplainsEmptyResult = true
+	}
+	return diagnostics
+}
+
 func applyScopeStagesWithDiagnostics(resolver *Resolver, gitCtx git.Context, s command.ExecutionScope, entries []Entry, scopeIndex int, colors platform.Palette) ([]Entry, []Diagnostic, error) {
 	if len(entries) == 0 {
 		return entries, nil, nil
@@ -96,25 +209,14 @@ func applyScopeStagesWithDiagnostics(resolver *Resolver, gitCtx git.Context, s c
 			// without breaking older runs.
 			continue
 		}
-		deadValues := deadTrailingSlashGlobStageValues(stage)
-		if scopeIndex >= 0 {
-			for _, value := range deadValues {
-				diagnostics = append(diagnostics, Diagnostic{
-					Message:    trailingSlashGlobStageWarning(stage.Kind, value, scopeIndex, colors),
-					ScopeIndex: scopeIndex,
-				})
-			}
-		}
 		ctx := stageContext{Resolver: resolver, GitCtx: gitCtx, Scope: s, Stage: stage}
 		next, err := applier(ctx, entries)
 		if err != nil {
 			return nil, nil, err
 		}
 		entries = next
+		diagnostics = append(diagnostics, PathOnlyStageDiagnostics(stage, scopeIndex, colors, len(entries) == 0)...)
 		if len(entries) == 0 {
-			if stage.Kind == command.StageOnly && len(deadValues) > 0 && len(deadValues) == len(stage.Values) && len(diagnostics) > 0 {
-				diagnostics[len(diagnostics)-len(deadValues)].ExplainsEmptyResult = true
-			}
 			return entries, diagnostics, nil
 		}
 	}

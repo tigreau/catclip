@@ -180,7 +180,7 @@ func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, d
 	case "--changed", "--staged", "--unstaged", "--untracked":
 		previewFlag = "--only"
 	}
-	cmd, tmpdir := buildFileSetCheckpointPreview(view, previewFlag)
+	cmd, tmpdir := buildFileSetCheckpointPreview(currentArgs, view, previewFlag)
 	if cmd == "" {
 		cmd = fallback()
 		if benchEnabled {
@@ -204,24 +204,55 @@ func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, d
 	}
 }
 
-func buildFileSetCheckpointPreview(view resolvedScopeView, previewFlag string) (cmd string, tmpdir string) {
+func buildFileSetCheckpointPreview(currentArgs []string, view resolvedScopeView, previewFlag string) (cmd string, tmpdir string) {
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
 		return "", ""
+	}
+	buildCommand := func(path string) string {
+		parts := []string{
+			discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
+			"--internal-prediscovered", discovery.ShellQuoteArg(path),
+		}
+		if previewFlag != "" {
+			parts = append(parts,
+				"--internal-file-set-selection", "{+f}",
+				"--internal-file-set-stage", strings.TrimPrefix(previewFlag, "--"),
+			)
+		}
+		parts = append(parts,
+			"--internal-tree-target", "{3}",
+			"--internal-tree-kind", "{4}",
+			"--internal-tree-state", "{5}",
+		)
+		return strings.Join(parts, " ")
+	}
+	if currentArgs != nil {
+		if cachedPath, ok := scopeViewMemoCheckpointPath(currentArgs); ok {
+			return buildCommand(cachedPath), ""
+		}
+	}
+	statuses := map[string]string{}
+	if view.GitContext.Enabled {
+		statuses, err = git.StatusMapForPathspecs(view.GitContext, discovery.GitStatusPathspecsForEntries(view.GitContext, view.Entries))
+		if err != nil {
+			return "", ""
+		}
+	}
+	if currentArgs != nil {
+		cachedPath, owned, cacheErr := scopeViewMemoCheckpoint(currentArgs, view, statuses)
+		if owned {
+			if cacheErr != nil {
+				return "", ""
+			}
+			return buildCommand(cachedPath), ""
+		}
 	}
 	tmpdir, err = os.MkdirTemp("", "catclip-scc-*")
 	if err != nil {
 		return "", ""
 	}
 	checkpointPath := filepath.Join(tmpdir, "scope.json")
-	statuses := map[string]string{}
-	if view.GitContext.Enabled {
-		statuses, err = git.StatusMapForPathspecs(view.GitContext, discovery.GitStatusPathspecsForEntries(view.GitContext, view.Entries))
-		if err != nil {
-			_ = os.RemoveAll(tmpdir)
-			return "", ""
-		}
-	}
 	if err := discovery.WriteCheckpoint(checkpointPath, view.Invocation.WorkingDir, discovery.CheckpointData{
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
@@ -231,36 +262,14 @@ func buildFileSetCheckpointPreview(view resolvedScopeView, previewFlag string) (
 		return "", ""
 	}
 
-	parts := []string{
-		discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
-		"--internal-prediscovered", discovery.ShellQuoteArg(checkpointPath),
-	}
-	if previewFlag != "" {
-		parts = append(parts,
-			"--internal-file-set-selection", "{+f}",
-			"--internal-file-set-stage", strings.TrimPrefix(previewFlag, "--"),
-		)
-	}
-	parts = append(parts,
-		"--internal-tree-target", "{3}",
-		"--internal-tree-kind", "{4}",
-		"--internal-tree-state", "{5}",
-	)
-	return strings.Join(parts, " "), tmpdir
+	return buildCommand(checkpointPath), tmpdir
 }
 
-// startupModifierCurrentScopePreviewCommand is a static start:preview for the
-// modifier menu. It is pinned once when the menu opens and is not a per-keystroke
-// free-form refinement, so it is an explicit SCC exemption.
-//
-// Returns (cmd, tmpdir). The caller must os.RemoveAll(tmpdir) after fzf exits
-// (or immediately when cmd is ""). The checkpoint hand-off matters: without it
-// the child runs ~1.3s of search.rg.text_files re-discovery on every catclip
-// startup, which the Windows latency trace exposed in v0.6.0
-// (see docs/versions/v0.6.1/reports/ACTIVE_NOTE_windows_interactive_latency_findings.md
-// Finding 1). All other picker previews use --internal-prediscovered; this one
-// shipped without it.
-func startupModifierCurrentScopePreviewCommand(state startupCurrentScopeState, view resolvedScopeView) (cmd string, tmpdir string) {
+// startupModifierCurrentScopePreviewCommand prepares the static modifier-menu
+// preview as a retained state checkpoint. Only checkpoint preparation blocks
+// opening fzf; the child decodes and renders the tree after the menu is live.
+// A same-state revisit and later dynamic pickers reuse the same checkpoint.
+func startupModifierCurrentScopePreviewCommand(currentArgs []string, state startupCurrentScopeState, view resolvedScopeView) (cmd string, tmpdir string) {
 	if !state.Known || state.Empty || len(state.Scopes) == 0 {
 		return "", ""
 	}
@@ -274,32 +283,53 @@ func startupModifierCurrentScopePreviewCommand(state startupCurrentScopeState, v
 	if err != nil || strings.TrimSpace(self) == "" {
 		return "", ""
 	}
-
-	tmpdir, err = os.MkdirTemp("", "catclip-modifier-*")
-	if err != nil {
-		return "", ""
+	buildCommand := func(checkpointPath string) string {
+		parts := []string{
+			discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
+			"--internal-prediscovered", discovery.ShellQuoteArg(checkpointPath),
+		}
+		parts = append(parts, command.CanonicalScopeArgs(state.Scopes[len(state.Scopes)-1])...)
+		return strings.Join(parts, " ")
 	}
-	checkpointPath := filepath.Join(tmpdir, "scope.json")
+	buildTargetInventoryCommand := func(inventoryPath string) string {
+		parts := []string{
+			discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
+			"--internal-target-inventory", discovery.ShellQuoteArg(inventoryPath),
+		}
+		if view.Invocation.WithBinaries {
+			parts = append(parts, "--with-binaries")
+		}
+		parts = append(parts, command.CanonicalScopeArgs(state.Scopes[len(state.Scopes)-1])...)
+		return strings.Join(parts, " ")
+	}
+
+	// The first stage-free filter screen can consume the target picker's sealed
+	// compact projection directly. This avoids materializing an equivalent JSON
+	// checkpoint before picker.Run. Derived states and dynamic pickers continue
+	// through the general retained checkpoint path below.
+	currentScope := state.Scopes[len(state.Scopes)-1]
+	if currentArgs != nil && len(currentScope.Stages) == 0 &&
+		!currentScope.Paths && currentScope.OutputMode() == command.EntryModeFull {
+		if inventoryPath, owned, inventoryErr := scopeViewMemoTargetPreviewInventory(currentArgs); owned && inventoryErr == nil {
+			return buildTargetInventoryCommand(inventoryPath), ""
+		}
+	}
+
+	if currentArgs != nil {
+		if checkpointPath, ok := scopeViewMemoCheckpointPath(currentArgs); ok {
+			return buildCommand(checkpointPath), ""
+		}
+	}
+
 	statuses := map[string]string{}
 	if view.GitContext.Enabled {
+		finishStatusBench := platform.InternalBenchSpan("ui.startup.modifier_picker.git_status_map",
+			"entries", platform.InternalBenchInt(len(view.Entries)),
+		)
 		if state.GitStatusMap != nil {
-			// Reuse the porcelain map already collected by
-			// startupCurrentScopeStateForArgs (single git invocation
-			// per parent flow). Trace label kept for continuity but
-			// records the cache hit explicitly.
-			finishStatusBench := platform.InternalBenchSpan("ui.startup.modifier_picker.git_status_map",
-				"entries", platform.InternalBenchInt(len(view.Entries)),
-			)
 			statuses = state.GitStatusMap
-			finishStatusBench(
-				"err", "false",
-				"statuses", platform.InternalBenchInt(len(statuses)),
-				"cached", "true",
-			)
+			finishStatusBench("err", "false", "statuses", platform.InternalBenchInt(len(statuses)), "cached", "true")
 		} else {
-			finishStatusBench := platform.InternalBenchSpan("ui.startup.modifier_picker.git_status_map",
-				"entries", platform.InternalBenchInt(len(view.Entries)),
-			)
 			statuses, err = git.StatusMapForPathspecs(view.GitContext, discovery.GitStatusPathspecsForEntries(view.GitContext, view.Entries))
 			finishStatusBench(
 				"err", platform.InternalBenchError(err),
@@ -307,30 +337,38 @@ func startupModifierCurrentScopePreviewCommand(state startupCurrentScopeState, v
 				"cached", "false",
 			)
 			if err != nil {
-				_ = os.RemoveAll(tmpdir)
 				return "", ""
 			}
 		}
 	}
+	if currentArgs != nil {
+		checkpointPath, owned, cacheErr := scopeViewMemoCheckpoint(currentArgs, view, statuses)
+		if owned {
+			if cacheErr != nil {
+				return "", ""
+			}
+			return buildCommand(checkpointPath), ""
+		}
+	}
+
+	tmpdir, err = os.MkdirTemp("", "catclip-modifier-*")
+	if err != nil {
+		return "", ""
+	}
+	checkpointPath := filepath.Join(tmpdir, "scope.json")
 	finishWriteBench := platform.InternalBenchSpan("ui.startup.modifier_picker.write_checkpoint",
 		"entries", platform.InternalBenchInt(len(view.Entries)),
 	)
-	werr := discovery.WriteCheckpoint(checkpointPath, view.Invocation.WorkingDir, discovery.CheckpointData{
+	err = discovery.WriteCheckpoint(checkpointPath, view.Invocation.WorkingDir, discovery.CheckpointData{
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,
+		NoIgnore:   view.Scope.NoIgnore,
 	})
-	finishWriteBench("err", platform.InternalBenchError(werr))
-	if werr != nil {
+	finishWriteBench("err", platform.InternalBenchError(err))
+	if err != nil {
 		_ = os.RemoveAll(tmpdir)
 		return "", ""
 	}
-
-	// Modifier menu pins one static preview for the current scope (no
-	// per-bucket / per-target args, unlike the file-set picker), so just the
-	// prediscovered checkpoint flag plus the canonical scope tail.
-	parts := []string{discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview", "--internal-prediscovered", discovery.ShellQuoteArg(checkpointPath)}
-	scopeArgs := command.CanonicalScopeArgs(state.Scopes[len(state.Scopes)-1])
-	parts = append(parts, scopeArgs...)
-	return strings.Join(parts, " "), tmpdir
+	return buildCommand(checkpointPath), tmpdir
 }

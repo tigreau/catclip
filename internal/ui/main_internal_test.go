@@ -238,7 +238,7 @@ exit 91
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
-func TestResolveStartupModifierMenuOnlyUsesCheckpointPreviewCommand(t *testing.T) {
+func TestResolveStartupModifierMenuUsesSharedCheckpointPreviews(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts":  "console.log('src')\n",
 		"src/other.ts": "console.log('other')\n",
@@ -248,6 +248,7 @@ func TestResolveStartupModifierMenuOnlyUsesCheckpointPreviewCommand(t *testing.T
 	installScriptFzf(t, `#!/bin/sh
 prompt=""
 preview=""
+bindings=""
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--prompt)
@@ -256,6 +257,11 @@ while [ "$#" -gt 0 ]; do
 			;;
 		--preview)
 			preview="$2"
+			shift 2
+			;;
+		--bind)
+			bindings="$bindings
+$2"
 			shift 2
 			;;
 		*)
@@ -267,6 +273,10 @@ done
 input="$(cat)"
 
 if [ "$prompt" = "filter> " ]; then
+	printf '%s\n' "$bindings" | grep -F -- 'start:preview(' | grep -F -- '--internal-tree-preview --internal-prediscovered' >/dev/null || {
+		echo "filter preview did not use retained checkpoint child: $bindings" >&2
+		exit 91
+	}
 	printf '%s\n' "$input" | grep -F $'\tonly' | head -n 1
 	exit 0
 fi
@@ -445,9 +455,6 @@ exit 91
 func TestStartupModifierCurrentScopePreviewCommandUsesCheckpointHandoff(t *testing.T) {
 	limit := 5
 	tmpRoot := t.TempDir()
-	// Use a real entry pointing at a real file so WriteCheckpoint's size stat
-	// can complete; the modifier-menu preview command needs Entries to write
-	// a usable checkpoint, otherwise it returns ("","").
 	entryPath := filepath.Join(tmpRoot, "src", "main.ts")
 	if err := os.MkdirAll(filepath.Dir(entryPath), 0o755); err != nil {
 		t.Fatalf("MkdirAll returned error: %v", err)
@@ -461,6 +468,7 @@ func TestStartupModifierCurrentScopePreviewCommandUsesCheckpointHandoff(t *testi
 			AbsPath:    entryPath,
 			RelPath:    "src/main.ts",
 			TargetRoot: "src",
+			SizeKnown:  true,
 		}},
 	}
 	state := startupCurrentScopeState{
@@ -476,43 +484,28 @@ func TestStartupModifierCurrentScopePreviewCommandUsesCheckpointHandoff(t *testi
 			},
 		},
 	}
-	cmd, tmpdir := startupModifierCurrentScopePreviewCommand(state, view)
+	cmd, tmpdir := startupModifierCurrentScopePreviewCommand(nil, state, view)
 	if tmpdir != "" {
 		defer os.RemoveAll(tmpdir)
 	}
-
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
-
-	// The preview command MUST contain --internal-prediscovered so the child
-	// reads the precomputed checkpoint instead of repeating discovery (the
-	// v0.6.0 Windows-latency Finding 1 regression — see
-	// docs/versions/v0.6.1/reports/ACTIVE_NOTE_windows_interactive_latency_findings.md).
 	if !strings.HasPrefix(cmd, discovery.ShellQuoteArg(self)+" --quiet --internal-tree-preview --internal-prediscovered ") {
-		t.Fatalf("expected modifier preview to use --internal-prediscovered checkpoint hand-off, got %q", cmd)
+		t.Fatalf("expected checkpoint preview child, got %q", cmd)
 	}
-	// The current-scope tail still appears so the child renders the right
-	// scope from the checkpoint.
 	if !strings.Contains(cmd, " docs --recent 5") {
-		t.Fatalf("expected modifier preview to carry the current scope tail (docs --recent 5), got %q", cmd)
+		t.Fatalf("expected current scope tail, got %q", cmd)
 	}
-	// Earlier scopes must not bleed into the preview (the menu is for the
-	// current scope only).
 	if strings.Contains(cmd, " src --only '*.ts'") {
-		t.Fatalf("expected modifier preview to exclude earlier scopes, got %q", cmd)
+		t.Fatalf("earlier scope leaked into preview command: %q", cmd)
 	}
-	if strings.Contains(cmd, "catclip-tree") || strings.Contains(cmd, "|") {
-		t.Fatalf("expected modifier preview command to avoid catclip-tree pipe, got %q", cmd)
-	}
-	// The checkpoint file must actually exist on disk (callers rely on this
-	// to clean up).
 	if tmpdir == "" {
 		t.Fatalf("expected non-empty tmpdir for cleanup, got %q", tmpdir)
 	}
 	if _, err := os.Stat(filepath.Join(tmpdir, "scope.json")); err != nil {
-		t.Fatalf("expected scope.json checkpoint to exist in tmpdir, stat error: %v", err)
+		t.Fatalf("expected scope.json checkpoint: %v", err)
 	}
 }
 
@@ -526,7 +519,7 @@ func TestStartupModifierCurrentScopePreviewCommandSkipsWhenViewIsEmpty(t *testin
 			{Targets: []string{"src"}},
 		},
 	}
-	cmd, tmpdir := startupModifierCurrentScopePreviewCommand(state, resolvedScopeView{})
+	cmd, tmpdir := startupModifierCurrentScopePreviewCommand(nil, state, resolvedScopeView{})
 	if cmd != "" || tmpdir != "" {
 		t.Fatalf("expected empty preview when view has no entries, got cmd=%q tmpdir=%q", cmd, tmpdir)
 	}
@@ -1064,10 +1057,16 @@ func TestResolveInteractiveStartupArgsFinishEarlyClearsPendingModifiers(t *testi
 	_ = parseInProject(t, project, []string{"."})
 	installScriptFzf(t, `#!/bin/sh
 prompt=""
+bindings=""
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--prompt)
 			prompt="$2"
+			shift 2
+			;;
+		--bind)
+			bindings="$bindings
+$2"
 			shift 2
 			;;
 		*)
@@ -2025,10 +2024,16 @@ func TestMaybeResolveStartupPickerArgsBareModifierMenuPicksTargetsFirst(t *testi
 	stateFile := filepath.Join(t.TempDir(), "picker-order")
 	installScriptFzf(t, fmt.Sprintf(`#!/bin/sh
 prompt=""
+bindings=""
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--prompt)
 			prompt="$2"
+			shift 2
+			;;
+		--bind)
+			bindings="$bindings
+$2"
 			shift 2
 			;;
 		*)
@@ -2048,6 +2053,14 @@ fi
 if [ "$prompt" = "filter> " ]; then
 	[ -f %q ] || {
 		echo "modifier picker opened before target picker" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F -- '--internal-target-inventory' >/dev/null || {
+		echo "first filter preview did not reuse committed target inventory: $bindings" >&2
+		exit 91
+	}
+	printf '%%s\n' "$bindings" | grep -F -- '--internal-prediscovered' >/dev/null && {
+		echo "first filter preview unexpectedly serialized JSON: $bindings" >&2
 		exit 91
 	}
 	printf '%%s\n' "$input" | grep -F $'\tchanged' | head -n 1
@@ -2072,6 +2085,63 @@ exit 91
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
+
+func TestTargetConfirmationHandsCompactInventoryToFirstFilterPreview(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/main.ts":    "console.log('src')\n",
+		"shared/util.ts": "console.log('shared')\n",
+	})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+bindings=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		--prompt)
+			prompt="$2"
+			shift 2
+			;;
+		--bind)
+			bindings="$bindings
+$2"
+			shift 2
+			;;
+		*)
+			shift
+			;;
+	esac
+done
+
+input="$(cat)"
+if [ "$prompt" = "select> " ]; then
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1
+	exit 0
+fi
+if [ "$prompt" = "filter> " ]; then
+	printf '%s\n' "$bindings" | grep -F -- '--internal-target-inventory' >/dev/null || exit 91
+	printf '%s\n' "$bindings" | grep -F -- '--internal-prediscovered' >/dev/null && exit 92
+	printf '%s\n' "$input" | grep -F $'\tpaths' | head -n 1
+	exit 0
+fi
+exit 93
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _, usedFzf, err := resolveStartupArgsWithUndo(resolver, []string{"--"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !usedFzf {
+		t.Fatal("expected target and filter pickers")
+	}
+	if got, want := strings.Join(args, "\n"), "src\n--paths"; got != want {
+		t.Fatalf("resolved args = %q, want %q", got, want)
+	}
+}
+
 func TestMaybeResolveStartupPickerArgsHeadlessRecentSkipsStartupPicker(t *testing.T) {
 	if !platform.CanPromptInteractively() {
 		t.Skip("interactive terminal not available")

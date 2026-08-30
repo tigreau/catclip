@@ -35,7 +35,7 @@ func ApplyRecentStage(entries []Entry, workingDir string, limit *int) ([]Entry, 
 }
 
 // EnsureEntryModTimes fills ModTime + SizeBytes for any entry missing
-// them, statting on disk via os.Stat. Used by applyRecentStage and by
+// them, statting on disk via os.Lstat. Used by applyRecentStage and by
 // root's preview_table.go (for the file-list preview pane).
 //
 // Fail-fast contract: mirrors EnsureEntrySizes. --recent was invoked
@@ -49,7 +49,7 @@ func EnsureEntryModTimes(entries []Entry, workingDir string) ([]Entry, error) {
 		}
 		paths[i] = entries[i].AbsPath
 	}
-	infos, errs := parallelStat(paths, os.Stat)
+	infos, errs := parallelStat(paths, os.Lstat)
 	for i := range entries {
 		if paths[i] == "" {
 			continue

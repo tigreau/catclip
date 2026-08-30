@@ -2,29 +2,53 @@ package search
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/tigreau/catclip/internal/platform"
 )
 
 const (
-	// Classification may enqueue accepted paths immediately, but metadata I/O
-	// does not begin until boostWorkers. Even one concurrent Lstat worker was
-	// measurable on the 196k-file reference corpus, so list readiness wins over
-	// speculative overlap here.
-	textSizeCaptureInitialWorkers = 0
+	// Start one worker while classification is still running. Target
+	// confirmation is the completion boundary, but this small speculative lane
+	// lets already-classified files make progress while keeping the initial list
+	// responsive.
+	textSizeCaptureInitialWorkers = 1
 	// Once classification finishes, metadata collection can use the same
 	// bounded parallelism as the preview's former exact-size fallback.
 	textSizeCaptureMaxWorkers = 16
 )
 
-// TextSizeCapture collects opportunistic Lstat sizes for files already known
-// to be text. It is owned by one interactive target picker and never makes
-// classification fail: unreadable or disappearing files simply remain absent
-// so the preview's existing exact lookup can handle them if selected.
+// FileMetadataState is the terminal result of the primary Lstat owned by an
+// interactive target generation. Ready is zero so existing successful record
+// literals remain source-compatible.
+type FileMetadataState uint8
+
+const (
+	FileMetadataReady FileMetadataState = iota
+	FileMetadataVanished
+	FileMetadataUnreadable
+)
+
+// FileMetadata is the reusable part of one successful Lstat. Keeping the full
+// record costs no additional filesystem work and prevents later interactive
+// stages from asking the operating system for the same facts again.
+type FileMetadata struct {
+	SizeBytes int64
+	ModTime   time.Time
+	Mode      fs.FileMode
+	State     FileMetadataState
+	Error     string
+}
+
+// TextSizeCapture collects opportunistic Lstat metadata for files already
+// known to be text. It is owned by one interactive target picker and never
+// makes classification fail. Failures are retained as terminal observations
+// so downstream screens do not repeat the same primary lookup.
 type TextSizeCapture struct {
 	workingDir  string
 	ctx         context.Context
@@ -36,8 +60,8 @@ type TextSizeCapture struct {
 	boostOnce   sync.Once
 	interrupted atomic.Bool
 
-	mu    sync.RWMutex
-	sizes map[string]int64
+	mu       sync.RWMutex
+	metadata map[string]FileMetadata
 }
 
 func newTextSizeCapture(workingDir string) *TextSizeCapture {
@@ -49,7 +73,7 @@ func newTextSizeCapture(workingDir string) *TextSizeCapture {
 		batches:    make(chan []string, 4),
 		boost:      make(chan struct{}),
 		done:       make(chan struct{}),
-		sizes:      make(map[string]int64),
+		metadata:   make(map[string]FileMetadata),
 	}
 	go capture.run()
 	return capture
@@ -75,7 +99,7 @@ func (c *TextSizeCapture) run() {
 	)
 	defer func() {
 		c.mu.RLock()
-		captured := len(c.sizes)
+		captured := len(c.metadata)
 		c.mu.RUnlock()
 		finishBench(
 			"captured", platform.InternalBenchInt(captured),
@@ -97,10 +121,7 @@ func (c *TextSizeCapture) run() {
 					}
 					abs := filepath.Join(c.workingDir, filepath.FromSlash(rel))
 					info, err := os.Lstat(abs)
-					if err != nil {
-						continue
-					}
-					c.record(rel, info.Size())
+					c.recordResult(rel, info, err)
 				}
 			}()
 		}
@@ -176,12 +197,38 @@ func (c *TextSizeCapture) add(relPaths []string) {
 	}
 }
 
-func (c *TextSizeCapture) record(rel string, size int64) {
+func (c *TextSizeCapture) record(rel string, info os.FileInfo) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
-	c.sizes[rel] = size
+	c.metadata[rel] = FileMetadata{
+		SizeBytes: info.Size(),
+		ModTime:   info.ModTime(),
+		Mode:      info.Mode(),
+	}
+	c.mu.Unlock()
+}
+
+func (c *TextSizeCapture) recordResult(rel string, info os.FileInfo, err error) {
+	if c == nil {
+		return
+	}
+	if err == nil && info != nil && info.Mode().IsRegular() {
+		c.record(rel, info)
+		return
+	}
+	record := FileMetadata{State: FileMetadataUnreadable}
+	if err != nil {
+		record.Error = err.Error()
+		if os.IsNotExist(err) {
+			record.State = FileMetadataVanished
+		}
+	} else {
+		record.Error = "path is not a regular file"
+	}
+	c.mu.Lock()
+	c.metadata[rel] = record
 	c.mu.Unlock()
 }
 
@@ -199,9 +246,90 @@ func (c *TextSizeCapture) Snapshot() map[string]int64 {
 		return nil
 	}
 	c.mu.RLock()
-	out := make(map[string]int64, len(c.sizes))
-	for rel, size := range c.sizes {
-		out[rel] = size
+	out := make(map[string]int64, len(c.metadata))
+	for rel, metadata := range c.metadata {
+		if metadata.State == FileMetadataReady {
+			out[rel] = metadata.SizeBytes
+		}
+	}
+	c.mu.RUnlock()
+	return out
+}
+
+// MetadataSnapshot returns every completed Lstat record. The returned map is
+// detached from the workers and becomes the interactive session's immutable
+// filesystem metadata seed after the target picker closes.
+func (c *TextSizeCapture) MetadataSnapshot() map[string]FileMetadata {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	out := make(map[string]FileMetadata, len(c.metadata))
+	for rel, metadata := range c.metadata {
+		out[rel] = metadata
+	}
+	c.mu.RUnlock()
+	return out
+}
+
+// FinalizeSelection stops speculative work, reuses every completed selected
+// record, and fills only selected gaps. It returns only after every requested
+// path has a terminal ready/vanished/unreadable record.
+func (c *TextSizeCapture) FinalizeSelection(relPaths []string) map[string]FileMetadata {
+	if c == nil {
+		return nil
+	}
+	c.Stop()
+
+	selected := make([]string, 0, len(relPaths))
+	seen := make(map[string]struct{}, len(relPaths))
+	for _, rel := range relPaths {
+		rel = filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel)))
+		if rel == "" || rel == "." {
+			continue
+		}
+		if _, ok := seen[rel]; ok {
+			continue
+		}
+		seen[rel] = struct{}{}
+		selected = append(selected, rel)
+	}
+
+	c.mu.RLock()
+	missing := make([]string, 0, len(selected))
+	for _, rel := range selected {
+		if _, ok := c.metadata[rel]; !ok {
+			missing = append(missing, rel)
+		}
+	}
+	c.mu.RUnlock()
+
+	jobs := make(chan string)
+	var wg sync.WaitGroup
+	workers := min(textSizeCaptureMaxWorkers, len(missing))
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for rel := range jobs {
+				abs := filepath.Join(c.workingDir, filepath.FromSlash(rel))
+				info, err := os.Lstat(abs)
+				c.recordResult(rel, info, err)
+			}
+		}()
+	}
+	for _, rel := range missing {
+		jobs <- rel
+	}
+	close(jobs)
+	wg.Wait()
+
+	c.mu.RLock()
+	out := make(map[string]FileMetadata, len(selected))
+	for _, rel := range selected {
+		if record, ok := c.metadata[rel]; ok {
+			out[rel] = record
+		}
 	}
 	c.mu.RUnlock()
 	return out

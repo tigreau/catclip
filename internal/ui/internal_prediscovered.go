@@ -81,15 +81,17 @@ func buildPrediscoveredTreePlan(cfg prediscoveredCommandConfig) (output.Plan, di
 		scope = cfg.Scopes[0]
 	}
 	if cfg.FileSetSelectionPath != "" {
-		values, err := readFzfFileSetSelection(cfg.FileSetSelectionPath)
+		selection, err := readFzfFileSetSelection(cfg.FileSetSelectionPath)
 		if err != nil {
 			return output.Plan{}, discovery.CheckpointData{}, err
 		}
-		kind := command.StageOnly
-		if cfg.FileSetSelectionStage == "exclude" {
-			kind = command.StageExclude
+		if !selection.All {
+			kind := command.StageOnly
+			if cfg.FileSetSelectionStage == "exclude" {
+				kind = command.StageExclude
+			}
+			scope.Stages = append(scope.Stages, command.Stage{Kind: kind, Values: selection.Values})
 		}
-		scope.Stages = append(scope.Stages, command.Stage{Kind: kind, Values: values})
 	}
 
 	finishTailBench := platform.InternalBenchSpan("ui.internal.prediscovered.apply_tail",
@@ -122,10 +124,15 @@ func buildPrediscoveredTreePlan(cfg prediscoveredCommandConfig) (output.Plan, di
 	return plan, checkpoint, nil
 }
 
-func readFzfFileSetSelection(selectionPath string) ([]string, error) {
+type fzfFileSetSelection struct {
+	Values []string
+	All    bool
+}
+
+func readFzfFileSetSelection(selectionPath string) (fzfFileSetSelection, error) {
 	f, err := os.Open(selectionPath)
 	if err != nil {
-		return nil, err
+		return fzfFileSetSelection{}, err
 	}
 	defer f.Close()
 
@@ -135,9 +142,12 @@ func readFzfFileSetSelection(selectionPath string) ([]string, error) {
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		fields := strings.SplitN(line, "\t", 3)
+		fields := strings.Split(line, "\t")
+		if len(fields) >= 6 && fields[5] == string(startupFileSetRowAll) {
+			return fzfFileSetSelection{All: true}, nil
+		}
 		if len(fields) < 2 || fields[1] == "" {
-			return nil, fmt.Errorf("invalid fzf file-set selection row")
+			return fzfFileSetSelection{}, fmt.Errorf("invalid fzf file-set selection row")
 		}
 		if _, ok := seen[fields[1]]; ok {
 			continue
@@ -146,12 +156,12 @@ func readFzfFileSetSelection(selectionPath string) ([]string, error) {
 		values = append(values, fields[1])
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return fzfFileSetSelection{}, err
 	}
 	if len(values) == 0 {
-		return nil, fmt.Errorf("empty fzf file-set selection")
+		return fzfFileSetSelection{}, fmt.Errorf("empty fzf file-set selection")
 	}
-	return values, nil
+	return fzfFileSetSelection{Values: values}, nil
 }
 
 func FzfFilterTreeRenderOptions() treeRenderOptions {
@@ -396,9 +406,8 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 
 	// --not-contains live: prune entries matching the pattern; no
 	// first-match line (there's no match to center the preview on).
-	// The memo plumbing is contains-shaped (prefix-extension narrows
-	// the match set) and doesn't transfer cleanly to prunes, so skip
-	// it for this kind.
+	// Prefix-extension restriction does not transfer to negative matches,
+	// but the exact final survivor set is still written for the parent handoff.
 	if liveKind == command.StageNotContains {
 		finishRowsBench := platform.InternalBenchSpan("ui.internal.content_match_list.not_contains_rows",
 			"entries", platform.InternalBenchInt(len(entries)),
@@ -416,6 +425,7 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 			finishBench("err", platform.InternalBenchError(err))
 			return err
 		}
+		writeContentMatchMemo(contentMatchMemoPath(cfg.CheckpointPath), pattern, discovery.EntryAbsPaths(pruned))
 		rows := contentMatchRowsFromEntries(pruned)
 		err = writeContentMatchRows(stdout, rows)
 		finishBench(
@@ -489,11 +499,9 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 // upstream filter invariant. Pass nil to skip intersection (e.g.
 // the headless/fallback path where no prior filtering occurred).
 //
-// The memo (used by the chunked path for prefix-extension restriction)
-// is intentionally not touched here. Direct mode's per-call cost is
-// low enough that the memo's savings are minor, and skipping the
-// write avoids cross-route contamination if eligibility flips mid-
-// session.
+// Direct mode also publishes the final membership memo. It does not read the
+// memo for prefix-extension restriction, but the parent can reuse the exact
+// confirmed result instead of scanning the same files again during handoff.
 func runDirectContentMatch(cfg prediscoveredCommandConfig, scope command.ExecutionScope, allowedEntries []discovery.Entry, noIgnore bool, stdout io.Writer) error {
 	pattern := contentMatchScopePattern(scope)
 	target := scope.Targets[0]
@@ -544,5 +552,8 @@ func runDirectContentMatch(cfg prediscoveredCommandConfig, scope command.Executi
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].RelPath < rows[j].RelPath
 	})
+	memoEntries := append([]discovery.Entry(nil), allowedEntries...)
+	memoEntries = discovery.EnsureEntryAbsPaths(memoEntries, cfg.Invocation.WorkingDir)
+	writeContentMatchMemo(contentMatchMemoPath(cfg.CheckpointPath), pattern, matchedAbsPathsFromRows(rows, memoEntries))
 	return writeContentMatchRows(stdout, rows)
 }

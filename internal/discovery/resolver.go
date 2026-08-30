@@ -37,15 +37,24 @@ type Resolver struct {
 	// interactive target picker. It lets the visible-file classifier start an
 	// opportunistic metadata snapshot without adding size work to headless or
 	// direct discovery.
-	CaptureTargetPreviewSizes bool
-	WantedBasenames           map[string]struct{}
-	ScopeTargets              []string
-	StartupEscHint            string
-	textFileSet               map[string]struct{}
-	textFileSetReady          bool
-	interactiveTargets        []TargetMatch
-	interactiveTargetsOk      bool
-	targetPreviewSizes        *search.TextSizeCapture
+	CaptureTargetPreviewSizes  bool
+	WantedBasenames            map[string]struct{}
+	ScopeTargets               []string
+	StartupEscHint             string
+	textFileSet                map[string]struct{}
+	textFileSetReady           bool
+	interactiveTargets         []TargetMatch
+	interactiveTargetsOk       bool
+	targetPreviewSizes         *search.TextSizeCapture
+	targetPreviewInventory     []TargetMatch
+	targetPreviewInventoryOK   bool
+	retainedTargetPreviewDirs  []string
+	retainedTargetPreviewPath  string
+	retainedTargetPreviewReady bool
+	committedTargetPreviewPath string
+	committedTargetEntries     []Entry
+	committedTargetMetadata    map[string]search.FileMetadata
+	committedTargetReady       bool
 	// targetInventoriesByScope caches no-ignore target inventories per narrowed
 	// scope-target key ("" = the working-dir-wide universe). Separate cache
 	// entries retain either the complete universe or only ignored rows.
@@ -215,12 +224,7 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		// per-scope loop in cli.go converts this into exit 2 (single
 		// scope or all scopes unsatisfiable) or exit 1 (mixed success).
 		// See docs/versions/v0.5.0/reports/ACTIVE_BUG_git_selection_silently_dropped_no_git.md.
-		result.Diagnostics = append(result.Diagnostics, Diagnostic{
-			Message:              command.GitSelectionRequiresGitRepoMessage(),
-			IsScopeUnsatisfiable: true,
-			ExplainsEmptyResult:  true,
-			ScopeIndex:           scopeIndex,
-		})
+		result.Diagnostics = append(result.Diagnostics, GitSelectionUnavailableDiagnostic(scopeIndex))
 		result.Notices = DedupePreserveOrder(result.Notices)
 		return result, nil
 	}
@@ -236,6 +240,19 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	result.Entries = EnsureEntryAbsPaths(entries, cfg.WorkingDir)
 	result.Notices = DedupePreserveOrder(result.Notices)
 	return result, nil
+}
+
+// GitSelectionUnavailableDiagnostic is the canonical diagnostic for a scope
+// that requests a Git-backed filter outside a Git working tree. Retained
+// interactive projections use the same value as a cold scope evaluation so a
+// memo hit cannot change exit semantics or user-visible guidance.
+func GitSelectionUnavailableDiagnostic(scopeIndex int) Diagnostic {
+	return Diagnostic{
+		Message:              command.GitSelectionRequiresGitRepoMessage(),
+		IsScopeUnsatisfiable: true,
+		ExplainsEmptyResult:  true,
+		ScopeIndex:           scopeIndex,
+	}
 }
 
 func diagnosticsExplainTargetRequest(diagnostics []Diagnostic) bool {

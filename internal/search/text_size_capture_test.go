@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestClassifyTextPathsWithSizeCaptureStoresOnlyTextFiles(t *testing.T) {
@@ -77,7 +78,12 @@ func TestTextSizeCaptureStopCancelsOutstandingWork(t *testing.T) {
 
 func TestTextSizeCaptureCompletedSnapshotRemainsReusableAfterStop(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "ready.txt"), []byte("ready"), 0o644); err != nil {
+	path := filepath.Join(dir, "ready.txt")
+	if err := os.WriteFile(path, []byte("ready"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wantModTime := time.Unix(1_700_000_000, 0)
+	if err := os.Chtimes(path, wantModTime, wantModTime); err != nil {
 		t.Fatal(err)
 	}
 	capture := StartTextSizeCapture(dir, []string{"ready.txt"})
@@ -88,5 +94,40 @@ func TestTextSizeCaptureCompletedSnapshotRemainsReusableAfterStop(t *testing.T) 
 	}
 	if got := capture.Snapshot()["ready.txt"]; got != 5 {
 		t.Fatalf("captured size = %d, want 5", got)
+	}
+	metadata, ok := capture.MetadataSnapshot()["ready.txt"]
+	if !ok {
+		t.Fatal("completed metadata snapshot omitted ready.txt")
+	}
+	if metadata.SizeBytes != 5 || !metadata.ModTime.Equal(wantModTime) || !metadata.Mode.IsRegular() {
+		t.Fatalf("metadata = %+v, want size=5 modtime=%v regular", metadata, wantModTime)
+	}
+}
+
+func TestTextSizeCaptureFinalizeSelectionRecordsTerminalOutcomes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ready.txt"), []byte("ready"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "gone.txt"), []byte("gone"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "gone.txt")); err != nil {
+		t.Fatal(err)
+	}
+	capture := newTextSizeCapture(dir)
+
+	metadata := capture.FinalizeSelection([]string{"ready.txt", "gone.txt"})
+	if len(metadata) != 2 {
+		t.Fatalf("finalized metadata = %+v, want exactly two selected records", metadata)
+	}
+	if got := metadata["ready.txt"]; got.State != FileMetadataReady || got.SizeBytes != 5 || !got.Mode.IsRegular() {
+		t.Fatalf("ready metadata = %+v", got)
+	}
+	if got := metadata["gone.txt"]; got.State != FileMetadataVanished || got.Error == "" {
+		t.Fatalf("vanished metadata = %+v", got)
+	}
+	if _, ok := capture.Snapshot()["gone.txt"]; ok {
+		t.Fatal("vanished path leaked into the successful size snapshot")
 	}
 }

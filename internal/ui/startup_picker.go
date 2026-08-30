@@ -106,9 +106,9 @@ type startupCurrentScopeState struct {
 	ProgressExtras          interactiveProgressExtras
 	// GitStatusMap is the porcelain map (workPath → "S"/"M"/"SM"/"?")
 	// collected once in startupCurrentScopeStateForArgs and reused by
-	// startupModifierCurrentScopePreviewCommand so the checkpoint write
-	// doesn't repeat the git status call. nil when git is disabled or
-	// the scope is empty (the caller falls back to a fresh fetch).
+	// startupModifierCurrentScopePreviewCommand so checkpoint preparation does
+	// not repeat the Git status call. nil when Git is disabled or the scope is
+	// empty.
 	GitStatusMap map[string]string
 }
 
@@ -771,6 +771,11 @@ func resolveInteractiveStartupArgs(resolver *discovery.Resolver, args []string) 
 }
 
 func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, requireScopeBeforeModifiers bool) ([]string, []string, bool, error) {
+	// This legacy non-undo driver still appears in focused tests and helper
+	// flows. Give it the same target-inventory lifetime boundary as the main
+	// undo-aware interactive session.
+	defer resolver.ReleaseRetainedTargetPreviewInventory()
+
 	targetPrompt := "select> "
 	if len(args) == 0 {
 		resolvedArgs, resolvedTargets, _, usedFzf, err := resolveStartupScopeInputsWithPrompt(resolver, nil, nil, nil, nil, targetPrompt)
@@ -1091,7 +1096,7 @@ func chooseStartupModifierChoiceWithProgress(currentArgs []string, escHint strin
 	finishPrepBench := platform.InternalBenchSpan("ui.startup.modifier_picker.prepare_preview",
 		"entries", platform.InternalBenchInt(len(view.Entries)),
 	)
-	previewCmd, previewTmpdir := startupModifierCurrentScopePreviewCommand(state, view)
+	previewCmd, previewTmpdir := startupModifierCurrentScopePreviewCommand(currentArgs, state, view)
 	finishPrepBench(
 		"has_preview", platform.InternalBenchBool(previewCmd != ""),
 	)
@@ -1240,8 +1245,13 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 		finishIgnoredBench := platform.InternalBenchSpan("ui.startup.scope_state.has_scoped_ignored",
 			"targets", platform.InternalBenchInt(len(current.Targets)),
 		)
-		hasScopedIgnored, err := startupHasScopedIgnoredTargets(current.Targets)
-		finishIgnoredBench("err", platform.InternalBenchError(err))
+		hasScopedIgnored, cached, err := view.inventory.cachedScopedIgnored(func() (bool, error) {
+			return startupHasScopedIgnoredTargets(current.Targets)
+		})
+		finishIgnoredBench(
+			"err", platform.InternalBenchError(err),
+			"cached", platform.InternalBenchBool(cached),
+		)
 		if err == nil {
 			state.HasScopedIgnoredTargets = hasScopedIgnored
 		}
@@ -1269,16 +1279,17 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 	// unstaged / untracked); per the v0.6.2 Windows trace each separate
 	// invocation cost ~150 ms (Defender intercepts every git subprocess
 	// .git/ read), so the consolidation saves ~300 ms on warm boot. The
-	// resulting map is also reused by startupModifierCurrentScopePreviewCommand
-	// to write the modifier-menu checkpoint without a second porcelain
-	// call (state.GitStatusMap).
+	// resulting map is also reused while preparing the modifier preview's
+	// retained checkpoint, without a second porcelain call.
 	finishGitSelBench := platform.InternalBenchSpan("ui.startup.scope_state.git_selection_sets",
 		"repo_paths", platform.InternalBenchInt(total),
 	)
-	pathspecs := discovery.GitStatusPathspecsForEntries(view.GitContext, view.Entries)
-	statusMap, err := git.StatusMapForPathspecs(view.GitContext, pathspecs)
+	statusMap, cached, err := view.inventory.cachedGitStatus(view.Entries, func(entries []discovery.Entry) (map[string]string, error) {
+		pathspecs := discovery.GitStatusPathspecsForEntries(view.GitContext, entries)
+		return git.StatusMapForPathspecs(view.GitContext, pathspecs)
+	})
 	if err != nil {
-		finishGitSelBench("err", platform.InternalBenchError(err))
+		finishGitSelBench("err", platform.InternalBenchError(err), "cached", platform.InternalBenchBool(cached))
 		return startupCurrentScopeState{}, resolvedScopeView{}, err
 	}
 	state.GitStatusMap = statusMap
@@ -1305,6 +1316,7 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 	}
 	finishGitSelBench(
 		"err", "false",
+		"cached", platform.InternalBenchBool(cached),
 		"statuses", platform.InternalBenchInt(len(statusMap)),
 		"staged", platform.InternalBenchInt(len(staged)),
 		"unstaged", platform.InternalBenchInt(len(unstaged)),

@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,21 @@ import (
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/git"
 )
+
+func TestMarshalCheckpointUsesCompactJSON(t *testing.T) {
+	raw, err := MarshalCheckpoint(CheckpointData{
+		Entries: []Entry{{RelPath: "src/main.go", Mode: command.EntryModeFull}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("\n  ")) || bytes.Count(raw, []byte("\n")) != 1 || raw[len(raw)-1] != '\n' {
+		t.Fatalf("checkpoint is not one compact JSON document: %q", raw)
+	}
+	if _, err := UnmarshalCheckpoint(raw); err != nil {
+		t.Fatalf("compact checkpoint did not round-trip: %v", err)
+	}
+}
 
 func TestCheckpointNoIgnoreRoundtrip(t *testing.T) {
 	cases := []struct {
@@ -38,6 +54,50 @@ func TestCheckpointNoIgnoreRoundtrip(t *testing.T) {
 				t.Fatalf("NoIgnore round-trip: got %v, want %v", out.NoIgnore, tc.noIgnore)
 			}
 		})
+	}
+}
+
+func TestCheckpointRoundTripsEveryOutputProjection(t *testing.T) {
+	in := CheckpointData{
+		GitContext: git.Context{Enabled: true, Root: "/repo", WorkPrefix: "sub", HasHead: true},
+		GitStatus:  map[string]string{"full.txt": "M"},
+		NoIgnore:   true,
+		Entries: []Entry{
+			{RelPath: "full.txt", Mode: command.EntryModeFull, GitVisible: true, IgnoreBypassed: true, BlockSource: ".gitignore"},
+			{RelPath: "lines.txt", Mode: command.EntryModeLines, Lines: true, LinesStart: 2, LinesEnd: 4},
+			{
+				RelPath:             "snippet.txt",
+				Mode:                command.EntryModeSnippet,
+				SnippetPattern:      "TODO|FIXME",
+				SnippetContextSet:   true,
+				SnippetContextLines: 3,
+				SnippetMatchLines:   []int{5, 11},
+			},
+			{RelPath: "diff.txt", Mode: command.EntryModeDiff, DiffWantStaged: true, DiffWantUnstaged: true},
+		},
+	}
+	raw, err := MarshalCheckpoint(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := UnmarshalCheckpoint(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("checkpoint changed output projection:\ngot  %+v\nwant %+v", out, in)
+	}
+
+	// Decoded collections belong to that read. Mutating one decode must not
+	// alter the serialized source or a later decode.
+	out.GitStatus["full.txt"] = "?"
+	out.Entries[2].SnippetMatchLines[0] = 999
+	again, err := UnmarshalCheckpoint(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.GitStatus["full.txt"] != "M" || !reflect.DeepEqual(again.Entries[2].SnippetMatchLines, []int{5, 11}) {
+		t.Fatalf("checkpoint decode retained mutable aliases: %+v", again)
 	}
 }
 

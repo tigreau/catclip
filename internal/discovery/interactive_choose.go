@@ -59,6 +59,9 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	// the no-ignore picker opens; otherwise a query such as "src" unexpectedly
 	// shows thousands of weaker dependency-path matches.
 	allTargets, previewInventory := targetPickerMatchSets(allTargets, r.NoIgnore, query)
+	r.beginTargetPreviewGeneration()
+	r.targetPreviewInventory = append([]TargetMatch(nil), previewInventory...)
+	r.targetPreviewInventoryOK = true
 	options := make([]TargetMatch, 0, len(allTargets))
 	for _, target := range allTargets {
 		if CoveredBySelection(target.Path, selectedPaths) {
@@ -90,16 +93,23 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	labels, index := TargetMatchLabels(options)
 	header := TargetPickerHeaderWithEscHint(prompt, r.StartupEscHint)
 	revealedHeader := styledTargetPickerHeaderWithSymbols(prompt, r.StartupEscHint, platform.ActivePalette())
-	selectedLabels, err := chooseManyTargetMatchesWithFzfChrome(path, query, prompt, header, revealedHeader, labels, previewInventory, r.GitCtx, sizeCapture, false, r.WithBinaries)
+	selectedLabels, inventoryLease, err := chooseManyTargetMatchesWithFzfChrome(path, query, prompt, header, revealedHeader, labels, previewInventory, r.GitCtx, sizeCapture, false, r.WithBinaries)
 	if err != nil {
 		return nil, err
 	}
+	// Until a valid target row is committed, the lease remains responsible for
+	// cleanup. This makes an immediate Enter safe: picker.Run may return before
+	// any preview child starts, but the synchronously written inventory is no
+	// longer removed by the generic picker defer before ownership reaches the
+	// resolver.
+	defer inventoryLease.Release()
 
 	selected := make([]TargetMatch, 0, len(selectedLabels))
 	for _, key := range selectedLabels {
 		match, ok := index[key]
 		if ok {
 			if match.Kind == "all" {
+				inventoryLease.TransferTo(r)
 				return []TargetMatch{match}, nil
 			}
 			selected = append(selected, match)
@@ -108,6 +118,7 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	if len(selected) == 0 {
 		return nil, ErrSelectionCancelled
 	}
+	inventoryLease.TransferTo(r)
 	return selected, nil
 }
 
@@ -506,7 +517,11 @@ func ChooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, f
 	if strings.TrimSpace(result.Query) == "" && result.Key == "" && len(result.Matches) == 0 {
 		return fzfChooseResult{}, ErrSelectionCancelled
 	}
-	return fzfChooseResult{Query: result.Query, Key: result.Key, Matches: result.Matches}, nil
+	var matchMemo []byte
+	if checkpointPath != "" {
+		matchMemo, _ = os.ReadFile(filepath.Join(filepath.Dir(checkpointPath), ContentMatchMemoFilename))
+	}
+	return fzfChooseResult{Query: result.Query, Key: result.Key, Matches: result.Matches, MatchMemo: matchMemo}, nil
 }
 
 func contentMatchReloadBindings(reloadCommand, searchingPreviewCommand string) []string {
@@ -523,9 +538,37 @@ func chooseManyWithTypedFzf(bin, query, prompt string, candidates []string, kind
 	return chooseManyWithFzfOptions(bin, query, prompt, "1,2", "1,2", "", "", staticPreviewCommand(FzfPreviewCommand(includeTarget, withBinaries)), formatFzfCandidates(candidates, kind, state))
 }
 
-func chooseManyTargetMatchesWithFzfChrome(bin, query, prompt, header, revealedHeader string, candidates []string, inventory []TargetMatch, gitCtx git.Context, sizeCapture *search.TextSizeCapture, includeTarget, withBinaries bool) ([]string, error) {
+type targetPreviewInventoryLease struct {
+	sessionDir    string
+	inventoryPath string
+	baseComplete  bool
+}
+
+func (l *targetPreviewInventoryLease) Release() {
+	if l == nil || l.sessionDir == "" {
+		return
+	}
+	_ = os.RemoveAll(l.sessionDir)
+	l.sessionDir = ""
+	l.inventoryPath = ""
+	l.baseComplete = false
+}
+
+func (l *targetPreviewInventoryLease) TransferTo(resolver *Resolver) {
+	if l == nil || resolver == nil || l.sessionDir == "" || l.inventoryPath == "" {
+		return
+	}
+	resolver.retainTargetPreviewInventory(l.sessionDir, l.inventoryPath, l.baseComplete)
+	l.sessionDir = ""
+	l.inventoryPath = ""
+	l.baseComplete = false
+}
+
+func chooseManyTargetMatchesWithFzfChrome(bin, query, prompt, header, revealedHeader string, candidates []string, inventory []TargetMatch, gitCtx git.Context, sizeCapture *search.TextSizeCapture, includeTarget, withBinaries bool) ([]string, targetPreviewInventoryLease, error) {
+	inventoryPath := ""
+	baseComplete := false
 	previewBuilder := func(sessionDir string) previewCommandSetup {
-		inventoryPath := filepath.Join(sessionDir, "targets.bin")
+		inventoryPath = filepath.Join(sessionDir, "targets.bin")
 		sizesPending := !sizeCapture.Complete()
 		// Check completion before taking the snapshot. If capture finishes after
 		// this check, the inventory may conservatively stay pending and the
@@ -541,15 +584,19 @@ func chooseManyTargetMatchesWithFzfChrome(bin, query, prompt, header, revealedHe
 		})
 		finishBench("err", platform.InternalBenchError(err))
 		if err != nil {
+			inventoryPath = ""
+			baseComplete = false
 			return previewCommandSetup{
 				Command: FzfPreviewCommand(includeTarget, withBinaries),
 				Cleanup: sizeCapture.Stop,
 			}
 		}
 		if !sizesPending {
+			baseComplete = true
 			return previewCommandSetup{
-				Command: FzfPreviewCommandWithInventory(inventoryPath, withBinaries),
-				Cleanup: sizeCapture.Stop,
+				Command:                FzfPreviewCommandWithInventory(inventoryPath, withBinaries),
+				Cleanup:                sizeCapture.Stop,
+				RetainSessionOnSuccess: true,
 			}
 		}
 
@@ -579,14 +626,27 @@ func chooseManyTargetMatchesWithFzfChrome(bin, query, prompt, header, revealedHe
 			_ = os.WriteFile(TargetPreviewSizedInventoryDonePath(inventoryPath), nil, 0o600)
 		}()
 		return previewCommandSetup{
-			Command: FzfPreviewCommandWithInventory(inventoryPath, withBinaries),
+			Command:                FzfPreviewCommandWithInventory(inventoryPath, withBinaries),
+			RetainSessionOnSuccess: true,
 			Cleanup: func() {
 				sizeCapture.Stop()
 				<-writerDone
 			},
 		}
 	}
-	return chooseManyWithFzfOptions(bin, query, prompt, "2", "1,2", header, revealedHeader, previewBuilder, candidates)
+	result, err := chooseManyWithFzfOptionsResult(bin, query, prompt, "2", "1,2", header, revealedHeader, previewBuilder, candidates)
+	if err != nil {
+		return nil, targetPreviewInventoryLease{}, err
+	}
+	lease := targetPreviewInventoryLease{}
+	if result.PreviewSession != "" && inventoryPath != "" {
+		lease = targetPreviewInventoryLease{
+			sessionDir:    result.PreviewSession,
+			inventoryPath: inventoryPath,
+			baseComplete:  baseComplete,
+		}
+	}
+	return result.Matches, lease, nil
 }
 
 func chooseManyTargetMatchesWithFzf(bin, query, prompt string, candidates []string, includeTarget, withBinaries bool) ([]string, error) {
@@ -597,22 +657,45 @@ type fzfChooseResult struct {
 	Query   string
 	Key     string
 	Matches []string
+	// MatchMemo is the final reload child's serialized content-match memo.
+	// Callers must validate that its pattern equals Query before reuse.
+	MatchMemo []byte
 }
 
 type previewCommandSetup struct {
-	Command string
-	Cleanup func()
+	Command                string
+	Cleanup                func()
+	RetainSessionOnSuccess bool
 }
 
 func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, revealedHeader string, previewCommandBuilder func(string) previewCommandSetup, candidates []string) ([]string, error) {
+	result, err := chooseManyWithFzfOptionsResult(bin, query, prompt, nth, withNth, header, revealedHeader, previewCommandBuilder, candidates)
+	// This compatibility wrapper returns only matches, so it cannot transfer a
+	// retained session lease. Keep ownership local if a future builder enables
+	// retention accidentally; the target picker uses the result-bearing form.
+	if result.PreviewSession != "" {
+		_ = os.RemoveAll(result.PreviewSession)
+	}
+	return result.Matches, err
+}
+
+type chooseManyResult struct {
+	Matches        []string
+	PreviewSession string
+}
+
+func chooseManyWithFzfOptionsResult(bin, query, prompt, nth, withNth, header, revealedHeader string, previewCommandBuilder func(string) previewCommandSetup, candidates []string) (chooseManyResult, error) {
 	platform.StopActiveSpinner()
 	previewSession, err := os.MkdirTemp("", "catclip-target-preview-")
 	if err != nil {
-		return nil, err
+		return chooseManyResult{}, err
 	}
+	retainPreviewSession := false
 	defer func() {
 		picker.StopPreviewProcess(previewSession, picker.TargetPreviewPIDFile)
-		_ = os.RemoveAll(previewSession)
+		if !retainPreviewSession {
+			_ = os.RemoveAll(previewSession)
+		}
 	}()
 	setup := previewCommandSetup{}
 	if previewCommandBuilder != nil {
@@ -638,15 +721,22 @@ func chooseManyWithFzfOptions(bin, query, prompt, nth, withNth, header, revealed
 	}
 	result, err := picker.Run(bin, themedFzfRequest(req))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
-		return nil, ErrSelectionCancelled
+		return chooseManyResult{}, ErrSelectionCancelled
 	}
 	if err != nil {
-		return nil, err
+		return chooseManyResult{}, err
 	}
 	if len(result.Matches) == 0 {
-		return nil, ErrSelectionCancelled
+		return chooseManyResult{}, ErrSelectionCancelled
 	}
-	return result.Matches, nil
+	retainedPath := ""
+	if setup.RetainSessionOnSuccess {
+		// Flip ownership before returning. Deferred preview-process shutdown still
+		// runs, but directory deletion is now the caller's responsibility.
+		retainPreviewSession = true
+		retainedPath = previewSession
+	}
+	return chooseManyResult{Matches: result.Matches, PreviewSession: retainedPath}, nil
 }
 
 func staticPreviewCommand(command string) func(string) previewCommandSetup {

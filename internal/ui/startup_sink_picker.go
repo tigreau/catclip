@@ -81,9 +81,10 @@ type startupSinkChoice struct {
 }
 
 type sinkPayloadMeasurement struct {
-	Bytes       int64
-	WouldBundle bool
-	Err         error
+	Bytes         int64
+	WouldBundle   bool
+	OutputPreview sinkPreview
+	Err           error
 }
 
 type sinkPreviewMode int
@@ -178,7 +179,7 @@ var startupSinkChoicesLarge = []startupSinkChoice{
 }
 
 func maybeResolveStartupSinkPickerArgs(rawArgs []string, result StartupPickerResult) (StartupPickerResult, error) {
-	if !result.UsedFzf || len(result.Args) == 0 || rawArgsSkipOutputSinkPicker(rawArgs) {
+	if !result.UsedFzf || len(result.Args) == 0 {
 		return result, nil
 	}
 
@@ -190,6 +191,14 @@ func maybeResolveStartupSinkPickerArgs(rawArgs []string, result StartupPickerRes
 		Git:       ctx.Git,
 		Discovery: ctx.Discovery,
 		Plan:      ctx.Plan,
+	}
+	// An explicit sink suppresses only the sink picker. Earlier interactive
+	// choices still resolved against the retained generation, so final run must
+	// consume that same prepared result rather than execute discovery again.
+	if rawArgsSkipOutputSinkPicker(rawArgs) {
+		out := result
+		out.PreparedOutput = prepared
+		return out, nil
 	}
 	// There is no meaningful destination or preview for an empty payload.
 	// Preserve the prepared discovery so normal execution prints its standard
@@ -233,6 +242,14 @@ func argsContain(args []string, needle string) bool {
 }
 
 func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, error) {
+	finishBench := platform.InternalBenchSpan("ui.startup_sink.build_context",
+		"argc", platform.InternalBenchInt(len(args)),
+	)
+	defer func() {
+		// Detailed child spans identify discovery reuse, plan building, and
+		// reporting; this parent makes the complete pre-preview cost visible.
+		finishBench()
+	}()
 	cfg, err := cli.ParseArgsAllowImplicitDot(args)
 	if err != nil {
 		return StartupSinkPickerContext{}, err
@@ -240,31 +257,70 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 	emitCfg := emitConfigFromParsedCommand(cfg)
 	renderCfg := RenderConfigFromParsedCommand(cfg)
 	renderCfg.Preview = true
-	gitCtx := git.Detect(cfg.WorkingDir)
-	// Discovery diagnostics from this pass get embedded in the prepared
-	// state and replayed by run() after the picker resolves. They must
-	// carry the same ANSI codes a non-interactive run would produce; an
-	// empty palette here would strip color from every discovery.Diagnostic
-	// (ignored-target errors, target-not-found warnings, etc.) the user
-	// later sees on stderr after picker confirmation.
-	colors := platform.ActivePalette()
-
 	resolved := command.ResolvedFromParsed(cfg)
-	discoveryResult, err := discovery.DiscoverInvocation(resolved, gitCtx, io.Discard, colors)
-	if err != nil {
-		return StartupSinkPickerContext{}, err
+	finishReuseBench := platform.InternalBenchSpan("ui.startup_sink.discovery_handoff",
+		"scopes", platform.InternalBenchInt(len(resolved.Scopes)),
+	)
+	discoveryResult, gitCtx, reused := scopeViewMemoDiscoveryResult(resolved)
+	derivedForHandoff := false
+	if !reused {
+		wd, _ := scopeViewMemoKey(args)
+		if scopeViewMemoCanAdvanceTo(wd, args, resolved.Config) {
+			if _, deriveErr := resolvedCurrentScopeViewForArgs(args); deriveErr != nil {
+				return StartupSinkPickerContext{}, deriveErr
+			}
+			discoveryResult, gitCtx, reused = scopeViewMemoDiscoveryResult(resolved)
+			derivedForHandoff = reused
+		}
 	}
+	if !reused {
+		if scopeViewMemoHasSealedGeneration() {
+			finishReuseBench("reused", "false", "err", "sealed-generation-miss")
+			return StartupSinkPickerContext{}, fmt.Errorf("internal error: sealed interactive scope is missing from retained state")
+		}
+		gitCtx = git.Detect(cfg.WorkingDir)
+		// Discovery diagnostics from this pass get embedded in the prepared
+		// state and replayed by run() after the picker resolves. They must
+		// carry the same ANSI codes a non-interactive run would produce; an
+		// empty palette here would strip color from every discovery.Diagnostic
+		// (ignored-target errors, target-not-found warnings, etc.) the user
+		// later sees on stderr after picker confirmation.
+		colors := platform.ActivePalette()
+		discoveryResult, err = discovery.DiscoverInvocation(resolved, gitCtx, io.Discard, colors)
+		if err != nil {
+			finishReuseBench("reused", "false", "err", platform.InternalBenchError(err))
+			return StartupSinkPickerContext{}, err
+		}
+	}
+	finishReuseBench(
+		"reused", platform.InternalBenchBool(reused),
+		"derived", platform.InternalBenchBool(derivedForHandoff),
+		"entries", platform.InternalBenchInt(discoveredResultEntryCount(discoveryResult)),
+		"err", "false",
+	)
+	finishPlanBench := platform.InternalBenchSpan("ui.startup_sink.build_plan",
+		"entries", platform.InternalBenchInt(discoveredResultEntryCount(discoveryResult)),
+	)
 	plan, err := output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+	finishPlanBench("err", platform.InternalBenchError(err))
 	if err != nil {
 		return StartupSinkPickerContext{}, err
 	}
 	if err := output.ValidateRawPlan(emitCfg, plan); err != nil {
 		return StartupSinkPickerContext{}, err
 	}
+	planPathCount := 0
+	if platform.InternalBenchEnabled() {
+		planPathCount = len(plan.DistinctRelPaths())
+	}
+	finishReportBench := platform.InternalBenchSpan("ui.startup_sink.build_report",
+		"paths", platform.InternalBenchInt(planPathCount),
+	)
 	report, err := output.BuildReportForPlan(gitCtx, plan, output.ReportOptions{
 		IncludeTreeMetadata: NeedsTreeRender(renderCfg),
 		Notices:             discovery.DedupePreserveOrder(discoveryResult.Notices),
 	})
+	finishReportBench("err", platform.InternalBenchError(err))
 	if err != nil {
 		return StartupSinkPickerContext{}, err
 	}
@@ -281,15 +337,39 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 	}, nil
 }
 
+func discoveredResultEntryCount(result discovery.Result) int {
+	count := 0
+	for _, scope := range result.Invocation.Scopes {
+		count += len(scope.Entries)
+	}
+	return count
+}
+
 func measureOutputForSinkMenu(plan output.Plan, emitCfg output.EmitConfig) sinkPayloadMeasurement {
-	preview, err := renderSinkOutputTextPreview(plan, emitCfg, output.BundleThreshold+1)
+	planPathCount := 0
+	if platform.InternalBenchEnabled() {
+		planPathCount = len(plan.DistinctRelPaths())
+	}
+	finishBench := platform.InternalBenchSpan("ui.startup_sink.render_output_preview",
+		"paths", platform.InternalBenchInt(planPathCount),
+	)
+	// The output picker needs a 128 KiB preview immediately after this size
+	// decision. Render that once here and carry it forward instead of reading
+	// and highlighting the same payload first at 4 KiB and then at 128 KiB.
+	preview, err := renderSinkOutputTextPreview(plan, emitCfg, output.PreviewByteLimit)
+	finishBench(
+		"err", platform.InternalBenchError(err),
+		"preview_bytes", platform.InternalBenchInt(len(preview.Body)),
+		"truncated", platform.InternalBenchBool(preview.Truncated),
+	)
 	if err != nil {
 		return sinkPayloadMeasurement{WouldBundle: true, Err: err}
 	}
 	bytes := int64(len(preview.Body))
 	return sinkPayloadMeasurement{
-		Bytes:       bytes,
-		WouldBundle: preview.Truncated || bytes >= output.BundleThreshold,
+		Bytes:         bytes,
+		WouldBundle:   preview.Truncated || bytes >= output.BundleThreshold,
+		OutputPreview: preview,
 	}
 }
 
@@ -303,7 +383,11 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 		choices = startupSinkChoicesLarge
 	}
 	lines, index := startupSinkChoiceLines(choices)
-	files, err := PrepareStartupSinkPreviewFiles(ctx)
+	var precomputedOutput *sinkPreview
+	if measurement.Err == nil {
+		precomputedOutput = &measurement.OutputPreview
+	}
+	files, err := prepareStartupSinkPreviewFiles(ctx, precomputedOutput)
 	if err != nil {
 		return nil, false, err
 	}
@@ -374,6 +458,10 @@ func startupSinkPickerHeaderWithEscHint(escHint string) string {
 }
 
 func PrepareStartupSinkPreviewFiles(ctx StartupSinkPickerContext) (startupSinkPreviewFiles, error) {
+	return prepareStartupSinkPreviewFiles(ctx, nil)
+}
+
+func prepareStartupSinkPreviewFiles(ctx StartupSinkPickerContext, precomputedOutput *sinkPreview) (startupSinkPreviewFiles, error) {
 	tmpdir, err := os.MkdirTemp("", "catclip-sink-preview-*")
 	if err != nil {
 		return startupSinkPreviewFiles{}, err
@@ -386,9 +474,14 @@ func PrepareStartupSinkPreviewFiles(ctx StartupSinkPickerContext) (startupSinkPr
 		return startupSinkPreviewFiles{}, err
 	}
 
-	outputPreview, err := renderSinkPreviewWithMode(ctx, sinkPreviewModeOutputText, output.PreviewByteLimit)
-	if err != nil {
-		return fail(err)
+	var outputPreview sinkPreview
+	if precomputedOutput != nil {
+		outputPreview = *precomputedOutput
+	} else {
+		outputPreview, err = renderSinkPreviewWithMode(ctx, sinkPreviewModeOutputText, output.PreviewByteLimit)
+		if err != nil {
+			return fail(err)
+		}
 	}
 	treePreview, err := renderSinkPreviewWithMode(ctx, sinkPreviewModeTreeReport, output.PreviewByteLimit)
 	if err != nil {

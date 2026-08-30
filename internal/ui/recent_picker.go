@@ -12,7 +12,6 @@ import (
 	"github.com/tigreau/catclip/internal/cli"
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
-	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 )
@@ -52,25 +51,21 @@ func resolveStartupRecentPickerArgsWithEscHint(currentArgs []string, query strin
 }
 
 func startupRecentPickerEntries(currentArgs []string) ([]discovery.Entry, error) {
-	cfg, err := cli.ParseArgsAllowImplicitDot(currentArgs)
+	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
 	if err != nil {
 		return nil, err
 	}
-	scopeSpecs := cfg.Command.Scopes()
-	if len(scopeSpecs) == 0 {
+	if len(view.Scopes) == 0 {
 		return nil, nil
 	}
-
-	scopeIndex := len(scopeSpecs) - 1
-	currentScope := command.ExecutionScopeFromScopeSpec(scopeSpecs[scopeIndex])
-
-	invocationCfg := command.InvocationFromParsed(cfg)
-	gitCtx := git.Detect(invocationCfg.WorkingDir)
-	discovered, err := discovery.EvaluateScope(invocationCfg, gitCtx, scopeIndex, currentScope, io.Discard, platform.Palette{})
+	entries, ok, err := retainedScopeViewEntriesWithReadyMetadata(view)
 	if err != nil {
 		return nil, err
 	}
-	return discovery.ApplyRecentStage(discovered.Entries, invocationCfg.WorkingDir, nil)
+	if !ok {
+		return nil, fmt.Errorf("internal error: recent picker scope is missing retained metadata")
+	}
+	return discovery.ApplyRecentStage(entries, view.Invocation.WorkingDir, nil)
 }
 
 func startupRecentPickerLines(entries []discovery.Entry) []string {

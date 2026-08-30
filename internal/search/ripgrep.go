@@ -354,8 +354,8 @@ func ClassifyTextPaths(workingDir string, relPaths []string) (map[string]struct{
 // ClassifyTextPathsWithSizeCapture applies the same classifier as
 // ClassifyTextPaths while opportunistically collecting Lstat sizes for files
 // that classify as text. Known-text names enter the bounded size queue before
-// the residue NUL scan, but metadata workers start only after classification
-// so fzf list readiness never competes with speculative Lstat work.
+// the residue NUL scan; one metadata worker overlaps classification and the
+// bounded pool expands after classification.
 // Known-binary files are never queued; when the
 // existing empty-file admission pass proves one is an empty text file, its
 // already-known zero size is recorded directly.
@@ -582,7 +582,7 @@ func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[stri
 		if info.Size() == 0 && info.Mode().IsRegular() {
 			set[rel] = struct{}{}
 			if capture != nil {
-				capture.record(rel, 0)
+				capture.record(rel, info)
 			}
 			admittedCount++
 		}

@@ -36,10 +36,9 @@ func ApplySizeStage(entries []Entry, workingDir string, nums []int) ([]Entry, er
 	return out, nil
 }
 
-// EnsureEntrySizes fills SizeBytes for entries missing it. It uses os.Stat
-// because --size reasons about the payload that would be emitted; for a
-// symlinked entry, that is the target file. Discovery does not currently
-// emit symlink entries, so this preserves existing behavior in practice.
+// EnsureEntrySizes fills SizeBytes and retains ModTime from the same lookup.
+// Discovery excludes symlink entries, so Lstat matches the target-picker and
+// checkpoint metadata contract without changing the valid file universe.
 //
 // Fail-fast contract: a single os.Stat error returns (nil, err). --size
 // was invoked as a filter, so a missing target file is a real user
@@ -53,7 +52,7 @@ func EnsureEntrySizes(entries []Entry, workingDir string) ([]Entry, error) {
 		}
 		paths[i] = entries[i].AbsPath
 	}
-	infos, errs := parallelStat(paths, os.Stat)
+	infos, errs := parallelStat(paths, os.Lstat)
 	for i := range entries {
 		if paths[i] == "" {
 			continue
@@ -63,6 +62,7 @@ func EnsureEntrySizes(entries []Entry, workingDir string) ([]Entry, error) {
 		}
 		entries[i].SizeBytes = infos[i].Size()
 		entries[i].SizeKnown = true
+		entries[i].ModTime = infos[i].ModTime()
 	}
 	return entries, nil
 }

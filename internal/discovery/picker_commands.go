@@ -13,6 +13,12 @@ import (
 	"github.com/tigreau/catclip/internal/platform"
 )
 
+// ContentMatchMemoFilename is the picker-session sidecar written by the
+// content-match reload child. The chooser reads it after fzf confirms a query
+// and before removing the session directory, allowing the parent to reuse the
+// exact membership that was already displayed.
+const ContentMatchMemoFilename = "content-match-memo.json"
+
 // FzfPreviewCommand is used by target-selection pickers before a parent scope
 // has settled entries. SCC does not apply there; modifier previews use the
 // checkpoint wrappers in startup_picker.go / fzfCheckpointContentMatchListCommand.

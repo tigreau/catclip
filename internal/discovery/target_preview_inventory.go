@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/search"
 )
 
 const targetPreviewInventoryMagic = "CCTPINV2"
@@ -60,13 +62,70 @@ func WriteTargetPreviewInventoryWithOptions(path string, gitCtx git.Context, mat
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 
+	return writeTargetPreviewInventoryFile(path, func(w io.Writer) error {
+		return writeTargetPreviewInventory(w, gitCtx, files, opts)
+	})
+}
+
+// WriteTargetPreviewEntryInventory writes an already-selected, canonically
+// ordered entry projection without expanding it back into TargetMatch rows.
+// It is used when a fast-confirmed target state first needs cross-process
+// preview transport; allocating another large match slice would undermine the
+// compact transition this artifact is meant to provide.
+func WriteTargetPreviewEntryInventory(path string, gitCtx git.Context, entries []Entry) error {
+	previous := ""
+	for _, entry := range entries {
+		rel := normalizeRelPath(entry.RelPath)
+		if rel == "" || rel == "." {
+			return fmt.Errorf("target preview inventory contains an empty path")
+		}
+		if previous != "" && rel <= previous {
+			return fmt.Errorf("target preview inventory entries are not strictly sorted")
+		}
+		previous = rel
+	}
+	return writeTargetPreviewInventoryFile(path, func(w io.Writer) error {
+		if err := writeTargetPreviewInventoryHeader(w, gitCtx, len(entries), TargetPreviewInventoryWriteOptions{}); err != nil {
+			return err
+		}
+		for _, entry := range entries {
+			entryFlags := byte(0)
+			if entry.IgnoreBypassed {
+				entryFlags |= targetPreviewIgnored
+				if entry.BlockSource == ".hiss" {
+					entryFlags |= targetPreviewHiss
+				}
+			}
+			if entry.SizeKnown {
+				entryFlags |= targetPreviewSizeKnown
+			}
+			if _, err := w.Write([]byte{entryFlags}); err != nil {
+				return err
+			}
+			if err := writeTargetPreviewString(w, normalizeRelPath(entry.RelPath)); err != nil {
+				return err
+			}
+			if entry.SizeKnown {
+				if entry.SizeBytes < 0 {
+					return fmt.Errorf("target preview inventory contains an invalid size")
+				}
+				if err := writeTargetPreviewUint(w, uint64(entry.SizeBytes)); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	})
+}
+
+func writeTargetPreviewInventoryFile(path string, write func(io.Writer) error) error {
 	tmp := path + ".tmp"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 	bw := bufio.NewWriterSize(f, 256*1024)
-	writeErr := writeTargetPreviewInventory(bw, gitCtx, files, opts)
+	writeErr := write(bw)
 	if writeErr == nil {
 		writeErr = bw.Flush()
 	}
@@ -86,29 +145,7 @@ func WriteTargetPreviewInventoryWithOptions(path string, gitCtx git.Context, mat
 }
 
 func writeTargetPreviewInventory(w io.Writer, gitCtx git.Context, files []TargetMatch, opts TargetPreviewInventoryWriteOptions) error {
-	if _, err := io.WriteString(w, targetPreviewInventoryMagic); err != nil {
-		return err
-	}
-	flags := byte(0)
-	if gitCtx.Enabled {
-		flags |= targetPreviewGitEnabled
-	}
-	if gitCtx.HasHead {
-		flags |= targetPreviewGitHasHead
-	}
-	if opts.SizesPending {
-		flags |= targetPreviewSizesPending
-	}
-	if _, err := w.Write([]byte{flags}); err != nil {
-		return err
-	}
-	if err := writeTargetPreviewString(w, gitCtx.Root); err != nil {
-		return err
-	}
-	if err := writeTargetPreviewString(w, gitCtx.WorkPrefix); err != nil {
-		return err
-	}
-	if err := writeTargetPreviewUint(w, uint64(len(files))); err != nil {
+	if err := writeTargetPreviewInventoryHeader(w, gitCtx, len(files), opts); err != nil {
 		return err
 	}
 	for _, match := range files {
@@ -133,6 +170,35 @@ func writeTargetPreviewInventory(w io.Writer, gitCtx git.Context, files []Target
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+func writeTargetPreviewInventoryHeader(w io.Writer, gitCtx git.Context, count int, opts TargetPreviewInventoryWriteOptions) error {
+	if _, err := io.WriteString(w, targetPreviewInventoryMagic); err != nil {
+		return err
+	}
+	flags := byte(0)
+	if gitCtx.Enabled {
+		flags |= targetPreviewGitEnabled
+	}
+	if gitCtx.HasHead {
+		flags |= targetPreviewGitHasHead
+	}
+	if opts.SizesPending {
+		flags |= targetPreviewSizesPending
+	}
+	if _, err := w.Write([]byte{flags}); err != nil {
+		return err
+	}
+	if err := writeTargetPreviewString(w, gitCtx.Root); err != nil {
+		return err
+	}
+	if err := writeTargetPreviewString(w, gitCtx.WorkPrefix); err != nil {
+		return err
+	}
+	if err := writeTargetPreviewUint(w, uint64(count)); err != nil {
+		return err
 	}
 	return nil
 }
@@ -307,6 +373,47 @@ func ApplyTargetPreviewSizes(matches []TargetMatch, sizes map[string]int64) []Ta
 	return out
 }
 
+// TargetPreviewEntries converts the parent target picker's classified file
+// universe into the canonical discovery row shape without another walk.
+func TargetPreviewEntries(workingDir string, matches []TargetMatch, metadata map[string]search.FileMetadata) []Entry {
+	entries := make([]Entry, 0, len(matches))
+	for _, match := range matches {
+		if match.Kind != treeTargetKindFile {
+			continue
+		}
+		rel := normalizeRelPath(match.Path)
+		if rel == "" || rel == "." {
+			continue
+		}
+		ignored := match.Ignored
+		blockSource := ""
+		if ignored {
+			blockSource = match.IgnoreSource
+			if blockSource == "" {
+				blockSource = ".gitignore"
+			}
+		}
+		entry := Entry{
+			AbsPath:        filepath.Join(workingDir, filepath.FromSlash(rel)),
+			RelPath:        rel,
+			GitVisible:     !ignored,
+			Mode:           command.EntryModeFull,
+			IgnoreBypassed: ignored,
+			BlockSource:    blockSource,
+			SizeBytes:      match.SizeBytes,
+			SizeKnown:      match.SizeKnown,
+		}
+		if record, ok := metadata[rel]; ok && record.State == search.FileMetadataReady {
+			entry.SizeBytes = record.SizeBytes
+			entry.SizeKnown = true
+			entry.ModTime = record.ModTime
+		}
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].RelPath < entries[j].RelPath })
+	return DedupeEntriesByPath(entries)
+}
+
 func readTargetPreviewString(r *bufio.Reader) (string, error) {
 	length, err := binary.ReadUvarint(r)
 	if err != nil {
@@ -335,17 +442,19 @@ func SelectTargetPreviewEntries(inventory []Entry, targets []string) []Entry {
 			return append([]Entry(nil), inventory...)
 		}
 	}
-	selected := make([]Entry, 0)
+	type selectedRef struct {
+		index int
+		root  string
+	}
+	selectedRefs := make([]selectedRef, 0)
 	seen := make(map[string]struct{})
-	appendEntry := func(entry Entry, root string) {
+	appendEntry := func(index int, root string) {
+		entry := inventory[index]
 		if _, ok := seen[entry.RelPath]; ok {
 			return
 		}
 		seen[entry.RelPath] = struct{}{}
-		if root != "." {
-			entry.TargetRoot = root
-		}
-		selected = append(selected, entry)
+		selectedRefs = append(selectedRefs, selectedRef{index: index, root: root})
 	}
 	for _, raw := range targets {
 		target := normalizeRelPath(raw)
@@ -353,8 +462,23 @@ func SelectTargetPreviewEntries(inventory []Entry, targets []string) []Entry {
 			target = "."
 		}
 		if target == "." {
-			for _, entry := range inventory {
-				appendEntry(entry, ".")
+			for i := range inventory {
+				appendEntry(i, ".")
+			}
+			continue
+		}
+		if hasGlobChars(target) {
+			for i, entry := range inventory {
+				matched, err := path.Match(target, path.Base(entry.RelPath))
+				if err != nil {
+					break
+				}
+				if !matched {
+					matched, _ = path.Match(target, entry.RelPath)
+				}
+				if matched {
+					appendEntry(i, ".")
+				}
 			}
 			continue
 		}
@@ -362,14 +486,32 @@ func SelectTargetPreviewEntries(inventory []Entry, targets []string) []Entry {
 			return inventory[i].RelPath >= target
 		})
 		if start < len(inventory) && inventory[start].RelPath == target {
-			appendEntry(inventory[start], target)
+			appendEntry(start, target)
 		}
 		prefix := strings.TrimSuffix(target, "/") + "/"
 		start = sort.Search(len(inventory), func(i int) bool {
 			return inventory[i].RelPath >= prefix
 		})
 		for i := start; i < len(inventory) && strings.HasPrefix(inventory[i].RelPath, prefix); i++ {
-			appendEntry(inventory[i], target)
+			appendEntry(i, target)
+		}
+	}
+	// A multi-target projection is assembled in target-selection order, while
+	// canonical discovery orders entries by path. Most projections are already
+	// ordered (and select-all/single-target returned above), so pay only a linear
+	// check here and sort the compact selected slice when the groups interleave.
+	if len(targets) > 1 && !sort.SliceIsSorted(selectedRefs, func(i, j int) bool {
+		return selectedRefs[i].index < selectedRefs[j].index
+	}) {
+		sort.Slice(selectedRefs, func(i, j int) bool {
+			return selectedRefs[i].index < selectedRefs[j].index
+		})
+	}
+	selected := make([]Entry, len(selectedRefs))
+	for i, ref := range selectedRefs {
+		selected[i] = inventory[ref.index]
+		if ref.root != "." {
+			selected[i].TargetRoot = ref.root
 		}
 	}
 	return selected
