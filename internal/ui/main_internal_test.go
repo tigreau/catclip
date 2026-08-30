@@ -218,7 +218,7 @@ if [ "$prompt" = "only> " ]; then
 		echo "preview command leaked typed target shared: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection {+f} --internal-file-set-stage only' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection "{+f}" --internal-file-set-stage only' >/dev/null || {
 		echo "preview command missing file-backed --only stage: $preview" >&2
 		exit 91
 	}
@@ -290,7 +290,7 @@ if [ "$prompt" = "only> " ]; then
 		echo "preview command leaked typed target src: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection {+f} --internal-file-set-stage only' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection "{+f}" --internal-file-set-stage only' >/dev/null || {
 		echo "preview command missing file-backed --only stage: $preview" >&2
 		exit 91
 	}
@@ -350,7 +350,7 @@ if [ "$prompt" = "exclude> " ]; then
 		echo "preview command leaked typed target src: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection {+f} --internal-file-set-stage exclude' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection "{+f}" --internal-file-set-stage exclude' >/dev/null || {
 		echo "preview command missing file-backed --exclude stage: $preview" >&2
 		exit 91
 	}
@@ -423,7 +423,7 @@ if [ "$prompt" = "changed> " ]; then
 		echo "preview command did not use prediscovered checkpoint: $preview" >&2
 		exit 91
 	}
-	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection {+f} --internal-file-set-stage only' >/dev/null || {
+	printf '%s\n' "$preview" | grep -F -- '--internal-file-set-selection "{+f}" --internal-file-set-stage only' >/dev/null || {
 		echo "preview command did not lower git picker preview to a file-backed --only stage: $preview" >&2
 		exit 91
 	}

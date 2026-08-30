@@ -1206,6 +1206,9 @@ func TestRetainedCheckpointIsSharedAcrossPickerKinds(t *testing.T) {
 	if fileSetCmd == "" || fileSetTmpdir != "" {
 		t.Fatalf("file-set picker did not use session checkpoint: cmd=%q tmpdir=%q", fileSetCmd, fileSetTmpdir)
 	}
+	if !strings.Contains(fileSetCmd, `--internal-file-set-selection "{+f}"`) {
+		t.Fatalf("file-set picker did not protect raw fzf selection-file placeholder: %s", fileSetCmd)
+	}
 
 	_, key := scopeViewMemoKey(args)
 	scopeViewMemoMu.Lock()

@@ -10,6 +10,35 @@ import (
 	"github.com/tigreau/catclip/internal/discovery"
 )
 
+// This is intentionally a small shell-free regression for the Windows GitHub
+// job. fzf substitutes {+f} as a raw temporary filename; without the explicit
+// quotes, a POSIX-like Windows $SHELL consumes C:\Users\... as backslash
+// escapes before the preview child can open it.
+func TestFileSetPreviewProtectsRawFzfSelectionFilePlaceholder(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a.go": "package a\n",
+	})
+	view := resolvedScopeView{
+		Invocation: command.Invocation{WorkingDir: project, Quiet: true, Internal: true},
+		Scopes:     []command.ExecutionScope{{Targets: []string{"src"}}},
+		Scope:      command.ExecutionScope{Targets: []string{"src"}},
+		Entries:    []discovery.Entry{{RelPath: "src/a.go"}},
+	}
+
+	for _, stage := range []string{"--only", "--exclude"} {
+		t.Run(strings.TrimPrefix(stage, "--"), func(t *testing.T) {
+			cmd, tmpdir := buildFileSetCheckpointPreview(nil, view, stage)
+			if tmpdir != "" {
+				t.Cleanup(func() { _ = os.RemoveAll(tmpdir) })
+			}
+			want := `--internal-file-set-selection "{+f}" --internal-file-set-stage ` + strings.TrimPrefix(stage, "--")
+			if cmd == "" || !strings.Contains(cmd, want) {
+				t.Fatalf("preview command did not protect fzf selection-file path:\n%s\nwant fragment: %s", cmd, want)
+			}
+		})
+	}
+}
+
 func TestReadFzfFileSetSelectionExtractsValuesFromRows(t *testing.T) {
 	selectionPath := filepath.Join(t.TempDir(), "selection.tsv")
 	rows := strings.Join([]string{

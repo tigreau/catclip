@@ -215,8 +215,14 @@ func buildFileSetCheckpointPreview(currentArgs []string, view resolvedScopeView,
 			"--internal-prediscovered", discovery.ShellQuoteArg(path),
 		}
 		if previewFlag != "" {
+			// Unlike ordinary fzf placeholders, the `f` form inserts its
+			// generated temporary path without shell quoting. A raw Windows
+			// path is consequently consumed as backslash escapes when fzf uses
+			// Git Bash or another POSIX-like $SHELL. Quote this exceptional
+			// placeholder in the command template so the substituted path stays
+			// one argument under cmd, PowerShell, and POSIX shells.
 			parts = append(parts,
-				"--internal-file-set-selection", "{+f}",
+				"--internal-file-set-selection", discovery.ShellQuoteArg("{+f}"),
 				"--internal-file-set-stage", strings.TrimPrefix(previewFlag, "--"),
 			)
 		}
