@@ -4,6 +4,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -73,6 +74,14 @@ func normalizeSymbolicInteractiveFileSetValues(values []string) ([]string, bool,
 		}
 		if _, err := discovery.ClassifyStageValue(value); err != nil {
 			return nil, false, err
+		}
+		// Windows forbids wildcard characters in filenames, and Lstat reports
+		// ERROR_INVALID_NAME rather than a not-exist error for these values.
+		// The literal-wildcard safeguard is therefore both unnecessary and
+		// misleading there: every successfully classified wildcard row is
+		// symbolic by construction.
+		if runtime.GOOS == "windows" {
+			continue
 		}
 		if _, err := os.Lstat(filepath.FromSlash(normalized)); err == nil {
 			return nil, false, nil

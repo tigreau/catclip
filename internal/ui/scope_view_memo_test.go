@@ -1211,7 +1211,8 @@ func TestRetainedCheckpointIsSharedAcrossPickerKinds(t *testing.T) {
 	scopeViewMemoMu.Lock()
 	checkpointPath := scopeViewMemoValues[key].checkpointPath
 	scopeViewMemoMu.Unlock()
-	if checkpointPath == "" || !strings.Contains(modifierCmd, checkpointPath) || !strings.Contains(fileSetCmd, checkpointPath) {
+	checkpointToken := discovery.ShellQuoteArg(checkpointPath)
+	if checkpointPath == "" || !strings.Contains(modifierCmd, checkpointToken) || !strings.Contains(fileSetCmd, checkpointToken) {
 		t.Fatalf("picker commands did not share checkpoint %q:\nmodifier=%s\nfile-set=%s", checkpointPath, modifierCmd, fileSetCmd)
 	}
 }
