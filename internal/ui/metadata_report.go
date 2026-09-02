@@ -279,7 +279,10 @@ func populateMetadataIgnoreTrace(workingDir string, scopes []discovery.Scope, su
 	}
 	collectors := make([]*metadataIgnoredCollector, len(scopes))
 	for _, i := range active {
-		collectors[i] = &metadataIgnoredCollector{workingDir: workingDir}
+		collectors[i] = &metadataIgnoredCollector{
+			workingDir:     workingDir,
+			globalHissPath: hissPath,
+		}
 		summaries[i].VisibleKnown = true
 	}
 	_, err := search.RunRipgrepIgnoreTrace(workingDir, search.RipgrepFileOptions{
@@ -494,9 +497,10 @@ func metadataSlashPath(value string) string {
 }
 
 type metadataIgnoredCollector struct {
-	workingDir string
-	total      int
-	rows       []search.IgnoreTraceRecord
+	workingDir     string
+	globalHissPath string
+	total          int
+	rows           []search.IgnoreTraceRecord
 }
 
 func (collector *metadataIgnoredCollector) add(record search.IgnoreTraceRecord) {
@@ -538,7 +542,14 @@ func (collector *metadataIgnoredCollector) summary() MetadataIgnoredSummary {
 			if !filepath.IsAbs(source) {
 				source = filepath.Join(collector.workingDir, filepath.FromSlash(source))
 			}
-			source = metadataDisplayPath(collector.workingDir, source)
+			if collector.globalHissPath != "" && filepath.Clean(source) == filepath.Clean(collector.globalHissPath) {
+				// The global Catclip ignore file is user configuration, even when
+				// its configured location happens to sit below the current working
+				// directory. Never make it look like a project-owned ignore file.
+				source = platform.DisplayPath(source)
+			} else {
+				source = metadataDisplayPath(collector.workingDir, source)
+			}
 		}
 		summary.Rows = append(summary.Rows, MetadataIgnoredPath{
 			Path:    metadataSlashPath(record.Path),

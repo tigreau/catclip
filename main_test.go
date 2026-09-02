@@ -3508,9 +3508,15 @@ func TestRunMetadataReportsOnlyCausalIgnoreSources(t *testing.T) {
 		t.Fatalf("run returned error: %v", err)
 	}
 	out := stdout.String()
-	for _, source := range []string{".gitignore", "src/.gitignore", "~/config/catclip/.hiss"} {
-		if !strings.Contains(out, source) {
-			t.Fatalf("metadata ignore provenance missing %q:\n%s", source, out)
+	normalizedOut := filepath.ToSlash(out)
+	hissDisplay := filepath.ToSlash(platform.DisplayPath(filepath.Join(configHome, "catclip", ".hiss")))
+	for _, provenance := range []string{
+		"source: .gitignore · pattern: *.tmp",
+		"source: src/.gitignore · pattern: *.generated",
+		"source: " + hissDisplay + " · pattern: *.secret",
+	} {
+		if !strings.Contains(normalizedOut, provenance) {
+			t.Fatalf("metadata ignore provenance missing %q:\n%s", provenance, out)
 		}
 	}
 	for _, ignored := range []string{"src/root.tmp", "src/skip.generated", "src/machine.secret"} {
