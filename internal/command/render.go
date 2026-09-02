@@ -49,7 +49,7 @@ func CanonicalResolvedInvocationCommand(invocation Resolved, flags RenderFlags) 
 }
 
 // CanonicalGlobalArgs renders the invocation-wide flags (--verbose,
-// --quiet, --print, --raw, --no-tree, --no-bundle, --preview,
+// --quiet, --yes/--no, --print, --raw, --no-tree, --no-bundle, --metadata,
 // --headless, --with-binaries) that prefix every canonical command.
 func CanonicalGlobalArgs(invocationCfg Invocation, flags RenderFlags) []string {
 	out := make([]string, 0, 10)
@@ -59,8 +59,10 @@ func CanonicalGlobalArgs(invocationCfg Invocation, flags RenderFlags) []string {
 	if invocationCfg.Quiet && !invocationCfg.Headless {
 		out = append(out, "--quiet")
 	}
-	if flags.Yes {
+	if flags.EmissionPolicy == EmissionAlways {
 		out = append(out, "--yes")
+	} else if flags.EmissionPolicy == EmissionNever {
+		out = append(out, "--no")
 	}
 	if flags.OutputMode == OutputModeStdout && !invocationCfg.Headless {
 		out = append(out, "--print")
@@ -74,8 +76,8 @@ func CanonicalGlobalArgs(invocationCfg Invocation, flags RenderFlags) []string {
 	if flags.NoBundle {
 		out = append(out, "--no-bundle")
 	}
-	if flags.Preview {
-		out = append(out, "--preview")
+	if flags.PayloadKind == PayloadMetadata {
+		out = append(out, "--metadata")
 	}
 	if invocationCfg.Headless {
 		out = append(out, "--headless")

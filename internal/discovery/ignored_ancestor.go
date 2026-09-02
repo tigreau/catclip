@@ -70,9 +70,10 @@ func (r *Resolver) findIgnoredAncestors(target string) []ignoredAncestorCandidat
 	// a leading `**/` are anchored, so the inside-dir form needs explicit
 	// `**/<name>/**` to match at any depth.
 	opts := search.RipgrepFileOptions{
-		NoIgnore:  true,
-		Basenames: []string{base, "**/" + base + "/**"},
-		Timeout:   5 * time.Second,
+		NoIgnore:    true,
+		Basenames:   []string{base, "**/" + base + "/**"},
+		Timeout:     5 * time.Second,
+		Enumeration: r.membershipEnumeration(search.MembershipReasonIgnoredAncestor),
 	}
 	if parent != "." {
 		opts.Paths = []string{parent}

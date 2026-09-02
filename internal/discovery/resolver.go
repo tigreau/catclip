@@ -33,6 +33,9 @@ type Resolver struct {
 	AllowFileSymlinks bool
 	WithBinaries      bool
 	NoIgnore          bool
+	// MembershipEnumeration identifies the owning interactive generation when
+	// one exists. Individual scan boundaries replace only its Reason field.
+	MembershipEnumeration search.MembershipEnumerationContext
 	// CaptureTargetPreviewSizes is enabled only while constructing an
 	// interactive target picker. It lets the visible-file classifier start an
 	// opportunistic metadata snapshot without adding size work to headless or
@@ -45,6 +48,7 @@ type Resolver struct {
 	textFileSetReady           bool
 	interactiveTargets         []TargetMatch
 	interactiveTargetsOk       bool
+	resolvedTargets            []ResolvedTarget
 	targetPreviewSizes         *search.TextSizeCapture
 	targetPreviewInventory     []TargetMatch
 	targetPreviewInventoryOK   bool
@@ -98,6 +102,7 @@ type Resolver struct {
 type Scope struct {
 	Scope           command.ExecutionScope
 	GitContext      git.Context
+	ResolvedTargets []ResolvedTarget
 	Entries         []Entry
 	Diagnostics     []Diagnostic
 	Notices         []string
@@ -121,7 +126,14 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		NoIgnore:          s.NoIgnore || s.HasStage(command.StageNoIgnore),
 		WantedBasenames:   CollectWantedBasenames(s.Targets),
 		ScopeTargets:      append([]string(nil), s.Targets...),
+		MembershipEnumeration: search.MembershipEnumerationContext{
+			ScopeIndex: scopeIndex,
+			ScopeKnown: true,
+		},
 	}
+	defer func() {
+		result.ResolvedTargets = append([]ResolvedTarget(nil), resolver.resolvedTargets...)
+	}()
 
 	var entries []Entry
 	selectedPaths := make([]string, 0, len(s.Targets))
@@ -410,8 +422,9 @@ func (r *Resolver) dirBlockedBy(relPath string) (*BlockInfo, error) {
 		return &BlockInfo{Source: ".hiss"}, nil
 	}
 	paths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{
-		NoIgnore: true,
-		Paths:    []string{relPath},
+		NoIgnore:    true,
+		Paths:       []string{relPath},
+		Enumeration: r.membershipEnumeration(search.MembershipReasonIgnoreAttribution),
 	})
 	if err != nil {
 		return nil, err
@@ -588,6 +601,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 			return nil, Diagnostics, notices, false, err
 		}
 		if len(discovered) > 0 {
+			r.recordResolvedFiles(discovered)
 			return withTargetRoot(discovered, resolvedDir), Diagnostics, notices, false, nil
 		}
 		fuzzyFiles, err := r.fuzzySearchFilesUnder(resolvedDir, baseName, blockedDir)
@@ -656,6 +670,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 			return nil, Diagnostics, notices, false, err
 		}
 		if len(discovered) > 0 {
+			r.recordResolvedFiles(discovered)
 			return discovered, Diagnostics, notices, false, nil
 		}
 		if hidden := r.ignoredExactFileCandidates(skipped); len(hidden) > 0 {
@@ -740,6 +755,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 		}
 		notices = append(notices, formatSkippedMatchesWarning(skipped)...)
 		if len(discovered) > 0 {
+			r.recordResolvedFiles(discovered)
 			return discovered, Diagnostics, notices, false, nil
 		}
 	}
@@ -828,6 +844,7 @@ func (r *Resolver) resolveTargetMatch(match TargetMatch, colors platform.Palette
 	case "file":
 		return r.resolveExactTarget(match.Path, false, colors)
 	case "dir":
+		r.recordResolvedTarget(match.Path, ResolvedTargetDir)
 		files, err := r.discoverVisibleFilesUnder(match.Path)
 		if err != nil {
 			return nil, true, nil, err
@@ -852,6 +869,7 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 	}
 
 	if info.IsDir() {
+		r.recordResolvedTarget(relTarget, ResolvedTargetDir)
 		if r.NoIgnore {
 			files, err := r.discoverFilesUnderNoIgnore(relTarget)
 			r.markNoIgnoreTargetWalk(relTarget)
@@ -869,6 +887,7 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 	if !info.Mode().IsRegular() {
 		return nil, true, nil, nil
 	}
+	r.recordResolvedTarget(relTarget, ResolvedTargetFile)
 	text, err := r.classifyTextFile(relTarget, absTarget)
 	if err != nil {
 		return nil, true, nil, err
@@ -913,7 +932,7 @@ func (r *Resolver) ensureTextFileSet() error {
 	if r.textFileSetReady {
 		return nil
 	}
-	set, err := search.ResolveTextFileSet(r.Cfg.WorkingDir, r.ScopeTargets)
+	set, err := search.ResolveTextFileSet(r.Cfg.WorkingDir, r.ScopeTargets, r.membershipEnumeration(search.MembershipReasonTextSetFallback))
 	if err != nil {
 		return err
 	}
@@ -1176,8 +1195,9 @@ func (r *Resolver) buildVisibleFileIndex() error {
 	}
 
 	paths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{
-		NoIgnore:  true,
-		Basenames: sortedStringSet(r.WantedBasenames),
+		NoIgnore:    true,
+		Basenames:   sortedStringSet(r.WantedBasenames),
+		Enumeration: r.membershipEnumeration(search.MembershipReasonBasenameResolution),
 	})
 	if err != nil {
 		return err
@@ -1227,7 +1247,7 @@ func (r *Resolver) buildVisibleFileIndex() error {
 // visibleWithHiss layers the global .hiss on top. No-ignore discovery still uses
 // these sets to distinguish ordinary visible files from admitted ignored ones.
 func (r *Resolver) resolveIgnoreSets() (map[string]struct{}, map[string]struct{}, error) {
-	visibleAll, err := search.ResolveVisibleFileSet(r.Cfg.WorkingDir, "", nil)
+	visibleAll, err := search.ResolveVisibleFileSet(r.Cfg.WorkingDir, "", nil, r.membershipEnumeration(search.MembershipReasonIgnoreAttribution))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1237,7 +1257,7 @@ func (r *Resolver) resolveIgnoreSets() (map[string]struct{}, map[string]struct{}
 		return nil, nil, err
 	}
 	if hissPath != "" {
-		visibleWithHiss, err = search.ResolveVisibleFileSet(r.Cfg.WorkingDir, hissPath, nil)
+		visibleWithHiss, err = search.ResolveVisibleFileSet(r.Cfg.WorkingDir, hissPath, nil, r.membershipEnumeration(search.MembershipReasonIgnoreAttribution))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1253,7 +1273,10 @@ func (r *Resolver) BuildVisibleFileList() error {
 	if err != nil {
 		return err
 	}
-	paths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{HissPath: hissPath})
+	paths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{
+		HissPath:    hissPath,
+		Enumeration: r.membershipEnumeration(search.MembershipReasonPrimaryTarget),
+	})
 	if err != nil {
 		return err
 	}
@@ -1326,7 +1349,10 @@ func (r *Resolver) discoverVisibleFilesUnder(rootRel string) ([]Entry, error) {
 	if err != nil {
 		return nil, err
 	}
-	opts := search.RipgrepFileOptions{HissPath: hissPath}
+	opts := search.RipgrepFileOptions{
+		HissPath:    hissPath,
+		Enumeration: r.membershipEnumeration(search.MembershipReasonCanonicalFallback),
+	}
 	if rootRel != "." && rootRel != "" {
 		opts.Paths = []string{rootRel}
 	}
@@ -1355,6 +1381,10 @@ func sortedStringSet(values map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func (r *Resolver) membershipEnumeration(reason search.MembershipEnumerationReason) search.MembershipEnumerationContext {
+	return r.MembershipEnumeration.WithReason(reason)
 }
 
 func (r *Resolver) resolveVisibleFilesByBasename(baseRel, baseName string) ([]Entry, []SkippedMatch, error) {
@@ -1486,6 +1516,25 @@ func withTargetRoot(entries []Entry, targetRoot string) []Entry {
 		entries[i].TargetRoot = targetRoot
 	}
 	return entries
+}
+
+func (r *Resolver) recordResolvedFiles(entries []Entry) {
+	for _, entry := range entries {
+		r.recordResolvedTarget(entry.RelPath, ResolvedTargetFile)
+	}
+}
+
+func (r *Resolver) recordResolvedTarget(value string, kind ResolvedTargetKind) {
+	value = normalizeRelPath(value)
+	if value == "" || value == "." || (kind != ResolvedTargetFile && kind != ResolvedTargetDir) {
+		return
+	}
+	for _, target := range r.resolvedTargets {
+		if target.Path == value && target.Kind == kind {
+			return
+		}
+	}
+	r.resolvedTargets = append(r.resolvedTargets, ResolvedTarget{Path: value, Kind: kind})
 }
 
 func markEntriesGitVisible(entries []Entry) []Entry {

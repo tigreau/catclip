@@ -38,6 +38,23 @@ func TestFormatInteractiveFilterProgress(t *testing.T) {
 	}
 }
 
+func TestInteractiveFilterProgressShowsNeverEmitPolicy(t *testing.T) {
+	extras := interactiveProgressExtrasFromParsed(command.Parsed{EmissionPolicy: command.EmissionNever})
+	if got, want := formatInteractiveFilterProgress(extras, nil, 0), "catclip --no ▶ report"; got != want {
+		t.Fatalf("progress = %q, want %q", got, want)
+	}
+}
+
+func TestInteractiveFilterProgressShowsMetadataSelectedFromExtras(t *testing.T) {
+	extras := interactiveProgressExtrasFromParsed(command.Parsed{
+		PayloadKind:    command.PayloadMetadata,
+		EmissionPolicy: command.EmissionAlways,
+	})
+	if got, want := formatInteractiveFilterProgress(extras, nil, 0), "catclip --yes --metadata ▶ output"; got != want {
+		t.Fatalf("progress = %q, want %q", got, want)
+	}
+}
+
 func TestPendingFilterSlotCount(t *testing.T) {
 	args := []string{"--", "--recent", "5", "--", "src", "--"}
 	if got, want := pendingFilterSlotCount(args), 4; got != want {

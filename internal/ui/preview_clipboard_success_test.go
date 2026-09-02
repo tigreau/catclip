@@ -62,6 +62,20 @@ func TestWriteClipboardSuccessUsesDistinctSummarySubjects(t *testing.T) {
 	}
 }
 
+func TestWriteMetadataClipboardSuccessNamesThePayload(t *testing.T) {
+	plan := output.BuildPlan([]output.PreparedFileUnit{
+		{Entry: discovery.Entry{RelPath: "a.go"}},
+		{Entry: discovery.Entry{RelPath: "b.go"}},
+	})
+	var out bytes.Buffer
+	if err := WriteMetadataClipboardSuccess(&out, plan, output.EmitStats{SinkName: "clipboard"}, platform.Palette{}); err != nil {
+		t.Fatalf("WriteMetadataClipboardSuccess returned error: %v", err)
+	}
+	if got, want := strings.TrimSpace(out.String()), "Copied metadata for 2 files to clipboard"; got != want {
+		t.Fatalf("success = %q, want %q", got, want)
+	}
+}
+
 // TestWriteBundleSuccessIncludesWarnings pins the bundle-success
 // formatter: warnings emitted by the EmitStats producer must survive into
 // user-facing output when the bundle sink path runs.

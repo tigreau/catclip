@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// TestFormatFinderModifiedSpec pins the strict Finder spec used by the --preview
+// TestFormatFinderModifiedSpec pins the strict Finder spec used by --metadata
 // table: Today / Yesterday / absolute-with-year, no weekday tier, no year omission
 // — exactly what Finder's Date Modified column shows (verified against screenshots
 // for now = Wed 2026-05-27).
@@ -36,7 +36,7 @@ func TestFormatFinderModifiedSpec(t *testing.T) {
 
 // TestFormatFinderModifiedSpecNoWeekday is the explicit guard for the screenshot
 // finding: every day in the 2..6-day window renders as an absolute date, never a
-// weekday name (the --recent label tier does weekdays; the --preview spec does not).
+// weekday name (the --recent label tier does weekdays; the metadata spec does not).
 func TestFormatFinderModifiedSpecNoWeekday(t *testing.T) {
 	now := time.Date(2026, 5, 27, 12, 0, 0, 0, time.UTC)
 	weekdays := []string{"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"}
@@ -44,7 +44,7 @@ func TestFormatFinderModifiedSpecNoWeekday(t *testing.T) {
 		got := formatFinderModifiedSpec(now, now.AddDate(0, 0, -back))
 		for _, wd := range weekdays {
 			if got == wd+" at 12:00 PM" || (len(got) >= len(wd) && got[:len(wd)] == wd) {
-				t.Errorf("%d days back rendered a weekday (%q); --preview spec must use an absolute date", back, got)
+				t.Errorf("%d days back rendered a weekday (%q); metadata spec must use an absolute date", back, got)
 			}
 		}
 	}

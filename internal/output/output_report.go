@@ -6,7 +6,7 @@ import "fmt"
 // and preview. Lifted out of main.go ahead of the v0.6.0 output
 // extraction so the type travels with the rest of the output cluster.
 //
-// Fields are exported so root preview code (preview.go, preview_table.go,
+// Fields are exported so root/UI presentation code (preview.go, metadata_report.go,
 // tree_bridge.go) can read/write them after the type moves into
 // internal/output as output.Report.
 type Report struct {

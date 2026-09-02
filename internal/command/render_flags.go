@@ -8,18 +8,19 @@ package command
 // Fields map 1:1 from root emitConfig + command.Parsed toggles:
 //   - OutputMode: emitConfig.OutputMode
 //   - Raw, NoBundle: emitConfig.Raw, .NoBundle
-//   - Yes, NoTree, Preview: command.Parsed.Yes, .NoTree, .Preview
+//   - PayloadKind, EmissionPolicy, NoTree: command.Parsed.PayloadKind,
+//     .EmissionPolicy, .NoTree
 //
 // Pass these through canonical-render call sites instead of emitConfig +
 // trailing positional bools. The reviewer flagged the positional-bool
 // signature as harder to read and easier to misorder.
 type RenderFlags struct {
-	OutputMode OutputMode
-	Raw        bool
-	NoBundle   bool
-	Yes        bool
-	NoTree     bool
-	Preview    bool
+	OutputMode     OutputMode
+	Raw            bool
+	NoBundle       bool
+	PayloadKind    PayloadKind
+	EmissionPolicy EmissionPolicy
+	NoTree         bool
 }
 
 // RenderFlagsFromParsed packs the canonical-render toggles out of a
@@ -28,12 +29,12 @@ type RenderFlags struct {
 // root emit.go's emitConfig type.
 func RenderFlagsFromParsed(cfg Parsed) RenderFlags {
 	return RenderFlags{
-		OutputMode: cfg.OutputMode,
-		Raw:        cfg.Raw,
-		NoBundle:   cfg.NoBundle,
-		Yes:        cfg.Yes,
-		NoTree:     cfg.NoTree,
-		Preview:    cfg.Preview,
+		OutputMode:     cfg.OutputMode,
+		Raw:            cfg.Raw,
+		NoBundle:       cfg.NoBundle,
+		PayloadKind:    cfg.PayloadKind,
+		EmissionPolicy: cfg.EmissionPolicy,
+		NoTree:         cfg.NoTree,
 	}
 }
 
@@ -42,14 +43,16 @@ func RenderFlagsFromParsed(cfg Parsed) RenderFlags {
 // preview/reload commands suppress prompts.
 func InvocationFromParsed(cfg Parsed) Invocation {
 	return Invocation{
-		Version:      cfg.Version,
-		Platform:     cfg.Platform,
-		WorkingDir:   cfg.WorkingDir,
-		Verbose:      cfg.Verbose,
-		Quiet:        cfg.Quiet,
-		Headless:     cfg.Headless,
-		WithBinaries: cfg.WithBinaries,
-		Internal:     cfg.IsInternalKind(),
+		Version:        cfg.Version,
+		Platform:       cfg.Platform,
+		WorkingDir:     cfg.WorkingDir,
+		Verbose:        cfg.Verbose,
+		Quiet:          cfg.Quiet,
+		Headless:       cfg.Headless,
+		WithBinaries:   cfg.WithBinaries,
+		PayloadKind:    cfg.PayloadKind,
+		EmissionPolicy: cfg.EmissionPolicy,
+		Internal:       cfg.IsInternalKind(),
 	}
 }
 

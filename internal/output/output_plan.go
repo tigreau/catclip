@@ -290,7 +290,7 @@ func (p Plan) Len() int { return len(p.items) }
 
 // EntriesInEmissionOrder returns the plan's entries deduped by RelPath
 // in first-seen order. The right shape for callers that want to
-// process each unique file once (preview table, verbose git metrics).
+// process each unique file once (metadata report, verbose git metrics).
 // Replaces ad-hoc `seen[item.relPath]` loops at external callers.
 func (p Plan) EntriesInEmissionOrder() []discovery.Entry {
 	if len(p.items) == 0 {
@@ -557,7 +557,7 @@ func (p Plan) MergedItems() []discovery.Entry {
 }
 
 // NewFilePlanItem and NewPathPlanItem are exported wrappers around the
-// internal item constructors, for root-side tests (preview_table_test.go,
+// internal item constructors, for root-side tests (metadata/report tests,
 // startup_sink_picker_test.go) that need to build a Plan with specific
 // items. Production code should prefer BuildPlan, PreparePlan, or
 // BuildPlanForResolvedScopes.

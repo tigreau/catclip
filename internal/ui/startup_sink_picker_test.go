@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tigreau/catclip/internal/cli"
 	"github.com/tigreau/catclip/internal/command"
@@ -584,7 +585,7 @@ printf '%s\n' "$input" | grep -F $'\theadless\t' | head -n 1
 	}
 }
 
-func TestMaybeResolveStartupSinkPickerArgsSelectsPreview(t *testing.T) {
+func TestMaybeResolveStartupSinkPickerContainsDestinationsOnly(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake-fzf cannot run on Windows")
 	}
@@ -610,15 +611,11 @@ while [ "$#" -gt 0 ]; do
 done
 
 input="$(cat)"
-printf '%s\n' "$input" | grep -F "Stdout - metadata only" >/dev/null || {
-	echo "missing metadata-only stdout label" >&2
+printf '%s\n' "$input" | grep -F "metadata only" >/dev/null && {
+	echo "metadata must be a payload selected in extras, not an output destination" >&2
 	exit 91
 }
-printf '%s\n' "$input" | grep -F "Print paths, sizes, tokens, git, dates." >/dev/null || {
-	echo "missing metadata-only stdout description" >&2
-	exit 91
-}
-printf '%s\n' "$input" | grep -F $'\tpreview\t' | head -n 1
+printf '%s\n' "$input" | grep -F $'\tstdout\t' | head -n 1
 `)
 
 	result, err := maybeResolveStartupSinkPickerArgs(nil, StartupPickerResult{
@@ -628,7 +625,7 @@ printf '%s\n' "$input" | grep -F $'\tpreview\t' | head -n 1
 	if err != nil {
 		t.Fatalf("maybeResolveStartupSinkPickerArgs returned error: %v", err)
 	}
-	if got, want := strings.Join(result.Args, "\n"), "src\n--preview"; got != want {
+	if got, want := strings.Join(result.Args, "\n"), "src\n-p"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 	if result.PreparedOutput == nil {
@@ -650,7 +647,7 @@ echo "fzf should not be called when raw args already choose a sink" >&2
 exit 91
 `)
 
-	for _, rawArg := range []string{"-p", "--print", "--headless", "--no-bundle", "--preview", "-q", "--quiet"} {
+	for _, rawArg := range []string{"-p", "--print", "--headless", "--no-bundle", "--no", "-q", "--quiet"} {
 		t.Run(rawArg, func(t *testing.T) {
 			result, err := maybeResolveStartupSinkPickerArgs([]string{rawArg}, StartupPickerResult{
 				Args:    []string{"src", rawArg},
@@ -667,6 +664,26 @@ exit 91
 			}
 			if got, want := result.PreparedOutput.Plan.DistinctRelPaths(), []string{"src/main.go"}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("prepared paths = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestSinkPickerGateUsesParsedMeaningOfFlagLikeValues(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "no emission", args: []string{"src", "--no"}, want: true},
+		{name: "no used as contains value", args: []string{"src", "--contains", "--no"}, want: false},
+		{name: "yes used as contains value", args: []string{"src", "--contains", "--yes"}, want: false},
+		{name: "stdout", args: []string{"src", "--print"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := rawArgsSkipOutputSinkPicker(tc.args)
+			if got != tc.want {
+				t.Fatalf("rawArgsSkipOutputSinkPicker(%q) = %v, want %v", tc.args, got, tc.want)
 			}
 		})
 	}
@@ -874,6 +891,55 @@ esac
 	}
 }
 
+func TestBareMetadataRunsTargetAndDestinationPickers(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake-fzf cannot run on Windows")
+	}
+
+	project := setupTestProject(t, map[string]string{"src/main.go": "package main\n"})
+	_ = parseInProject(t, project, []string{"."})
+	installScriptFzf(t, `#!/bin/sh
+prompt=""
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+	--prompt) prompt="$2"; shift 2 ;;
+	*) shift ;;
+	esac
+done
+input="$(cat)"
+case "$prompt" in
+"select> ") printf '%s\n' "$input" | awk -F '\t' '$2 == "src"' | head -n 1 ;;
+"output> ")
+	printf '%s\n' "$input" | grep -F "metadata only" >/dev/null && exit 91
+	printf '%s\n' "$input" | awk -F '\t' '$2 == "stdout"' | head -n 1
+	;;
+*) exit 91 ;;
+esac
+`)
+
+	resolver, err := newStartupPickerResolver()
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := resolveStartupPickerResultWithUndo(resolver, []string{"--metadata"})
+	if err != nil {
+		t.Fatalf("bare metadata interactive flow: %v", err)
+	}
+	if got, want := strings.Join(result.Args, "\n"), "src\n--metadata\n-p"; got != want {
+		t.Fatalf("resolved args = %q, want %q", got, want)
+	}
+	if result.PreparedOutput == nil || result.PreparedOutput.Metadata == nil {
+		t.Fatal("metadata report was not retained through the output picker")
+	}
+	var payload bytes.Buffer
+	if err := WriteMetadataReport(&payload, result.PreparedOutput.Metadata); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(payload.String(), "src/main.go") {
+		t.Fatalf("metadata payload lost selected file:\n%s", payload.String())
+	}
+}
+
 func TestTargetPickerCommitWithExplicitSinkCarriesPreparedOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fake-fzf cannot run on Windows")
@@ -1046,7 +1112,7 @@ func TestSinkTreeReportPreviewRendersAnsiColors(t *testing.T) {
 		t.Fatalf("output.BuildReportForPlan returned error: %v", err)
 	}
 	preview, err := renderSinkTreeReportPreview(StartupSinkPickerContext{
-		Render: RenderConfig{Preview: true},
+		Render: RenderConfig{ForceTreeMetadata: true},
 		Plan:   plan,
 		Report: report,
 	}, output.PreviewByteLimit)
@@ -1100,6 +1166,59 @@ func TestMeasureOutputForSinkMenuUsesLargeMenuAtBundleThreshold(t *testing.T) {
 	}
 }
 
+func TestMeasureStartupSinkPayloadUsesMetadataBytes(t *testing.T) {
+	report := &MetadataReport{
+		Root:   "project",
+		Scopes: []MetadataScope{{Summary: "src"}},
+		Rows:   []MetadataRow{{Path: "src/main.go", Size: "13.00B", Tokens: "~3", Git: "-", Modified: "Today"}},
+	}
+	measurement := measureStartupSinkPayload(StartupSinkPickerContext{
+		Config:   command.Parsed{PayloadKind: command.PayloadMetadata},
+		Metadata: report,
+	})
+	if measurement.Err != nil {
+		t.Fatalf("measureStartupSinkPayload: %v", measurement.Err)
+	}
+	wantBytes, err := report.EncodedSize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if measurement.Bytes != wantBytes {
+		t.Fatalf("measurement = %#v, want bytes %d", measurement, wantBytes)
+	}
+	if measurement.PreviewReady || len(measurement.OutputPreview.Body) != 0 {
+		t.Fatalf("metadata measurement eagerly rendered the picker preview: %#v", measurement)
+	}
+}
+
+func TestRunInternalSinkPreviewWaitsForAsyncArtifact(t *testing.T) {
+	dir := t.TempDir()
+	modePath := filepath.Join(dir, "mode")
+	outputPath := filepath.Join(dir, "output.txt")
+	treePath := filepath.Join(dir, "tree.txt")
+	if err := os.WriteFile(modePath, []byte("output\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(outputPath+".pending", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		time.Sleep(25 * time.Millisecond)
+		_ = os.WriteFile(outputPath, []byte("ready\n"), 0o600)
+		_ = os.Remove(outputPath + ".pending")
+	}()
+	var stdout bytes.Buffer
+	if err := RunInternalSinkPreview(modePath, outputPath, treePath, &stdout); err != nil {
+		t.Fatalf("RunInternalSinkPreview: %v", err)
+	}
+	<-done
+	if got, want := stdout.String(), "ready\n"; got != want {
+		t.Fatalf("preview = %q, want %q", got, want)
+	}
+}
+
 func TestPrepareStartupSinkPreviewFilesReusesMeasuredOutput(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.go": "package main\n\nfunc main() {}\n",
@@ -1119,7 +1238,7 @@ func TestPrepareStartupSinkPreviewFilesReusesMeasuredOutput(t *testing.T) {
 
 	files, err := prepareStartupSinkPreviewFiles(StartupSinkPickerContext{
 		Emit:   output.EmitConfig{},
-		Render: RenderConfig{Preview: true},
+		Render: RenderConfig{ForceTreeMetadata: true},
 		Plan:   plan,
 		Report: report,
 	}, &measurement.OutputPreview)

@@ -158,12 +158,13 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Options:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "--preview", Right: "Size up files before reading them"},
+		{Left: "--metadata", Right: "Output selected-file details instead of contents"},
 		{Left: "-p, --print", Right: "Print to terminal instead of clipboard"},
 		{Left: "-r, --raw", Right: "Bare file body — no wrappers, no line numbers"},
 		{Left: "-q, --quiet", Right: "No prompts, decorations, or tree preview"},
 		{Left: "--headless", Right: "Script mode: stdout, quiet, no prompts (see --help-all)"},
 		{Left: "-y, --yes", Right: "Skip confirmation for large copies"},
+		{Left: "--no", Right: "Show what would be selected, but never emit the final output"},
 		{Left: "-t, --no-tree", Right: "Skip the file tree preview"},
 		{Left: "--no-bundle", Right: "Force text clipboard; skip bundle for large output"},
 		{Left: "-v, --verbose", Right: "Debug info and timings"},
@@ -268,7 +269,8 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 		{Left: "catclip FILE --lines 400 450", Right: "A numbered slice"},
 		{Left: "catclip FILE -r > dest", Right: "Copy a file byte-exact"},
 		{Left: "catclip TARGET --changed-diff", Right: "Git changes as patches"},
-		{Left: "catclip TARGET --preview", Right: "Size things up before reading"},
+		{Left: "catclip TARGET --metadata", Right: "Copy a selected-file report"},
+		{Left: "catclip TARGET --metadata --print", Right: "Print that report to stdout"},
 	})
 	b.WriteString("\n")
 	fmt.Fprintf(&b, "  A workflow that scales: start with %s to see what's there,\n", flag("--paths"))
@@ -281,10 +283,11 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("  around each match, a whole function/class/method, an XML element, or a\n")
 	b.WriteString("  config section; add N for fixed +/- N line windows. With neither, you get\n")
 	b.WriteString("  full file contents.\n\n")
-	fmt.Fprintf(&b, "  %s sizes up files before you read them: a per-file table of size,\n", flag("--preview"))
-	b.WriteString("  tokens, git status, modified date, and shape — no contents, nothing copied.\n")
+	fmt.Fprintf(&b, "  %s outputs a per-file report of path, size, estimated tokens,\n", flag("--metadata"))
+	b.WriteString("  git status, and modified date instead of file contents. Send that report\n")
+	b.WriteString("  to the clipboard by default, or add --print for stdout.\n")
 	b.WriteString("  Read small files whole, snippet the large ones, skip the rest, instead of\n")
-	b.WriteString("  reading blind. The # header labels the columns.\n\n")
+	b.WriteString("  reading blind.\n\n")
 	b.WriteString("  catclip replaces find + grep + cat pipelines with a single command.\n")
 	b.WriteString("  One process handles discovery, filtering, content matching, and output —\n")
 	b.WriteString("  no per-file fork overhead. Faster than per-file cat loops on large codebases.\n")
@@ -390,7 +393,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
 		{Left: "(default)", Right: "Full file contents in <file> wrappers"},
 		{Left: "--paths", Right: "Bare relative paths, one per line"},
-		{Left: "--preview", Right: "Per-file table (size, tokens, git, modified, shape); no contents"},
+		{Left: "--metadata", Right: "Per-file report (path, size, tokens, git, modified)"},
 		{Left: "--snippet 'REGEX'", Right: "Smart block around each regex match"},
 		{Left: "--snippet 'REGEX' N", Right: "Matching lines plus N lines before and after"},
 		{Left: "--changed-diff", Right: "All changed files as unified diff patches"},
@@ -577,16 +580,16 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	fmt.Fprintf(&b, "  %s (%s with %s):\n", bold("Raw"), flag("-r"), flag("-p"))
 	b.WriteString("    ...file body without any wrapper tags...\n")
 	b.WriteString("    (requires exactly one surviving full-file item)\n\n")
-	fmt.Fprintf(&b, "  %s (%s):\n", bold("Preview"), flag("--preview"))
-	b.WriteString("    # line 1: relative path\n")
-	b.WriteString("    # line 2: size, tokens, git, modified, shape\n")
-	b.WriteString("    #   git:   M=modified S=staged SM=staged+modified ?=untracked -=none\n")
-	b.WriteString("    #   shape: full | snippet | lines | diff | path-only\n")
-	b.WriteString("    src/components/Button.tsx\n")
-	b.WriteString("      2.14KB    ~547    [M]  Today at 2:58 AM  full\n")
-	b.WriteString("    src/components/Header.tsx\n")
-	b.WriteString("      1.05KB    ~256    [-]  Jun 3, 2026        full\n")
-	b.WriteString("    (two lines per file — path, then metrics; no file contents; column-aligned)\n\n")
+	fmt.Fprintf(&b, "  %s (%s):\n", bold("Metadata"), flag("--metadata"))
+	b.WriteString("    PATH                              SIZE      TOKENS   GIT   MODIFIED\n")
+	b.WriteString("    src/components/Button.tsx         2.14KB      ~547   M     Today\n")
+	b.WriteString("    src/components/Header.tsx         1.05KB      ~256   -     Jun 3, 2026\n")
+	b.WriteString("    (selected-file details replace contents; clipboard by default)\n\n")
+	fmt.Fprintf(&b, "  %s (%s):\n", bold("No emission"), flag("--no"))
+	b.WriteString("    Render the normal selection tree and summary to stdout, then stop.\n")
+	b.WriteString("    No file contents are emitted and the clipboard is left unchanged.\n")
+	fmt.Fprintf(&b, "    Cannot be combined with %s, %s, %s, or %s.\n\n",
+		flag("--yes"), flag("--print"), flag("--headless"), flag("--quiet"))
 	fmt.Fprintf(&b, "  Diff type attributes: %s, %s, %s, %s\n\n",
 		flag("type=\"diff\""), flag("type=\"staged-diff\""), flag("type=\"unstaged-diff\""), flag("type=\"untracked\""))
 
@@ -609,7 +612,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 
 	// ── Exit codes ──────────────────────────────────────────────────────
 	head("EXIT CODES")
-	fmt.Fprintf(&b, "  %s    Success — all targets resolved, output was emitted\n", bold("0"))
+	fmt.Fprintf(&b, "  %s    Success — all targets resolved; output was emitted or intentionally withheld by --no\n", bold("0"))
 	fmt.Fprintf(&b, "  %s    Partial or no results — one or more targets not found, or runtime error\n", bold("1"))
 	fmt.Fprintf(&b, "  %s    Usage error — invalid flags, arguments, or validation failure\n\n", bold("2"))
 	b.WriteString("  When some targets resolve and others don't, catclip emits output for the\n")
@@ -682,10 +685,11 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 		{Left: "-p, --print", Right: "Stdout instead of clipboard"},
 		{Left: "-r, --raw", Right: "Bare file body, no wrappers or numbers"},
 		{Left: "-y, --yes", Right: "Skip confirmation"},
+		{Left: "--no", Right: "Show what would be selected, but never emit the final output"},
 		{Left: "-t, --no-tree", Right: "Skip tree preview"},
 		{Left: "--no-bundle", Right: "Force text clipboard; skip bundle file for ≥4KB output"},
 		{Left: "-v, --verbose", Right: "Debug info and timings"},
-		{Left: "--preview", Right: "Size up files before reading them"},
+		{Left: "--metadata", Right: "Selected-file details instead of contents"},
 		{Left: "--with-binaries", Right: "Include binary files in discovery"},
 		{Left: "--hiss", Right: "Edit catclip's own ignore rules (on top of .gitignore)"},
 		{Left: "--hiss-reset", Right: "Reset catclip's ignore rules to defaults"},

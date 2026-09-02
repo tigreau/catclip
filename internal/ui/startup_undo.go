@@ -129,6 +129,7 @@ func resolveStartupWithUndo(resolver *discovery.Resolver, args []string, opts st
 							Git:       ctx.Git,
 							Discovery: ctx.Discovery,
 							Plan:      ctx.Plan,
+							Metadata:  ctx.Metadata,
 						}
 						sinkResolved = true
 					}
@@ -231,7 +232,7 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 		}
 
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
 			args = append(args, arg)
 			pending = pending[1:]
 			continue
@@ -310,7 +311,7 @@ func runStartupSinkFrame(frame startupInteractiveFrame, rawArgs []string) (start
 	if err != nil {
 		return startupInteractiveFrameResult{}, err
 	}
-	prepared := &StartupPreparedOutputState{Git: ctx.Git, Discovery: ctx.Discovery, Plan: ctx.Plan}
+	prepared := &StartupPreparedOutputState{Git: ctx.Git, Discovery: ctx.Discovery, Plan: ctx.Plan, Metadata: ctx.Metadata}
 	// Resolve this frame without fzf; normal execution owns empty-result
 	// diagnostics, and a sink menu cannot offer anything useful here.
 	if ctx.Plan.IsEmpty() {
@@ -320,7 +321,7 @@ func runStartupSinkFrame(frame startupInteractiveFrame, rawArgs []string) (start
 			SinkResolved:   true,
 		}, nil
 	}
-	measurement := measureOutputForSinkMenu(ctx.Plan, ctx.Emit)
+	measurement := measureStartupSinkPayload(ctx)
 	sinkArgs, usedFzf, err := pickOutputSinkWithEscHint(ctx, measurement, frame.EscHint)
 	if err != nil {
 		return startupInteractiveFrameResult{UsedFzf: usedFzf}, err
@@ -549,7 +550,7 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 			selected = selected[:0]
 			explicit = explicit[:0]
 			inModifierMode = false
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
 			continue
 		case "--no-ignore":
 			inModifierMode = true
@@ -608,7 +609,7 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 		switch arg {
 		case "--then":
 			inModifierMode = false
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
 			continue
 		case "--no-ignore":
 			inModifierMode = true
@@ -656,7 +657,7 @@ func startupFrameTargetPrompt(args []string) string {
 		switch args[i] {
 		case "--then":
 			return "then> "
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
 			continue
 		default:
 			return "select> "

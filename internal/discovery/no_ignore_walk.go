@@ -18,19 +18,20 @@ import (
 // visible membership; this function walks only the scope's committed targets
 // with ignore rules disabled and appends newly admitted text files. It does
 // not apply any later narrowing or output stage.
-func ExpandEntriesUnderNoIgnore(cfg command.Invocation, gitCtx git.Context, scope command.ExecutionScope, entries []Entry) ([]Entry, error) {
+func ExpandEntriesUnderNoIgnore(cfg command.Invocation, gitCtx git.Context, scope command.ExecutionScope, entries []Entry, enumeration search.MembershipEnumerationContext) ([]Entry, error) {
 	finishBench := platform.InternalBenchSpan("discovery.no_ignore_generation",
 		"targets", platform.InternalBenchInt(len(scope.Targets)),
 		"retained", platform.InternalBenchInt(len(entries)),
 	)
 	resolver := Resolver{
-		Cfg:               cfg,
-		GitCtx:            gitCtx,
-		AllowFileSymlinks: false,
-		WithBinaries:      cfg.WithBinaries,
-		NoIgnore:          true,
-		WantedBasenames:   CollectWantedBasenames(scope.Targets),
-		ScopeTargets:      append([]string(nil), scope.Targets...),
+		Cfg:                   cfg,
+		GitCtx:                gitCtx,
+		AllowFileSymlinks:     false,
+		WithBinaries:          cfg.WithBinaries,
+		NoIgnore:              true,
+		WantedBasenames:       CollectWantedBasenames(scope.Targets),
+		ScopeTargets:          append([]string(nil), scope.Targets...),
+		MembershipEnumeration: enumeration,
 	}
 	expanded, optimized, err := resolver.expandRetainedEntriesUnderNoIgnore(scope, entries)
 	if err == nil && !optimized {
@@ -62,8 +63,10 @@ const (
 )
 
 type noIgnoreTargetSpec struct {
-	relPath string
-	kind    noIgnoreTargetKind
+	relPath        string
+	kind           noIgnoreTargetKind
+	identity       os.FileInfo
+	componentCount int
 }
 
 // expandRetainedEntriesUnderNoIgnore reuses the visible generation's text
@@ -117,9 +120,19 @@ func (r *Resolver) expandRetainedEntriesUnderNoIgnore(scope command.ExecutionSco
 			} else {
 				walkRoots = append(walkRoots, target)
 			}
-			specs = append(specs, noIgnoreTargetSpec{relPath: target, kind: kind})
+			specs = append(specs, noIgnoreTargetSpec{
+				relPath:        target,
+				kind:           kind,
+				identity:       info,
+				componentCount: strings.Count(strings.Trim(target, "/"), "/") + 1,
+			})
 		} else if info.Mode().IsRegular() {
-			specs = append(specs, noIgnoreTargetSpec{relPath: target, kind: noIgnoreTargetFile})
+			specs = append(specs, noIgnoreTargetSpec{
+				relPath:        target,
+				kind:           noIgnoreTargetFile,
+				identity:       info,
+				componentCount: strings.Count(strings.Trim(target, "/"), "/") + 1,
+			})
 			walkRoots = append(walkRoots, target)
 		}
 	}
@@ -130,7 +143,7 @@ func (r *Resolver) expandRetainedEntriesUnderNoIgnore(scope command.ExecutionSco
 	if broadWalk {
 		walkRoots = []string{"."}
 	}
-	rels, err := ripgrepListUnderTargets(r.Cfg.WorkingDir, walkRoots, true)
+	rels, err := ripgrepListUnderTargets(r.Cfg.WorkingDir, walkRoots, true, r.membershipEnumeration(search.MembershipReasonNoIgnoreExpansion))
 	if err != nil {
 		return nil, true, err
 	}
@@ -140,7 +153,10 @@ func (r *Resolver) expandRetainedEntriesUnderNoIgnore(scope command.ExecutionSco
 		if rel == "" {
 			continue
 		}
-		root, matched := noIgnoreTargetRootForPath(specs, rel)
+		root, matched, matchErr := r.noIgnoreTargetRootForPath(specs, rel)
+		if matchErr != nil {
+			return nil, true, matchErr
+		}
 		if !matched {
 			continue
 		}
@@ -189,35 +205,117 @@ func (r *Resolver) expandRetainedEntriesUnderNoIgnore(scope command.ExecutionSco
 	return mergeNoIgnoreEntries(retained, additions), true, nil
 }
 
+func (r *Resolver) noIgnoreTargetRootForPath(specs []noIgnoreTargetSpec, rel string) (string, bool, error) {
+	for i := range specs {
+		if err := r.resolveNoIgnoreLiteralAliasForPath(&specs[i], rel); err != nil {
+			return "", false, err
+		}
+	}
+	root, matched := noIgnoreTargetRootForPath(specs, rel)
+	return root, matched, nil
+}
+
+// resolveNoIgnoreLiteralAliasForPath updates a differently-cased literal to
+// the spelling emitted by the broad rg walk, but only after the filesystem
+// proves both spellings name the same object. The current rel is already in
+// memory; this adds no directory enumeration and normally performs no stat.
+func (r *Resolver) resolveNoIgnoreLiteralAliasForPath(spec *noIgnoreTargetSpec, rel string) error {
+	if spec == nil || spec.identity == nil || (spec.kind != noIgnoreTargetDir && spec.kind != noIgnoreTargetFile) {
+		return nil
+	}
+	candidate := rel
+	if spec.kind == noIgnoreTargetDir {
+		var ok bool
+		candidate, ok = noIgnoreDirectoryPrefix(rel, spec.componentCount)
+		if !ok {
+			return nil
+		}
+	}
+	if candidate == spec.relPath {
+		// The broad walk has now proved the typed spelling is already canonical;
+		// stop doing alias work for the rest of this generation.
+		spec.identity = nil
+		return nil
+	}
+	if !strings.EqualFold(candidate, spec.relPath) {
+		return nil
+	}
+	candidateInfo, err := os.Lstat(filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(candidate)))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if os.SameFile(spec.identity, candidateInfo) {
+		spec.relPath = candidate
+		spec.identity = nil
+	}
+	return nil
+}
+
+// noIgnoreDirectoryPrefix returns the first componentCount components of a
+// descendant path without allocating. The next slash is required because a
+// directory target selects strict descendants, not a same-named file row.
+func noIgnoreDirectoryPrefix(rel string, componentCount int) (string, bool) {
+	if componentCount <= 0 {
+		return "", false
+	}
+	start := 0
+	for component := 0; component < componentCount; component++ {
+		separator := strings.IndexByte(rel[start:], '/')
+		if separator < 0 {
+			return "", false
+		}
+		separator += start
+		if component == componentCount-1 {
+			return rel[:separator], true
+		}
+		start = separator + 1
+	}
+	return "", false
+}
+
 func noIgnoreTargetRootForPath(specs []noIgnoreTargetSpec, rel string) (string, bool) {
+	matchedAny := false
 	for _, spec := range specs {
+		candidateRoot := ""
+		matched := false
 		switch spec.kind {
 		case noIgnoreTargetAll:
-			return "", true
+			matched = true
 		case noIgnoreTargetGlob:
-			matched, _ := path.Match(spec.relPath, path.Base(rel))
+			matched, _ = path.Match(spec.relPath, path.Base(rel))
 			if !matched {
 				matched, _ = path.Match(spec.relPath, rel)
-			}
-			if matched {
-				return "", true
 			}
 		case noIgnoreTargetDir:
 			prefix := strings.TrimSuffix(spec.relPath, "/") + "/"
 			if strings.HasPrefix(rel, prefix) {
-				return spec.relPath, true
+				candidateRoot = spec.relPath
+				matched = true
 			}
 		case noIgnoreTargetFile:
 			if rel == spec.relPath {
-				root := normalizeRelPath(path.Dir(spec.relPath))
-				if root == "." {
-					root = ""
+				candidateRoot = normalizeRelPath(path.Dir(spec.relPath))
+				if candidateRoot == "." {
+					candidateRoot = ""
 				}
-				return root, true
+				matched = true
 			}
 		}
+		if !matched {
+			continue
+		}
+		matchedAny = true
+		// Canonical MergeFileEntry semantics: a broad/root match may be
+		// enriched by the first later non-empty target root, but an existing
+		// non-empty root is not replaced by another overlapping target.
+		if candidateRoot != "" {
+			return candidateRoot, true
+		}
 	}
-	return "", false
+	return "", matchedAny
 }
 
 // mergeNoIgnoreEntries restores canonical path order without sorting the full
@@ -268,7 +366,7 @@ func (r *Resolver) markNoIgnoreTargetWalk(target string) {
 // discoverFilesUnderNoIgnore performs one no-ignore walk below a target while
 // retaining ignore attribution for rendering and picker previews.
 func (r *Resolver) discoverFilesUnderNoIgnore(rootRel string) ([]Entry, error) {
-	rels, err := ripgrepListUnder(r.Cfg.WorkingDir, rootRel, true)
+	rels, err := ripgrepListUnder(r.Cfg.WorkingDir, rootRel, true, r.membershipEnumeration(search.MembershipReasonNoIgnoreExpansion))
 	if err != nil {
 		return nil, err
 	}

@@ -22,6 +22,8 @@ const (
 	ReasonUntrackedDiff                   Reason = "untracked_diff"
 	ReasonPositionalAfterModifier         Reason = "positional_after_modifier"
 	ReasonOutputModeConflict              Reason = "output_mode_conflict"
+	ReasonMetadataOutputConflict          Reason = "metadata_output_conflict"
+	ReasonEmissionPolicyConflict          Reason = "emission_policy_conflict"
 	ReasonDiffSnippetConflict             Reason = "diff_snippet_conflict"
 	ReasonDiffContentFilterOrder          Reason = "diff_content_filter_order"
 	ReasonDiffGitFilterOrder              Reason = "diff_git_filter_order"
@@ -78,6 +80,32 @@ func renderValidationFailure(e ValidationFailure) string {
 		return "Error: positional targets must come before modifiers.\n  Add targets first, or use --then for a new scope."
 	case ReasonOutputModeConflict:
 		return fmt.Sprintf("Error: %s and %s cannot be combined in the same scope.\n  Use --then to start a new scope for a different output mode.", e.BoundaryFlag, e.Flag)
+	case ReasonMetadataOutputConflict:
+		switch e.Flag {
+		case "--snippet":
+			return "Error: --metadata and --snippet cannot be combined.\n  Metadata is the final output shape. Use --contains PATTERN --metadata to list matching files."
+		case "--changed-diff":
+			return "Error: --metadata and --changed-diff cannot be combined.\n  Metadata is the final output shape. Use --changed --metadata to list changed files."
+		case "--staged-diff":
+			return "Error: --metadata and --staged-diff cannot be combined.\n  Metadata is the final output shape. Use --staged --metadata to list staged files."
+		case "--unstaged-diff":
+			return "Error: --metadata and --unstaged-diff cannot be combined.\n  Metadata is the final output shape. Use --unstaged --metadata to list unstaged files."
+		default:
+			return fmt.Sprintf("Error: --metadata and %s cannot be combined.\n  Metadata is the final output shape; remove one of these flags.", e.Flag)
+		}
+	case ReasonEmissionPolicyConflict:
+		switch e.BoundaryFlag {
+		case "--yes":
+			return "Error: --yes cannot be combined with --no.\n  Choose whether catclip should always emit or never emit the final output."
+		case "--print":
+			return "Error: --no cannot be combined with --print.\n  --no stops before final output; remove one of these flags."
+		case "--headless":
+			return "Error: --no cannot be combined with --headless.\n  --headless requires final output on stdout; remove one of these flags."
+		case "--quiet":
+			return "Error: --no cannot be combined with --quiet.\n  --no reports what was selected; remove one of these flags."
+		default:
+			return fmt.Sprintf("Error: --no cannot be combined with %s.", e.BoundaryFlag)
+		}
 	case ReasonDiffSnippetConflict:
 		return "Error: --snippet and --diff cannot be combined.\n  Use --snippet to extract blocks around content matches.\n  Use --diff to show unified git patches."
 	case ReasonDiffContentFilterOrder:
@@ -130,6 +158,14 @@ func renderRequiredValueValidationFailure(e ValidationFailure) string {
 
 func RequiredStageValueError(flag string) error {
 	return ValidationFailure{Reason: ReasonRequiredValue, Flag: flag}
+}
+
+func EmissionPolicyConflictError(flag string) error {
+	return ValidationFailure{Reason: ReasonEmissionPolicyConflict, Flag: "--no", BoundaryFlag: flag}
+}
+
+func MetadataOutputConflictError(flag string) error {
+	return ValidationFailure{Reason: ReasonMetadataOutputConflict, Flag: flag, BoundaryFlag: "--metadata"}
 }
 
 func UnknownOptionError(value string) error {

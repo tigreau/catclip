@@ -36,7 +36,7 @@ func TestSinkPreviewTogglePersistsAcrossPreviewReruns(t *testing.T) {
 	}
 	files, err := ui.PrepareStartupSinkPreviewFiles(ui.StartupSinkPickerContext{
 		Emit:   output.EmitConfig{},
-		Render: ui.RenderConfig{Preview: true},
+		Render: ui.RenderConfig{ForceTreeMetadata: true},
 		Plan:   plan,
 		Report: report,
 	})

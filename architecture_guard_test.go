@@ -45,6 +45,12 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	// pickers, or clipboard completion.
 	requireCallOnlyInAllowedFiles(t, files, "updatecheck.Check",
 		[]string{"run_update_check.go"})
+	// Final payload emission has one root orchestration boundary. `--no` is
+	// enforced immediately before this call in executeNormalOutput; keeping new
+	// callers out of other root files prevents a future sink path from bypassing
+	// the typed emission-policy gate.
+	requireCallOnlyInAllowedFiles(t, files, "output.EmitOutputPlan",
+		[]string{"run_output.go"})
 
 	// fzf execution is confined to interactive_choose.go (the v0.6.6
 	// discovery file split), so the resolver core and other discovery files
@@ -281,7 +287,7 @@ func requireInternalRenderHandlersAvoidDerivation(t *testing.T, files []parsedGo
 			"search.RipgrepBinary", "search.RunRipgrepFiles",
 			"search.RunRipgrepMatchLines", "search.RunRipgrepMatches",
 			"search.ResolveTextFileSet", "search.ResolveVisibleFileSet",
-			"search.FirstMatchLinePerFile", "search.HasScopedIgnoredTargetsStreaming",
+			"search.FirstMatchLinePerFile",
 		},
 	)
 }

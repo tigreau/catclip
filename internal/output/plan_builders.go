@@ -70,6 +70,34 @@ func BuildPlanForDiscoveredInvocation(gitCtx git.Context, inv discovery.Discover
 	return BuildPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, allEntries)
 }
 
+// BuildMetadataPlanForDiscoveredInvocation constructs the same deduped,
+// ordered file view as the ordinary planner without preparing content bodies.
+// Metadata needs captured size and modification time, so script-mode gaps are
+// filled once here and carried in the plan through report construction.
+func BuildMetadataPlanForDiscoveredInvocation(workingDir string, inv discovery.Discovered) (Plan, error) {
+	var entries []discovery.Entry
+	scopes := make([]command.ExecutionScope, 0, len(inv.Scopes))
+	for _, scope := range inv.Scopes {
+		scopes = append(scopes, scope.Scope)
+		entries = append(entries, scope.Entries...)
+	}
+	if ExecutionScopesPreserveEvaluatedOrder(scopes) {
+		entries = discovery.DedupeEntriesByPathPreserveOrder(entries)
+	} else {
+		entries = discovery.DedupeEntriesByPath(entries)
+	}
+	var err error
+	entries, err = discovery.EnsureEntryModTimes(entries, workingDir)
+	if err != nil {
+		return Plan{}, err
+	}
+	units := make([]PreparedFileUnit, 0, len(entries))
+	for _, entry := range entries {
+		units = append(units, PreparedFileUnit{Entry: entry, BodyBytes: entry.SizeBytes})
+	}
+	return BuildPlan(units), nil
+}
+
 // ExecutionScopesPreserveEvaluatedOrder reports whether any scope contains a
 // stage whose evaluated entry order is user-visible. Discovery-side predicates
 // can't help here because these stages shape plan dedup behavior

@@ -19,18 +19,19 @@ import (
 )
 
 type resolvedScopeView struct {
-	Invocation command.Invocation
-	Render     RenderConfig
-	Progress   interactiveProgressExtras
-	GitContext git.Context
-	Scopes     []command.ExecutionScope
-	ScopeIndex int
-	Scope      command.ExecutionScope
-	Entries    []discovery.Entry
-	Discovered discovery.Scope
-	Duration   time.Duration
-	inventory  *scopeViewInventory
-	fileIDs    []uint32
+	Invocation   command.Invocation
+	Render       RenderConfig
+	Progress     interactiveProgressExtras
+	GitContext   git.Context
+	Scopes       []command.ExecutionScope
+	ScopeIndex   int
+	GenerationID uint64
+	Scope        command.ExecutionScope
+	Entries      []discovery.Entry
+	Discovered   discovery.Scope
+	Duration     time.Duration
+	inventory    *scopeViewInventory
+	fileIDs      []uint32
 	// snippetMatchLines is a state-local overlay keyed by stable inventory ID.
 	// Match offsets belong to one --snippet pattern and therefore cannot live
 	// on the shared path inventory used by sibling history states.
@@ -69,11 +70,9 @@ type scopeViewInventory struct {
 	metadataKnown       []bool
 	metadataSealed      bool
 
-	observationMu      sync.Mutex
-	scopedIgnoredKnown bool
-	hasScopedIgnored   bool
-	gitStatusKnown     bool
-	gitStatus          map[string]string
+	observationMu  sync.Mutex
+	gitStatusKnown bool
+	gitStatus      map[string]string
 }
 
 type retainedContentStageResult struct {
@@ -105,10 +104,12 @@ func materializeScopeView(entry scopeViewMemoEntry) resolvedScopeView {
 func materializeScopeViewWithMetadata(entry scopeViewMemoEntry, includeCaptured bool) resolvedScopeView {
 	includeCaptured = includeCaptured || entry.projectMetadata
 	view := entry.view
+	view.GenerationID = entry.stateID
 	view.Render.Scopes = cloneExecutionScopes(view.Render.Scopes)
 	view.Scopes = cloneExecutionScopes(view.Scopes)
 	view.Scope = cloneExecutionScope(view.Scope)
 	view.Discovered.Scope = cloneExecutionScope(view.Discovered.Scope)
+	view.Discovered.ResolvedTargets = append([]discovery.ResolvedTarget(nil), view.Discovered.ResolvedTargets...)
 	view.Discovered.Entries = cloneDiscoveryEntries(view.Discovered.Entries)
 	view.Discovered.Diagnostics = append([]discovery.Diagnostic(nil), view.Discovered.Diagnostics...)
 	view.Discovered.Notices = cloneStringSlice(view.Discovered.Notices)
@@ -210,25 +211,6 @@ func cloneDiscoveryEntries(in []discovery.Entry) []discovery.Entry {
 		out[i].SnippetMatchLines = append([]int(nil), in[i].SnippetMatchLines...)
 	}
 	return out
-}
-
-func (inventory *scopeViewInventory) cachedScopedIgnored(compute func() (bool, error)) (bool, bool, error) {
-	if inventory == nil {
-		value, err := compute()
-		return value, false, err
-	}
-	inventory.observationMu.Lock()
-	defer inventory.observationMu.Unlock()
-	if inventory.scopedIgnoredKnown {
-		return inventory.hasScopedIgnored, true, nil
-	}
-	value, err := compute()
-	if err != nil {
-		return false, false, err
-	}
-	inventory.hasScopedIgnored = value
-	inventory.scopedIgnoredKnown = true
-	return value, false, nil
 }
 
 func (inventory *scopeViewInventory) cachedGitStatus(current []discovery.Entry, compute func([]discovery.Entry) (map[string]string, error)) (map[string]string, bool, error) {
@@ -422,9 +404,10 @@ func scopeViewMemoAdoptTargetSelection(args []string, gitCtx git.Context, entrie
 		Scope:      cloneExecutionScope(currentScope),
 		Entries:    selected,
 		Discovered: discovery.Scope{
-			Scope:      cloneExecutionScope(currentScope),
-			GitContext: gitCtx,
-			Entries:    cloneDiscoveryEntries(selected),
+			Scope:           cloneExecutionScope(currentScope),
+			GitContext:      gitCtx,
+			ResolvedTargets: discovery.ResolvedTargetsFromEntries(selected),
+			Entries:         cloneDiscoveryEntries(selected),
 		},
 	}
 	stored := scopeViewMemoStoreFresh(key, args, view)
@@ -1346,7 +1329,12 @@ func applyNoIgnoreScopeStageIDs(parent scopeViewMemoEntry, scope command.Executi
 	}
 	inventory.mu.RUnlock()
 
-	expanded, err := discovery.ExpandEntriesUnderNoIgnore(cfg, parent.view.GitContext, scope, retained)
+	expanded, err := discovery.ExpandEntriesUnderNoIgnore(cfg, parent.view.GitContext, scope, retained, search.MembershipEnumerationContext{
+		Reason:       search.MembershipReasonNoIgnoreExpansion,
+		ScopeIndex:   parent.view.ScopeIndex,
+		ScopeKnown:   true,
+		GenerationID: parent.stateID,
+	})
 	if err != nil {
 		finishBench("eligible", "true", "err", platform.InternalBenchError(err))
 		return nil, true, err

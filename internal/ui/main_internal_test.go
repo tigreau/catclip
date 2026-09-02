@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -1178,8 +1179,8 @@ if [ "$prompt" = "extras> " ]; then
 		echo "extras picker should not offer --no-bundle; output picker owns it" >&2
 		exit 91
 	}
-	printf '%%s\n' "$input" | grep -F -- "--preview" >/dev/null && {
-		echo "extras picker should not offer --preview; output picker owns it" >&2
+	printf '%%s\n' "$input" | grep -F -- "--metadata" >/dev/null || {
+		echo "extras picker should offer --metadata" >&2
 		exit 91
 	}
 	printf '%%s\n' "$input" | grep -F $'\traw' | head -n 1
@@ -1577,13 +1578,57 @@ func TestStartupAvailableModifierChoicesHideContainsAndGitRowsWhenScopeHasDiff(t
 		}
 	}
 }
-func TestStartupAvailableModifierChoicesEmptyKnownScopeShowsNoChoices(t *testing.T) {
+func TestStartupAvailableModifierChoicesEmptyKnownScopeOffersNoIgnoreOnce(t *testing.T) {
 	choices := startupAvailableModifierChoicesWithState(
+		[]string{"src"},
+		startupCurrentScopeState{Known: true, Empty: true},
+	)
+	if got, want := startupModifierChoiceKeys(choices), []string{"no-ignore"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("empty scope choices = %v, want %v", got, want)
+	}
+
+	choices = startupAvailableModifierChoicesWithState(
+		[]string{"src", "--no-ignore"},
+		startupCurrentScopeState{Known: true, Empty: true},
+	)
+	if len(choices) != 0 {
+		t.Fatalf("--no-ignore was offered twice for an empty scope: %#v", startupModifierChoiceKeys(choices))
+	}
+
+	choices = startupAvailableModifierChoicesWithState(
 		[]string{"src", "--changed-diff"},
 		startupCurrentScopeState{Known: true, Empty: true},
 	)
 	if len(choices) != 0 {
-		t.Fatalf("expected no choices for known empty scope, got %#v", startupModifierChoiceKeys(choices))
+		t.Fatalf("invalidly ordered --no-ignore was offered after a modifier: %#v", startupModifierChoiceKeys(choices))
+	}
+}
+
+func TestStartupAvailableModifierChoicesAlwaysOffersNoIgnoreForNonEmptyScope(t *testing.T) {
+	choices := startupAvailableModifierChoicesWithState(
+		[]string{"src"},
+		startupCurrentScopeState{Known: true},
+	)
+	if !startupModifierChoiceKeysContain(choices, "no-ignore") {
+		t.Fatalf("--no-ignore missing without an availability probe: %#v", startupModifierChoiceKeys(choices))
+	}
+}
+
+func TestEmptyScopeAfterNoIgnoreReturnsNoFilesWithoutReopeningPicker(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"outside.go": "package outside\n",
+	})
+	if err := os.Mkdir(filepath.Join(project, "empty"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(project)
+	scopeViewMemoReset()
+	defer scopeViewMemoReset()
+	t.Setenv("CATCLIP_FZF", filepath.Join(t.TempDir(), "must-not-run-fzf"))
+
+	_, err := chooseStartupModifierChoiceWithProgress([]string{"empty", "--no-ignore"}, "", 1)
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "no text files found") {
+		t.Fatalf("empty no-ignore scope error = %v, want normal no-files result", err)
 	}
 }
 func TestStartupAvailableModifierChoicesHideDiffModesWhenScopeHasSnippet(t *testing.T) {
@@ -1973,7 +2018,7 @@ func TestStartupCommandCanRunDirectlyRejectsLeadingRecentLimitWithoutExplicitTar
 		t.Fatal("expected leading --recent 5 without explicit target not to be treated as direct")
 	}
 }
-func TestStartupCommandCanRunDirectlyRejectsBarePreviewWithoutExplicitTarget(t *testing.T) {
+func TestStartupCommandCanRunDirectlyRejectsBareMetadataWithoutExplicitTarget(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('src')\n",
 	})
@@ -1984,12 +2029,12 @@ func TestStartupCommandCanRunDirectlyRejectsBarePreviewWithoutExplicitTarget(t *
 		t.Fatalf("newStartupPickerResolver returned error: %v", err)
 	}
 
-	direct, err := startupCommandCanRunDirectly(resolver, []string{"--preview"})
+	direct, err := startupCommandCanRunDirectly(resolver, []string{"--metadata"})
 	if err != nil {
 		t.Fatalf("startupCommandCanRunDirectly returned error: %v", err)
 	}
 	if direct {
-		t.Fatal("expected bare --preview without explicit target not to be treated as direct")
+		t.Fatal("expected bare --metadata without explicit target not to be treated as direct")
 	}
 }
 func TestStartupCommandCanRunDirectlyRejectsBareThenWithoutExplicitTarget(t *testing.T) {
@@ -2274,7 +2319,7 @@ exit 91
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
-func TestMaybeResolveStartupPickerArgsBarePreviewPicksTargetsFirst(t *testing.T) {
+func TestMaybeResolveStartupPickerArgsBareMetadataPicksTargetsFirst(t *testing.T) {
 	if !platform.CanPromptInteractively() {
 		t.Skip("interactive terminal not available")
 	}
@@ -2309,17 +2354,17 @@ echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
-	result, handled, err := maybeResolveStartupPickerArgs([]string{"--preview"})
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"--metadata"})
 	if err != nil {
 		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
 	}
 	if !handled {
-		t.Fatal("expected bare --preview to be handled by startup picker")
+		t.Fatal("expected bare --metadata to be handled by startup picker")
 	}
 	if !result.UsedFzf {
-		t.Fatal("expected bare --preview flow to use fzf")
+		t.Fatal("expected bare --metadata flow to use fzf")
 	}
-	if got, want := strings.Join(result.Args, "\n"), "--preview\nsrc"; got != want {
+	if got, want := strings.Join(result.Args, "\n"), "--metadata\nsrc"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
@@ -2352,6 +2397,7 @@ func TestMaybeResolveStartupPickerArgsBareGlobalRunFlagsPickTargetsFirst(t *test
 		{name: "print", arg: "-p", want: "src\n-p"},
 		{name: "no-tree", arg: "-t", want: "src\n-t"},
 		{name: "yes", arg: "-y", want: "src\n-y"},
+		{name: "no", arg: "--no", want: "src\n--no"},
 		{name: "verbose", arg: "-v", want: "src\n-v"},
 	}
 
@@ -2471,7 +2517,7 @@ exit 91
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
-func TestMaybeResolveStartupPickerArgsBareThenPreviewPicksBothScopes(t *testing.T) {
+func TestMaybeResolveStartupPickerArgsBareThenMetadataPicksBothScopes(t *testing.T) {
 	if !platform.CanPromptInteractively() {
 		t.Skip("interactive terminal not available")
 	}
@@ -2525,21 +2571,21 @@ echo "unexpected prompt: $prompt" >&2
 exit 91
 `, stateFile, stateFile, stateFile, stateFile))
 
-	result, handled, err := maybeResolveStartupPickerArgs([]string{"--then", "--preview"})
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"--then", "--metadata"})
 	if err != nil {
 		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
 	}
 	if !handled {
-		t.Fatal("expected bare --then --preview to be handled by startup picker")
+		t.Fatal("expected bare --then --metadata to be handled by startup picker")
 	}
 	if !result.UsedFzf {
-		t.Fatal("expected bare --then --preview flow to use fzf")
+		t.Fatal("expected bare --then --metadata flow to use fzf")
 	}
-	if got, want := strings.Join(result.Args, "\n"), "src\n--then\nshared\n--preview"; got != want {
+	if got, want := strings.Join(result.Args, "\n"), "src\n--then\nshared\n--metadata"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }
-func TestMaybeResolveStartupPickerArgsResolvedThenPreviewPicksSecondScopeFirst(t *testing.T) {
+func TestMaybeResolveStartupPickerArgsResolvedThenMetadataPicksSecondScopeFirst(t *testing.T) {
 	if !platform.CanPromptInteractively() {
 		t.Skip("interactive terminal not available")
 	}
@@ -2574,17 +2620,17 @@ echo "unexpected prompt: $prompt" >&2
 exit 91
 `)
 
-	result, handled, err := maybeResolveStartupPickerArgs([]string{"src", "--then", "--preview"})
+	result, handled, err := maybeResolveStartupPickerArgs([]string{"src", "--then", "--metadata"})
 	if err != nil {
 		t.Fatalf("maybeResolveStartupPickerArgs returned error: %v", err)
 	}
 	if !handled {
-		t.Fatal("expected src --then --preview to be handled by startup picker")
+		t.Fatal("expected src --then --metadata to be handled by startup picker")
 	}
 	if !result.UsedFzf {
-		t.Fatal("expected src --then --preview flow to use fzf")
+		t.Fatal("expected src --then --metadata flow to use fzf")
 	}
-	if got, want := strings.Join(result.Args, "\n"), "src\n--then\nshared\n--preview"; got != want {
+	if got, want := strings.Join(result.Args, "\n"), "src\n--then\nshared\n--metadata"; got != want {
 		t.Fatalf("expected resolved args %q, got %q", want, got)
 	}
 }

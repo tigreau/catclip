@@ -79,6 +79,48 @@ type TargetMatch struct {
 	SizeKnown    bool
 }
 
+// ResolvedTarget records the on-disk identity chosen for one target
+// before scope filters run. This compact evidence survives an empty later
+// stage, so diagnostic consumers do not have to resolve the target again or
+// infer it from whichever entries happened to survive.
+type ResolvedTargetKind string
+
+const (
+	ResolvedTargetFile ResolvedTargetKind = "file"
+	ResolvedTargetDir  ResolvedTargetKind = "dir"
+)
+
+type ResolvedTarget struct {
+	Path string
+	Kind ResolvedTargetKind
+}
+
+// ResolvedTargetsFromEntries reconstructs target-picker evidence. Picker file
+// rows carry their own path as TargetRoot; directory rows stamp the selected
+// directory on each descendant. Empty/all-project roots need no literal
+// evidence because the execution scope already represents their wide universe.
+func ResolvedTargetsFromEntries(entries []Entry) []ResolvedTarget {
+	seen := make(map[ResolvedTarget]struct{})
+	out := make([]ResolvedTarget, 0)
+	for _, entry := range entries {
+		root := normalizeRelPath(entry.TargetRoot)
+		if root == "" || root == "." {
+			continue
+		}
+		kind := ResolvedTargetDir
+		if root == normalizeRelPath(entry.RelPath) {
+			kind = ResolvedTargetFile
+		}
+		target := ResolvedTarget{Path: root, Kind: kind}
+		if _, ok := seen[target]; ok {
+			continue
+		}
+		seen[target] = struct{}{}
+		out = append(out, target)
+	}
+	return out
+}
+
 // StartupTargetOutcome describes the routing decision established by the
 // startup target probe. The startup UI consumes this once instead of asking
 // separate reachability, determinism, and non-empty questions that each run

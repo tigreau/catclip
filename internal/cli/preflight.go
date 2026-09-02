@@ -17,6 +17,12 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 	var stageState scopeStageTransitionState
 	var current executionScopeBuilder
 	inModifierMode := false
+	emissionCfg := command.Parsed{OutputMode: command.OutputModeClipboard}
+	sawYes := false
+	sawNo := false
+	validateEmission := func() error {
+		return validateEmissionPolicyCompatibility(emissionCfg, sawYes, sawNo)
+	}
 
 	resetScope := func() {
 		stageState = scopeStageTransitionState{}
@@ -71,7 +77,30 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		switch arg {
 		case "-h", "--help", "--help-all", "--version", "-V", "--check-update", "--hiss", "--hiss-reset", "--all-ignore-rules":
 			continue
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
+		case "-v", "--verbose", "-t", "--no-tree", "--no-bundle", "--with-binaries":
+			continue
+		case "-r", "--raw":
+			emissionCfg.Raw = true
+			continue
+		case "--metadata":
+			emissionCfg.PayloadKind = command.PayloadMetadata
+			continue
+		case "-q", "--quiet":
+			emissionCfg.Quiet = true
+			continue
+		case "-y", "--yes":
+			sawYes = true
+			emissionCfg.EmissionPolicy = command.EmissionAlways
+			continue
+		case "--no":
+			sawNo = true
+			emissionCfg.EmissionPolicy = command.EmissionNever
+			continue
+		case "-p", "--print":
+			emissionCfg.OutputMode = command.OutputModeStdout
+			continue
+		case "--headless":
+			emissionCfg.Headless = true
 			continue
 		case "--then":
 			if err := appendCurrentScope(); err != nil {
@@ -80,6 +109,9 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 			continue
 		case "--":
 			if err := validateScopeSemantics(); err != nil {
+				return command.Spec{}, err
+			}
+			if err := validateEmission(); err != nil {
 				return command.Spec{}, err
 			}
 			if allRemainingArgsAreBareModifierPlaceholders(args[i:]) {
@@ -96,10 +128,16 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 				if len(executionScopes) == 0 {
 					executionScopes = append(executionScopes, command.ExecutionScope{Targets: []string{"."}})
 				}
+				if err := validatePayloadCompatibility(emissionCfg.PayloadKind, emissionCfg.Raw, executionScopes); err != nil {
+					return command.Spec{}, err
+				}
 				return command.PartialSpecFromExecutionScopes(executionScopes), nil
 			}
 			if i != len(args)-1 {
 				return command.Spec{}, BareModifierPlaceholderOrderError()
+			}
+			if err := validatePayloadCompatibility(emissionCfg.PayloadKind, emissionCfg.Raw, executionScopes); err != nil {
+				return command.Spec{}, err
 			}
 			return command.PartialSpecFromExecutionScopes(executionScopes), nil
 		case "--no-ignore":
@@ -390,6 +428,12 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 	}
 
 	if err := appendCurrentScope(); err != nil {
+		return command.Spec{}, err
+	}
+	if err := validateEmission(); err != nil {
+		return command.Spec{}, err
+	}
+	if err := validatePayloadCompatibility(emissionCfg.PayloadKind, emissionCfg.Raw, executionScopes); err != nil {
 		return command.Spec{}, err
 	}
 	if len(executionScopes) == 0 {

@@ -87,14 +87,18 @@ func discoverFilesUnder(workingDir, rootRel, baseName string, classifyText textC
 // ripgrepListUnder returns the rg-discovered file list under rootRel.
 // When noIgnore is true rg ignores .gitignore/.hiss; otherwise the global
 // .hiss is layered onto the default gitignore-aware enumeration.
-func ripgrepListUnder(workingDir, rootRel string, noIgnore bool) ([]string, error) {
-	return ripgrepListUnderTargets(workingDir, []string{rootRel}, noIgnore)
+func ripgrepListUnder(workingDir, rootRel string, noIgnore bool, enumeration ...search.MembershipEnumerationContext) ([]string, error) {
+	return ripgrepListUnderTargets(workingDir, []string{rootRel}, noIgnore, enumeration...)
 }
 
 // ripgrepListUnderTargets enumerates a union of literal roots in one rg
 // process. A dot/empty root means the working-directory-wide universe.
-func ripgrepListUnderTargets(workingDir string, roots []string, noIgnore bool) ([]string, error) {
-	opts := search.RipgrepFileOptions{NoIgnore: noIgnore}
+func ripgrepListUnderTargets(workingDir string, roots []string, noIgnore bool, enumeration ...search.MembershipEnumerationContext) ([]string, error) {
+	context := search.MembershipEnumerationContext{Reason: search.MembershipReasonCanonicalFallback}
+	if len(enumeration) > 0 {
+		context = enumeration[0]
+	}
+	opts := search.RipgrepFileOptions{NoIgnore: noIgnore, Enumeration: context}
 	if !noIgnore {
 		hissPath, err := ReadableHissPath()
 		if err != nil {

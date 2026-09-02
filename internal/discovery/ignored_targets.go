@@ -262,12 +262,12 @@ func ignoredTargetsCacheKey(narrowed []string) string {
 	return strings.Join(narrowed, "\x00")
 }
 
-// narrowableScopeTargets mirrors search.scopedCacheTargets: the
+// NarrowableScopeTargets mirrors search.scopedCacheTargets: the
 // normalized literal target list that is safe to hand rg as positional
 // walk roots, or nil when the universe must stay working-dir-wide (no
 // targets, a "." target, a glob, or a fuzzy/missing path — resolution
 // may then land anywhere, so narrowing would be incorrect).
-func narrowableScopeTargets(workingDir string, targets []string) []string {
+func NarrowableScopeTargets(workingDir string, targets []string) []string {
 	if len(targets) == 0 {
 		return nil
 	}
@@ -322,7 +322,7 @@ func (r *Resolver) targetInventoryUnderNoIgnore(scopeTargets []string, ignoredOn
 	// dir set. Wide fallback (narrowed == nil) covers "."/fuzzy/glob
 	// targets, where the filter keeps everything and wide is right-sized
 	// by definition.
-	narrowed := narrowableScopeTargets(r.Cfg.WorkingDir, scopeTargets)
+	narrowed := NarrowableScopeTargets(r.Cfg.WorkingDir, scopeTargets)
 	cacheKind := "all\x00"
 	if ignoredOnly {
 		cacheKind = "ignored\x00"
@@ -332,7 +332,11 @@ func (r *Resolver) targetInventoryUnderNoIgnore(scopeTargets []string, ignoredOn
 		return append([]TargetMatch(nil), cached...), nil
 	}
 
-	rgPaths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{NoIgnore: true, Paths: narrowed})
+	rgPaths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{
+		NoIgnore:    true,
+		Paths:       narrowed,
+		Enumeration: r.membershipEnumeration(search.MembershipReasonTargetInventory),
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +345,7 @@ func (r *Resolver) targetInventoryUnderNoIgnore(scopeTargets []string, ignoredOn
 	// identical literal-targets rule internally; nil = wide for both).
 	var projectTextSet map[string]struct{}
 	if !r.WithBinaries {
-		projectTextSet, err = search.ResolveTextFileSet(r.Cfg.WorkingDir, narrowed)
+		projectTextSet, err = search.ResolveTextFileSet(r.Cfg.WorkingDir, narrowed, r.membershipEnumeration(search.MembershipReasonTextSetFallback))
 		if err != nil {
 			return nil, err
 		}

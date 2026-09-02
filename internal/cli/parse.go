@@ -81,6 +81,8 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 	var current executionScopeBuilder
 	inModifierMode := false
 	lastNoValueModifier := ""
+	sawYes := false
+	sawNo := false
 	var stdinCache stdinPathCache
 
 	finalize := func() error {
@@ -164,7 +166,11 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 		case "-q", "--quiet":
 			cfg.Quiet = true
 		case "-y", "--yes":
-			cfg.Yes = true
+			sawYes = true
+			cfg.EmissionPolicy = command.EmissionAlways
+		case "--no":
+			sawNo = true
+			cfg.EmissionPolicy = command.EmissionNever
 		case "-p", "--print":
 			cfg.OutputMode = command.OutputModeStdout
 		case "--headless":
@@ -177,8 +183,8 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			cfg.NoTree = true
 		case "--no-bundle":
 			cfg.NoBundle = true
-		case "--preview":
-			cfg.Preview = true
+		case "--metadata":
+			cfg.PayloadKind = command.PayloadMetadata
 		case "--internal-tree-preview":
 			cfg.TreePreview = true
 		case "--input-dir":
@@ -536,6 +542,13 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 		return command.Parsed{}, err
 	}
 
+	if err := validateEmissionPolicyCompatibility(cfg, sawYes, sawNo); err != nil {
+		return command.Parsed{}, err
+	}
+	if err := validatePayloadCompatibility(cfg.PayloadKind, cfg.Raw, executionScopes); err != nil {
+		return command.Parsed{}, err
+	}
+
 	if cfg.Headless || cfg.IsInternalKind() {
 		cfg.OutputMode = command.OutputModeStdout
 		cfg.Quiet = true
@@ -555,6 +568,46 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 	cfg.Command = command.FinalizedSpecFromExecutionScopes(executionScopes)
 
 	return cfg, nil
+}
+
+func validatePayloadCompatibility(kind command.PayloadKind, raw bool, scopes []command.ExecutionScope) error {
+	if kind != command.PayloadMetadata {
+		return nil
+	}
+	if raw {
+		return MetadataOutputConflictError("--raw")
+	}
+	for _, scope := range scopes {
+		for _, stage := range scope.Stages {
+			switch stage.Kind {
+			case command.StagePaths, command.StageLines, command.StageSnippet,
+				command.StageDiff, command.StageChangedDiff, command.StageStagedDiff,
+				command.StageUnstagedDiff:
+				flag, _ := command.StageFlag(stage.Kind)
+				return MetadataOutputConflictError(flag)
+			}
+		}
+	}
+	return nil
+}
+
+func validateEmissionPolicyCompatibility(cfg command.Parsed, sawYes, sawNo bool) error {
+	if sawYes && sawNo {
+		return EmissionPolicyConflictError("--yes")
+	}
+	if cfg.EmissionPolicy != command.EmissionNever {
+		return nil
+	}
+	if cfg.OutputMode == command.OutputModeStdout {
+		return EmissionPolicyConflictError("--print")
+	}
+	if cfg.Headless {
+		return EmissionPolicyConflictError("--headless")
+	}
+	if cfg.Quiet {
+		return EmissionPolicyConflictError("--quiet")
+	}
+	return nil
 }
 
 // Parser helpers

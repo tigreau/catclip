@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tigreau/catclip/internal/cli"
 	"github.com/tigreau/catclip/internal/command"
@@ -46,6 +47,10 @@ func RunInternalSinkPreview(modePath, outputPath, treePath string, stdout io.Wri
 		targetPath = treePath
 		modeName = "tree"
 	}
+	if err := waitForSinkPreviewArtifact(targetPath); err != nil {
+		finishBench("err", platform.InternalBenchError(err), "mode", modeName)
+		return err
+	}
 	finishContentBench := platform.InternalBenchSpan("ui.internal.sink_preview.read_target",
 		"mode", modeName,
 	)
@@ -67,10 +72,30 @@ func RunInternalSinkPreview(modePath, outputPath, treePath string, stdout io.Wri
 	return err
 }
 
+func waitForSinkPreviewArtifact(targetPath string) error {
+	pendingPath := targetPath + ".pending"
+	if _, err := os.Stat(pendingPath); err != nil {
+		return nil
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if _, err := os.Stat(pendingPath); os.IsNotExist(err) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timed out preparing output preview")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 type StartupPreparedOutputState struct {
 	Git       git.Context
 	Discovery discovery.Result
 	Plan      output.Plan
+	Metadata  *MetadataReport
 }
 
 type startupSinkChoice struct {
@@ -84,6 +109,7 @@ type sinkPayloadMeasurement struct {
 	Bytes         int64
 	WouldBundle   bool
 	OutputPreview sinkPreview
+	PreviewReady  bool
 	Err           error
 }
 
@@ -112,6 +138,7 @@ type StartupSinkPickerContext struct {
 	Discovery      discovery.Result
 	Plan           output.Plan
 	Report         output.Report
+	Metadata       *MetadataReport
 }
 
 type startupSinkPreviewFiles struct {
@@ -131,12 +158,6 @@ var startupSinkChoicesSmall = []startupSinkChoice{
 		Label:       "Stdout - for piping",
 		Description: "Print to stdout for piping into another tool or saving to a file.",
 		Args:        []string{"-p"},
-	},
-	{
-		Key:         "preview",
-		Label:       "Stdout - metadata only",
-		Description: "Print paths, sizes, tokens, git, dates.",
-		Args:        []string{"--preview"},
 	},
 	{
 		Key:         "headless",
@@ -165,12 +186,6 @@ var startupSinkChoicesLarge = []startupSinkChoice{
 		Args:        []string{"-p"},
 	},
 	{
-		Key:         "preview",
-		Label:       "Stdout - metadata only",
-		Description: "Print paths, sizes, tokens, git, dates.",
-		Args:        []string{"--preview"},
-	},
-	{
 		Key:         "headless",
 		Label:       "Headless - agent / script contract",
 		Description: "Print to stdout with quiet stderr and no prompts.",
@@ -191,6 +206,7 @@ func maybeResolveStartupSinkPickerArgs(rawArgs []string, result StartupPickerRes
 		Git:       ctx.Git,
 		Discovery: ctx.Discovery,
 		Plan:      ctx.Plan,
+		Metadata:  ctx.Metadata,
 	}
 	// An explicit sink suppresses only the sink picker. Earlier interactive
 	// choices still resolved against the retained generation, so final run must
@@ -208,7 +224,7 @@ func maybeResolveStartupSinkPickerArgs(rawArgs []string, result StartupPickerRes
 		out.PreparedOutput = prepared
 		return out, nil
 	}
-	measurement := measureOutputForSinkMenu(ctx.Plan, ctx.Emit)
+	measurement := measureStartupSinkPayload(ctx)
 	sinkArgs, usedFzf, err := pickOutputSink(ctx, measurement)
 	if err != nil {
 		return StartupPickerResult{}, err
@@ -222,14 +238,28 @@ func maybeResolveStartupSinkPickerArgs(rawArgs []string, result StartupPickerRes
 	return out, nil
 }
 
+func parsedConfigSkipsOutputSinkPicker(cfg command.Parsed) bool {
+	return cfg.OutputMode == command.OutputModeStdout ||
+		cfg.Headless ||
+		cfg.NoBundle ||
+		cfg.EmissionPolicy == command.EmissionNever ||
+		cfg.Quiet
+}
+
 func rawArgsSkipOutputSinkPicker(args []string) bool {
-	for _, arg := range args {
-		switch arg {
-		case "-p", "--print", "--headless", "--no-bundle", "--preview", "-q", "--quiet":
-			return true
+	cfg, err := cli.ParseArgsAllowImplicitDot(args)
+	if err != nil {
+		// Headless parsing requires an explicit target. Add one only as a
+		// validation fallback; fixed-arity parsing still decides whether a
+		// flag-looking token such as --no is a value or a real global flag.
+		cfg, err = cli.ParseArgsAllowImplicitDot(append(append([]string(nil), args...), "."))
+		if err != nil {
+			// Incomplete interactive flags (for example a bare --contains whose
+			// value will be chosen in fzf) are intentionally not sink choices.
+			return false
 		}
 	}
-	return false
+	return parsedConfigSkipsOutputSinkPicker(cfg)
 }
 
 func argsContain(args []string, needle string) bool {
@@ -256,7 +286,7 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 	}
 	emitCfg := emitConfigFromParsedCommand(cfg)
 	renderCfg := RenderConfigFromParsedCommand(cfg)
-	renderCfg.Preview = true
+	renderCfg.ForceTreeMetadata = true
 	resolved := command.ResolvedFromParsed(cfg)
 	finishReuseBench := platform.InternalBenchSpan("ui.startup_sink.discovery_handoff",
 		"scopes", platform.InternalBenchInt(len(resolved.Scopes)),
@@ -301,7 +331,12 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 	finishPlanBench := platform.InternalBenchSpan("ui.startup_sink.build_plan",
 		"entries", platform.InternalBenchInt(discoveredResultEntryCount(discoveryResult)),
 	)
-	plan, err := output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+	var plan output.Plan
+	if cfg.PayloadKind == command.PayloadMetadata {
+		plan, err = output.BuildMetadataPlanForDiscoveredInvocation(cfg.WorkingDir, discoveryResult.Invocation)
+	} else {
+		plan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+	}
 	finishPlanBench("err", platform.InternalBenchError(err))
 	if err != nil {
 		return StartupSinkPickerContext{}, err
@@ -317,12 +352,19 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 		"paths", platform.InternalBenchInt(planPathCount),
 	)
 	report, err := output.BuildReportForPlan(gitCtx, plan, output.ReportOptions{
-		IncludeTreeMetadata: NeedsTreeRender(renderCfg),
+		IncludeTreeMetadata: NeedsTreeRender(renderCfg) || cfg.PayloadKind == command.PayloadMetadata,
 		Notices:             discovery.DedupePreserveOrder(discoveryResult.Notices),
 	})
 	finishReportBench("err", platform.InternalBenchError(err))
 	if err != nil {
 		return StartupSinkPickerContext{}, err
+	}
+	var metadata *MetadataReport
+	if cfg.PayloadKind == command.PayloadMetadata && cfg.EmissionPolicy != command.EmissionNever {
+		metadata, err = BuildMetadataReport(cfg.WorkingDir, gitCtx, discoveryResult.Invocation.Scopes, plan, report, cfg.WithBinaries, time.Now())
+		if err != nil {
+			return StartupSinkPickerContext{}, err
+		}
 	}
 	return StartupSinkPickerContext{
 		Config:         cfg,
@@ -334,6 +376,7 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 		Discovery:      discoveryResult,
 		Plan:           plan,
 		Report:         report,
+		Metadata:       metadata,
 	}, nil
 }
 
@@ -370,6 +413,24 @@ func measureOutputForSinkMenu(plan output.Plan, emitCfg output.EmitConfig) sinkP
 		Bytes:         bytes,
 		WouldBundle:   preview.Truncated || bytes >= output.BundleThreshold,
 		OutputPreview: preview,
+		PreviewReady:  true,
+	}
+}
+
+func measureStartupSinkPayload(ctx StartupSinkPickerContext) sinkPayloadMeasurement {
+	if ctx.Config.PayloadKind != command.PayloadMetadata {
+		return measureOutputForSinkMenu(ctx.Plan, ctx.Emit)
+	}
+	if ctx.Metadata == nil {
+		return sinkPayloadMeasurement{WouldBundle: true, Err: fmt.Errorf("internal error: metadata report is unavailable")}
+	}
+	fullBytes, err := ctx.Metadata.EncodedSize()
+	if err != nil {
+		return sinkPayloadMeasurement{WouldBundle: true, Err: err}
+	}
+	return sinkPayloadMeasurement{
+		Bytes:       fullBytes,
+		WouldBundle: fullBytes >= output.BundleThreshold,
 	}
 }
 
@@ -384,7 +445,7 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 	}
 	lines, index := startupSinkChoiceLines(choices)
 	var precomputedOutput *sinkPreview
-	if measurement.Err == nil {
+	if measurement.Err == nil && measurement.PreviewReady {
 		precomputedOutput = &measurement.OutputPreview
 	}
 	files, err := prepareStartupSinkPreviewFiles(ctx, precomputedOutput)
@@ -466,7 +527,13 @@ func prepareStartupSinkPreviewFiles(ctx StartupSinkPickerContext, precomputedOut
 	if err != nil {
 		return startupSinkPreviewFiles{}, err
 	}
+	var cancel context.CancelFunc
+	var renderDone <-chan struct{}
 	cleanup := func() {
+		if cancel != nil {
+			cancel()
+			<-renderDone
+		}
 		_ = os.RemoveAll(tmpdir)
 	}
 	fail := func(err error) (startupSinkPreviewFiles, error) {
@@ -474,31 +541,49 @@ func prepareStartupSinkPreviewFiles(ctx StartupSinkPickerContext, precomputedOut
 		return startupSinkPreviewFiles{}, err
 	}
 
-	var outputPreview sinkPreview
-	if precomputedOutput != nil {
-		outputPreview = *precomputedOutput
-	} else {
-		outputPreview, err = renderSinkPreviewWithMode(ctx, sinkPreviewModeOutputText, output.PreviewByteLimit)
-		if err != nil {
-			return fail(err)
-		}
-	}
-	treePreview, err := renderSinkPreviewWithMode(ctx, sinkPreviewModeTreeReport, output.PreviewByteLimit)
-	if err != nil {
-		return fail(err)
-	}
-
 	outputPath := filepath.Join(tmpdir, "output.txt")
 	treePath := filepath.Join(tmpdir, "tree.txt")
 	modePath := filepath.Join(tmpdir, "mode")
-	if err := os.WriteFile(outputPath, formatSinkPreview(outputPreview), 0o600); err != nil {
-		return fail(err)
-	}
-	if err := os.WriteFile(treePath, formatSinkPreview(treePreview), 0o600); err != nil {
-		return fail(err)
-	}
 	if err := os.WriteFile(modePath, []byte("output\n"), 0o600); err != nil {
 		return fail(err)
+	}
+
+	asyncMetadata := ctx.Config.PayloadKind == command.PayloadMetadata && precomputedOutput == nil
+	if asyncMetadata {
+		for _, targetPath := range []string{outputPath, treePath} {
+			if err := os.WriteFile(targetPath+".pending", nil, 0o600); err != nil {
+				return fail(err)
+			}
+		}
+		renderCtx, renderCancel := context.WithCancel(context.Background())
+		cancel = renderCancel
+		done := make(chan struct{})
+		renderDone = done
+		go func() {
+			defer close(done)
+			writeAsyncSinkPreview(renderCtx, ctx, sinkPreviewModeOutputText, outputPath)
+			writeAsyncSinkPreview(renderCtx, ctx, sinkPreviewModeTreeReport, treePath)
+		}()
+	} else {
+		var outputPreview sinkPreview
+		if precomputedOutput != nil {
+			outputPreview = *precomputedOutput
+		} else {
+			outputPreview, err = renderSinkPreviewWithMode(ctx, sinkPreviewModeOutputText, output.PreviewByteLimit)
+			if err != nil {
+				return fail(err)
+			}
+		}
+		treePreview, renderErr := renderSinkPreviewWithMode(ctx, sinkPreviewModeTreeReport, output.PreviewByteLimit)
+		if renderErr != nil {
+			return fail(renderErr)
+		}
+		if err := os.WriteFile(outputPath, formatSinkPreview(outputPreview), 0o600); err != nil {
+			return fail(err)
+		}
+		if err := os.WriteFile(treePath, formatSinkPreview(treePreview), 0o600); err != nil {
+			return fail(err)
+		}
 	}
 
 	self, err := os.Executable()
@@ -528,6 +613,22 @@ func prepareStartupSinkPreviewFiles(ctx StartupSinkPickerContext, precomputedOut
 	}, nil
 }
 
+func writeAsyncSinkPreview(ctx context.Context, pickerCtx StartupSinkPickerContext, mode sinkPreviewMode, targetPath string) {
+	preview, err := renderSinkPreviewWithModeContext(ctx, pickerCtx, mode, output.PreviewByteLimit)
+	if err != nil {
+		preview = sinkPreview{Mode: mode, Body: []byte(fmt.Sprintf("Preview unavailable: %v\n", err))}
+	}
+	body := formatSinkPreview(preview)
+	tmpPath := targetPath + ".part"
+	if err := os.WriteFile(tmpPath, body, 0o600); err == nil {
+		if renameErr := os.Rename(tmpPath, targetPath); renameErr != nil {
+			_ = os.WriteFile(targetPath, body, 0o600)
+		}
+	}
+	_ = os.Remove(tmpPath)
+	_ = os.Remove(targetPath + ".pending")
+}
+
 func startupSinkPreviewToggleBinding(toggleCommand string) string {
 	action := "execute-silent(" + toggleCommand + ")+refresh-preview"
 	// Key choice constraints:
@@ -543,12 +644,40 @@ func startupSinkPreviewToggleBinding(toggleCommand string) string {
 }
 
 func renderSinkPreviewWithMode(ctx StartupSinkPickerContext, mode sinkPreviewMode, limit int64) (sinkPreview, error) {
+	return renderSinkPreviewWithModeContext(context.Background(), ctx, mode, limit)
+}
+
+func renderSinkPreviewWithModeContext(renderCtx context.Context, ctx StartupSinkPickerContext, mode sinkPreviewMode, limit int64) (sinkPreview, error) {
 	switch mode {
 	case sinkPreviewModeTreeReport:
-		return renderSinkTreeReportPreview(ctx, limit)
+		return renderSinkTreeReportPreviewContext(renderCtx, ctx, limit)
 	default:
+		if ctx.Config.PayloadKind == command.PayloadMetadata {
+			return renderSinkMetadataPreviewContext(renderCtx, ctx.Metadata, limit)
+		}
 		return renderSinkOutputTextPreview(ctx.Plan, ctx.Emit, limit)
 	}
+}
+
+func renderSinkMetadataPreview(report *MetadataReport, limit int64) (sinkPreview, error) {
+	return renderSinkMetadataPreviewContext(context.Background(), report, limit)
+}
+
+func renderSinkMetadataPreviewContext(ctx context.Context, report *MetadataReport, limit int64) (sinkPreview, error) {
+	var buf bytes.Buffer
+	w := output.NewPreviewCapWriter(&buf, ctx, limit)
+	err := WriteMetadataReport(w, report)
+	if err != nil && !errors.Is(err, output.ErrPreviewLimitReached) {
+		return sinkPreview{}, err
+	}
+	body := append([]byte(nil), buf.Bytes()...)
+	return sinkPreview{
+		Mode:           sinkPreviewModeOutputText,
+		Body:           body,
+		Truncated:      w.Truncated(),
+		FullBytesKnown: !w.Truncated(),
+		FullBytes:      int64(len(body)),
+	}, nil
 }
 
 func renderSinkOutputTextPreview(plan output.Plan, emitCfg output.EmitConfig, limit int64) (sinkPreview, error) {
@@ -690,6 +819,16 @@ func sinkPreviewBodyHasLineNumbers(body []byte) bool {
 func renderSinkTreeReportPreview(ctx StartupSinkPickerContext, limit int64) (sinkPreview, error) {
 	var buf bytes.Buffer
 	w := output.NewPreviewCapWriter(&buf, context.Background(), limit)
+	return renderSinkTreeReportPreviewToWriter(ctx, &buf, w)
+}
+
+func renderSinkTreeReportPreviewContext(renderCtx context.Context, ctx StartupSinkPickerContext, limit int64) (sinkPreview, error) {
+	var buf bytes.Buffer
+	w := output.NewPreviewCapWriter(&buf, renderCtx, limit)
+	return renderSinkTreeReportPreviewToWriter(ctx, &buf, w)
+}
+
+func renderSinkTreeReportPreviewToWriter(ctx StartupSinkPickerContext, buf *bytes.Buffer, w *output.PreviewCapWriter) (sinkPreview, error) {
 	err := RenderPreview(ctx.Render, ctx.Git, ctx.Plan, ctx.Report, w, w, platform.ANSIPalette())
 	if err != nil && !errors.Is(err, output.ErrPreviewLimitReached) {
 		return sinkPreview{}, err

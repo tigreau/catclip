@@ -212,6 +212,13 @@ var startupExtrasChoices = []StartupModifierChoice{
 		Args:        []string{"--raw"},
 		Mode:        startupModifierModeFlags,
 	},
+	{
+		Key:         "metadata",
+		Label:       "--metadata",
+		Description: "selected-file details instead of contents",
+		Args:        []string{"--metadata"},
+		Mode:        startupModifierModeFlags,
+	},
 }
 
 // startupSnippetBoundaryChoices lists the smart block plus every legal fixed
@@ -260,18 +267,17 @@ func startupAvailableModifierChoices(currentArgs []string) []StartupModifierChoi
 
 func startupAvailableModifierChoicesWithState(currentArgs []string, state startupCurrentScopeState) []StartupModifierChoice {
 	if state.Known && state.Empty {
-		if !state.HasScopedIgnoredTargets {
-			return nil
+		choice := StartupModifierChoice{
+			Key:         "no-ignore",
+			Label:       "--no-ignore",
+			Description: "Include everything hidden by ignore rules",
+			Args:        []string{"--no-ignore"},
+			Mode:        startupModifierModeFlags,
 		}
-		return []StartupModifierChoice{
-			{
-				Key:         "no-ignore",
-				Label:       "--no-ignore",
-				Description: "Include everything hidden by ignore rules",
-				Args:        []string{"--no-ignore"},
-				Mode:        startupModifierModeFlags,
-			},
+		if startupModifierChoiceAllowed(currentArgs, choice, state) {
+			return []StartupModifierChoice{choice}
 		}
+		return nil
 	}
 	choices := make([]StartupModifierChoice, 0, len(startupModifierChoices)+len(startupModifierMetaChoices))
 	for _, choice := range startupModifierChoices {
@@ -402,7 +408,7 @@ func startupModifierChoiceMeaningful(choice StartupModifierChoice, state startup
 		}
 		return state.AnyUnstaged
 	case "--no-ignore":
-		return state.HasScopedIgnoredTargets
+		return true
 	default:
 		return true
 	}

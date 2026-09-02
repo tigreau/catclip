@@ -14,22 +14,19 @@ import (
 )
 
 type RenderConfig struct {
-	NoTree     bool
-	Preview    bool
-	Quiet      bool
-	Yes        bool
-	TreeTarget string
-	TreeKind   string
-	TreeState  string
-	Scopes     []command.ExecutionScope
+	NoTree            bool
+	Quiet             bool
+	ForceTreeMetadata bool
+	TreeTarget        string
+	TreeKind          string
+	TreeState         string
+	Scopes            []command.ExecutionScope
 }
 
 func RenderConfigFromParsedCommand(cfg command.Parsed) RenderConfig {
 	return RenderConfig{
 		NoTree:     cfg.NoTree,
-		Preview:    cfg.Preview,
 		Quiet:      cfg.Quiet,
-		Yes:        cfg.Yes,
 		TreeTarget: cfg.TreeTarget,
 		TreeKind:   cfg.TreeKind,
 		TreeState:  cfg.TreeState,
@@ -38,17 +35,17 @@ func RenderConfigFromParsedCommand(cfg command.Parsed) RenderConfig {
 }
 
 func NeedsTreeRender(cfg RenderConfig) bool {
+	if cfg.ForceTreeMetadata {
+		return true
+	}
 	if cfg.NoTree {
 		return false
-	}
-	if cfg.Preview {
-		return true
 	}
 	return !cfg.Quiet
 }
 
 func TreeDocumentRenderConfig(cfg RenderConfig) RenderConfig {
-	cfg.Preview = true
+	cfg.ForceTreeMetadata = true
 	return cfg
 }
 
@@ -73,41 +70,114 @@ func RenderPreview(cfg RenderConfig, gitCtx git.Context, plan output.Plan, repor
 	return writeSummary(stdout, report, colors)
 }
 
-func WriteNormalDiagnostics(cfg RenderConfig, gitCtx git.Context, plan output.Plan, report output.Report, stderr io.Writer, colors platform.Palette) (bool, error) {
+func WriteNormalDiagnostics(
+	cfg RenderConfig,
+	gitCtx git.Context,
+	plan output.Plan,
+	report output.Report,
+	emissionPolicy command.EmissionPolicy,
+	presentationWriter, diagnosticWriter io.Writer,
+	presentationColors, diagnosticColors platform.Palette,
+) (bool, error) {
 	if !cfg.Quiet {
-		if err := writeFilterSummary(stderr, gitCtx, colors); err != nil {
+		if err := writeFilterSummary(diagnosticWriter, gitCtx, diagnosticColors); err != nil {
 			return false, err
 		}
-		if err := writeReportNotices(stderr, report, colors); err != nil {
+		if err := writeReportNotices(diagnosticWriter, report, diagnosticColors); err != nil {
 			return false, err
 		}
 		if !cfg.NoTree {
-			if err := printPreviewTree(stderr, plan, report, colors); err != nil {
+			if err := printPreviewTree(presentationWriter, plan, report, presentationColors); err != nil {
 				return false, err
 			}
 		}
-		if err := writeSummary(stderr, report, colors); err != nil {
+		if err := writeSummary(presentationWriter, report, presentationColors); err != nil {
 			return false, err
 		}
 		if report.Tokens > tokenWarnThreshold {
-			if _, err := fmt.Fprintf(stderr, "  %s~%d tokens may exceed some LLM context windows.%s\n", colors.Warn, report.Tokens, colors.Reset); err != nil {
+			if _, err := fmt.Fprintf(diagnosticWriter, "  %s~%d tokens may exceed some LLM context windows.%s\n", diagnosticColors.Warn, report.Tokens, diagnosticColors.Reset); err != nil {
 				return false, err
 			}
 		}
 	}
 
-	if report.Tokens <= tokenWarnThreshold || cfg.Yes || cfg.Quiet {
+	if emissionPolicy == command.EmissionNever {
+		return false, nil
+	}
+	if report.Tokens <= tokenWarnThreshold || emissionPolicy == command.EmissionAlways || cfg.Quiet {
 		return true, nil
 	}
 
-	proceedPrompt, err := PromptYesNo(colors.Prompt+"Proceed? [y/N]"+colors.Reset, false, stderr)
+	proceedPrompt, err := PromptYesNo(diagnosticColors.Prompt+"Proceed? [y/N]"+diagnosticColors.Reset, false, diagnosticWriter)
 	if err != nil {
 		return false, err
 	}
 	if proceedPrompt {
 		return true, nil
 	}
-	if _, err := fmt.Fprintf(stderr, "%sAborted.%s\n", colors.Warn, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(diagnosticWriter, "%sAborted.%s\n", diagnosticColors.Warn, diagnosticColors.Reset); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// WriteMetadataDiagnostics keeps the ordinary selected-file tree and summary,
+// but bases the context-window warning and confirmation on the metadata bytes
+// that will actually be emitted rather than on the selected files' contents.
+func WriteMetadataDiagnostics(
+	cfg RenderConfig,
+	gitCtx git.Context,
+	plan output.Plan,
+	report output.Report,
+	metadata *MetadataReport,
+	emissionPolicy command.EmissionPolicy,
+	presentationWriter, diagnosticWriter io.Writer,
+	presentationColors, diagnosticColors platform.Palette,
+) (bool, error) {
+	if !cfg.Quiet {
+		if err := writeFilterSummary(diagnosticWriter, gitCtx, diagnosticColors); err != nil {
+			return false, err
+		}
+		if err := writeReportNotices(diagnosticWriter, report, diagnosticColors); err != nil {
+			return false, err
+		}
+		if !cfg.NoTree {
+			if err := printPreviewTree(presentationWriter, plan, report, presentationColors); err != nil {
+				return false, err
+			}
+		}
+		if err := writeSummary(presentationWriter, report, presentationColors); err != nil {
+			return false, err
+		}
+	}
+
+	if emissionPolicy == command.EmissionNever {
+		return false, nil
+	}
+	payloadBytes, err := metadata.EncodedSize()
+	if err != nil {
+		return false, err
+	}
+	payloadTokens := payloadBytes / 4
+	if !cfg.Quiet && payloadTokens > tokenWarnThreshold {
+		if _, err := fmt.Fprintf(diagnosticWriter,
+			"  %sMetadata output is ~%d tokens and may exceed some LLM context windows.%s\n",
+			diagnosticColors.Warn, payloadTokens, diagnosticColors.Reset); err != nil {
+			return false, err
+		}
+	}
+	if payloadTokens <= tokenWarnThreshold || emissionPolicy == command.EmissionAlways || cfg.Quiet {
+		return true, nil
+	}
+
+	proceedPrompt, err := PromptYesNo(diagnosticColors.Prompt+"Proceed? [y/N]"+diagnosticColors.Reset, false, diagnosticWriter)
+	if err != nil {
+		return false, err
+	}
+	if proceedPrompt {
+		return true, nil
+	}
+	if _, err := fmt.Fprintf(diagnosticWriter, "%sAborted.%s\n", diagnosticColors.Warn, diagnosticColors.Reset); err != nil {
 		return false, err
 	}
 	return false, nil
@@ -167,6 +237,36 @@ func WriteClipboardSuccess(w io.Writer, plan output.Plan, stats output.EmitStats
 		_, err := fmt.Fprintf(w, "\n%sCopied%s %s%d %s%s %sto clipboard%s %s(%s ... %s)%s\n", colors.OK, colors.Reset, colors.Bold, count, word, colors.Reset, colors.OK, colors.Reset, colors.Dim, first, last, colors.Reset)
 		return err
 	}
+}
+
+func WriteMetadataClipboardSuccess(w io.Writer, plan output.Plan, stats output.EmitStats, colors platform.Palette) error {
+	count := len(plan.DistinctRelPaths())
+	if count == 0 {
+		return nil
+	}
+	word := "files"
+	if count == 1 {
+		word = "file"
+	}
+	if stats.SinkName == "bundle" {
+		path := platform.DisplayPath(stats.BundlePath)
+		if _, err := fmt.Fprintf(w, "\n%sBundled%s metadata for %s%d %s%s %s→%s %s%s%s %s(%s)%s\n%sPaste attaches a file — works in web UIs and file managers, not terminals.%s\n%sUse --no-bundle to copy text instead.%s\n",
+			colors.OK, colors.Reset, colors.Bold, count, word, colors.Reset,
+			colors.OK, colors.Reset, colors.Bold, path, colors.Reset,
+			colors.Dim, humanByteSize(stats.PayloadBytes), colors.Reset,
+			colors.Dim, colors.Reset, colors.Dim, colors.Reset); err != nil {
+			return err
+		}
+		for _, warning := range stats.Warnings {
+			if _, err := fmt.Fprintf(w, "%sWarning: %s%s\n", colors.Warn, warning, colors.Reset); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "\n%sCopied%s metadata for %s%d %s%s %sto clipboard%s\n",
+		colors.OK, colors.Reset, colors.Bold, count, word, colors.Reset, colors.OK, colors.Reset)
+	return err
 }
 
 func writeBundleSuccess(w io.Writer, count int, word string, stats output.EmitStats, colors platform.Palette) error {

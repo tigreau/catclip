@@ -3,9 +3,15 @@ package catclip
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/output"
+	"github.com/tigreau/catclip/internal/ui"
 )
 
 func TestSummarizeDiagnostics(t *testing.T) {
@@ -145,6 +151,56 @@ func TestExecutePlanOutputStopsBeforePayloadWhenDiagnosticWriteFails(t *testing.
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("diagnostic write failure emitted payload: %q", stdout.String())
+	}
+}
+
+func TestNeverEmitWritesSelectionReportButStopsBeforePayload(t *testing.T) {
+	project := t.TempDir()
+	absPath := filepath.Join(project, "src", "main.go")
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	const body = "PAYLOAD_MUST_NOT_BE_EMITTED\n"
+	if err := os.WriteFile(absPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := discovery.Entry{
+		AbsPath:    absPath,
+		RelPath:    "src/main.go",
+		TargetRoot: project,
+		Mode:       command.EntryModeFull,
+	}
+	plan := output.BuildPlan([]output.PreparedFileUnit{{Entry: entry, BodyBytes: int64(len(body))}})
+	report := output.Report{
+		Sizes:     map[string]int64{"src/main.go": int64(len(body))},
+		Statuses:  map[string]string{},
+		ModeTags:  map[string]string{},
+		HumanSize: "28.00B",
+		Tokens:    7,
+		CountWord: "file",
+	}
+	var stdout, stderr bytes.Buffer
+	err := executeNormalOutput(outputExecutionContext{
+		Invocation: command.Invocation{EmissionPolicy: command.EmissionNever},
+		Render:     ui.RenderConfig{},
+		Emit:       output.EmitConfig{OutputMode: command.OutputModeStdout},
+		Stdout:     &stdout,
+		Stderr:     &stderr,
+	}, outputExecutionState{Plan: plan}, report)
+	if err != nil {
+		t.Fatalf("executeNormalOutput() error = %v", err)
+	}
+	if got := stdout.String(); !strings.Contains(got, "src/") || !strings.Contains(got, "main.go") || !strings.Contains(got, "Count:") {
+		t.Fatalf("stdout is missing selection report:\n%s", got)
+	} else if strings.Contains(got, "PAYLOAD_MUST_NOT_BE_EMITTED") {
+		t.Fatalf("stdout contains final payload:\n%s", got)
+	} else if strings.Contains(got, "Proceed?") || strings.Contains(got, "Aborted.") {
+		t.Fatalf("--no must not prompt or describe the run as aborted:\n%s", got)
+	}
+	if got := stderr.String(); !strings.Contains(got, "Not a git repo") {
+		t.Fatalf("diagnostics should retain stderr for --no, stderr=%q", got)
+	} else if strings.Contains(got, "src/") || strings.Contains(got, "Count:") {
+		t.Fatalf("tree/summary leaked to stderr for --no, stderr=%q", got)
 	}
 }
 

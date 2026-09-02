@@ -56,8 +56,8 @@ Pipeline coordination:
 Rendering surfaces:
 
 - **preview**: confirmation-flow tree summary, badges, size/token disclaimer
-- **preview_table**: the `--preview` file table (path + size/tokens/git/modified/shape); replaces the tree on `--preview` only
-- **date_format**: shared timestamp / duration / Finder-style date formatting (`--recent`, `--preview`, `--verbose`, bundle names)
+- **metadata_report**: the `--metadata` payload (selected paths + size/tokens/git/modified and conditional binary flags)
+- **date_format**: shared timestamp / duration / Finder-style date formatting (`--recent`, `--metadata`, `--verbose`, bundle names)
 - **file_preview**: per-file preview rendering for pickers
 - **resolved_scope_view**: human-readable resolved-scope summary
 - **text_snapshot**: load-once text snapshot used by snippet and lines rendering
@@ -88,7 +88,7 @@ Subpackages and platform shims:
 
 ## Product rules
 
-1. **Preview must be truthful** — the tree, the `--preview` table, and the summary must reflect exactly what will be copied, not a looser approximation.
+1. **Selection and payload views must be truthful** — the tree, metadata report, and summary must describe the exact selected membership or final payload they label, never a looser approximation.
 
 2. **Current paths win** — the UI should show the current filesystem view and current working-tree paths, even when Git metadata is simplified.
 
@@ -136,6 +136,8 @@ Subpackages and platform shims:
     **Enforced (part 1 only):** `TestRunPipelineArchitectureGuards` (`requirePreviewPlaceholdersStayStandalone`) scans every command builder in `previewCommandBuilders` for embedded placeholders and POSIX shell fragments, and a meta-check fails the build if a new placeholder-using function in a builder file isn't classified as either a shell-command builder or an fzf-native exemption (`fzfPlaceholderExemptFuncs`, e.g. `--preview-window` offsets). An agent that reintroduces `dir/{2}.json` fails the test. **Part 2 (trivial value) is not statically enforceable** — whether a substituted value is trivial depends on runtime row data — so passing the guard means "not concatenated," *not* "safe to push any value through fzf." Keep substituted values trivial by design.
 
 19. **Discovery is the parent's job, once per authorized target generation** — the initial interactive target flow enumerates its visible universe once and adopts the confirmed membership as a sealed session generation. An explicit `--no-ignore` or genuinely new target/scope universe may create another generation. Ordinary modifier pickers (`--depth`, `--recent`, `--only`, …), output selection, and final execution consume retained state; they do not run `evaluateScope` to replace same-generation membership. The parent may apply a candidate stage or bounded content/Git work to retained paths and write the result to a temp file. The fzf preview command reads that prediscovered input and formats — nothing more. If a user-visible refresh feature is added later, it must be designed as another explicit generation boundary; v0.7.4 does not ship one.
+
+    **The metadata ignore trace is diagnostic, never target authority.** When an actual normal-ignore `--metadata` payload is materialized, the parent may run one streaming `rg --files --debug` process over the compacted union of its applicable targets. It must use the ordinary visible-walk flags and `.hiss` overlay. NUL-delimited stdout supplies exact raw-visible coverage; stderr supplies only causal non-whitelist Gitignore boundary decisions with their deciding source/pattern. Neither stream may add, remove, reorder, or reclassify the retained selected entries. Instrument it as diagnostic authority with reason `metadata-ignore-trace`; retain only exact scalar totals plus bounded display rows in the materialized report. It never runs for ordinary payloads, `--metadata --no`, or all-`--no-ignore` metadata, and remains at most one process per report rather than one per target/scope. Drain both pipes concurrently and keep version-pinned Unix, escaped-pattern, and Windows-path parser fixtures.
 
     A preview command that invokes `catclip` with scope-bearing arguments in a free-form modifier hot path is broken by definition: fzf re-runs preview on every cursor move, so any path that ends up calling `evaluateScope` from there means hundreds of milliseconds of rg + classification + stage application per keystroke. Target selection before a settled generation, per-file live reads, and static render-only previews have separate contracts; none permits same-generation directory discovery. The bug is invisible on small repos and crippling on large ones, so the rule has to be load-bearing at design time.
 
@@ -252,15 +254,20 @@ Subpackages and platform shims:
    - live `--only` / `--exclude` previews must never expand every marked row into subprocess argv. Pass fzf's selected-row temporary file (`{+f}`) to the checkpoint-backed internal preview and parse its value column in-process. If checkpoint setup fails, omit the live preview instead of restoring an unbounded argv fallback. This keeps preview command size constant for large `--no-ignore` scopes; see `docs/versions/v0.7.0/reports/RESOLVED_BUG_large_file_set_selection_argmax.md`
 
 9. Build preview metadata and render the tree/summary when needed:
-   - `--preview` renders a per-file table (path + size/tokens/git/modified/shape) instead of the tree; the confirmation flow, sink picker, and fzf pickers keep the tree. `--no-tree` governs only the confirmation tree, not `--preview`
-   - the tree is always a structural, path-sorted view. Ordering stages such as bare `--recent` and bare `--size` do not visually reorder its rows, even though they change clipboard/stdout/file emission to newest-first or largest-first. Their bounded forms (`--recent N`, `--size MIN [MAX]`) may change which files remain, but the surviving tree rows are still path-sorted. Use `--preview` when the user needs a flat table in actual emission order
+   - `--metadata` is an invocation-wide final payload containing one row per selected path in emission order. It uses the ordinary clipboard/stdout/bundle transport, composes with membership filters and `--then`, and conflicts with `--paths`, `--lines`, `--snippet`, diff output, and `--raw` in every scope
+   - metadata headers include an RFC3339 materialization time, best-effort Git branch/commit plus selected change counts, per-scope exact raw-visible/final-selected coverage, and causal ignored boundary paths. Extension composition is selected-byte-ranked and capped at five groups; selections of at least 20 files may also show five directory groups and five largest selected files. These summaries consume retained entries and cannot change membership
+   - ignored-boundary display is capped at 20 rows per scope while retaining the exact boundary total. `--no-ignore` scopes omit ignore-derived coverage/provenance entirely. Binary rows use a final `binary` flag and contribute bytes but not estimated tokens to row, aggregate, or footer token totals
+   - the tree is always a structural, path-sorted selection view. Ordering stages such as bare `--recent` and bare `--size` do not visually reorder its rows, even though they change payload order to newest-first or largest-first. Their bounded forms (`--recent N`, `--size MIN [MAX]`) may change which files remain, but the surviving tree rows are still path-sorted
+   - `--no-tree` governs only the pre-emission selection tree; it never suppresses the `--metadata` payload
    - normal `-q` runs skip tree rendering and confirmation entirely
-   - `-q` therefore makes `-y` and `-t` redundant in normal non-preview runs
-   - preview/tree-specific metadata such as git status is only collected when a tree will actually be rendered
+   - `-q` therefore makes `-y` and `-t` redundant in normal content-output runs
+   - tree-specific metadata such as git status is collected when a tree will render; `--metadata` also collects it because Git state is part of that payload
    - preview Git badges are selector-aligned: `[S]`, `[M]`, `[?]`, `[SM]` — see rule 3
-   - size/token summary is still computed even without a tree because the Count / Size / Tokens disclaimer depends on it; token counting remains a fast byte-based estimate (`bytes / 4`) on purpose, because exact tokenizers would add noticeable work while the real hot cost here is gathering file sizes, not formatting the final number
+   - the selection size/token summary remains a fast content estimate (`bytes / 4`). Metadata confirmation is instead driven by the encoded metadata payload's bytes/tokens, so selected file contents cannot trigger a warning when they will not be emitted
+   - `--no` is the invocation-wide never-emit policy. It renders this normal selection report to stdout and then exits successfully at the same boundary as declining confirmation, without prompting, entering final payload serialization/body streaming, initializing a clipboard/bundle sink, or printing an emission-success message. Truthful plan preparation may still retain the established snippet/line/diff state, but never ordinary full-file bodies. The policy is global across `--then` scopes and incompatible with `--yes`, `--print`, `--headless`, and `--quiet`
 
 10. Emit output to stdout or the clipboard sink:
+    - enter this phase only when the invocation's emission policy permits it
     - default: full file contents in `<file path="...">` wrappers
     - `--paths`: bare relative paths, one per line
     - `--snippet`: matched blocks in `<file path="..." lines="L-L">` wrappers

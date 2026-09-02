@@ -1,7 +1,6 @@
 package ui
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -90,20 +89,19 @@ type StartupPickerResult struct {
 }
 
 type startupCurrentScopeState struct {
-	Known                   bool
-	Empty                   bool
-	HasScopedIgnoredTargets bool
-	GitKnown                bool
-	AnyChanged              bool
-	AllChanged              bool
-	AnyStaged               bool
-	AllStaged               bool
-	AnyUnstaged             bool
-	AllUnstaged             bool
-	AnyUntracked            bool
-	AllUntracked            bool
-	Scopes                  []command.ExecutionScope
-	ProgressExtras          interactiveProgressExtras
+	Known          bool
+	Empty          bool
+	GitKnown       bool
+	AnyChanged     bool
+	AllChanged     bool
+	AnyStaged      bool
+	AllStaged      bool
+	AnyUnstaged    bool
+	AllUnstaged    bool
+	AnyUntracked   bool
+	AllUntracked   bool
+	Scopes         []command.ExecutionScope
+	ProgressExtras interactiveProgressExtras
 	// GitStatusMap is the porcelain map (workPath → "S"/"M"/"SM"/"?")
 	// collected once in startupCurrentScopeStateForArgs and reused by
 	// startupModifierCurrentScopePreviewCommand so checkpoint preparation does
@@ -233,6 +231,10 @@ func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (
 	probesByScope := make([][]discovery.StartupTargetProbe, len(scopeSpecs))
 	for scopeIndex, scopeSpec := range scopeSpecs {
 		scopeResolverCopy := *resolver
+		scopeResolverCopy.MembershipEnumeration = search.MembershipEnumerationContext{
+			ScopeIndex: scopeIndex,
+			ScopeKnown: true,
+		}
 		scopeTargets := scopeSpec.Targets()
 		scopeResolverCopy.NoIgnore = scopeSpec.NoIgnore()
 		for _, target := range scopeTargets {
@@ -302,7 +304,7 @@ func startupHasUnresolvedScope(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
 			continue
 		case "--then":
 			if !scopeHasExplicitTarget {
@@ -459,8 +461,8 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 			continue
 		case "--then":
 			continue
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-			"--no-bundle", "--preview", "--with-binaries", "--changed", "--staged", "--unstaged", "--untracked",
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
+			"--no-bundle", "--metadata", "--with-binaries", "--changed", "--staged", "--unstaged", "--untracked",
 			"--changed-diff", "--staged-diff", "--unstaged-diff", "--", "--diff":
 			continue
 		}
@@ -513,8 +515,8 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 
 		seenModifier = true
 		switch tokens[i] {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-			"--no-bundle", "--preview", "--with-binaries", "--changed", "--staged", "--unstaged", "--untracked",
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
+			"--no-bundle", "--metadata", "--with-binaries", "--changed", "--staged", "--unstaged", "--untracked",
 			"--changed-diff", "--staged-diff", "--unstaged-diff", "--paths":
 			parsed.modifiers = append(parsed.modifiers, tokens[i])
 		case "--lines":
@@ -823,7 +825,7 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 		}
 
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
 			finalArgs = append(finalArgs, arg)
 			i++
 		case "--then":
@@ -975,7 +977,7 @@ func startupLeadingModifierNeedsInitialScope(arg string) bool {
 	switch arg {
 	case "--then":
 		return false
-	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--preview", "--with-binaries":
+	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
 		return true
 	case "--", "--no-ignore", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths",
 		"--changed", "--staged", "--unstaged", "--untracked",
@@ -1079,12 +1081,12 @@ func chooseStartupModifierChoiceWithProgress(currentArgs []string, escHint strin
 		finishBench("err", platform.InternalBenchError(err))
 		return StartupModifierChoice{}, err
 	}
-	if state.Known && state.Empty && !state.HasScopedIgnoredTargets {
-		finishBench("err", "false", "no_files", "true")
-		return StartupModifierChoice{}, startupNoFilesMatchedError(state.Scopes)
-	}
 	lines, index := startupModifierChoiceLines(startupAvailableModifierChoicesWithState(currentArgs, state))
 	if len(lines) == 0 {
+		if state.Known && state.Empty {
+			finishBench("err", "false", "no_files", "true")
+			return StartupModifierChoice{}, startupNoFilesMatchedError(state.Scopes)
+		}
 		finishBench("err", "false", "no_choices", "true")
 		return StartupModifierChoice{}, discovery.ErrSelectionCancelled
 	}
@@ -1240,22 +1242,6 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 		Scopes:         append([]command.ExecutionScope(nil), view.Scopes...),
 		ProgressExtras: view.Progress,
 	}
-	if len(view.Scopes) > 0 {
-		current := view.Scopes[len(view.Scopes)-1]
-		finishIgnoredBench := platform.InternalBenchSpan("ui.startup.scope_state.has_scoped_ignored",
-			"targets", platform.InternalBenchInt(len(current.Targets)),
-		)
-		hasScopedIgnored, cached, err := view.inventory.cachedScopedIgnored(func() (bool, error) {
-			return startupHasScopedIgnoredTargets(current.Targets)
-		})
-		finishIgnoredBench(
-			"err", platform.InternalBenchError(err),
-			"cached", platform.InternalBenchBool(cached),
-		)
-		if err == nil {
-			state.HasScopedIgnoredTargets = hasScopedIgnored
-		}
-	}
 	if state.Empty || !view.GitContext.Enabled {
 		return state, view, nil
 	}
@@ -1347,18 +1333,6 @@ func unionRepoPathSets(sets ...map[string]struct{}) map[string]struct{} {
 		}
 	}
 	return out
-}
-
-func startupHasScopedIgnoredTargets(scopeTargets []string) (bool, error) {
-	wd, err := os.Getwd()
-	if err != nil {
-		return false, err
-	}
-	hissPath, err := discovery.ReadableHissPath()
-	if err != nil {
-		return false, err
-	}
-	return search.HasScopedIgnoredTargetsStreaming(context.Background(), wd, scopeTargets, hissPath)
 }
 
 func startupAnyAllForCurrentScope(total int, set map[string]struct{}) (bool, bool) {

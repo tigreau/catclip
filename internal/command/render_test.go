@@ -44,6 +44,13 @@ func TestCanonicalResolvedInvocationCommandRoundTripsPOSIXShellArguments(t *test
 	}
 }
 
+func TestCanonicalGlobalArgsRendersNeverEmitPolicy(t *testing.T) {
+	got := CanonicalGlobalArgs(Invocation{}, RenderFlags{EmissionPolicy: EmissionNever})
+	if !reflect.DeepEqual(got, []string{"--no"}) {
+		t.Fatalf("CanonicalGlobalArgs() = %#v, want [--no]", got)
+	}
+}
+
 func TestCanonicalResolvedInvocationCommandUsesPowerShellLiteralQuoting(t *testing.T) {
 	target := `src\Chris's $draft file.ts`
 	pattern := `can't match $HOME or *`

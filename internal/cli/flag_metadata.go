@@ -269,8 +269,8 @@ var extraFixedValueCounts = map[string]int{
 // optional-value consumption. Kept as an explicit table (they have no
 // spec entries); spec flags join the boundary set automatically below.
 var globalBoundaryFlags = []string{
-	"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-	"--no-bundle", "--preview", "--with-binaries",
+	"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
+	"--no-bundle", "--metadata", "--with-binaries",
 	"-h", "--help", "--help-all", "--version", "-V", "--check-update", "--hiss", "--hiss-reset", "--all-ignore-rules",
 }
 

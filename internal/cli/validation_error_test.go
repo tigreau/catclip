@@ -27,6 +27,7 @@ func TestValidationFailureConstructors(t *testing.T) {
 		{name: "diff git order", err: diffGitFilterOrderError("--staged", "--changed-diff"), want: ValidationFailure{Reason: ReasonDiffGitFilterOrder, Flag: "--staged", BoundaryFlag: "--changed-diff"}},
 		{name: "snippet order", err: snippetContentFilterOrderError("--contains"), want: ValidationFailure{Reason: ReasonSnippetContentFilterOrder, Flag: "--contains"}},
 		{name: "output conflict", err: outputModeConflictError("--snippet", "--changed-diff"), want: ValidationFailure{Reason: ReasonOutputModeConflict, Flag: "--changed-diff", BoundaryFlag: "--snippet"}},
+		{name: "emission conflict", err: EmissionPolicyConflictError("--print"), want: ValidationFailure{Reason: ReasonEmissionPolicyConflict, Flag: "--no", BoundaryFlag: "--print"}},
 		{name: "diff snippet conflict", err: diffSnippetConflictError(), want: ValidationFailure{Reason: ReasonDiffSnippetConflict}},
 		{name: "terminal boundary", err: terminalBoundaryOrderError("--paths", "--contains"), want: ValidationFailure{Reason: ReasonTerminalBoundaryOrder, BoundaryFlag: "--paths", NextFlag: "--contains"}},
 		{name: "no ignore missing target", err: NoIgnoreMissingPositionalTargetError(), want: ValidationFailure{Reason: ReasonNoIgnoreMissingPositionalTarget, Flag: "--no-ignore"}},
@@ -59,6 +60,7 @@ func TestValidationFailureRendering(t *testing.T) {
 		{name: "contains suggestion", err: ContainsMissingPatternError([]string{"--contains", "--snippet", "a"}, 0), want: "Error: --contains requires a regex pattern.\n  Example: catclip src --contains 'TODO'\n  Did you mean: catclip . --snippet 'a'"},
 		{name: "include unsupported", err: IncludeUnsupportedError(), want: "Error: --include is not a supported option.\n\n  Name an ignored file or directory as a target:\n    catclip src/generated\n\n  To disable ignore rules below a target:\n    catclip src --no-ignore"},
 		{name: "no ignore missing target", err: NoIgnoreMissingPositionalTargetError(), wantContains: "catclip src --no-ignore"},
+		{name: "emission conflict", err: EmissionPolicyConflictError("--headless"), wantContains: "--no cannot be combined with --headless"},
 	}
 
 	for _, tt := range tests {

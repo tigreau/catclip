@@ -265,7 +265,11 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 				finishPlanBench := platform.InternalBenchSpan("cli.run.build_plan",
 					"scopes", platform.InternalBenchInt(len(discoveryResult.Invocation.Scopes)),
 				)
-				outputPlan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+				if cfg.PayloadKind == command.PayloadMetadata {
+					outputPlan, err = output.BuildMetadataPlanForDiscoveredInvocation(cfg.WorkingDir, discoveryResult.Invocation)
+				} else {
+					outputPlan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+				}
 				finishPlanBench(
 					"err", platform.InternalBenchError(err),
 					"items", platform.InternalBenchInt(outputPlan.Len()),
@@ -310,11 +314,15 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 			Started:    started,
 		}
 		outputState := outputExecutionState{
-			Scopes:      commandScopes,
-			Plan:        outputPlan,
-			Diagnostics: diagnostics,
-			Summary:     diagnosticSummary,
-			Notices:     notices,
+			Scopes:           commandScopes,
+			DiscoveredScopes: discoveryResult.Invocation.Scopes,
+			Plan:             outputPlan,
+			Diagnostics:      diagnostics,
+			Summary:          diagnosticSummary,
+			Notices:          notices,
+		}
+		if prepared != nil {
+			outputState.Metadata = prepared.Metadata
 		}
 		if cfg.TreePreview {
 			return executeTreePreview(outputCtx, outputState)
@@ -501,7 +509,7 @@ type hissConfig struct {
 func hissConfigFromParsedCommand(cfg command.Parsed) hissConfig {
 	return hissConfig{
 		Quiet: cfg.Quiet,
-		Yes:   cfg.Yes,
+		Yes:   cfg.EmissionPolicy == command.EmissionAlways,
 	}
 }
 

@@ -45,11 +45,13 @@ type outputExecutionContext struct {
 }
 
 type outputExecutionState struct {
-	Scopes      []command.ExecutionScope
-	Plan        output.Plan
-	Diagnostics []discovery.Diagnostic
-	Summary     DiagnosticSummary
-	Notices     []string
+	Scopes           []command.ExecutionScope
+	DiscoveredScopes []discovery.Scope
+	Plan             output.Plan
+	Metadata         *ui.MetadataReport
+	Diagnostics      []discovery.Diagnostic
+	Summary          DiagnosticSummary
+	Notices          []string
 }
 
 func executeTreePreview(ctx outputExecutionContext, state outputExecutionState) error {
@@ -83,18 +85,20 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 		return executeEmptyOutput(ctx, state)
 	}
 	reportStarted := time.Now()
+	finishReportBench := platform.InternalBenchSpan("output.report", "items", platform.InternalBenchInt(state.Plan.Len()))
 	report, err := output.BuildReportForPlan(ctx.Git, state.Plan, output.ReportOptions{
-		IncludeTreeMetadata: ui.NeedsTreeRender(ctx.Render),
+		IncludeTreeMetadata: ui.NeedsTreeRender(ctx.Render) || ctx.Invocation.PayloadKind == command.PayloadMetadata,
 		Notices:             discovery.DedupePreserveOrder(state.Notices),
 	})
+	finishReportBench("err", platform.InternalBenchError(err))
 	if err != nil {
 		return err
 	}
 	if ctx.Invocation.Verbose {
 		fmt.Fprintf(ctx.Stderr, "[verbose] report: %s\n", formatDuration(time.Since(reportStarted)))
 	}
-	if ctx.Render.Preview {
-		return executePreview(ctx, state, report)
+	if ctx.Invocation.PayloadKind == command.PayloadMetadata {
+		return executeMetadata(ctx, state, report)
 	}
 	return executeNormalOutput(ctx, state, report)
 }
@@ -116,18 +120,74 @@ func executeEmptyOutput(ctx outputExecutionContext, state outputExecutionState) 
 	return newExitError(1, "")
 }
 
-func executePreview(ctx outputExecutionContext, state outputExecutionState, report output.Report) error {
-	renderStarted := time.Now()
-	// --preview renders the file table (not the tree). The tree's ui.RenderPreview
-	// stays for the sink picker; the confirmation flow keeps ui.WriteNormalDiagnostics.
-	err := ui.RenderPreviewTable(ctx.Render, ctx.Git, state.Plan, report, ctx.Stdout, ctx.Stderr,
-		ctx.Invocation.WorkingDir, time.Now(), ctx.Colors)
+func executeMetadata(ctx outputExecutionContext, state outputExecutionState, report output.Report) error {
+	finishBench := platform.InternalBenchSpan("output.metadata", "items", platform.InternalBenchInt(state.Plan.Len()))
+	defer finishBench()
+	diagStarted := time.Now()
+	presentationWriter := ctx.Stderr
+	presentationColors := ctx.Colors
+	if ctx.Invocation.EmissionPolicy == command.EmissionNever {
+		presentationWriter = ctx.Stdout
+		presentationColors = platform.ActivePaletteForWriter(ctx.Stdout)
+		proceed, err := ui.WriteNormalDiagnostics(ctx.Render, ctx.Git, state.Plan, report,
+			ctx.Invocation.EmissionPolicy, presentationWriter, ctx.Stderr, presentationColors, ctx.Colors)
+		if err != nil {
+			return err
+		}
+		if proceed {
+			return fmt.Errorf("internal error: never-emit metadata diagnostics reached payload emission")
+		}
+		if ctx.Invocation.Verbose {
+			fmt.Fprintf(ctx.Stderr, "[verbose] diagnostics: %s\n", formatDuration(time.Since(diagStarted)))
+			fmt.Fprintf(ctx.Stderr, "[verbose] total: %s\n", formatDuration(time.Since(ctx.Started)))
+		}
+		if state.Summary.HasScopeUnsatisfiable || state.Summary.HasTargetNotFound {
+			return newExitError(1, "")
+		}
+		return nil
+	}
+
+	metadata := state.Metadata
+	var err error
+	if metadata == nil {
+		metadata, err = ui.BuildMetadataReport(ctx.Invocation.WorkingDir, ctx.Git, state.DiscoveredScopes, state.Plan, report, ctx.Invocation.WithBinaries, time.Now())
+		if err != nil {
+			return err
+		}
+	}
+	proceed, err := ui.WriteMetadataDiagnostics(ctx.Render, ctx.Git, state.Plan, report, metadata,
+		ctx.Invocation.EmissionPolicy, presentationWriter, ctx.Stderr, presentationColors, ctx.Colors)
 	if err != nil {
 		return err
 	}
 	if ctx.Invocation.Verbose {
-		fmt.Fprintf(ctx.Stderr, "[verbose] preview: %s\n", formatDuration(time.Since(renderStarted)))
-		fmt.Fprintf(ctx.Stderr, "[verbose] total: %s\n", formatDuration(time.Since(ctx.Started)))
+		fmt.Fprintf(ctx.Stderr, "[verbose] diagnostics: %s\n", formatDuration(time.Since(diagStarted)))
+	}
+	if !proceed {
+		if ctx.Invocation.Verbose {
+			fmt.Fprintf(ctx.Stderr, "[verbose] total: %s\n", formatDuration(time.Since(ctx.Started)))
+		}
+		return nil
+	}
+	if shouldSeparateStdoutPayload(ctx.Emit, ctx.Invocation, ctx.Stdout, ctx.Stderr) {
+		fmt.Fprintln(ctx.Stderr)
+	}
+	outputStarted := time.Now()
+	finishEmitBench := platform.InternalBenchSpan("output.metadata.emit")
+	emitStats, err := output.WithPayloadWriter(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), ctx.Stdout, ctx.Colors, func(w io.Writer) error {
+		return ui.WriteMetadataReport(w, metadata)
+	})
+	finishEmitBench("err", platform.InternalBenchError(err), "bytes", fmt.Sprintf("%d", emitStats.PayloadBytes))
+	if err != nil {
+		return err
+	}
+	if ctx.Invocation.Verbose {
+		fmt.Fprintf(ctx.Stderr, "[verbose] metadata output: %s\n", formatDuration(time.Since(outputStarted)))
+	}
+	if ctx.Emit.OutputMode == command.OutputModeClipboard && !ctx.Invocation.Quiet {
+		if err := ui.WriteMetadataClipboardSuccess(ctx.Stderr, state.Plan, emitStats, ctx.Colors); err != nil {
+			return err
+		}
 	}
 	if state.Summary.HasScopeUnsatisfiable {
 		return newExitError(1, "")
@@ -143,7 +203,23 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 		return err
 	}
 	diagStarted := time.Now()
-	proceed, err := ui.WriteNormalDiagnostics(ctx.Render, ctx.Git, state.Plan, report, ctx.Stderr, ctx.Colors)
+	presentationWriter := ctx.Stderr
+	presentationColors := ctx.Colors
+	if ctx.Invocation.EmissionPolicy == command.EmissionNever {
+		presentationWriter = ctx.Stdout
+		presentationColors = platform.ActivePaletteForWriter(ctx.Stdout)
+	}
+	proceed, err := ui.WriteNormalDiagnostics(
+		ctx.Render,
+		ctx.Git,
+		state.Plan,
+		report,
+		ctx.Invocation.EmissionPolicy,
+		presentationWriter,
+		ctx.Stderr,
+		presentationColors,
+		ctx.Colors,
+	)
 	if err != nil {
 		return err
 	}
@@ -151,6 +227,13 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 		fmt.Fprintf(ctx.Stderr, "[verbose] diagnostics: %s\n", formatDuration(time.Since(diagStarted)))
 	}
 	if !proceed {
+		if ctx.Invocation.Verbose {
+			fmt.Fprintf(ctx.Stderr, "[verbose] total: %s\n", formatDuration(time.Since(ctx.Started)))
+		}
+		if ctx.Invocation.EmissionPolicy == command.EmissionNever &&
+			(state.Summary.HasScopeUnsatisfiable || state.Summary.HasTargetNotFound) {
+			return newExitError(1, "")
+		}
 		return nil
 	}
 	outputMetrics, err := collectVerboseOutputMetrics(ctx.Invocation.Verbose, ctx.Git, state.Plan)

@@ -105,8 +105,9 @@ func locateIgnoreSources(cfg listIgnoreRulesConfig) ([]*ignoreSource, error) {
 	// wouldn't apply those to visible content either).
 	for _, target := range cfg.Targets {
 		rels, err := search.RunRipgrepFiles(cfg.WorkingDir, search.RipgrepFileOptions{
-			Basenames: []string{".gitignore"},
-			Paths:     []string{target},
+			Basenames:   []string{".gitignore"},
+			Paths:       []string{target},
+			Enumeration: search.MembershipEnumerationContext{Reason: search.MembershipReasonIgnoreRuleListing},
 		})
 		if err != nil {
 			return nil, fmt.Errorf("locate .gitignore files under %s: %w", target, err)

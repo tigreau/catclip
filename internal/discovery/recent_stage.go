@@ -35,13 +35,23 @@ func ApplyRecentStage(entries []Entry, workingDir string, limit *int) ([]Entry, 
 }
 
 // EnsureEntryModTimes fills ModTime + SizeBytes for any entry missing
-// them, statting on disk via os.Lstat. Used by applyRecentStage and by
-// root's preview_table.go (for the file-list preview pane).
+// them, statting on disk via os.Lstat. Used by applyRecentStage and the
+// metadata report when a script-mode entry did not already carry primary stat data.
 //
 // Fail-fast contract: mirrors EnsureEntrySizes. --recent was invoked
 // as a filter, so a missing entry is a real error that surfaces here.
 func EnsureEntryModTimes(entries []Entry, workingDir string) ([]Entry, error) {
 	entries = EnsureEntryAbsPaths(entries, workingDir)
+	missing := false
+	for i := range entries {
+		if entries[i].ModTime.IsZero() {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return entries, nil
+	}
 	paths := make([]string, len(entries))
 	for i := range entries {
 		if !entries[i].ModTime.IsZero() {

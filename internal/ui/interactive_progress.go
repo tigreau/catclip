@@ -12,9 +12,11 @@ const (
 	progressExtraVerbose interactiveProgressExtras = 1 << iota
 	progressExtraQuiet
 	progressExtraYes
+	progressExtraNo
 	progressExtraRaw
 	progressExtraNoTree
 	progressExtraWithBinaries
+	progressExtraMetadata
 )
 
 func interactiveProgressExtrasFromParsed(cfg command.Parsed) interactiveProgressExtras {
@@ -25,8 +27,10 @@ func interactiveProgressExtrasFromParsed(cfg command.Parsed) interactiveProgress
 	if cfg.Quiet && !cfg.Headless {
 		extras |= progressExtraQuiet
 	}
-	if cfg.Yes {
+	if cfg.EmissionPolicy == command.EmissionAlways {
 		extras |= progressExtraYes
+	} else if cfg.EmissionPolicy == command.EmissionNever {
+		extras |= progressExtraNo
 	}
 	if cfg.Raw {
 		extras |= progressExtraRaw
@@ -36,6 +40,9 @@ func interactiveProgressExtrasFromParsed(cfg command.Parsed) interactiveProgress
 	}
 	if cfg.WithBinaries {
 		extras |= progressExtraWithBinaries
+	}
+	if cfg.PayloadKind == command.PayloadMetadata {
+		extras |= progressExtraMetadata
 	}
 	return extras
 }
@@ -57,6 +64,8 @@ func formatInteractiveFilterProgress(extras interactiveProgressExtras, scopes []
 	writeInteractiveProgressExtra(&out, extras, progressExtraVerbose, "--verbose")
 	writeInteractiveProgressExtra(&out, extras, progressExtraQuiet, "--quiet")
 	writeInteractiveProgressExtra(&out, extras, progressExtraYes, "--yes")
+	writeInteractiveProgressExtra(&out, extras, progressExtraNo, "--no")
+	writeInteractiveProgressExtra(&out, extras, progressExtraMetadata, "--metadata")
 	writeInteractiveProgressExtra(&out, extras, progressExtraRaw, "--raw")
 	writeInteractiveProgressExtra(&out, extras, progressExtraNoTree, "--no-tree")
 	writeInteractiveProgressExtra(&out, extras, progressExtraWithBinaries, "--with-binaries")
@@ -75,7 +84,11 @@ func formatInteractiveFilterProgress(extras interactiveProgressExtras, scopes []
 	}
 	out.WriteString(" ▶")
 	if filterSlots <= 0 {
-		out.WriteString(" output")
+		if extras&progressExtraNo != 0 {
+			out.WriteString(" report")
+		} else {
+			out.WriteString(" output")
+		}
 		return out.String()
 	}
 	for range filterSlots {

@@ -8,7 +8,7 @@ import (
 // date_format.go is the single home for turning timestamps and durations into the
 // strings catclip displays. Keeping every date/time/duration rule here means there
 // is one place to read, change, and test them, and one set of helpers for all
-// callers — the `--recent` picker, the `--preview` table, `--verbose` timing, the
+// callers — the `--recent` picker, the `--metadata` report, `--verbose` timing, the
 // large-copy bundle writer, and future features.
 //
 // Every function below is a pure transform of its time inputs using only the
@@ -28,9 +28,9 @@ import (
 //
 // This is intentionally NOT byte-identical to macOS Finder: real Finder shows no
 // weekday tier and always prints the year. The weekday + year-omission here are a
-// deliberate, richer recency cue for the `--recent` UI. The `--preview` table uses
+// deliberate, richer recency cue for the `--recent` UI. The `--metadata` report uses
 // the stricter real-Finder spec instead (always year, no weekday) — that formatter
-// will live in this file when `--preview` is built.
+// lives below.
 func formatFinderModifiedLabel(now, modTime time.Time) string {
 	if modTime.IsZero() {
 		return "unknown date"
@@ -58,7 +58,7 @@ func formatFinderModifiedLabel(now, modTime time.Time) string {
 }
 
 // formatFinderModifiedSpec renders a file's modified time as the *strict* macOS
-// Finder "Date Modified" spec, used by the `--preview` table. Unlike
+// Finder "Date Modified" spec, used by the `--metadata` report. Unlike
 // formatFinderModifiedLabel it adds no recency embellishment — no weekday tier and
 // the year is always shown:
 //
@@ -69,7 +69,7 @@ func formatFinderModifiedLabel(now, modTime time.Time) string {
 // This is exactly what Finder's column shows, which is also why it suits agents:
 // "Today"/"Yesterday" self-describe (catclip computes them from now), and every
 // older entry is a full, unambiguous date the agent reads or compares without
-// decoding a convention or knowing "now". Same value in both `--preview` modes.
+// decoding a convention or knowing "now".
 func formatFinderModifiedSpec(now, modTime time.Time) string {
 	if modTime.IsZero() {
 		return "unknown date"
@@ -112,7 +112,7 @@ func sameCalendarDay(a, b time.Time) bool {
 //	< 1 year   -> "4mo ago"
 //	otherwise  -> "2y ago"
 //
-// The `--preview` table deliberately avoids this "… ago" style (Finder has no
+// The `--metadata` report deliberately avoids this "… ago" style (Finder has no
 // elapsed-time form); it is specific to the `--recent` preview.
 func formatRecentAge(now, modTime time.Time) string {
 	if modTime.IsZero() {
@@ -139,48 +139,5 @@ func formatRecentAge(now, modTime time.Time) string {
 		return fmt.Sprintf("%dmo ago", int(d/(30*24*time.Hour)))
 	default:
 		return fmt.Sprintf("%dy ago", int(d/(365*24*time.Hour)))
-	}
-}
-
-// recencyBucket classifies how recently a file changed, for UI that colors by
-// freshness (the --preview table). It is date logic, so it lives here next to the
-// formatters rather than in the preview renderer.
-type recencyBucket int
-
-const (
-	recencyUnknown recencyBucket = iota
-	recencyToday
-	recencyYesterday
-	recencyMonth // within ~30 days, older than yesterday
-	recencyYear  // within ~365 days
-	recencyOlder
-)
-
-// bucketRecency classifies modTime relative to now into a recencyBucket.
-func bucketRecency(now, modTime time.Time) recencyBucket {
-	if modTime.IsZero() {
-		return recencyUnknown
-	}
-	loc := now.Location()
-	if loc == nil {
-		loc = time.Local
-	}
-	now = now.In(loc)
-	modTime = modTime.In(loc)
-
-	switch {
-	case sameCalendarDay(now, modTime):
-		return recencyToday
-	case sameCalendarDay(now.AddDate(0, 0, -1), modTime):
-		return recencyYesterday
-	}
-	d := now.Sub(modTime)
-	switch {
-	case d < 30*24*time.Hour:
-		return recencyMonth
-	case d < 365*24*time.Hour:
-		return recencyYear
-	default:
-		return recencyOlder
 	}
 }

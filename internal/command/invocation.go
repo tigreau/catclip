@@ -4,18 +4,20 @@ package command
 // fills it once per `catclip` invocation; everything after parse / resolve
 // threads it through unchanged.
 //
-// Internal flags the CLI fills but downstream callers also need: WorkingDir
-// is the runtime cwd snapshot; Internal flips true when the process is a
-// short-lived --internal-* helper spawned by fzf (suppresses prompts).
+// WorkingDir is the runtime cwd snapshot; EmissionPolicy is the invocation-wide
+// final-output decision; Internal flips true when the process is a short-lived
+// --internal-* helper spawned by fzf (suppresses prompts).
 type Invocation struct {
-	Version      string
-	Platform     string
-	WorkingDir   string
-	Verbose      bool
-	Quiet        bool
-	Headless     bool
-	WithBinaries bool
-	Internal     bool
+	Version        string
+	Platform       string
+	WorkingDir     string
+	Verbose        bool
+	Quiet          bool
+	Headless       bool
+	WithBinaries   bool
+	PayloadKind    PayloadKind
+	EmissionPolicy EmissionPolicy
+	Internal       bool
 }
 
 // Resolved is the parsed Invocation paired with the resolved set of

@@ -110,6 +110,37 @@ func TestResolvedScopeViewMemoReturnsDetachedCommandState(t *testing.T) {
 	}
 }
 
+func TestResolvedScopeViewMemoRetainsTargetEvidenceAfterEmptyFilter(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"nested/unique-scope/keep.go": "package scope\n",
+	})
+	t.Chdir(project)
+	scopeViewMemoReset()
+	defer scopeViewMemoReset()
+
+	baseArgs := []string{"nested/unique-scope"}
+	entries := []discovery.Entry{{
+		RelPath:    "nested/unique-scope/keep.go",
+		AbsPath:    filepath.Join(project, "nested", "unique-scope", "keep.go"),
+		TargetRoot: "nested/unique-scope",
+	}}
+	if !scopeViewMemoAdoptTargetSelection(baseArgs, git.Context{}, entries, metadataForMemoEntries(t, entries)) {
+		t.Fatal("could not adopt target selection")
+	}
+
+	view, err := resolvedCurrentScopeViewForArgs([]string{"nested/unique-scope", "--only", "definitely-no-match-*"})
+	if err != nil {
+		t.Fatalf("derive empty filter: %v", err)
+	}
+	if len(view.Entries) != 0 {
+		t.Fatalf("filtered entries = %v, want none", entryRelPaths(view.Entries))
+	}
+	want := discovery.ResolvedTarget{Path: "nested/unique-scope", Kind: discovery.ResolvedTargetDir}
+	if len(view.Discovered.ResolvedTargets) != 1 || view.Discovered.ResolvedTargets[0] != want {
+		t.Fatalf("retained resolved targets = %#v, want %#v", view.Discovered.ResolvedTargets, want)
+	}
+}
+
 func TestResolvedCurrentScopeViewDerivesPathOnlyStagesFromRetainedParent(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/a.go":          "package a\n",
@@ -282,6 +313,29 @@ func TestResolvedCurrentScopeViewRetainsNoIgnoreGenerationAndNewMetadata(t *test
 	}); err != nil || cached {
 		t.Fatalf("initial Git observation: cached=%v err=%v", cached, err)
 	}
+	var enumerationMu sync.Mutex
+	var enumerationEvents []search.MembershipEnumerationEvent
+	restoreEnumerationObserver := search.SetMembershipEnumerationObserver(func(event search.MembershipEnumerationEvent) {
+		enumerationMu.Lock()
+		enumerationEvents = append(enumerationEvents, event)
+		enumerationMu.Unlock()
+	})
+	defer restoreEnumerationObserver()
+
+	// Modifier-state requests consume retained membership only. Merely deciding
+	// whether to display --no-ignore must never enumerate the filesystem.
+	_, _, err = startupCurrentScopeStateForArgs(baseArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := startupCurrentScopeStateForArgs(baseArgs); err != nil {
+		t.Fatal(err)
+	}
+	enumerationMu.Lock()
+	if len(enumerationEvents) != 0 {
+		t.Fatalf("modifier availability enumerated membership: %+v", enumerationEvents)
+	}
+	enumerationMu.Unlock()
 
 	benchLog := filepath.Join(t.TempDir(), "bench.log")
 	t.Setenv("CATCLIP_INTERNAL_BENCH_LOG", benchLog)
@@ -336,6 +390,28 @@ func TestResolvedCurrentScopeViewRetainsNoIgnoreGenerationAndNewMetadata(t *test
 	if !reflect.DeepEqual(entryRelPaths(reentered.Entries), entryRelPaths(expanded.Entries)) {
 		t.Fatalf("re-entry changed expanded membership:\nfirst=%v\nagain=%v", entryRelPaths(expanded.Entries), entryRelPaths(reentered.Entries))
 	}
+	if _, _, err := startupCurrentScopeStateForArgs(noIgnoreArgs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildStartupSinkPickerContext(noIgnoreArgs); err != nil {
+		t.Fatal(err)
+	}
+
+	enumerationMu.Lock()
+	observedEnumerations := append([]search.MembershipEnumerationEvent(nil), enumerationEvents...)
+	enumerationMu.Unlock()
+	if len(observedEnumerations) != 3 {
+		t.Fatalf("interactive lifecycle membership enumerations = %d, want no-ignore union + two-source attribution: %+v", len(observedEnumerations), observedEnumerations)
+	}
+	expansion := observedEnumerations[0]
+	if expansion.Kind != search.MembershipEnumerationFiles || expansion.IgnorePolicy != search.MembershipNoIgnore || expansion.Context.Reason != search.MembershipReasonNoIgnoreExpansion || expansion.Context.GenerationID == 0 || !expansion.Context.ScopeKnown || expansion.Context.ScopeIndex != 0 {
+		t.Fatalf("no-ignore expansion labels = %+v", expansion)
+	}
+	for _, attribution := range observedEnumerations[1:] {
+		if attribution.Kind != search.MembershipEnumerationVisibleSet || attribution.IgnorePolicy != search.MembershipVisible || attribution.Context.Reason != search.MembershipReasonIgnoreAttribution || attribution.Context.GenerationID == 0 || !attribution.Context.ScopeKnown || attribution.Context.ScopeIndex != 0 {
+			t.Fatalf("ignore-attribution enumeration labels = %+v", attribution)
+		}
+	}
 
 	logBytes, err := os.ReadFile(benchLog)
 	if err != nil {
@@ -356,6 +432,112 @@ func TestResolvedCurrentScopeViewRetainsNoIgnoreGenerationAndNewMetadata(t *test
 	}
 	if got := strings.Count(logText, `event="search.text_size_capture"`); got != 1 || !strings.Contains(logText, `captured="2"`) {
 		t.Fatalf("secondary metadata capture did not stat exactly the two new paths (events=%d):\n%s", got, logText)
+	}
+}
+
+func TestRetainedNoIgnoreWithoutIgnoredFilesIsSilentNoOp(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a.go": "package a\n",
+		"src/b.md": "visible\n",
+	})
+	t.Chdir(project)
+	scopeViewMemoReset()
+	defer scopeViewMemoReset()
+
+	baseArgs := []string{"--quiet", "--print", "src"}
+	base, err := resolvedCurrentScopeViewForArgs(baseArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := metadataForMemoEntries(t, base.Entries)
+	scopeViewMemoReset()
+	if !scopeViewMemoAdoptTargetSelection(baseArgs, git.Detect(project), base.Entries, metadata) {
+		t.Fatal("visible generation was not sealed")
+	}
+	base, err = resolvedCurrentScopeViewForArgs(baseArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var enumerationMu sync.Mutex
+	var events []search.MembershipEnumerationEvent
+	restore := search.SetMembershipEnumerationObserver(func(event search.MembershipEnumerationEvent) {
+		enumerationMu.Lock()
+		events = append(events, event)
+		enumerationMu.Unlock()
+	})
+	defer restore()
+
+	state, _, err := startupCurrentScopeStateForArgs(baseArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !startupModifierChoiceKeysContain(startupAvailableModifierChoicesWithState(baseArgs, state), "no-ignore") {
+		t.Fatal("--no-ignore was hidden when no ignored files existed")
+	}
+	enumerationMu.Lock()
+	if len(events) != 0 {
+		t.Fatalf("showing --no-ignore enumerated membership: %+v", events)
+	}
+	enumerationMu.Unlock()
+
+	expanded, err := resolvedCurrentScopeViewForArgs(append(append([]string(nil), baseArgs...), "--no-ignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := entryRelPaths(expanded.Entries), entryRelPaths(base.Entries); !reflect.DeepEqual(got, want) {
+		t.Fatalf("no-op --no-ignore changed membership: got %v want %v", got, want)
+	}
+	if !reflect.DeepEqual(expanded.Discovered.Diagnostics, base.Discovered.Diagnostics) {
+		t.Fatalf("no-op --no-ignore added diagnostics: base=%+v expanded=%+v", base.Discovered.Diagnostics, expanded.Discovered.Diagnostics)
+	}
+	if !reflect.DeepEqual(expanded.Discovered.Notices, base.Discovered.Notices) {
+		t.Fatalf("no-op --no-ignore added notices: base=%+v expanded=%+v", base.Discovered.Notices, expanded.Discovered.Notices)
+	}
+
+	enumerationMu.Lock()
+	observed := append([]search.MembershipEnumerationEvent(nil), events...)
+	enumerationMu.Unlock()
+	if len(observed) != 1 || observed[0].Kind != search.MembershipEnumerationFiles || observed[0].IgnorePolicy != search.MembershipNoIgnore || observed[0].Context.Reason != search.MembershipReasonNoIgnoreExpansion {
+		t.Fatalf("silent no-op membership work = %+v, want only the selected no-ignore union", observed)
+	}
+}
+
+func TestEmptyIgnoredScopeOffersNoIgnoreAndRecoversFiles(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":        "blocked/\n",
+		"blocked/hidden.go": "package hidden\n",
+		"visible.go":        "package visible\n",
+	})
+	t.Chdir(project)
+	scopeViewMemoReset()
+	defer scopeViewMemoReset()
+
+	baseArgs := []string{"--quiet", "--print", "blocked/*"}
+	base, err := resolvedCurrentScopeViewForArgs(baseArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(base.Entries) != 0 {
+		t.Fatalf("ignored base scope unexpectedly visible: %+v", base.Entries)
+	}
+	state, _, err := startupCurrentScopeStateForArgs(baseArgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Known || !state.Empty || !startupModifierChoiceKeysContain(startupAvailableModifierChoicesWithState(baseArgs, state), "no-ignore") {
+		t.Fatalf("empty ignored scope did not offer --no-ignore: state=%+v choices=%v", state, startupModifierChoiceKeys(startupAvailableModifierChoicesWithState(baseArgs, state)))
+	}
+
+	expanded, err := resolvedCurrentScopeViewForArgs(append(append([]string(nil), baseArgs...), "--no-ignore"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := entryRelPaths(expanded.Entries), []string{"blocked/hidden.go"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("empty ignored scope recovery = %v, want %v", got, want)
+	}
+	if !expanded.Entries[0].IgnoreBypassed || expanded.Entries[0].BlockSource != ".gitignore" {
+		t.Fatalf("recovered entry lost ignore attribution: %+v", expanded.Entries[0])
 	}
 }
 
@@ -808,20 +990,6 @@ func TestDerivedStatesShareInventoryObservations(t *testing.T) {
 	}
 	if base.inventory == nil || child.inventory != base.inventory {
 		t.Fatal("derived state did not retain its parent's inventory")
-	}
-
-	ignoredCalls := 0
-	computeIgnored := func() (bool, error) {
-		ignoredCalls++
-		return true, nil
-	}
-	firstIgnored, cached, err := base.inventory.cachedScopedIgnored(computeIgnored)
-	if err != nil || !firstIgnored || cached {
-		t.Fatalf("first ignored observation: value=%v cached=%v err=%v", firstIgnored, cached, err)
-	}
-	secondIgnored, cached, err := child.inventory.cachedScopedIgnored(computeIgnored)
-	if err != nil || !secondIgnored || !cached || ignoredCalls != 1 {
-		t.Fatalf("reused ignored observation: value=%v cached=%v calls=%d err=%v", secondIgnored, cached, ignoredCalls, err)
 	}
 
 	gitCalls := 0

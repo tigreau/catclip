@@ -26,9 +26,30 @@ const (
 	OutputModeStdout    OutputMode = "stdout"
 )
 
+// PayloadKind identifies the invocation-wide final payload representation.
+// Scope output modes describe file-content projections; metadata instead
+// replaces the complete invocation payload and therefore lives here.
+type PayloadKind uint8
+
+const (
+	PayloadContent PayloadKind = iota
+	PayloadMetadata
+)
+
+// EmissionPolicy controls whether the final output payload may be emitted.
+// The zero value preserves the normal confirmation behavior.
+type EmissionPolicy uint8
+
+const (
+	EmissionDefault EmissionPolicy = iota
+	EmissionAlways
+	EmissionNever
+)
+
 // Parsed is the typed result of CLI argv parsing. It captures the entire
-// user intent — what to copy (Command Spec), how to render it (Verbose /
-// Quiet / NoTree / Preview / Raw), where it goes (OutputMode), and any
+// user intent — what to copy (Command Spec), which final payload to produce
+// (PayloadKind), how to present it (Verbose / Quiet / NoTree / Raw), where it
+// goes (OutputMode), and any
 // internal-preview state for fzf-spawned helper processes. The runtime
 // pipeline reads from Parsed once at the start of run() and never mutates
 // it; downstream callers receive narrower configs derived from Parsed via
@@ -39,19 +60,19 @@ const (
 // commands), the canonicalized command Spec, and parser warnings to
 // surface on stderr.
 type Parsed struct {
-	Action     Action
-	Version    string
-	Platform   string
-	WorkingDir string
-	OutputMode OutputMode
+	Action      Action
+	Version     string
+	Platform    string
+	WorkingDir  string
+	OutputMode  OutputMode
+	PayloadKind PayloadKind
 
 	Verbose                bool
 	Quiet                  bool
 	Headless               bool
 	WithBinaries           bool
-	Yes                    bool
+	EmissionPolicy         EmissionPolicy
 	Raw                    bool
-	Preview                bool
 	NoTree                 bool
 	NoBundle               bool
 	TreePreview            bool

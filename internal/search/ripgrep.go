@@ -1,12 +1,10 @@
 package search
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,10 +77,11 @@ var errRipgrepUnavailable = errors.New("Error: this catclip install is missing b
 var ErrRipgrepBadPattern = errors.New("Error: --contains/--not-contains/--snippet pattern failed to compile in ripgrep PCRE2 engine.")
 
 type RipgrepFileOptions struct {
-	NoIgnore  bool
-	Basenames []string
-	Paths     []string
-	HissPath  string
+	NoIgnore    bool
+	Basenames   []string
+	Paths       []string
+	HissPath    string
+	Enumeration MembershipEnumerationContext
 	// Timeout caps the rg call as a hung-process guard for error-path probes
 	// like the ignored-ancestor lookup (see ACTIVE_PLAN_surface_ignored_ancestor.md).
 	// Zero means use the default reloadCancelCtx behavior (no extra timeout).
@@ -93,7 +92,14 @@ func RipgrepBinary() (string, bool) {
 	return platform.BundledToolBinary("CATCLIP_RG", "rg")
 }
 
-func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) ([]string, error) {
+func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) (paths []string, retErr error) {
+	policy := MembershipVisible
+	if opts.NoIgnore {
+		policy = MembershipNoIgnore
+	}
+	ctx := reloadCancelCtx
+	var membershipSpan *membershipEnumerationSpan
+	defer func() { membershipSpan.finish(len(paths), scanWasCancelled(ctx, retErr), retErr) }()
 	finishBench := platform.InternalBenchSpan("search.rg.files",
 		"paths", platform.InternalBenchInt(len(opts.Paths)),
 		"basenames", platform.InternalBenchInt(len(opts.Basenames)),
@@ -105,37 +111,12 @@ func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) ([]string, erro
 		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
+	membershipSpan = beginMembershipEnumeration(MembershipEnumerationFiles, policy, opts.Enumeration)
 
 	// Symlinks are intentionally excluded for now, so keep rg on its default
 	// non-following behavior and avoid pulling link paths into candidate lists.
-	args := []string{"--files", "--hidden", "--no-ignore-dot", "--no-require-git", "-0"}
-	if opts.NoIgnore {
-		args = append(args, "--no-ignore")
-	}
-	if !opts.NoIgnore && opts.HissPath != "" {
-		args = append(args, "--ignore-file", opts.HissPath)
-	}
-	for _, base := range opts.Basenames {
-		base = strings.TrimSpace(base)
-		if base == "" {
-			continue
-		}
-		args = append(args, "-g", base)
-	}
-	pathArgs := make([]string, 0, len(opts.Paths))
-	for _, rel := range opts.Paths {
-		rel = normalizeRelPath(rel)
-		if rel == "" || rel == "." {
-			continue
-		}
-		pathArgs = append(pathArgs, rel)
-	}
-	if len(pathArgs) > 0 {
-		args = append(args, "--")
-		args = append(args, pathArgs...)
-	}
+	args := ripgrepFileArgs(opts, false)
 
-	ctx := reloadCancelCtx
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(reloadCancelCtx, opts.Timeout)
@@ -162,7 +143,7 @@ func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) ([]string, erro
 		return nil, err
 	}
 
-	paths := splitNullSeparated(out)
+	paths = splitNullSeparated(out)
 	for i, rel := range paths {
 		paths[i] = normalizeRelPath(rel)
 	}
@@ -170,6 +151,43 @@ func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) ([]string, erro
 	paths = dedupeSortedStrings(paths)
 	finishBench("err", "false", "results", platform.InternalBenchInt(len(paths)))
 	return paths, nil
+}
+
+// ripgrepFileArgs is the single command-shape owner for ordinary file
+// enumeration and metadata's diagnostic --debug pass. Keeping the flags here
+// prevents the diagnostic inventory from silently observing a different
+// ignore universe than normal Catclip discovery.
+func ripgrepFileArgs(opts RipgrepFileOptions, debug bool) []string {
+	args := []string{"--files", "--hidden", "--no-ignore-dot", "--no-require-git", "-0"}
+	if debug {
+		args = append(args, "--debug")
+	}
+	if opts.NoIgnore {
+		args = append(args, "--no-ignore")
+	}
+	if !opts.NoIgnore && opts.HissPath != "" {
+		args = append(args, "--ignore-file", opts.HissPath)
+	}
+	for _, base := range opts.Basenames {
+		base = strings.TrimSpace(base)
+		if base == "" {
+			continue
+		}
+		args = append(args, "-g", base)
+	}
+	pathArgs := make([]string, 0, len(opts.Paths))
+	for _, rel := range opts.Paths {
+		rel = normalizeRelPath(rel)
+		if rel == "" || rel == "." {
+			continue
+		}
+		pathArgs = append(pathArgs, rel)
+	}
+	if len(pathArgs) > 0 {
+		args = append(args, "--")
+		args = append(args, pathArgs...)
+	}
+	return args
 }
 
 // textFileSetCache memoizes runRipgrepTextFiles by canonicalized working
@@ -237,7 +255,7 @@ func joinScopedCacheTargets(targets []string) string {
 // list to scope the enumeration to those paths only. Multiple scopes in one
 // process get independent cache entries. Safe to call from multiple resolvers;
 // the underlying rg invocation runs at most once per distinct cache key.
-func ResolveTextFileSet(workingDir string, targets []string) (map[string]struct{}, error) {
+func ResolveTextFileSet(workingDir string, targets []string, enumeration ...MembershipEnumerationContext) (map[string]struct{}, error) {
 	dirKey, err := filepath.Abs(workingDir)
 	if err != nil {
 		dirKey = workingDir
@@ -253,7 +271,8 @@ func ResolveTextFileSet(workingDir string, targets []string) (map[string]struct{
 	}
 	textFileSetCacheMu.Unlock()
 
-	set, err := runRipgrepTextFiles(workingDir, normTargets)
+	context := membershipContextOrDefault(enumeration, MembershipReasonTextSetFallback)
+	set, err := runRipgrepTextFiles(workingDir, normTargets, context)
 	if err != nil {
 		return nil, err
 	}
@@ -292,15 +311,16 @@ func ResolveTextFileSet(workingDir string, targets []string) (map[string]struct{
 // When targets is non-empty, the universe is restricted to those paths as
 // rg positional arguments — files outside the targets are never
 // enumerated. Pass nil/empty for the project-wide universe.
-func runRipgrepTextFiles(workingDir string, targets []string) (map[string]struct{}, error) {
+func runRipgrepTextFiles(workingDir string, targets []string, enumeration MembershipEnumerationContext) (map[string]struct{}, error) {
 	finishBench := platform.InternalBenchSpan("search.rg.text_files",
 		"targets", platform.InternalBenchInt(len(targets)),
 		"classifier", "hybrid",
 	)
 
 	allPaths, err := RunRipgrepFiles(workingDir, RipgrepFileOptions{
-		NoIgnore: true,
-		Paths:    targets,
+		NoIgnore:    true,
+		Paths:       targets,
+		Enumeration: enumeration.WithReason(MembershipReasonTextSetFallback),
 	})
 	if err != nil {
 		finishBench("err", "true")
@@ -615,7 +635,7 @@ var (
 // catclip must never add here is --no-ignore-parent, which disables that
 // ancestor traversal. Mirrors ResolveTextFileSet's narrowing; globs, "."/root,
 // and missing targets fall back to project-wide via scopedCacheTargets.
-func ResolveVisibleFileSet(workingDir, hissPath string, targets []string) (map[string]struct{}, error) {
+func ResolveVisibleFileSet(workingDir, hissPath string, targets []string, enumeration ...MembershipEnumerationContext) (map[string]struct{}, error) {
 	dirKey, err := filepath.Abs(workingDir)
 	if err != nil {
 		dirKey = workingDir
@@ -638,7 +658,8 @@ func ResolveVisibleFileSet(workingDir, hissPath string, targets []string) (map[s
 	}
 	visibleFileSetCacheMu.Unlock()
 
-	set, err := runRipgrepVisibleFiles(workingDir, hissPath, normTargets)
+	context := membershipContextOrDefault(enumeration, MembershipReasonIgnoreAttribution)
+	set, err := runRipgrepVisibleFiles(workingDir, hissPath, normTargets, context)
 	if err != nil {
 		return nil, err
 	}
@@ -657,7 +678,10 @@ func ResolveVisibleFileSet(workingDir, hissPath string, targets []string) (map[s
 // (catclip's previous Go matcher applied root .gitignore unconditionally).
 // When hissPath is non-empty, rg also applies it as a gitignore-syntax
 // overlay.
-func runRipgrepVisibleFiles(workingDir, hissPath string, targets []string) (map[string]struct{}, error) {
+func runRipgrepVisibleFiles(workingDir, hissPath string, targets []string, enumeration MembershipEnumerationContext) (set map[string]struct{}, retErr error) {
+	ctx := reloadCancelCtx
+	var membershipSpan *membershipEnumerationSpan
+	defer func() { membershipSpan.finish(len(set), scanWasCancelled(ctx, retErr), retErr) }()
 	finishBench := platform.InternalBenchSpan("search.rg.visible_files",
 		"has_hiss", strconv.FormatBool(strings.TrimSpace(hissPath) != ""),
 		"targets", platform.InternalBenchInt(len(targets)),
@@ -667,6 +691,7 @@ func runRipgrepVisibleFiles(workingDir, hissPath string, targets []string) (map[
 		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
+	membershipSpan = beginMembershipEnumeration(MembershipEnumerationVisibleSet, MembershipVisible, enumeration)
 
 	args := []string{
 		"--files",
@@ -685,7 +710,7 @@ func runRipgrepVisibleFiles(workingDir, hissPath string, targets []string) (map[
 		args = append(args, targets...)
 	}
 
-	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = workingDir
 	t0 := time.Now()
 	out, err := cmd.Output()
@@ -703,7 +728,7 @@ func runRipgrepVisibleFiles(workingDir, hissPath string, targets []string) (map[
 	}
 
 	paths := splitNullSeparated(out)
-	set := make(map[string]struct{}, len(paths))
+	set = make(map[string]struct{}, len(paths))
 	for _, rel := range paths {
 		rel = normalizeRelPath(rel)
 		if rel == "" || rel == "." {
@@ -1102,6 +1127,16 @@ type directOptions struct {
 	noIgnore bool
 }
 
+func scanWasCancelled(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
 // DirectInvert switches from --files-with-matches to --files-without-match.
 func DirectInvert() DirectOption { return func(o *directOptions) { o.invert = true } }
 
@@ -1160,6 +1195,8 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...Dire
 		spanName = "search.rg.direct_not_matches"
 	}
 	finishBench := platform.InternalBenchSpan(spanName,
+		"scan_class", "content-root",
+		"membership_authority", "false",
 		"target", target,
 		"pattern_len", platform.InternalBenchInt(len(pattern)),
 	)
@@ -1260,6 +1297,8 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...Dire
 func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string, opts ...DirectOption) (map[string]int, error) {
 	cfg := directOptionsFrom(opts)
 	finishBench := platform.InternalBenchSpan("search.rg.direct_match_lines",
+		"scan_class", "content-root",
+		"membership_authority", "false",
 		"target", target,
 		"pattern_len", platform.InternalBenchInt(len(pattern)),
 	)
@@ -1432,104 +1471,6 @@ func chunkExecArgs(paths []string, maxCount, maxBytes int) [][]string {
 	}
 	flush()
 	return chunks
-}
-
-// HasScopedIgnoredTargetsStreaming reports whether any path within
-// scopeTargets is ignored (by .gitignore or the .hiss overlay), at
-// any nesting depth.
-//
-// Implementation: take the cached visible-with-hiss set from
-// ResolveVisibleFileSet (process-cached, free on warm cache), then
-// stream `rg --files --no-ignore` over the scope targets and compare
-// each emitted path against the visible set. The first path missing
-// from visible short-circuits to (true, nil) and the rg subprocess
-// is cancelled.
-//
-// Hard rg failures return (false, err); the caller may log under -v
-// and treat the modifier as unavailable. There is no fallback path.
-//
-// A previous version of this helper used a `--max-depth 3` cap on
-// both rg invocations as a perf optimization. The cap was removed
-// because it produced false negatives for deep ignored entries. See
-// docs/versions/v0.5.0/reports/ACTIVE_PLAN_modifier_menu_performance.md.
-func HasScopedIgnoredTargetsStreaming(ctx context.Context, workingDir string, scopeTargets []string, hissPath string) (bool, error) {
-	bin, ok := RipgrepBinary()
-	if !ok {
-		return false, errRipgrepUnavailable
-	}
-
-	relTargets := make([]string, 0, len(scopeTargets))
-	for _, t := range scopeTargets {
-		t = normalizeRelPath(t)
-		if t == "" {
-			continue
-		}
-		relTargets = append(relTargets, t)
-	}
-	if len(relTargets) == 0 {
-		return false, nil
-	}
-
-	visible, err := ResolveVisibleFileSet(workingDir, hissPath, nil)
-	if err != nil {
-		return false, err
-	}
-
-	withIgnoredArgs := []string{
-		"--files",
-		"--hidden",
-		"--no-require-git",
-		"-0",
-		"-g", "!.git",
-		"--no-ignore",
-		"--",
-	}
-	withIgnoredArgs = append(withIgnoredArgs, relTargets...)
-
-	streamCtx, cancelStream := context.WithCancel(ctx)
-	defer cancelStream()
-	cmd := exec.CommandContext(streamCtx, bin, withIgnoredArgs...)
-	cmd.Dir = workingDir
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return false, err
-	}
-	if err := cmd.Start(); err != nil {
-		return false, err
-	}
-
-	found := false
-	reader := bufio.NewReader(stdout)
-	for {
-		chunk, readErr := reader.ReadBytes(0)
-		if len(chunk) > 0 && chunk[len(chunk)-1] == 0 {
-			chunk = chunk[:len(chunk)-1]
-		}
-		if len(chunk) > 0 {
-			p := normalizeRelPath(string(chunk))
-			if p != "" && p != "." {
-				if _, ok := visible[p]; !ok {
-					found = true
-					break
-				}
-			}
-		}
-		if readErr != nil {
-			break
-		}
-	}
-
-	if found {
-		cancelStream()
-	}
-	_, _ = io.Copy(io.Discard, stdout)
-	waitErr := cmd.Wait()
-	if !found && waitErr != nil {
-		if exitErr, ok := waitErr.(*exec.ExitError); !ok || exitErr.ExitCode() != 1 {
-			return false, waitErr
-		}
-	}
-	return found, nil
 }
 
 // MaxLinesForFiles returns the largest line count across absPaths, using

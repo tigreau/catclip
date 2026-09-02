@@ -2,7 +2,6 @@ package catclip
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -203,8 +202,8 @@ func TestParseArgsAcceptedCommandShapes(t *testing.T) {
 				t.Fatal("Raw = false")
 			}
 		}},
-		{name: "preview then print", args: []string{"src", "--preview", "--print"}, check: assertPreviewStdoutParsed},
-		{name: "print then preview", args: []string{"src", "--print", "--preview"}, check: assertPreviewStdoutParsed},
+		{name: "metadata then print", args: []string{"src", "--metadata", "--print"}, check: assertMetadataStdoutParsed},
+		{name: "print then metadata", args: []string{"src", "--print", "--metadata"}, check: assertMetadataStdoutParsed},
 		{name: "no ignore", args: []string{".", "--no-ignore"}, check: func(t *testing.T, cfg command.Parsed) {
 			if scope := parsedExecutionScope(t, cfg); !scope.NoIgnore {
 				t.Fatalf("unexpected scope: %#v", scope)
@@ -260,7 +259,7 @@ func TestParseArgsAcceptedCommandShapes(t *testing.T) {
 				t.Fatalf("unexpected config: %#v", cfg)
 			}
 		}},
-		{name: "headless preview with target", args: []string{".", "--preview", "--headless"}},
+		{name: "headless metadata with target", args: []string{".", "--metadata", "--headless"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -275,9 +274,9 @@ func TestParseArgsAcceptedCommandShapes(t *testing.T) {
 	}
 }
 
-func assertPreviewStdoutParsed(t *testing.T, cfg command.Parsed) {
+func assertMetadataStdoutParsed(t *testing.T, cfg command.Parsed) {
 	t.Helper()
-	if !cfg.Preview || cfg.OutputMode != command.OutputModeStdout {
+	if cfg.PayloadKind != command.PayloadMetadata || cfg.OutputMode != command.OutputModeStdout {
 		t.Fatalf("unexpected config: %#v", cfg)
 	}
 }
@@ -308,7 +307,7 @@ func TestParseArgsRejectedCommandShapes(t *testing.T) {
 		{name: "contains equals", args: []string{"src", "--contains=TODO"}, wantText: "--contains requires a space"},
 		{name: "extra contains value", args: []string{"src", "--contains", "TODO", "extra"}, wantText: "--contains 'TODO extra'"},
 		{name: "headless without target", args: []string{"--headless"}, wantText: "--headless requires explicit targets"},
-		{name: "headless preview without target", args: []string{"--preview", "--headless"}, wantText: "--headless requires explicit targets"},
+		{name: "headless metadata without target", args: []string{"--metadata", "--headless"}, wantText: "--headless requires explicit targets"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -663,14 +662,14 @@ func TestRunStageOrderChangesRecentThenOnlyResult(t *testing.T) {
 	}
 }
 
-func TestRunPreviewSizePreservesLargestFirstOrder(t *testing.T) {
+func TestRunMetadataSizePreservesLargestFirstOrder(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"aaa-small.txt":  "small\n",
 		"mmm-medium.txt": strings.Repeat("m", 1024),
 		"zzz-big.txt":    strings.Repeat("b", 2048),
 	})
 
-	cfg := parseInProject(t, project, []string{"--quiet", "--preview", ".", "--only", "*.txt", "--size"})
+	cfg := parseInProject(t, project, []string{"--quiet", "--metadata", "--print", ".", "--only", "*.txt", "--size"})
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -686,7 +685,7 @@ func TestRunPreviewSizePreservesLargestFirstOrder(t *testing.T) {
 		t.Fatalf("preview missing expected files:\n%s", out)
 	}
 	if !(big < medium && medium < small) {
-		t.Fatalf("--preview --size should preserve largest-first order, got:\n%s", out)
+		t.Fatalf("--metadata --size should preserve largest-first order, got:\n%s", out)
 	}
 }
 
@@ -859,7 +858,7 @@ func TestParseArgsHissResetStillParsesGlobalFlags(t *testing.T) {
 	if cfg.Action != command.ActionResetHiss {
 		t.Fatalf("expected hiss-reset action, got %q", cfg.Action)
 	}
-	if !cfg.Yes {
+	if cfg.EmissionPolicy != command.EmissionAlways {
 		t.Fatal("expected --yes to be preserved for hiss-reset")
 	}
 	if !cfg.Quiet {
@@ -1151,29 +1150,10 @@ func TestRunRawRejectsDiffOutput(t *testing.T) {
 	}
 }
 
-func TestRunPreviewIgnoresRawOutputFraming(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"VERSION": "0.4.1\n",
-	})
-
-	baseCfg := parseInProject(t, project, []string{"--preview", "--quiet", "VERSION"})
-	rawCfg := parseInProject(t, project, []string{"--preview", "--quiet", "VERSION", "--raw"})
-
-	var baseStdout, baseStderr bytes.Buffer
-	if err := run(baseCfg, &baseStdout, &baseStderr); err != nil {
-		t.Fatalf("base preview run returned error: %v", err)
-	}
-
-	var rawStdout, rawStderr bytes.Buffer
-	if err := run(rawCfg, &rawStdout, &rawStderr); err != nil {
-		t.Fatalf("raw preview run returned error: %v", err)
-	}
-
-	if rawStdout.String() != baseStdout.String() {
-		t.Fatalf("expected raw preview output to match normal preview\nwant:\n%s\ngot:\n%s", baseStdout.String(), rawStdout.String())
-	}
-	if rawStderr.String() != baseStderr.String() {
-		t.Fatalf("expected raw preview stderr to match normal preview\nwant:\n%s\ngot:\n%s", baseStderr.String(), rawStderr.String())
+func TestMetadataRejectsRawPayloadFraming(t *testing.T) {
+	_, err := cli.ParseArgs([]string{"VERSION", "--metadata", "--raw"})
+	if err == nil || !strings.Contains(err.Error(), "--metadata and --raw cannot be combined") {
+		t.Fatalf("expected actionable metadata/raw conflict, got %v", err)
 	}
 }
 
@@ -1401,36 +1381,10 @@ func TestRunPathsThenFilesSeparatesKindsWithSingleBlankLine(t *testing.T) {
 	}
 }
 
-func TestRunPreviewPathAndFileSummaryUsesCombinedPayloadStats(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"main.go": "package main\n",
-	})
-
-	cfg := parseInProject(t, project, []string{"--preview", "--quiet", "--headless", "main.go", "--paths", "--then", "main.go"})
-
-	var stdout, stderr bytes.Buffer
-	if err := run(cfg, &stdout, &stderr); err != nil {
-		t.Fatalf("run returned error: %v", err)
-	}
-
-	// One file appearing as both a path and a full file: combined per-file size,
-	// shape "path + file". (The modified date varies, so we don't exact-match the row.)
-	recs := parsePreviewRecordsRoot(t, stdout.String())
-	m, ok := recs["main.go"]
-	if !ok {
-		t.Fatalf("missing main.go record in:\n%s", stdout.String())
-	}
-	if m[0] != "21.00B" || m[1] != "~5" || m[4] != "path + file" {
-		t.Fatalf("combined stats wrong: size=%q tokens=%q shape=%q\n%s", m[0], m[1], m[4], stdout.String())
-	}
-	// Footer uses the shared summary language and the combined totals.
-	for _, want := range []string{"Count:   1 item", "Size:    21.00B", "Tokens:  ~5"} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("footer missing %q in:\n%s", want, stdout.String())
-		}
-	}
-	if got := stderr.String(); got != "" {
-		t.Fatalf("expected quiet preview to keep stderr empty, got:\n%s", got)
+func TestMetadataRejectsPathsInAnyThenScope(t *testing.T) {
+	_, err := cli.ParseArgs([]string{"main.go", "--paths", "--then", "main.go", "--metadata"})
+	if err == nil || !strings.Contains(err.Error(), "--metadata and --paths cannot be combined") {
+		t.Fatalf("expected invocation-wide metadata/paths conflict, got %v", err)
 	}
 }
 
@@ -2437,109 +2391,6 @@ func TestAllIgnoredTargetsIncludesGitignoreEntriesWithoutGitRepo(t *testing.T) {
 	}
 }
 
-func TestHasScopedIgnoredTargetsStreamingShallowGitignore(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		".gitignore":   "blocked/\n",
-		"blocked/a.ts": "export const blocked = true\n",
-		"src/main.ts":  "export const main = true\n",
-	})
-	hissPath := mustHissPath(t)
-
-	got, err := search.HasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"."}, hissPath)
-	if err != nil {
-		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
-	}
-	if !got {
-		t.Fatalf("expected true for shallow gitignored dir under root scope, got false")
-	}
-}
-
-func TestHasScopedIgnoredTargetsStreamingNoIgnores(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"src/main.ts":  "export const main = true\n",
-		"src/lib/a.ts": "export const a = true\n",
-	})
-	hissPath := mustHissPath(t)
-
-	got, err := search.HasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"."}, hissPath)
-	if err != nil {
-		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
-	}
-	if got {
-		t.Fatalf("expected false when scope has no ignored entries, got true")
-	}
-}
-
-func TestHasScopedIgnoredTargetsStreamingMidDepthIgnore(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		".gitignore":     "a/b/secret.txt\n",
-		"a/b/visible.ts": "export const visible = true\n",
-		"a/b/secret.txt": "secret\n",
-	})
-	hissPath := mustHissPath(t)
-
-	got, err := search.HasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"."}, hissPath)
-	if err != nil {
-		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
-	}
-	if !got {
-		t.Fatalf("expected true for ignored file at depth 3 from root scope, got false")
-	}
-}
-
-func TestHasScopedIgnoredTargetsStreamingDeepIgnoreStillSurfaces(t *testing.T) {
-	// Ignored entry deeper than the previously-rejected B = 3 bound.
-	// Must still return true: the modifier menu uses this probe to decide
-	// whether broad no-ignore discovery is relevant to the current targets.
-	project := setupTestProject(t, map[string]string{
-		".gitignore":                   "packages/foo/bar/dist/\n",
-		"packages/foo/bar/src/main.ts": "export const main = true\n",
-		"packages/foo/bar/dist/out.js": "module.exports = {}\n",
-	})
-	hissPath := mustHissPath(t)
-
-	got, err := search.HasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"."}, hissPath)
-	if err != nil {
-		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
-	}
-	if !got {
-		t.Fatalf("expected true for deep ignored entry (no false negatives at any depth), got false")
-	}
-}
-
-func TestHasScopedIgnoredTargetsStreamingDeepTargetWithIgnoredChild(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"a/b/c/file.ts":      "export const a = true\n",
-		"a/b/c/d/.gitignore": "blocked.ts\n",
-		"a/b/c/d/blocked.ts": "blocked\n",
-		"a/b/c/d/visible.ts": "visible\n",
-	})
-	hissPath := mustHissPath(t)
-
-	got, err := search.HasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"a/b/c/d"}, hissPath)
-	if err != nil {
-		t.Fatalf("hasScopedIgnoredTargetsStreaming returned error: %v", err)
-	}
-	if !got {
-		t.Fatalf("expected true for ignored child under a deep scope target, got false")
-	}
-}
-
-func TestHasScopedIgnoredTargetsStreamingHardErrorPropagates(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"src/main.ts": "export const main = true\n",
-	})
-	hissPath := mustHissPath(t)
-
-	got, err := search.HasScopedIgnoredTargetsStreaming(context.Background(), project, []string{"does-not-exist"}, hissPath)
-	if err == nil {
-		t.Fatalf("expected error for non-existent scope target, got nil (got=%v)", got)
-	}
-	if got {
-		t.Fatalf("expected (false, err) on hard rg error, got (true, %v)", err)
-	}
-}
-
 // TestCollectChangedRepoPathsUnionEqualsAllThree pins the equality the
 // modifier-menu Phase 2 dedupe relies on: `staged ∪ unstaged ∪ untracked`
 // is the same set as the old `command.ExecutionScope{}` call (which spawned a
@@ -3383,7 +3234,7 @@ func TestRunDirectTargetOverridesDefaultHissForTextFile(t *testing.T) {
 		"docs/setup.inf": "[Version]\nSignature=\"$Windows NT$\"\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--preview", "docs/setup.inf"})
+	cfg := parseInProject(t, project, []string{"--metadata", "--print", "docs/setup.inf"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3531,14 +3382,14 @@ func TestRunSnippetEmitsBlankLineBoundedBlocks(t *testing.T) {
 	}
 }
 
-func TestRunPreviewRendersTableAndSummary(t *testing.T) {
+func TestRunMetadataRendersReport(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/a.ts":              "const ok = true\n",
 		"src/components/b.tsx":  "export const B = 1\n",
 		"tests/ignored.test.ts": "ignored\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--preview", "src"})
+	cfg := parseInProject(t, project, []string{"--metadata", "--print", "src"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3546,30 +3397,159 @@ func TestRunPreviewRendersTableAndSummary(t *testing.T) {
 	}
 
 	out := stdout.String()
-	// --preview now renders the file table: full relative paths, no tree glyphs.
-	if !strings.HasPrefix(out, "# line 1: relative path\n") {
-		t.Fatalf("expected preview header, got:\n%s", out)
+	if !strings.HasPrefix(out, "Root: ") || !strings.Contains(out, "\nScope: src\n") {
+		t.Fatalf("expected metadata root and scope, got:\n%s", out)
 	}
 	if strings.Contains(out, "├──") {
-		t.Fatalf("--preview must not render a tree, got:\n%s", out)
+		t.Fatalf("--metadata payload must not contain a tree, got:\n%s", out)
 	}
 	if !strings.Contains(out, "src/a.ts") || !strings.Contains(out, "src/components/b.tsx") {
 		t.Fatalf("expected full relative paths in table, got:\n%s", out)
 	}
-	if !strings.Contains(out, "Count:") || !strings.Contains(out, "Size:") || !strings.Contains(out, "Tokens:") {
-		t.Fatalf("expected preview summary in output, got:\n%s", out)
+	if !strings.Contains(out, "PATH") || !strings.Contains(out, "SIZE") || !strings.Contains(out, "TOKENS") || !strings.Contains(out, "2 files ·") {
+		t.Fatalf("expected metadata columns and footer, got:\n%s", out)
 	}
 	if strings.Contains(out, "ignored.test.ts") {
 		t.Fatalf("expected default ignored tests/ directory to stay hidden, got:\n%s", out)
 	}
 }
 
-func TestRunPreviewShowsResolvedNestedTargetPath(t *testing.T) {
+func TestRunNormalPayloadDoesNotRunMetadataIgnoreTrace(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":  "*.tmp\n",
+		"src/main.go": "package main\n",
+	})
+	initGitRepo(t, project)
+	cfg := parseInProject(t, project, []string{"--print", "--quiet", "src"})
+	var metadataScans int
+	restore := search.SetMembershipEnumerationObserver(func(event search.MembershipEnumerationEvent) {
+		if event.Context.Reason == search.MembershipReasonMetadataIgnoreTrace {
+			metadataScans++
+		}
+	})
+	defer restore()
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if metadataScans != 0 {
+		t.Fatalf("ordinary payload performed %d metadata ignore-source scans, want 0", metadataScans)
+	}
+}
+
+func TestRunMetadataNoDoesNotRunMetadataIgnoreTrace(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":  "*.tmp\n",
+		"src/main.go": "package main\n",
+	})
+	initGitRepo(t, project)
+	cfg := parseInProject(t, project, []string{"--metadata", "--no", "src"})
+	var metadataScans int
+	restore := search.SetMembershipEnumerationObserver(func(event search.MembershipEnumerationEvent) {
+		if event.Context.Reason == search.MembershipReasonMetadataIgnoreTrace {
+			metadataScans++
+		}
+	})
+	defer restore()
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if metadataScans != 0 {
+		t.Fatalf("--metadata --no performed %d metadata ignore-source scans, want 0", metadataScans)
+	}
+}
+
+func TestRunMetadataNoIgnoreOmitsIgnoreSection(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":      "ignored.txt\n",
+		"visible.txt":     "visible\n",
+		"ignored.txt":     "ignored\n",
+		"assets/logo.png": "\x00PNG\n",
+	})
+	initGitRepo(t, project)
+	cfg := parseInProject(t, project, []string{"--metadata", "--print", "--quiet", "--with-binaries", ".", "--no-ignore"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	out := stdout.String()
+	if strings.Contains(out, "Ignore file") || strings.Contains(out, "--no-ignore") {
+		t.Fatalf("no-ignore metadata should omit ignore-policy prose:\n%s", out)
+	}
+	if !strings.Contains(out, "ignored.txt") || !strings.Contains(out, "logo.png") || !strings.Contains(out, "FLAGS") || !strings.Contains(out, "binary") {
+		t.Fatalf("no-ignore/binary metadata is incomplete:\n%s", out)
+	}
+}
+
+func TestRunMetadataReportsOnlyCausalIgnoreSources(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":            "*.tmp\n",
+		"src/.gitignore":        "*.generated\n",
+		"src/main.go":           "package main\n",
+		"src/root.tmp":          "ignored by root\n",
+		"src/skip.generated":    "ignored\n",
+		"src/machine.secret":    "ignored by hiss\n",
+		"src/nested/visible.go": "package nested\n",
+	})
+	configHome := filepath.Join(project, "config")
+	if err := os.MkdirAll(filepath.Join(configHome, "catclip"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configHome, "catclip", ".hiss"), []byte("*.secret\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	initGitRepo(t, project)
+	cfg := parseInProject(t, project, []string{"--metadata", "--print", "--quiet", "src"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	out := stdout.String()
+	for _, source := range []string{".gitignore", "src/.gitignore", "~/config/catclip/.hiss"} {
+		if !strings.Contains(out, source) {
+			t.Fatalf("metadata ignore provenance missing %q:\n%s", source, out)
+		}
+	}
+	for _, ignored := range []string{"src/root.tmp", "src/skip.generated", "src/machine.secret"} {
+		if !strings.Contains(out, ignored) {
+			t.Fatalf("causal ignored boundary missing %q:\n%s", ignored, out)
+		}
+	}
+	if strings.Contains(out, "<file path=\"src/skip.generated\"") {
+		t.Fatalf("ignored file leaked into metadata membership:\n%s", out)
+	}
+}
+
+func TestRunMetadataThenProducesOneScopeAwareReport(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"src/a.go":  "package a\n",
+		"docs/a.md": "# A\n",
+	})
+	cfg := parseInProject(t, project, []string{"src", "--then", "docs", "--metadata", "--print", "--quiet"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	out := stdout.String()
+	for _, want := range []string{"Scopes:\n", "1. src", "2. docs", "src/a.go", "docs/a.md", "2 files ·"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("scope-aware metadata missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "PATH") != 1 {
+		t.Fatalf("metadata should contain one deduplicated table:\n%s", out)
+	}
+}
+
+func TestRunMetadataShowsResolvedNestedTargetPath(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		".cache/babel-loader/abc.json": "ok\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--preview", "babel-loader"})
+	cfg := parseInProject(t, project, []string{"--metadata", "--print", "babel-loader"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3580,16 +3560,72 @@ func TestRunPreviewShowsResolvedNestedTargetPath(t *testing.T) {
 	// resolution is visible without a separate tree-style hint.
 	out := stdout.String()
 	if !strings.Contains(out, ".cache/babel-loader/abc.json") {
-		t.Fatalf("expected resolved file path in preview table, got:\n%s", out)
+		t.Fatalf("expected resolved file path in metadata table, got:\n%s", out)
 	}
 }
 
-func TestRunPreviewDoesNotShowTargetPathHintForRootLevelTarget(t *testing.T) {
+func TestRunMetadataFuzzyFileUsesResolvedTraceRoot(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		"nested/unique-report.go": "package report\n",
+		"other/unrelated.go":      "package other\n",
+	})
+	cfg := parseInProject(t, project, []string{"unique-report.go", "--metadata", "--headless"})
+	var traceEvents []search.MembershipEnumerationEvent
+	restore := search.SetMembershipEnumerationObserver(func(event search.MembershipEnumerationEvent) {
+		if event.Context.Reason == search.MembershipReasonMetadataIgnoreTrace {
+			traceEvents = append(traceEvents, event)
+		}
+	})
+	defer restore()
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v\nstderr:\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "Coverage: 1 raw visible file · 1 selected file") {
+		t.Fatalf("fuzzy file metadata lost resolved coverage:\n%s", out)
+	}
+	if len(traceEvents) != 1 || traceEvents[0].Results != 1 {
+		t.Fatalf("fuzzy file metadata trace was not narrowed to its resolved file: %#v", traceEvents)
+	}
+}
+
+func TestRunMetadataTracesScopeEmptiedByFilter(t *testing.T) {
+	project := setupTestProject(t, map[string]string{
+		".gitignore":                     "*.tmp\n",
+		"nested/unique-scope/keep.go":    "package scope\n",
+		"nested/unique-scope/hidden.tmp": "ignored\n",
+		"selected.go":                    "package selected\n",
+	})
+	cfg := parseInProject(t, project, []string{
+		"unique-scope", "--only", "definitely-no-match-*",
+		"--then", "selected.go", "--metadata", "--headless",
+	})
+
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("run returned error: %v\nstderr:\n%s", err, stderr.String())
+	}
+	out := stdout.String()
+	for _, want := range []string{
+		"Coverage: 1 raw visible file · 0 selected files",
+		"Ignored within target scope: 1 boundary path",
+		"nested/unique-scope/hidden.tmp",
+		"Coverage: 1 raw visible file · 1 selected file",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("zero-result scope metadata missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunMetadataDoesNotShowTreeTargetHint(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/a.ts": "const ok = true\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--preview", "src"})
+	cfg := parseInProject(t, project, []string{"--metadata", "--print", "src"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3601,48 +3637,36 @@ func TestRunPreviewDoesNotShowTargetPathHintForRootLevelTarget(t *testing.T) {
 	}
 }
 
-func TestRunPreviewNoTreeDoesNotSuppressTable(t *testing.T) {
+func TestRunMetadataNoTreeDoesNotSuppressPayload(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/a.ts": "const ok = true\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--preview", "--no-tree", "src"})
+	cfg := parseInProject(t, project, []string{"--metadata", "--print", "--no-tree", "src"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
 	}
 
-	// --no-tree governs only the confirmation-flow tree; it does not touch
-	// --preview, which always renders its table.
+	// --no-tree governs only the confirmation-flow tree; metadata is the final
+	// payload and remains present.
 	out := stdout.String()
 	if !strings.Contains(out, "src/a.ts") {
-		t.Fatalf("--no-tree must not suppress the --preview table, got:\n%s", out)
+		t.Fatalf("--no-tree must not suppress metadata, got:\n%s", out)
 	}
 	if strings.Contains(out, "├──") {
-		t.Fatalf("--preview must not render a tree, got:\n%s", out)
+		t.Fatalf("--metadata payload must not render a tree, got:\n%s", out)
 	}
-	if !strings.Contains(out, "Count:") || !strings.Contains(out, "Tokens:") {
-		t.Fatalf("expected summary footer, got:\n%s", out)
+	if !strings.Contains(out, "1 file ·") || !strings.Contains(out, "tokens") {
+		t.Fatalf("expected metadata footer, got:\n%s", out)
 	}
 }
 
-func TestRunPreviewShowsSnippetRangeTags(t *testing.T) {
-	project := setupTestProject(t, map[string]string{
-		"src/app.ts": "const a = 1\nTODO: fix\nconst b = 2\n",
-	})
-
-	cfg := parseInProject(t, project, []string{"--preview", "src", "--snippet", "TODO"})
-
-	var stdout, stderr bytes.Buffer
-	if err := run(cfg, &stdout, &stderr); err != nil {
-		t.Fatalf("run returned error: %v", err)
-	}
-
-	// The table's shape column carries the snippet range (no tree brackets).
-	out := stdout.String()
-	if !strings.Contains(out, "src/app.ts") || !strings.Contains(out, "snippet 1-3") {
-		t.Fatalf("expected snippet range in the shape column, got:\n%s", out)
+func TestMetadataRejectsSnippetOutputShape(t *testing.T) {
+	_, err := cli.ParseArgs([]string{"src", "--snippet", "TODO", "--metadata"})
+	if err == nil || !strings.Contains(err.Error(), "--metadata and --snippet cannot be combined") {
+		t.Fatalf("expected actionable metadata/snippet conflict, got %v", err)
 	}
 }
 
@@ -4026,7 +4050,7 @@ func TestRunChangedWithThenLetsSiblingScopeProceed(t *testing.T) {
 	}
 }
 
-func TestRunPreviewShowsGitStatusMarkers(t *testing.T) {
+func TestRunMetadataShowsGitStatusMarkers(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -4046,7 +4070,7 @@ func TestRunPreviewShowsGitStatusMarkers(t *testing.T) {
 	writeProjectFile(t, project, "bothstate.txt", "three\n")
 	writeProjectFile(t, project, "new.txt", "brand new\n")
 
-	cfg := parseInProject(t, project, []string{"--preview", "."})
+	cfg := parseInProject(t, project, []string{"--metadata", "--print", "."})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -4054,17 +4078,17 @@ func TestRunPreviewShowsGitStatusMarkers(t *testing.T) {
 	}
 
 	out := stdout.String()
-	if !strings.Contains(out, "staged.txt") || !strings.Contains(out, "[S]") {
-		t.Fatalf("expected staged marker in preview, got:\n%s", out)
+	if !strings.Contains(out, "staged.txt") || !strings.Contains(out, " S ") {
+		t.Fatalf("expected staged marker in metadata, got:\n%s", out)
 	}
-	if !strings.Contains(out, "unstaged.txt") || !strings.Contains(out, "[M]") {
-		t.Fatalf("expected unstaged marker in preview, got:\n%s", out)
+	if !strings.Contains(out, "unstaged.txt") || !strings.Contains(out, " M ") {
+		t.Fatalf("expected unstaged marker in metadata, got:\n%s", out)
 	}
-	if !strings.Contains(out, "bothstate.txt") || !strings.Contains(out, "[SM]") {
-		t.Fatalf("expected staged+unstaged marker in preview, got:\n%s", out)
+	if !strings.Contains(out, "bothstate.txt") || !strings.Contains(out, " SM ") {
+		t.Fatalf("expected staged+unstaged marker in metadata, got:\n%s", out)
 	}
-	if !strings.Contains(out, "new.txt") || !strings.Contains(out, "[?]") {
-		t.Fatalf("expected untracked marker in preview, got:\n%s", out)
+	if !strings.Contains(out, "new.txt") || !strings.Contains(out, " ? ") {
+		t.Fatalf("expected untracked marker in metadata, got:\n%s", out)
 	}
 }
 
@@ -4113,7 +4137,7 @@ func TestRunGitDiscoverySkipsTrackedFileSymlinks(t *testing.T) {
 	}
 }
 
-func TestRunPreviewSkipsTrackedFileSymlink(t *testing.T) {
+func TestRunMetadataSkipsTrackedFileSymlink(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -4131,7 +4155,7 @@ func TestRunPreviewSkipsTrackedFileSymlink(t *testing.T) {
 
 	initGitRepo(t, project)
 
-	cfg := parseInProject(t, project, []string{"--preview", "."})
+	cfg := parseInProject(t, project, []string{"--metadata", "--print", "."})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -4321,40 +4345,10 @@ func TestRunDiffUsesSpecificDiffTypes(t *testing.T) {
 	}
 }
 
-func TestRunPreviewShowsDiffOnlyTags(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("git not available")
-	}
-
-	project := setupTestProject(t, map[string]string{
-		"staged.txt": "one\n",
-	})
-	initGitRepo(t, project)
-
-	writeProjectFile(t, project, "staged.txt", "two\n")
-	runGit(t, project, "add", "staged.txt")
-	writeProjectFile(t, project, "new.txt", "brand new\n")
-
-	cfg := parseInProject(t, project, []string{"--preview", "--headless", ".", "--changed-diff"})
-
-	var stdout, stderr bytes.Buffer
-	if err := run(cfg, &stdout, &stderr); err != nil {
-		t.Fatalf("run returned error: %v", err)
-	}
-
-	recs := parsePreviewRecordsRoot(t, stdout.String())
-	staged, ok := recs["staged.txt"]
-	if !ok || staged[4] != "diff only" {
-		t.Fatalf("expected staged.txt shape=diff only, got %v in:\n%s", staged, stdout.String())
-	}
-	// Untracked new.txt has no diff, so it falls back to full content — not diff-only.
-	if n, ok := recs["new.txt"]; ok {
-		if n[2] != "[?]" {
-			t.Errorf("new.txt git = %q, want [?]", n[2])
-		}
-		if n[4] != "full" {
-			t.Errorf("new.txt shape = %q, want full (untracked has no diff)", n[4])
-		}
+func TestMetadataRejectsDiffOutputShape(t *testing.T) {
+	_, err := cli.ParseArgs([]string{".", "--changed-diff", "--metadata"})
+	if err == nil || !strings.Contains(err.Error(), "--metadata and --changed-diff cannot be combined") {
+		t.Fatalf("expected actionable metadata/diff conflict, got %v", err)
 	}
 }
 

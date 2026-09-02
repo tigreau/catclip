@@ -75,24 +75,26 @@ func TestInvocationFromParsedSetsInternalKind(t *testing.T) {
 
 func TestInvocationFromParsedCopiesRuntimeFields(t *testing.T) {
 	cfg := Parsed{
-		Version:      "1.2.3",
-		Platform:     "windows",
-		WorkingDir:   `C:\work\project`,
-		Verbose:      true,
-		Quiet:        true,
-		Headless:     true,
-		WithBinaries: true,
-		LinesPreview: true,
+		Version:        "1.2.3",
+		Platform:       "windows",
+		WorkingDir:     `C:\work\project`,
+		Verbose:        true,
+		Quiet:          true,
+		Headless:       true,
+		WithBinaries:   true,
+		EmissionPolicy: EmissionNever,
+		LinesPreview:   true,
 	}
 	want := Invocation{
-		Version:      "1.2.3",
-		Platform:     "windows",
-		WorkingDir:   `C:\work\project`,
-		Verbose:      true,
-		Quiet:        true,
-		Headless:     true,
-		WithBinaries: true,
-		Internal:     true,
+		Version:        "1.2.3",
+		Platform:       "windows",
+		WorkingDir:     `C:\work\project`,
+		Verbose:        true,
+		Quiet:          true,
+		Headless:       true,
+		WithBinaries:   true,
+		EmissionPolicy: EmissionNever,
+		Internal:       true,
 	}
 	if got := InvocationFromParsed(cfg); !reflect.DeepEqual(got, want) {
 		t.Fatalf("InvocationFromParsed() = %#v, want %#v", got, want)
