@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -542,11 +543,11 @@ func (collector *metadataIgnoredCollector) summary() MetadataIgnoredSummary {
 			if !filepath.IsAbs(source) {
 				source = filepath.Join(collector.workingDir, filepath.FromSlash(source))
 			}
-			if collector.globalHissPath != "" && filepath.Clean(source) == filepath.Clean(collector.globalHissPath) {
+			if collector.globalHissPath != "" && metadataPathsReferToSameFile(source, collector.globalHissPath) {
 				// The global Catclip ignore file is user configuration, even when
 				// its configured location happens to sit below the current working
 				// directory. Never make it look like a project-owned ignore file.
-				source = platform.DisplayPath(source)
+				source = metadataDisplayGlobalHissPath(collector.globalHissPath)
 			} else {
 				source = metadataDisplayPath(collector.workingDir, source)
 			}
@@ -572,10 +573,55 @@ func metadataRegularFile(value string) bool {
 }
 
 func metadataDisplayPath(workingDir, value string) string {
-	if rel, err := filepath.Rel(workingDir, value); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	canonicalWorkingDir := metadataCanonicalFilesystemPath(workingDir)
+	canonicalValue := metadataCanonicalFilesystemPath(value)
+	if rel, err := filepath.Rel(canonicalWorkingDir, canonicalValue); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return filepath.ToSlash(rel)
 	}
-	return platform.DisplayPath(value)
+	if display := platform.DisplayPath(value); display != value {
+		return display
+	}
+	return platform.DisplayPath(canonicalValue)
+}
+
+func metadataDisplayGlobalHissPath(value string) string {
+	clean := filepath.Clean(value)
+	if display := platform.DisplayPath(clean); display != clean {
+		return display
+	}
+	return platform.DisplayPath(metadataCanonicalFilesystemPath(clean))
+}
+
+func metadataPathsReferToSameFile(left, right string) bool {
+	canonicalLeft := metadataCanonicalFilesystemPath(left)
+	canonicalRight := metadataCanonicalFilesystemPath(right)
+	if canonicalLeft == canonicalRight || (runtime.GOOS == "windows" && strings.EqualFold(canonicalLeft, canonicalRight)) {
+		return true
+	}
+	leftInfo, leftErr := os.Stat(canonicalLeft)
+	rightInfo, rightErr := os.Stat(canonicalRight)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
+}
+
+func metadataCanonicalFilesystemPath(value string) string {
+	clean := filepath.Clean(value)
+	if runtime.GOOS == "windows" {
+		clean = metadataStripWindowsExtendedPath(clean)
+	}
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		clean = filepath.Clean(resolved)
+		if runtime.GOOS == "windows" {
+			clean = metadataStripWindowsExtendedPath(clean)
+		}
+	}
+	return clean
+}
+
+func metadataStripWindowsExtendedPath(value string) string {
+	if strings.HasPrefix(value, `\\?\UNC\`) {
+		return `\\` + strings.TrimPrefix(value, `\\?\UNC\`)
+	}
+	return strings.TrimPrefix(value, `\\?\`)
 }
 
 func buildMetadataGitSummary(workingDir string, gitCtx git.Context, entries []discovery.Entry, statuses map[string]string) *MetadataGitSummary {

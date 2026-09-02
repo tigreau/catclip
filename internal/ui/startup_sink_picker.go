@@ -659,10 +659,6 @@ func renderSinkPreviewWithModeContext(renderCtx context.Context, ctx StartupSink
 	}
 }
 
-func renderSinkMetadataPreview(report *MetadataReport, limit int64) (sinkPreview, error) {
-	return renderSinkMetadataPreviewContext(context.Background(), report, limit)
-}
-
 func renderSinkMetadataPreviewContext(ctx context.Context, report *MetadataReport, limit int64) (sinkPreview, error) {
 	var buf bytes.Buffer
 	w := output.NewPreviewCapWriter(&buf, ctx, limit)

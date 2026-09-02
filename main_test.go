@@ -2461,15 +2461,6 @@ func TestCollectChangedRepoPathsUnionEqualsAllThree(t *testing.T) {
 	}
 }
 
-func mustHissPath(t *testing.T) string {
-	t.Helper()
-	path, err := discovery.ReadableHissPath()
-	if err != nil {
-		t.Fatalf("discovery.ReadableHissPath: %v", err)
-	}
-	return path
-}
-
 func TestRunScopedFzfFileSearchStaysWithinResolvedDirectory(t *testing.T) {
 	installFakeFzf(t)
 
@@ -3509,15 +3500,17 @@ func TestRunMetadataReportsOnlyCausalIgnoreSources(t *testing.T) {
 	}
 	out := stdout.String()
 	normalizedOut := filepath.ToSlash(out)
-	hissDisplay := filepath.ToSlash(platform.DisplayPath(filepath.Join(configHome, "catclip", ".hiss")))
 	for _, provenance := range []string{
 		"source: .gitignore · pattern: *.tmp",
 		"source: src/.gitignore · pattern: *.generated",
-		"source: " + hissDisplay + " · pattern: *.secret",
+		"config/catclip/.hiss · pattern: *.secret",
 	} {
 		if !strings.Contains(normalizedOut, provenance) {
 			t.Fatalf("metadata ignore provenance missing %q:\n%s", provenance, out)
 		}
+	}
+	if strings.Contains(normalizedOut, "source: config/catclip/.hiss") {
+		t.Fatalf("global .hiss provenance looks project-local:\n%s", out)
 	}
 	for _, ignored := range []string{"src/root.tmp", "src/skip.generated", "src/machine.secret"} {
 		if !strings.Contains(out, ignored) {

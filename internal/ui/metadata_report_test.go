@@ -208,6 +208,24 @@ func TestMetadataIgnoredCollectorCapsRowsButRetainsExactTotal(t *testing.T) {
 	}
 }
 
+func TestMetadataStripWindowsExtendedPath(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "drive", value: `\\?\C:\Users\Chris\project\.gitignore`, want: `C:\Users\Chris\project\.gitignore`},
+		{name: "unc", value: `\\?\UNC\server\share\project\.gitignore`, want: `\\server\share\project\.gitignore`},
+		{name: "ordinary", value: `C:\Users\Chris\project\.gitignore`, want: `C:\Users\Chris\project\.gitignore`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := metadataStripWindowsExtendedPath(tc.value); got != tc.want {
+				t.Fatalf("metadataStripWindowsExtendedPath(%q) = %q, want %q", tc.value, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSortedMetadataAggregatesKeepsLargestFive(t *testing.T) {
 	groups := map[string]*MetadataAggregate{}
 	for i := 0; i < 7; i++ {
