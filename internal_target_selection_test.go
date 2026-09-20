@@ -151,7 +151,7 @@ func TestTargetSelectionFileNativePreviewProcess(t *testing.T) {
 	for _, transport := range [][]string{{"--internal-target-selection", selection}, {"--internal-target-roots", rootsPath}} {
 		child := exec.Command(os.Args[0], append(append([]string(nil), args[:4]...), transport...)...)
 		child.Dir = project
-		child.Env = append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
+		child.Env = nativePreviewTestEnv(t)
 		var stderr bytes.Buffer
 		child.Stderr = &stderr
 		got, err := child.Output()
@@ -180,7 +180,7 @@ func TestTargetSelectionFileNativePreviewProcess(t *testing.T) {
 	}
 	child := exec.Command(os.Args[0], args...)
 	child.Dir = project
-	child.Env = append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
+	child.Env = nativePreviewTestEnv(t)
 	var stderr bytes.Buffer
 	child.Stderr = &stderr
 	got, err := child.Output()

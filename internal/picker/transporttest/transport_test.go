@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -153,8 +154,15 @@ func TestFzfShellTransport(t *testing.T) {
 				rows, _ := discovery.TargetMatchLabels(matches)
 				command := relocate(discovery.FzfPreviewCommandWithInventory(checkpoint))
 				got := runTransport(t, bin, command, "", rows, true)
-				if got.Selection != strings.Join(rows, "\n")+"\n" {
-					t.Fatalf("selection lost/reordered rows: got %d bytes, want %d", len(got.Selection), len(strings.Join(rows, "\n"))+1)
+				// fzf orders selected items by selection time, not input position.
+				// Check exact row membership including multiplicity; select-all may
+				// assign equal timestamps on Windows and return tied rows in any order.
+				selected := strings.Split(strings.TrimSuffix(got.Selection, "\n"), "\n")
+				wantRows := slices.Clone(rows)
+				slices.Sort(selected)
+				slices.Sort(wantRows)
+				if !strings.HasSuffix(got.Selection, "\n") || !slices.Equal(selected, wantRows) {
+					t.Fatalf("selection lost, duplicated, or changed rows: got %d rows (%d bytes), want %d rows (%d bytes)", len(selected), len(got.Selection), len(rows), len(strings.Join(rows, "\n"))+1)
 				}
 				if len(got.Args) != 12 {
 					t.Fatalf("target argv changed or selection expanded: %q", got.Args)
@@ -208,6 +216,11 @@ func runTransport(t *testing.T, bin, command, query string, rows []string, selec
 		}
 	}
 	if runErr != nil || readErr != nil {
+		// The complete output is retained in CI artifacts. Do not flood the
+		// job log with all 10,000 selected rows when the helper fails to start.
+		if len(out) > 4096 {
+			out = append(out[:4096:4096], []byte("\n[output truncated; see fzf-output.txt artifact]\n")...)
+		}
 		t.Fatalf("fzf handoff failed: run=%v result=%v timeout=%v\n%s", runErr, readErr, ctx.Err(), out)
 	}
 	var got probeResult

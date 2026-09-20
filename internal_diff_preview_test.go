@@ -45,7 +45,7 @@ func TestDiffPreviewStateNativeProcess(t *testing.T) {
 			}
 			child := exec.Command(os.Args[0], args...)
 			child.Dir = project
-			child.Env = append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
+			child.Env = nativePreviewTestEnv(t)
 			var stderr bytes.Buffer
 			child.Stderr = &stderr
 			got, err := child.Output()

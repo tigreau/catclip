@@ -49,6 +49,32 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// Native preview children run inside fixture projects, outside the repository
+// containing CI's bin directory. Forward the parent's resolved dependencies so
+// these tests do not accidentally require globally installed rg/fzf.
+func nativePreviewTestEnv(t *testing.T) []string {
+	t.Helper()
+	env := append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
+	for _, dependency := range []struct {
+		key     string
+		resolve func() (string, bool)
+	}{
+		{"CATCLIP_RG", search.RipgrepBinary},
+		{"CATCLIP_FZF", discovery.FzfBinary},
+	} {
+		path, ok := dependency.resolve()
+		if !ok {
+			t.Fatalf("required dependency %s unavailable", dependency.key)
+		}
+		path, err := filepath.Abs(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env = append(env, dependency.key+"="+path)
+	}
+	return env
+}
+
 func skipUnlessLinux(t *testing.T, feature string) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
