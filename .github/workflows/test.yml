@@ -78,6 +78,16 @@ jobs:
       - name: go test
         run: go test ./...
 
+      - name: Real fzf POSIX transport control
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          CATCLIP_RUN_FZF_TRANSPORT_TESTS: '1'
+          CATCLIP_TEST_FZF_SHELL: sh
+        run: |
+          export CATCLIP_FZF="$GITHUB_WORKSPACE/bin/fzf"
+          go test -v -count=1 -timeout=6m ./internal/picker/transporttest
+
       - name: Embedded version smoke test
         shell: bash
         run: |

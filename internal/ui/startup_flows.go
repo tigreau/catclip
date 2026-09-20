@@ -764,7 +764,9 @@ func resolveStartupGitScopeArgsWithEscHint(resolver *discovery.Resolver, current
 
 	previewCommand := ""
 	if diffPreview {
-		previewCommand = startupFileSetPreviewCommand(currentArgs, stageFlag, diffPreview)
+		var cleanup func()
+		previewCommand, cleanup = prepareDiffPreview(currentArgs)
+		defer cleanup()
 	}
 	stageValues, usedFzf, err := resolveStartupModifierStageValuesWithEscHint(currentArgs, stageFlag, prompt, values, allowInteractiveEmpty, previewCommand, escHint)
 	if err != nil {

@@ -1,20 +1,65 @@
 package discovery
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/tigreau/catclip/internal/search"
 )
 
-// The checkpoint content-match reload command must embed the parent
-// scope's positional targets: without them the child parses an implicit
+func TestContentReloadLargeScopeAndSetupFailure(t *testing.T) {
+	dir := t.TempDir()
+	previous := scopeViewResolverFn
+	defer func() { scopeViewResolverFn = previous }()
+	var targets []string
+	for i := 0; i < 10000; i++ {
+		targets = append(targets, fmt.Sprintf("selected/file-%05d.go", i))
+	}
+	SetScopeViewResolver(func([]string) (ScopeView, bool) {
+		return ScopeView{WorkingDir: dir, Targets: targets, NoIgnore: true,
+			Entries: []Entry{{RelPath: targets[0], SizeKnown: true, SizeBytes: 1}}}, true
+	})
+	for _, flag := range []string{"--contains", "--not-contains", "--snippet"} {
+		cmd, path, cleanup, err := fzfCheckpointContentMatchListCommand(targets, flag)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := ReadCheckpoint(path)
+		if err != nil || data.Scope == nil || !reflect.DeepEqual(data.Scope.Targets, targets) || !data.NoIgnore {
+			t.Fatalf("scope lost in checkpoint: %v", err)
+		}
+		if len(cmd) > 4096 || strings.Contains(cmd, "selected/file-") || !strings.HasSuffix(cmd, flag+" {q}") {
+			t.Fatalf("unbounded or quoted query: %s", cmd)
+		}
+		cleanup()
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("checkpoint not cleaned: %v", err)
+		}
+	}
+	badTemp := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(badTemp, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"TMPDIR", "TMP", "TEMP"} {
+		t.Setenv(name, badTemp)
+	}
+	cmd, path, cleanup, err := fzfCheckpointContentMatchListCommand(targets, "--contains")
+	defer cleanup()
+	if err == nil || cmd != "" || path != "" {
+		t.Fatalf("failed checkpoint restored a fallback: %s, %s, %v", cmd, path, err)
+	}
+}
+
+// The content-match checkpoint must retain the parent's positional targets:
+// without them the child parses an implicit
 // "." scope and direct-mode rg walks the whole working dir instead of
 // the target (live failure 2026-07-04: cwd=Desktop, target=vscode-main,
 // per-keystroke rg over the entire Desktop).
-func TestFzfCheckpointContentMatchListCommandEmbedsScopeTargets(t *testing.T) {
+func TestFzfCheckpointContentMatchListCommandRetainsScopeTargets(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "vscode-main"), 0o755); err != nil {
 		t.Fatal(err)
@@ -33,8 +78,11 @@ func TestFzfCheckpointContentMatchListCommandEmbedsScopeTargets(t *testing.T) {
 		}, true
 	})
 
-	command, checkpointPath, cleanup := fzfCheckpointContentMatchListCommand([]string{"vscode-main"}, "--contains")
+	command, checkpointPath, cleanup, err := fzfCheckpointContentMatchListCommand([]string{"vscode-main"}, "--contains")
 	defer cleanup()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if command == "" {
 		t.Fatal("expected a checkpoint-backed command, got empty")
 	}
@@ -44,15 +92,12 @@ func TestFzfCheckpointContentMatchListCommandEmbedsScopeTargets(t *testing.T) {
 	if !strings.Contains(command, "--internal-prediscovered") {
 		t.Fatalf("expected checkpoint form, got: %s", command)
 	}
-	// The target must sit between the checkpoint path and the flag so the
-	// child parses it as a positional scope target.
-	flagIdx := strings.Index(command, " --contains ")
-	targetIdx := strings.Index(command, " vscode-main ")
-	if targetIdx == -1 {
-		t.Fatalf("expected scope target embedded in reload command, got: %s", command)
+	if !strings.HasSuffix(command, " --internal-checkpoint-scope --contains {q}") || strings.Contains(command, " vscode-main ") {
+		t.Fatalf("expected raw live query and bounded scope transport: %s", command)
 	}
-	if flagIdx == -1 || targetIdx > flagIdx {
-		t.Fatalf("expected target before %s flag, got: %s", "--contains", command)
+	data, err := ReadCheckpoint(checkpointPath)
+	if err != nil || data.Scope == nil || len(data.Scope.Targets) != 1 || data.Scope.Targets[0] != "vscode-main" {
+		t.Fatalf("checkpoint lost scope targets: %+v, %v", data.Scope, err)
 	}
 }
 

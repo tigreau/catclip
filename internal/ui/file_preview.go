@@ -114,6 +114,7 @@ type filePreviewConfig struct {
 	FocusedLabel   string
 	Scopes         []command.ExecutionScope
 	CheckpointPath string
+	DiffStatePath  string
 	Invocation     command.Invocation
 	Render         RenderConfig
 }
@@ -126,6 +127,7 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 		FocusedLabel:   cfg.TreeTarget,
 		Scopes:         command.ExecutionScopesFromSpec(cfg.Command),
 		CheckpointPath: cfg.PrediscoveredPath,
+		DiffStatePath:  cfg.DiffPreviewStatePath,
 		Invocation:     command.InvocationFromParsed(cfg),
 		Render:         RenderConfigFromParsedCommand(cfg),
 	}
@@ -160,6 +162,13 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 // shell branching in the command string. See fzfContentPreviewCommand for
 // the command builder.
 func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
+	if cfg.DiffStatePath != "" {
+		var err error
+		cfg, err = filePreviewWithDiffState(cfg)
+		if err != nil {
+			return err
+		}
+	}
 	// Before any work: terminate the prior focus-change's child if it's
 	// still alive. The checkpoint_tree mode (empty FilePath + non-empty
 	// checkpoint) ran 5–9 s of rg.matches + build_plan in v0.6.2 traces,

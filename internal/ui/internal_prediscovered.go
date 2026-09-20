@@ -22,6 +22,7 @@ import (
 // internal/discovery; this struct is just the runtime wrapper that
 // glues a parsed command to a checkpoint path.
 type prediscoveredCommandConfig struct {
+	CheckpointScope       bool
 	CheckpointPath        string
 	FileSetSelectionPath  string
 	FileSetSelectionStage string
@@ -32,6 +33,7 @@ type prediscoveredCommandConfig struct {
 
 func PrediscoveredCommandConfigFromParsedCommand(cfg command.Parsed) prediscoveredCommandConfig {
 	return prediscoveredCommandConfig{
+		CheckpointScope:       cfg.CheckpointScope,
 		CheckpointPath:        cfg.PrediscoveredPath,
 		FileSetSelectionPath:  cfg.FileSetSelectionPath,
 		FileSetSelectionStage: cfg.FileSetSelectionStage,
@@ -79,6 +81,19 @@ func buildPrediscoveredTreePlan(cfg prediscoveredCommandConfig) (output.Plan, di
 	var scope command.ExecutionScope
 	if len(cfg.Scopes) == 1 {
 		scope = cfg.Scopes[0]
+	}
+	if cfg.CheckpointScope {
+		scope, err = scopeFromCheckpoint(scope, checkpoint, false)
+		if err != nil {
+			return output.Plan{}, discovery.CheckpointData{}, err
+		}
+		entries := discovery.EnsureEntryAbsPaths(checkpoint.Entries, cfg.Invocation.WorkingDir)
+		// These entries already include every committed filter and projection.
+		// Reapplying a stored --no-ignore or content stage here would rediscover
+		// or repeat work, and can change the displayed selection.
+		plan, err := output.BuildPlanForResolvedScopes(checkpoint.GitContext, []command.ExecutionScope{scope},
+			[]output.EvaluatedScope{{Paths: scope.Paths, Entries: entries}}, entries)
+		return plan, checkpoint, err
 	}
 	if cfg.FileSetSelectionPath != "" {
 		selection, err := readFzfFileSetSelection(cfg.FileSetSelectionPath)
@@ -299,6 +314,13 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		return nil
 	}
 	scope := cfg.Scopes[0]
+	if cfg.CheckpointScope {
+		scope, err = scopeFromCheckpoint(scope, checkpoint, true)
+		if err != nil {
+			finishBench("err", "true")
+			return err
+		}
+	}
 	// The picker runs this preview command on every keystroke, including
 	// the initial frame where the user hasn't typed anything yet — fzf
 	// substitutes `{q}` as an empty string. An empty regex would fail

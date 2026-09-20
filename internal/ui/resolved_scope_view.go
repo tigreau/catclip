@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,7 @@ type resolvedScopeView struct {
 }
 
 type scopeViewMemoEntry struct {
+	targetRootsPath   string
 	inventory         *scopeViewInventory
 	fileIDs           []uint32
 	args              []string
@@ -69,6 +71,7 @@ type scopeViewInventory struct {
 	metadata            []search.FileMetadata
 	metadataKnown       []bool
 	metadataSealed      bool
+	checkpointInventory discovery.CheckpointInventoryRef
 
 	observationMu  sync.Mutex
 	gitStatusKnown bool
@@ -95,6 +98,7 @@ var (
 	scopeViewMemoTargetMetadata   map[string]search.FileMetadata
 	scopeViewMemoContentStages    = make(map[string]retainedContentStageResult)
 	scopeViewMemoGenerationSealed bool
+	scopeViewMemoInventoryDirs    []string
 )
 
 func materializeScopeView(entry scopeViewMemoEntry) resolvedScopeView {
@@ -266,6 +270,8 @@ func sameEntryOrder(left, right []discovery.Entry) bool {
 func scopeViewMemoReset() {
 	scopeViewMemoMu.Lock()
 	dirs := make([]string, 0, len(scopeViewMemoValues)*2)
+	dirs = append(dirs, scopeViewMemoInventoryDirs...)
+	scopeViewMemoInventoryDirs = nil
 	for _, entry := range scopeViewMemoValues {
 		if entry.checkpointDir != "" {
 			dirs = append(dirs, entry.checkpointDir)
@@ -849,8 +855,7 @@ func scopeViewMemoCheckpoint(args []string, view resolvedScopeView, statuses map
 		scopeViewMemoCond.Wait()
 	}
 	scopeViewMemoMu.Unlock()
-	expectedView := materializeScopeView(entry)
-	if !sameCheckpointScopeProjection(view, expectedView) {
+	if !checkpointMatchesRetainedScope(view, entry) {
 		scopeViewMemoCheckpointBuildFailed(key, entry.stateID)
 		return "", false, nil
 	}
@@ -880,7 +885,8 @@ func scopeViewMemoCheckpoint(args []string, view resolvedScopeView, statuses map
 		"state_id", platform.InternalBenchInt(int(entry.stateID)),
 		"entries", platform.InternalBenchInt(len(view.Entries)),
 	)
-	err = discovery.WriteCheckpoint(checkpointPath, view.Invocation.WorkingDir, discovery.CheckpointData{
+	err = writeRetainedStateCheckpoint(key, entry, checkpointPath, view, discovery.CheckpointData{
+		Scope:      &view.Scope,
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,
@@ -895,7 +901,7 @@ func scopeViewMemoCheckpoint(args []string, view resolvedScopeView, statuses map
 
 	scopeViewMemoMu.Lock()
 	current, stillPresent := scopeViewMemoValues[key]
-	if !stillPresent || current.stateID != entry.stateID {
+	if !stillPresent || current.stateID != entry.stateID || current.inventory != entry.inventory {
 		scopeViewMemoCond.Broadcast()
 		scopeViewMemoMu.Unlock()
 		_ = os.RemoveAll(tmpdir)
@@ -910,31 +916,56 @@ func scopeViewMemoCheckpoint(args []string, view resolvedScopeView, statuses map
 	return checkpointPath, true, nil
 }
 
-func sameCheckpointScopeProjection(got, want resolvedScopeView) bool {
+// Validate against the retained inventory without materializing another full
+// caller-owned view. These borrowed records never escape the read lock.
+func checkpointMatchesRetainedScope(got resolvedScopeView, entry scopeViewMemoEntry) bool {
+	want := entry.view
 	if !reflect.DeepEqual(got.Invocation, want.Invocation) ||
 		!reflect.DeepEqual(got.GitContext, want.GitContext) ||
 		got.ScopeIndex != want.ScopeIndex ||
 		!reflect.DeepEqual(got.Scope, want.Scope) ||
 		!reflect.DeepEqual(got.Scopes, want.Scopes) ||
-		len(got.Entries) != len(want.Entries) {
+		entry.inventory == nil || got.inventory != entry.inventory ||
+		!slices.Equal(got.fileIDs, entry.fileIDs) ||
+		len(got.Entries) != len(entry.fileIDs) {
 		return false
 	}
-	for i := range got.Entries {
-		left := got.Entries[i]
-		right := want.Entries[i]
-		// Metadata can be captured monotonically after the caller materializes
-		// its view. It is overlaid from the inventory before serialization, so
-		// exclude only those observation fields from the identity/projection
-		// comparison. Every selection and output-shape field remains exact.
-		left.AbsPath, right.AbsPath = "", ""
-		left.ModTime, right.ModTime = time.Time{}, time.Time{}
-		left.SizeBytes, right.SizeBytes = 0, 0
-		left.SizeKnown, right.SizeKnown = false, false
-		if !reflect.DeepEqual(left, right) {
+	entry.inventory.mu.RLock()
+	defer entry.inventory.mu.RUnlock()
+	mode := want.Scope.OutputMode()
+	for i, id := range entry.fileIDs {
+		if uint64(id) >= uint64(len(entry.inventory.entries)) {
+			return false
+		}
+		projected := [1]discovery.Entry{entry.inventory.entries[id]}
+		if lines, ok := entry.snippetMatchLines[id]; ok {
+			projected[0].SnippetMatchLines = lines
+		}
+		// Materialization normalizes empty snippet slices to nil.
+		if len(projected[0].SnippetMatchLines) == 0 {
+			projected[0].SnippetMatchLines = nil
+		}
+		discovery.StampEntriesWithScopeOutputMode(projected[:], mode, want.Scope)
+		if !sameCheckpointEntryProjection(got.Entries[i], projected[0]) {
 			return false
 		}
 	}
 	return true
+}
+
+// AbsPath and captured metadata are deliberately excluded: the writer overlays
+// current retained observations. All identity and output fields remain exact.
+// The field-by-field oracle test guards this list when Entry grows new fields.
+func sameCheckpointEntryProjection(a, b discovery.Entry) bool {
+	return a.RelPath == b.RelPath && a.TargetRoot == b.TargetRoot &&
+		a.GitVisible == b.GitVisible && a.IgnoreBypassed == b.IgnoreBypassed &&
+		a.BlockSource == b.BlockSource && a.Mode == b.Mode &&
+		a.SnippetPattern == b.SnippetPattern && a.SnippetContextSet == b.SnippetContextSet &&
+		a.SnippetContextLines == b.SnippetContextLines &&
+		(a.SnippetMatchLines == nil) == (b.SnippetMatchLines == nil) &&
+		slices.Equal(a.SnippetMatchLines, b.SnippetMatchLines) &&
+		a.Lines == b.Lines && a.LinesStart == b.LinesStart && a.LinesEnd == b.LinesEnd &&
+		a.DiffWantStaged == b.DiffWantStaged && a.DiffWantUnstaged == b.DiffWantUnstaged
 }
 
 // retainedScopeViewEntriesWithMetadata overlays the shared metadata records,
@@ -1001,6 +1032,7 @@ func retainedScopeViewEntriesWithMetadata(view resolvedScopeView) ([]discovery.E
 		inventory.metadataKnown[id] = true
 		if record.State == search.FileMetadataReady {
 			inventory.entries[id].SizeBytes = record.SizeBytes
+			inventory.checkpointInventory = discovery.CheckpointInventoryRef{}
 			inventory.entries[id].SizeKnown = true
 			inventory.entries[id].ModTime = record.ModTime
 		}
@@ -1380,6 +1412,7 @@ func applyNoIgnoreScopeStageIDs(parent scopeViewMemoEntry, scope command.Executi
 		}
 		entry.SnippetMatchLines = append([]int(nil), entry.SnippetMatchLines...)
 		inventory.entries = append(inventory.entries, entry)
+		inventory.checkpointInventory = discovery.CheckpointInventoryRef{}
 		inventory.metadata = append(inventory.metadata, record)
 		inventory.metadataKnown = append(inventory.metadataKnown, true)
 		out = append(out, id)
@@ -1588,12 +1621,14 @@ func applyMetadataScopeStageIDs(inventory *scopeViewInventory, ids []uint32, sta
 		if !ok || uint64(id) >= uint64(len(inventory.entries)) {
 			continue
 		}
-		if entry.SizeKnown {
+		if entry.SizeKnown && (!inventory.entries[id].SizeKnown || inventory.entries[id].SizeBytes != entry.SizeBytes) {
 			inventory.entries[id].SizeBytes = entry.SizeBytes
+			inventory.checkpointInventory = discovery.CheckpointInventoryRef{}
 			inventory.entries[id].SizeKnown = true
 		}
-		if !entry.ModTime.IsZero() {
+		if !entry.ModTime.IsZero() && !inventory.entries[id].ModTime.Equal(entry.ModTime) {
 			inventory.entries[id].ModTime = entry.ModTime
+			inventory.checkpointInventory = discovery.CheckpointInventoryRef{}
 		}
 	}
 	inventory.mu.Unlock()
@@ -1623,6 +1658,7 @@ func ScopeViewForDiscoveryArgs(args []string) (discovery.ScopeView, bool) {
 		GitContext: view.GitContext,
 		Entries:    view.Entries,
 		Targets:    view.Scope.Targets,
+		NoIgnore:   view.Scope.NoIgnore,
 	}, true
 }
 

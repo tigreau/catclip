@@ -56,16 +56,26 @@ func BuildLinesPreviewPlanForResolvedScopes(scopes []command.ExecutionScope, all
 // calls this once per invocation.
 func BuildPlanForDiscoveredInvocation(gitCtx git.Context, inv discovery.Discovered) (Plan, error) {
 	evaluatedScopes := make([]EvaluatedScope, 0, len(inv.Scopes))
-	var allEntries []discovery.Entry
 	resolvedScopes := make([]command.ExecutionScope, 0, len(inv.Scopes))
+	entryCount := 0
 	for _, scope := range inv.Scopes {
 		resolvedScopes = append(resolvedScopes, scope.Scope)
-		entries := append([]discovery.Entry(nil), scope.Entries...)
-		allEntries = append(allEntries, entries...)
+		entryCount += len(scope.Entries)
+		// Section preparation copies candidates before sorting/merging; it
+		// only reads these scope slices. Do not make a redundant input copy.
 		evaluatedScopes = append(evaluatedScopes, EvaluatedScope{
 			Paths:   scope.Scope.Paths,
-			Entries: entries,
+			Entries: scope.Entries,
 		})
+	}
+	var allEntries []discovery.Entry
+	if !ExecutionScopesUsePathsStage(resolvedScopes) {
+		// Non-sectioned deduplication mutates its slice, so this owned copy
+		// remains required. Sectioned planning never consumes allEntries.
+		allEntries = make([]discovery.Entry, 0, entryCount)
+		for _, scope := range inv.Scopes {
+			allEntries = append(allEntries, scope.Entries...)
+		}
 	}
 	return BuildPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, allEntries)
 }

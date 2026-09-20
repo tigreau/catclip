@@ -1158,6 +1158,10 @@ func (r *Resolver) BuildVisibleDirIndex() error {
 	for _, entry := range r.VisibleFileList {
 		dir := path.Dir(entry.RelPath)
 		for dir != "." && dir != "" {
+			// A previously indexed directory already contributed all its ancestors.
+			if _, exists := dirSet[dir]; exists {
+				break
+			}
 			dirSet[dir] = struct{}{}
 			dir = path.Dir(dir)
 		}

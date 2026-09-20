@@ -205,12 +205,32 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			}
 			i++
 			cfg.PrediscoveredPath = args[i]
+		case "--internal-checkpoint-scope":
+			cfg.CheckpointScope = true
+		case "--internal-diff-preview-state":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return command.Parsed{}, newUsageError("Error: --internal-diff-preview-state requires a descriptor path.")
+			}
+			i++
+			cfg.DiffPreviewStatePath = args[i]
 		case "--internal-target-inventory":
 			if i+1 >= len(args) {
 				return command.Parsed{}, newUsageError("Error: --internal-target-inventory requires an inventory path.")
 			}
 			i++
 			cfg.TargetPreviewInventory = args[i]
+		case "--internal-target-selection":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return command.Parsed{}, newUsageError("Error: --internal-target-selection requires a selection file path.")
+			}
+			i++
+			cfg.TargetSelectionPath = args[i]
+		case "--internal-target-roots":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return command.Parsed{}, newUsageError("Error: --internal-target-roots requires a descriptor path.")
+			}
+			i++
+			cfg.TargetRootsPath = args[i]
 		case "--internal-tree-target":
 			if i+1 >= len(args) {
 				return command.Parsed{}, newUsageError("Error: --internal-tree-target requires a path.")

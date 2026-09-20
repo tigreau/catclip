@@ -5,9 +5,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
+	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
@@ -45,7 +47,8 @@ func fzfPreviewCommand(inventoryPath string, withBinaries ...bool) string {
 		binaryFlag = " --with-binaries"
 	}
 
-	// {+2} passes all selected targets (falls back to focused when none selected).
+	// {+f} passes all selected rows through a file (focused row when none are
+	// marked). Keep the raw file placeholder quoted, unlike ordinary fields.
 	// {2}/{3}/{4} are the focused entry's metadata for tree highlight.
 	command := selfQ + ` --quiet` + binaryFlag + ` --internal-tree-preview`
 	if inventoryPath != "" {
@@ -53,7 +56,7 @@ func fzfPreviewCommand(inventoryPath string, withBinaries ...bool) string {
 	}
 	return command +
 		` --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4}` +
-		` {+2}`
+		` --internal-target-selection ` + ShellQuoteArg("{+f}")
 }
 
 // FzfContentPreviewCommand builds the preview-pane command for the
@@ -69,9 +72,9 @@ func fzfPreviewCommand(inventoryPath string, withBinaries ...bool) string {
 //   - Non-empty {q}, non-empty {3}: per-file preview with match
 //     highlighting (or snippet extraction / diff).
 //
-// checkpointPath is empty when the caller couldn't write a checkpoint
-// (legacy fallback path); in that case the `[all current matches]`
-// preview is empty, matching pre-v0.5.2 behavior. Pass the path
+// An explicitly empty checkpointPath keeps standalone preview callers'
+// `[all current matches]` preview empty. The interactive content picker
+// requires a checkpoint and reports setup failure instead. Pass the path
 // returned by fzfCheckpointContentMatchListCommand to enable the tree.
 func FzfContentPreviewCommand(flag, checkpointPath string) string {
 	self, err := os.Executable()
@@ -120,77 +123,31 @@ func FzfContentSearchingPreviewCommand(flag string) string {
 	return strings.Join(parts, " ")
 }
 
-// FzfContentMatchListCommand is the legacy fallback when the checkpoint match
-// list command cannot be built. Normal content pickers call
-// fzfCheckpointContentMatchListCommand, which loads entries[N] from disk.
-func FzfContentMatchListCommand(currentArgs []string, flag string) string {
-	self, err := os.Executable()
-	if err != nil || strings.TrimSpace(self) == "" {
-		return ""
-	}
-
-	parts := []string{ShellQuoteArg(self), "--quiet", "--internal-content-match-list"}
-	for _, arg := range currentArgs {
-		parts = append(parts, ShellQuoteArg(arg))
-	}
-	// fzf already shell-quotes placeholders like {q}; adding our own quotes
-	// breaks regex input that includes spaces or quote characters.
-	parts = append(parts, flag, "{q}")
-	return strings.Join(parts, " ")
-}
-
-// fzfCheckpointContentMatchListCommand returns:
-//   - the fzf `reload` command string for the content-match list,
-//   - the checkpoint path on disk (empty when the fast SCC path was not
-//     taken — caller should treat that as "no tree preview available"),
-//   - a cleanup function that removes the tmpdir housing the checkpoint.
-//
-// The checkpoint path is exposed so the preview command builder can wire
-// the same JSON file into --internal-file-preview's empty-path branch
-// (the `[all current matches]` row's scope tree). Match-list reload and
-// preview share the same checkpoint file — one JSON write per picker
-// open.
-// currentScopeNeedsNoIgnoreCheckpoint reports whether the current scope can
-// contain ignored entries. The picker's direct rg subprocess needs
-// --no-ignore to walk the same universe represented by the checkpoint.
-func currentScopeNeedsNoIgnoreCheckpoint(args []string) bool {
-	needNoIgnore := false
-	for _, a := range args {
-		switch a {
-		case "--then":
-			needNoIgnore = false
-		case "--no-ignore":
-			needNoIgnore = true
-		}
-	}
-	return needNoIgnore
-}
-
-func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (string, string, func()) {
-	fallback := func() string {
-		return FzfContentMatchListCommand(currentArgs, flag)
-	}
+// fzfCheckpointContentMatchListCommand shares one checkpoint between reload
+// and preview children. Setup errors must not restore unbounded scope argv or
+// let a child rediscover a different membership universe.
+func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (string, string, func(), error) {
 	noop := func() {}
 	switch flag {
 	case "--contains", "--snippet", "--not-contains":
 	default:
-		return fallback(), "", noop
+		return "", "", noop, fmt.Errorf("unsupported content picker flag %q", flag)
 	}
 	if scopeViewResolverFn == nil {
-		return fallback(), "", noop
+		return "", "", noop, fmt.Errorf("content picker requires a retained scope resolver")
 	}
 	view, ok := scopeViewResolverFn(currentArgs)
-	if !ok || len(view.Entries) == 0 {
-		return fallback(), "", noop
+	if !ok || len(view.Targets) == 0 {
+		return "", "", noop, fmt.Errorf("content picker could not retain the current scope")
 	}
 
 	self, err := os.Executable()
-	if err != nil || strings.TrimSpace(self) == "" {
-		return "", "", noop
+	if err != nil {
+		return "", "", noop, err
 	}
 	tmpdir, err := os.MkdirTemp("", "catclip-scc-*")
 	if err != nil {
-		return fallback(), "", noop
+		return "", "", noop, err
 	}
 	checkpointPath := filepath.Join(tmpdir, "scope.json")
 	statuses := map[string]string{}
@@ -198,35 +155,27 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 		statuses, err = git.StatusMapForPathspecs(view.GitContext, GitStatusPathspecsForEntries(view.GitContext, view.Entries))
 		if err != nil {
 			_ = os.RemoveAll(tmpdir)
-			return fallback(), "", noop
+			return "", "", noop, err
 		}
 	}
 	if err := WriteCheckpoint(checkpointPath, view.WorkingDir, CheckpointData{
+		Scope:      &command.ExecutionScope{Targets: append([]string(nil), view.Targets...)},
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,
-		NoIgnore:   currentScopeNeedsNoIgnoreCheckpoint(currentArgs),
+		NoIgnore:   view.NoIgnore,
 	}); err != nil {
 		_ = os.RemoveAll(tmpdir)
-		return fallback(), "", noop
+		return "", "", noop, err
 	}
 
-	parts := []string{ShellQuoteArg(self), "--quiet", "--internal-content-match-list", "--internal-prediscovered", ShellQuoteArg(checkpointPath)}
-	// Embed the parent scope's positional targets so the child parses the
-	// SAME scope instead of an implicit "." — direct-mode rg in the child
-	// searches scope.Targets[0], and without these it walks the whole
-	// working dir (correct results via checkpoint intersection, but
-	// cwd-wide cost and exit-2 fragility; live failure 2026-07-04 with
-	// cwd=Desktop, target=vscode-main).
-	for _, target := range view.Targets {
-		parts = append(parts, ShellQuoteArg(target))
-	}
+	parts := []string{ShellQuoteArg(self), "--quiet", "--internal-content-match-list", "--internal-prediscovered", ShellQuoteArg(checkpointPath), "--internal-checkpoint-scope"}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
 	parts = append(parts, flag, "{q}")
 	return strings.Join(parts, " "), checkpointPath, func() {
 		_ = os.RemoveAll(tmpdir)
-	}
+	}, nil
 }
 
 // ContentMatchPreviewWindow returns the fzf --preview-window spec for the
@@ -281,10 +230,40 @@ func ShellQuoteArg(arg string) string {
 	if arg == "" {
 		return `""`
 	}
-	if !strings.ContainsAny(arg, " \t\n\"'\\*?[]{}()$&;|<>") {
+	// fzf's file placeholder is substituted raw. It needs double quotes;
+	// ordinary placeholders must remain unquoted in the command builders.
+	if arg == "{+f}" {
+		return `"{+f}"`
+	}
+	if runtime.GOOS == "windows" {
+		// Keep the existing native shell contract until the separate cmd /
+		// PowerShell launcher repair has real-fzf Windows acceptance coverage.
+		if !strings.ContainsAny(arg, " \t\n\"'\\*?[]{}()$&;|<>") {
+			return arg
+		}
+		return strconv.Quote(arg)
+	}
+	plain := true
+	for _, r := range arg {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || strings.ContainsRune("_./:-", r) {
+			continue
+		}
+		plain = false
+		break
+	}
+	if plain {
 		return arg
 	}
-	return strconv.Quote(arg)
+	// Preserve the established readable spelling for simple spaces/globs.
+	// These characters have no expansion semantics inside double quotes.
+	if !strings.ContainsAny(arg, "$`\\\"!\r\n") {
+		return `"` + arg + `"`
+	}
+	// Literal shell words, not Go string literals: double quotes alone allow
+	// dollar/backtick expansion. Spell apostrophes and backslashes as separate
+	// double-quoted fragments so this also works in fish, whose single quotes
+	// interpret backslash escapes differently from POSIX shells.
+	return "'" + strings.NewReplacer("'", `'"'"'`, "\\", `'"\\"'`).Replace(arg) + "'"
 }
 
 func formatFzfCandidates(candidates []string, kind, state string) []string {
@@ -389,14 +368,22 @@ func TargetMatchLabels(matches []TargetMatch) ([]string, map[string]TargetMatch)
 		// and path as two transformed fields so target pickers can display
 		// "[file] path" while matching only field 2. Collapsing presentation
 		// to field 1 makes --nth 2 an empty search domain.
-		label := fmt.Sprintf("[%s]", match.Kind)
+		label := ""
+		switch match.Kind {
+		case "file":
+			label = "[file]"
+		case "dir":
+			label = "[dir]"
+		default:
+			label = "[" + match.Kind + "]"
+		}
 		if match.Kind == "all" {
 			plain := "[select all files]"
 			label = "\x1b[1m" + plain + "\x1b[0m"
 		} else if match.Ignored {
 			source := strings.TrimSpace(match.IgnoreSource)
 			if source != "" {
-				label = fmt.Sprintf("[%s %s]", match.Kind, source)
+				label = "[" + match.Kind + " " + source + "]"
 			}
 		}
 		labels = append(labels, strings.Join([]string{

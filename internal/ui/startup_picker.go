@@ -1208,15 +1208,22 @@ func currentScopeHasFlag(args []string, flag string) bool {
 }
 
 func currentScopeDiffPreviewFlag(args []string) string {
-	for i := len(args) - 1; i >= 0; i-- {
-		switch args[i] {
-		case "--changed-diff", "--staged-diff", "--unstaged-diff":
-			return args[i]
-		case "--then":
-			return ""
-		}
+	cfg, err := cli.ParseArgsAllowImplicitDot(args)
+	if err != nil {
+		return ""
 	}
-	return ""
+	scopes := command.ExecutionScopesFromSpec(cfg.Command)
+	if len(scopes) == 0 || !scopes[len(scopes)-1].Diff {
+		return ""
+	}
+	scope := scopes[len(scopes)-1]
+	if scope.Staged {
+		return "--staged-diff"
+	}
+	if scope.Unstaged {
+		return "--unstaged-diff"
+	}
+	return "--changed-diff"
 }
 
 // startupCurrentScopeStateForArgs returns both the menu-driving state and

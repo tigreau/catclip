@@ -372,16 +372,18 @@ exit 91
 	}
 }
 func TestStartupFileSetPreviewCommandKeepsDiffPreviewAfterDiffModeChosen(t *testing.T) {
-	command := startupFileSetPreviewCommand([]string{"cmd", "--no-ignore", "--changed-diff"}, "--only", false)
+	command, cleanup := startupCheckpointFileSetPreviewCommand([]string{"cmd", "--no-ignore", "--changed-diff"}, "--only", false)
+	defer cleanup()
 	if !strings.Contains(command, "--internal-file-preview") {
 		t.Fatalf("expected --only after diff mode to keep diff preview, got %q", command)
 	}
-	if !strings.Contains(command, "--changed-diff") {
+	if !strings.Contains(command, "--internal-diff-preview-state") {
 		t.Fatalf("expected --only after diff mode to inherit current diff scope, got %q", command)
 	}
 }
 func TestStartupFileSetPreviewCommandDoesNotUseUnboundedArgvFallback(t *testing.T) {
-	command := startupFileSetPreviewCommand([]string{"cmd", "--changed"}, "--changed", false)
+	command, cleanup := startupCheckpointFileSetPreviewCommand(nil, "--unsupported", false)
+	defer cleanup()
 	if command != "" {
 		t.Fatalf("expected non-checkpoint fallback to omit preview, got %q", command)
 	}
@@ -496,8 +498,8 @@ func TestStartupModifierCurrentScopePreviewCommandUsesCheckpointHandoff(t *testi
 	if !strings.HasPrefix(cmd, discovery.ShellQuoteArg(self)+" --quiet --internal-tree-preview --internal-prediscovered ") {
 		t.Fatalf("expected checkpoint preview child, got %q", cmd)
 	}
-	if !strings.Contains(cmd, " docs --recent 5") {
-		t.Fatalf("expected current scope tail, got %q", cmd)
+	if !strings.HasSuffix(cmd, " --internal-checkpoint-scope") || strings.Contains(cmd, " --recent ") {
+		t.Fatalf("expected retained scope transport, got %q", cmd)
 	}
 	if strings.Contains(cmd, " src --only '*.ts'") {
 		t.Fatalf("earlier scope leaked into preview command: %q", cmd)
@@ -507,6 +509,10 @@ func TestStartupModifierCurrentScopePreviewCommandUsesCheckpointHandoff(t *testi
 	}
 	if _, err := os.Stat(filepath.Join(tmpdir, "scope.json")); err != nil {
 		t.Fatalf("expected scope.json checkpoint: %v", err)
+	}
+	checkpoint, err := discovery.ReadCheckpoint(filepath.Join(tmpdir, "scope.json"))
+	if err != nil || checkpoint.Scope == nil || !reflect.DeepEqual(*checkpoint.Scope, state.Scopes[1]) {
+		t.Fatalf("current scope lost from checkpoint: %+v, %v", checkpoint.Scope, err)
 	}
 }
 

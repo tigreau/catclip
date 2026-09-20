@@ -32,7 +32,11 @@ var (
 )
 
 const (
-	execPathChunkMaxCount     = 256
+	execPathChunkMaxCount = 256
+	// Residue classification benefits from fewer process launches on large
+	// inventories. Keep other content operations at their existing batch size;
+	// both limits still yield to the platform path-argument byte budget.
+	residuePathChunkMaxCount  = 1024
 	execPathChunkMaxBytes     = 60 * 1024
 	windowsExecPathChunkBytes = 24 * 1024
 )
@@ -93,13 +97,7 @@ func RipgrepBinary() (string, bool) {
 }
 
 func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) (paths []string, retErr error) {
-	policy := MembershipVisible
-	if opts.NoIgnore {
-		policy = MembershipNoIgnore
-	}
 	ctx := reloadCancelCtx
-	var membershipSpan *membershipEnumerationSpan
-	defer func() { membershipSpan.finish(len(paths), scanWasCancelled(ctx, retErr), retErr) }()
 	finishBench := platform.InternalBenchSpan("search.rg.files",
 		"paths", platform.InternalBenchInt(len(opts.Paths)),
 		"basenames", platform.InternalBenchInt(len(opts.Basenames)),
@@ -111,46 +109,18 @@ func RunRipgrepFiles(workingDir string, opts RipgrepFileOptions) (paths []string
 		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
-	membershipSpan = beginMembershipEnumeration(MembershipEnumerationFiles, policy, opts.Enumeration)
-
-	// Symlinks are intentionally excluded for now, so keep rg on its default
-	// non-following behavior and avoid pulling link paths into candidate lists.
-	args := ripgrepFileArgs(opts, false)
-
 	if opts.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(reloadCancelCtx, opts.Timeout)
 		defer cancel()
 	}
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = workingDir
-	t0 := time.Now()
-	out, err := cmd.Output()
-	if benchEnabled() {
-		benchRgFilesTotal.Add(int64(time.Since(t0)))
-		benchRgFilesCalls.Add(1)
+	paths, retErr = runRipgrepFileBatches(ctx, bin, workingDir, opts, MembershipEnumerationFiles)
+	if retErr == nil {
+		sort.Strings(paths)
+		paths = dedupeSortedStrings(paths)
 	}
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			finishBench("err", "true", "deadline", "true")
-			return nil, ctx.Err()
-		}
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			finishBench("err", "false", "results", "0")
-			return nil, nil
-		}
-		finishBench("err", "true")
-		return nil, err
-	}
-
-	paths = splitNullSeparated(out)
-	for i, rel := range paths {
-		paths[i] = normalizeRelPath(rel)
-	}
-	sort.Strings(paths)
-	paths = dedupeSortedStrings(paths)
-	finishBench("err", "false", "results", platform.InternalBenchInt(len(paths)))
-	return paths, nil
+	finishBench("err", platform.InternalBenchError(retErr), "results", platform.InternalBenchInt(len(paths)))
+	return paths, retErr
 }
 
 // ripgrepFileArgs is the single command-shape owner for ordinary file
@@ -447,8 +417,12 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 	}
 
 	stats.residueCount = len(residue)
+	var observed map[string]os.FileInfo
+	if len(residue) > 0 && len(residue) <= tinyResidueMaxFiles {
+		observed = make(map[string]os.FileInfo, len(residue))
+	}
 	if len(residue) > 0 {
-		scanned, scanErr := runRipgrepNulScanFiles(workingDir, residue)
+		scanned, scanErr := runRipgrepNulScanFiles(workingDir, residue, observed)
 		if scanErr != nil {
 			if capture != nil {
 				capture.Stop()
@@ -459,14 +433,20 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 		acceptedResidue := make([]string, 0, len(scanned))
 		for rel := range scanned {
 			set[rel] = struct{}{}
-			acceptedResidue = append(acceptedResidue, rel)
+			if info := observed[rel]; capture != nil && info != nil && info.Mode().IsRegular() {
+				// The local classifier already completed this Lstat. Publish
+				// it as primary metadata instead of scheduling a duplicate.
+				capture.record(rel, info)
+			} else {
+				acceptedResidue = append(acceptedResidue, rel)
+			}
 		}
 		if capture != nil {
 			capture.add(acceptedResidue)
 		}
 	}
 
-	stats.statCount, stats.admitted = admitEmptyFilesToTextSet(workingDir, allPaths, set, capture)
+	stats.statCount, stats.admitted = admitEmptyFilesToTextSet(workingDir, allPaths, set, capture, observed)
 	stats.nameText = len(set) - stats.residueText - stats.admitted
 	recordTextClassificationResidue(residue, stats.residueText)
 	if capture != nil {
@@ -492,22 +472,25 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 // correct answer ("cannot prove NUL-free"). Only spawn-level failures
 // are fatal, with context so nothing surfaces as a bare "exit status 2"
 // (live failure 2026-07-04: one unreadable Desktop file killed the run).
-func runRipgrepNulScanFiles(workingDir string, relPaths []string) (map[string]struct{}, error) {
+func runRipgrepNulScanFiles(workingDir string, relPaths []string, observations ...map[string]os.FileInfo) (map[string]struct{}, error) {
 	bin, ok := RipgrepBinary()
 	if !ok {
 		return nil, errRipgrepUnavailable
 	}
-	out := make(map[string]struct{}, len(relPaths))
-	for _, chunk := range chunkExecArgs(relPaths, execPathChunkMaxCount, currentExecPathChunkByteLimit()) {
-		args := []string{
-			"--files-without-match",
-			"--text",
-			"--no-messages",
-			"-0",
-			"-e", `\x00`,
-			"--",
-		}
-		args = append(args, chunk...)
+	out, remaining, err := scanTinyResidue(reloadCancelCtx, workingDir, relPaths, observations...)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = make(map[string]struct{}, len(relPaths))
+	}
+	fixed := []string{"--files-without-match", "--text", "--no-messages", "-0", "-e", `\x00`, "--"}
+	pathChunks, err := contentPathChunks(bin, fixed, remaining, residuePathChunkMaxCount, runtime.GOOS)
+	if err != nil {
+		return nil, err
+	}
+	for _, chunk := range pathChunks {
+		args := append(append([]string(nil), fixed...), chunk...)
 		cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 		cmd.Dir = workingDir
 		t0 := time.Now()
@@ -515,6 +498,9 @@ func runRipgrepNulScanFiles(workingDir string, relPaths []string) (map[string]st
 		if benchEnabled() {
 			benchRgTextTotal.Add(int64(time.Since(t0)))
 			benchRgTextCalls.Add(1)
+		}
+		if cancelErr := reloadCancelCtx.Err(); cancelErr != nil {
+			return nil, cancelErr
 		}
 		if err != nil {
 			if _, isExit := err.(*exec.ExitError); !isExit {
@@ -588,15 +574,18 @@ func TextClassificationResidue() (paths []string, textCount int) {
 //
 // allPaths is the already-enumerated --no-ignore universe, so empty files in
 // blocked subtrees are considered too without a second rg walk.
-func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[string]struct{}, capture *TextSizeCapture) (statCount, admittedCount int) {
+func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[string]struct{}, capture *TextSizeCapture, observed map[string]os.FileInfo) (statCount, admittedCount int) {
 	for _, rel := range allPaths {
 		if _, ok := set[rel]; ok {
 			continue
 		}
-		statCount++
-		abs := filepath.Join(workingDir, filepath.FromSlash(rel))
-		info, statErr := os.Lstat(abs)
-		if statErr != nil {
+		info, known := observed[rel]
+		if !known {
+			statCount++
+			abs := filepath.Join(workingDir, filepath.FromSlash(rel))
+			info, _ = os.Lstat(abs)
+		}
+		if info == nil {
 			continue
 		}
 		if info.Size() == 0 && info.Mode().IsRegular() {
@@ -680,8 +669,6 @@ func ResolveVisibleFileSet(workingDir, hissPath string, targets []string, enumer
 // overlay.
 func runRipgrepVisibleFiles(workingDir, hissPath string, targets []string, enumeration MembershipEnumerationContext) (set map[string]struct{}, retErr error) {
 	ctx := reloadCancelCtx
-	var membershipSpan *membershipEnumerationSpan
-	defer func() { membershipSpan.finish(len(set), scanWasCancelled(ctx, retErr), retErr) }()
 	finishBench := platform.InternalBenchSpan("search.rg.visible_files",
 		"has_hiss", strconv.FormatBool(strings.TrimSpace(hissPath) != ""),
 		"targets", platform.InternalBenchInt(len(targets)),
@@ -691,43 +678,14 @@ func runRipgrepVisibleFiles(workingDir, hissPath string, targets []string, enume
 		finishBench("err", "true")
 		return nil, errRipgrepUnavailable
 	}
-	membershipSpan = beginMembershipEnumeration(MembershipEnumerationVisibleSet, MembershipVisible, enumeration)
-
-	args := []string{
-		"--files",
-		"--hidden",
-		"--no-ignore-dot",
-		"--no-require-git",
-		"-0",
-	}
-	if hissPath != "" {
-		args = append(args, "--ignore-file", hissPath)
-	}
-	// Positional narrowing: rg still applies ancestor .gitignore and .hiss
-	// anchored at workingDir (Pin #1/#2). Never add --no-ignore-parent.
-	if len(targets) > 0 {
-		args = append(args, "--")
-		args = append(args, targets...)
-	}
-
-	cmd := exec.CommandContext(ctx, bin, args...)
-	cmd.Dir = workingDir
-	t0 := time.Now()
-	out, err := cmd.Output()
-	if benchEnabled() {
-		benchRgVisibleTotal.Add(int64(time.Since(t0)))
-		benchRgVisibleCalls.Add(1)
-	}
+	paths, err := runRipgrepFileBatches(ctx, bin, workingDir, RipgrepFileOptions{
+		Paths: targets, HissPath: hissPath, Enumeration: enumeration,
+	}, MembershipEnumerationVisibleSet)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			finishBench("err", "false", "results", "0")
-			return map[string]struct{}{}, nil
-		}
 		finishBench("err", "true")
 		return nil, err
 	}
 
-	paths := splitNullSeparated(out)
 	set = make(map[string]struct{}, len(paths))
 	for _, rel := range paths {
 		rel = normalizeRelPath(rel)
@@ -787,22 +745,27 @@ func RunRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 
 	matches := make(map[string][]int, len(absPaths))
 	chunks := 0
-	for _, chunk := range chunkExecArgs(absPaths, execPathChunkMaxCount, currentExecPathChunkByteLimit()) {
+	fixed := []string{
+		"--color=never",
+		"--no-messages",
+		"--no-heading",
+		"--line-number",
+		"--null",
+		"--pcre2",
+		"-H",
+	}
+	if isSmartCaseInsensitive(pattern) {
+		fixed = append(fixed, "--ignore-case")
+	}
+	fixed = append(fixed, "-e", pattern, "--")
+	pathChunks, budgetErr := contentPathChunks(bin, fixed, absPaths, execPathChunkMaxCount, runtime.GOOS)
+	if budgetErr != nil {
+		finishBench("err", "true")
+		return nil, budgetErr
+	}
+	for _, chunk := range pathChunks {
 		chunks++
-		args := []string{
-			"--color=never",
-			"--no-messages",
-			"--no-heading",
-			"--line-number",
-			"--null",
-			"--pcre2",
-			"-H",
-		}
-		if isSmartCaseInsensitive(pattern) {
-			args = append(args, "--ignore-case")
-		}
-		args = append(args, "-e", pattern, "--")
-		args = append(args, chunk...)
+		args := append(append([]string(nil), fixed...), chunk...)
 
 		cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 		var stderr bytes.Buffer
@@ -909,25 +872,30 @@ func FirstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 	}
 	out := make(map[string]int, len(absPaths))
 	chunks := 0
-	for _, chunk := range chunkExecArgs(absPaths, execPathChunkMaxCount, currentExecPathChunkByteLimit()) {
+	fixed := []string{
+		"--color=never",
+		"--no-messages",
+		"--no-heading",
+		"--line-number",
+		"--null",
+		"--pcre2",
+		"-H",
+		"--max-count", "1",
+		"--only-matching",
+		"--replace", "",
+	}
+	if isSmartCaseInsensitive(pattern) {
+		fixed = append(fixed, "--ignore-case")
+	}
+	fixed = append(fixed, "-e", pattern, "--")
+	pathChunks, budgetErr := contentPathChunks(bin, fixed, absPaths, execPathChunkMaxCount, runtime.GOOS)
+	if budgetErr != nil {
+		finishBench("err", "true")
+		return nil, budgetErr
+	}
+	for _, chunk := range pathChunks {
 		chunks++
-		args := []string{
-			"--color=never",
-			"--no-messages",
-			"--no-heading",
-			"--line-number",
-			"--null",
-			"--pcre2",
-			"-H",
-			"--max-count", "1",
-			"--only-matching",
-			"--replace", "",
-		}
-		if isSmartCaseInsensitive(pattern) {
-			args = append(args, "--ignore-case")
-		}
-		args = append(args, "-e", pattern, "--")
-		args = append(args, chunk...)
+		args := append(append([]string(nil), fixed...), chunk...)
 
 		cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 		var stderr bytes.Buffer
@@ -1023,29 +991,34 @@ func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[s
 
 	matches := make(map[string]struct{}, len(absPaths))
 	chunks := 0
-	for _, chunk := range chunkExecArgs(absPaths, execPathChunkMaxCount, currentExecPathChunkByteLimit()) {
+	fixed := []string{
+		"--color=never",
+		"--no-messages",
+	}
+	if inv {
+		fixed = append(fixed, "--files-without-match")
+	} else {
+		fixed = append(fixed, "--files-with-matches")
+	}
+	fixed = append(fixed,
+		"--pcre2",
+		"-0",
+	)
+	if !inv {
+		fixed = append(fixed, "-m", "1")
+	}
+	if isSmartCaseInsensitive(pattern) {
+		fixed = append(fixed, "--ignore-case")
+	}
+	fixed = append(fixed, "-e", pattern, "--")
+	pathChunks, budgetErr := contentPathChunks(bin, fixed, absPaths, execPathChunkMaxCount, runtime.GOOS)
+	if budgetErr != nil {
+		finishBench("err", "true")
+		return nil, budgetErr
+	}
+	for _, chunk := range pathChunks {
 		chunks++
-		args := []string{
-			"--color=never",
-			"--no-messages",
-		}
-		if inv {
-			args = append(args, "--files-without-match")
-		} else {
-			args = append(args, "--files-with-matches")
-		}
-		args = append(args,
-			"--pcre2",
-			"-0",
-		)
-		if !inv {
-			args = append(args, "-m", "1")
-		}
-		if isSmartCaseInsensitive(pattern) {
-			args = append(args, "--ignore-case")
-		}
-		args = append(args, "-e", pattern, "--")
-		args = append(args, chunk...)
+		args := append(append([]string(nil), fixed...), chunk...)
 
 		cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 		var stderr bytes.Buffer
@@ -1235,6 +1208,10 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...Dire
 		args = append(args, "--ignore-case")
 	}
 	args = append(args, "-e", pattern, "--", target)
+	if commandArgBudgetUnits(bin, args, runtime.GOOS) > currentExecPathChunkByteLimit() {
+		finishBench("err", "true")
+		return nil, fmt.Errorf("rg direct content command exceeds the %s command budget", runtime.GOOS)
+	}
 
 	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 	cmd.Dir = workingDir
@@ -1333,6 +1310,10 @@ func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string, op
 		args = append(args, "--ignore-case")
 	}
 	args = append(args, "-e", pattern, "--", target)
+	if commandArgBudgetUnits(bin, args, runtime.GOOS) > currentExecPathChunkByteLimit() {
+		finishBench("err", "true")
+		return nil, fmt.Errorf("rg direct content command exceeds the %s command budget", runtime.GOOS)
+	}
 
 	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 	cmd.Dir = workingDir
@@ -1644,11 +1625,25 @@ func sizedLineCountCandidateChunk(candidates []sizedLineCountCandidate, start, m
 }
 
 func maxLinesForFileChunk(bin string, absPaths []string) (int, error) {
-	if len(absPaths) == 0 {
-		return 0, nil
+	fixed := []string{"-c", "--no-messages", "--color=never", "-e", "^", "--"}
+	chunks, err := contentPathChunks(bin, fixed, absPaths, execPathChunkMaxCount, runtime.GOOS)
+	if err != nil {
+		return 0, err
 	}
-	args := []string{"-c", "--no-messages", "--color=never", "-e", "^", "--"}
-	args = append(args, absPaths...)
+	maximum := 0
+	for _, chunk := range chunks {
+		count, err := maxLinesForNativeChunk(bin, append(append([]string(nil), fixed...), chunk...))
+		if err != nil {
+			return 0, err
+		}
+		if count > maximum {
+			maximum = count
+		}
+	}
+	return maximum, nil
+}
+
+func maxLinesForNativeChunk(bin string, args []string) (int, error) {
 	cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
 	out, err := cmd.Output()
 	if err != nil {

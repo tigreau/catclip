@@ -77,7 +77,11 @@ type Parsed struct {
 	NoBundle               bool
 	TreePreview            bool
 	PrediscoveredPath      string
+	CheckpointScope        bool
 	TargetPreviewInventory string
+	TargetSelectionPath    string
+	TargetRootsPath        string
+	DiffPreviewStatePath   string
 	TreeInputDir           string
 	TreeInputStem          string
 	TreeTarget             string
@@ -120,7 +124,7 @@ func (p Parsed) IsInternalKind() bool {
 	return p.TreePreview || p.FilePreview || p.FileSearchingPreview ||
 		p.ContentMatchList || p.SnippetBoundaryPreview || p.RecentPreview ||
 		p.LinesPreview ||
-		p.PrediscoveredPath != "" || p.TargetPreviewInventory != "" || p.TreeInputDir != "" ||
-		p.FileSetSelectionPath != "" || p.FileSetSelectionStage != "" ||
+		p.CheckpointScope || p.PrediscoveredPath != "" || p.TargetPreviewInventory != "" || p.TreeInputDir != "" ||
+		p.DiffPreviewStatePath != "" || p.TargetRootsPath != "" || p.TargetSelectionPath != "" || p.FileSetSelectionPath != "" || p.FileSetSelectionStage != "" ||
 		p.SinkTogglePath != "" || p.SinkPreviewModePath != ""
 }

@@ -22,6 +22,15 @@ type Plan struct {
 	items    []PlanItem
 }
 
+// SameInstance identifies value copies of one immutable prepared plan. Equal
+// membership is insufficient: independently built plans may project different
+// lines, snippets, paths or diffs. Empty plans never authorize cached output.
+func (p Plan) SameInstance(other Plan) bool {
+	return len(p.items) > 0 && len(p.items) == len(other.items) &&
+		len(p.sections) > 0 && len(p.sections) == len(other.sections) &&
+		&p.items[0] == &other.items[0] && &p.sections[0] == &other.sections[0]
+}
+
 type PlanSection struct {
 	kind  SectionKind
 	items []PlanItem
@@ -58,8 +67,9 @@ func BuildPlan(units []PreparedFileUnit) Plan {
 	}
 	if len(plan.items) > 0 {
 		plan.sections = []PlanSection{{
-			kind:  SectionKindFiles,
-			items: append([]PlanItem(nil), plan.items...),
+			kind: SectionKindFiles,
+			// Both views are private and immutable after construction.
+			items: plan.items[:len(plan.items):len(plan.items)],
 		}}
 	}
 	return plan
@@ -115,7 +125,7 @@ func buildLinesPreviewPlan(entries []discovery.Entry) Plan {
 	if len(plan.items) > 0 {
 		plan.sections = []PlanSection{{
 			kind:  SectionKindFiles,
-			items: append([]PlanItem(nil), plan.items...),
+			items: plan.items[:len(plan.items):len(plan.items)],
 		}}
 	}
 	return plan
@@ -129,7 +139,6 @@ func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, pre
 
 	plan := Plan{
 		sections: make([]PlanSection, 0, len(scopes)),
-		items:    make([]PlanItem, 0, len(fileItemsByScope)),
 	}
 
 	var currentPathSeen map[string]struct{}
@@ -139,7 +148,7 @@ func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, pre
 				continue
 			}
 			if len(plan.sections) == 0 || plan.sections[len(plan.sections)-1].kind != SectionKindPaths {
-				plan.sections = append(plan.sections, PlanSection{kind: SectionKindPaths})
+				plan.sections = append(plan.sections, PlanSection{kind: SectionKindPaths, items: make([]PlanItem, 0, len(scope.Entries))})
 				currentPathSeen = make(map[string]struct{}, len(scope.Entries))
 			}
 			section := &plan.sections[len(plan.sections)-1]
@@ -153,7 +162,6 @@ func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, pre
 				currentPathSeen[entry.RelPath] = struct{}{}
 				item := newPathOutputPlanItem(entry)
 				section.items = append(section.items, item)
-				plan.items = append(plan.items, item)
 			}
 			continue
 		}
@@ -164,18 +172,39 @@ func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, pre
 		}
 		currentPathSeen = nil
 		if len(plan.sections) == 0 || plan.sections[len(plan.sections)-1].kind != SectionKindFiles {
-			plan.sections = append(plan.sections, PlanSection{kind: SectionKindFiles})
+			plan.sections = append(plan.sections, PlanSection{kind: SectionKindFiles, items: scopeItems})
+			continue
 		}
 		section := &plan.sections[len(plan.sections)-1]
 		section.items = append(section.items, scopeItems...)
-		plan.items = append(plan.items, scopeItems...)
+	}
+
+	// Flatten once at the exact surviving size, then let sections reference
+	// their immutable range. Raw scope lengths can greatly overestimate this
+	// size when --then repeats overlapping path sets.
+	itemCount := 0
+	for _, section := range plan.sections {
+		itemCount += len(section.items)
+	}
+	plan.items = make([]PlanItem, 0, itemCount)
+	for i := range plan.sections {
+		start := len(plan.items)
+		plan.items = append(plan.items, plan.sections[i].items...)
+		end := len(plan.items)
+		plan.sections[i].items = plan.items[start:end:end]
 	}
 
 	return plan, nil
 }
 
 func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, preserveOrder bool) (map[int][]PlanItem, error) {
-	candidates := make([]scopedFileCandidate, 0)
+	candidateCount := 0
+	for _, scope := range scopes {
+		if !scope.Paths {
+			candidateCount += len(scope.Entries)
+		}
+	}
+	candidates := make([]scopedFileCandidate, 0, candidateCount)
 	for scopeIndex, scope := range scopes {
 		if scope.Paths {
 			continue
@@ -198,6 +227,15 @@ func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, pres
 		return nil, err
 	}
 	itemsByScope := make(map[int][]PlanItem, len(scopes))
+	counts := make([]int, len(scopes))
+	for _, candidate := range candidates {
+		counts[candidate.scopeIndex]++
+	}
+	for i, count := range counts {
+		if count > 0 {
+			itemsByScope[i] = make([]PlanItem, 0, count)
+		}
+	}
 	for _, candidate := range candidates {
 		unit, keep, err := PrepareFileUnit(gitCtx, candidate.entry, snippetMatches)
 		if err != nil {

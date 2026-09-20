@@ -60,11 +60,16 @@ type TextSizeCapture struct {
 	boostOnce   sync.Once
 	interrupted atomic.Bool
 
-	mu       sync.RWMutex
-	metadata map[string]FileMetadata
+	mu        sync.RWMutex
+	metadata  map[string]FileMetadata
+	seedCount int
 }
 
 func newTextSizeCapture(workingDir string) *TextSizeCapture {
+	return newTextSizeCaptureWithMetadata(workingDir, make(map[string]FileMetadata))
+}
+
+func newTextSizeCaptureWithMetadata(workingDir string, metadata map[string]FileMetadata) *TextSizeCapture {
 	ctx, cancel := context.WithCancel(context.Background())
 	capture := &TextSizeCapture{
 		workingDir: workingDir,
@@ -73,7 +78,8 @@ func newTextSizeCapture(workingDir string) *TextSizeCapture {
 		batches:    make(chan []string, 4),
 		boost:      make(chan struct{}),
 		done:       make(chan struct{}),
-		metadata:   make(map[string]FileMetadata),
+		metadata:   metadata,
+		seedCount:  len(metadata),
 	}
 	go capture.run()
 	return capture
@@ -90,6 +96,28 @@ func StartTextSizeCapture(workingDir string, relPaths []string) *TextSizeCapture
 	return capture
 }
 
+// ResumeTextSizeCapture keeps completed observations from a cancelled target
+// picker, but schedules only gaps in the current authorized membership. The
+// metadata map is not a source of paths. Cross-directory seeds are rejected.
+func ResumeTextSizeCapture(workingDir string, relPaths []string, previous *TextSizeCapture) *TextSizeCapture {
+	if previous == nil || previous.workingDir != workingDir {
+		return StartTextSizeCapture(workingDir, relPaths)
+	}
+	previous.Stop()
+	metadata := previous.MetadataSnapshot()
+	missing := make([]string, 0, len(relPaths))
+	for _, rel := range relPaths {
+		if _, ok := metadata[rel]; !ok {
+			missing = append(missing, rel)
+		}
+	}
+	capture := newTextSizeCaptureWithMetadata(workingDir, metadata)
+	capture.boostWorkers()
+	capture.add(missing)
+	capture.closeInput()
+	return capture
+}
+
 func (c *TextSizeCapture) run() {
 	defer close(c.done)
 
@@ -102,7 +130,8 @@ func (c *TextSizeCapture) run() {
 		captured := len(c.metadata)
 		c.mu.RUnlock()
 		finishBench(
-			"captured", platform.InternalBenchInt(captured),
+			"captured", platform.InternalBenchInt(captured-c.seedCount),
+			"reused", platform.InternalBenchInt(c.seedCount),
 			"cancelled", platform.InternalBenchBool(c.ctx.Err() != nil),
 		)
 	}()

@@ -2244,7 +2244,7 @@ func TestFzfPreviewCommandUsesInternalTreePreview(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+" --quiet --internal-tree-preview --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} {+2}") {
+	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-tree-preview --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} --internal-target-selection "{+f}"`) {
 		t.Fatalf("expected preview command to invoke internal tree preview, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
@@ -2317,27 +2317,16 @@ func TestFzfContentSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 	}
 }
 
-func TestFzfContentMatchListCommandQuotesMultiwordQuery(t *testing.T) {
-	command := discovery.FzfContentMatchListCommand([]string{".", "--exclude", "uninstall"}, "--snippet")
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable returned error: %v", err)
-	}
-
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-content-match-list . --exclude uninstall --snippet {q}`) {
-		t.Fatalf("expected content match list command to pass raw {q} placeholder, got %q", command)
-	}
-}
-
 func TestFzfDiffFilePreviewCommandUsesFilePreviewRenderer(t *testing.T) {
-	command := discovery.FzfDiffFilePreviewCommand([]string{"cmd", "--no-ignore", "--changed-diff"})
+	statePath := filepath.Join(t.TempDir(), "diff state.json")
+	command := discovery.FzfDiffFilePreviewCommand(statePath)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path {3} cmd --no-ignore --changed-diff --only {+2}") {
-		t.Fatalf("expected diff file preview command to invoke internal file preview renderer with scope-narrowing --only, got %q", command)
+	if want := discovery.ShellQuoteArg(self) + " --quiet --internal-file-preview --internal-diff-preview-state " + discovery.ShellQuoteArg(statePath) + " --internal-file-path {3}"; command != want {
+		t.Fatalf("expected bounded diff file preview command, got %q, want %q", command, want)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
 		t.Fatalf("expected diff file preview command to avoid catclip-tree pipe, got %q", command)

@@ -143,12 +143,16 @@ func renderEntries(w io.Writer, entries []DocumentEntry, entriesSorted bool, opt
 	if !entriesSorted {
 		entries = SortedEntries(entries)
 	}
-	lastParts := []string{}
-	lineCount := 0
 	landmarks := map[string]bool{}
 	if !opts.Bare {
 		landmarks = detectLandmarks(entries)
 	}
+	return renderEntriesWithLandmarks(w, entries, opts, colors, landmarks)
+}
+
+func renderEntriesWithLandmarks(w io.Writer, entries []DocumentEntry, opts RenderOptions, colors Palette, landmarks map[string]bool) error {
+	lastParts := []string{}
+	lineCount := 0
 	trimPrefix := ""
 	if opts.Bare {
 		trimPrefix = bareTrimPrefix(entries)
@@ -322,15 +326,9 @@ func highlightFilePreview(relPath, content string, opts RenderOptions) string {
 		return highlightUnifiedDiffPreview(content)
 	}
 
-	lexer := lexerForPath(relPath)
+	lexer := lexerForPreview(relPath, content)
 	if lexer == nil {
-		// No filename-based lexer for this type. Fall back to content analysis,
-		// which is content-dependent and therefore NOT cached (every body differs).
-		lexer = lexers.Analyse(content)
-		if lexer == nil || lexer == lexers.Fallback {
-			return content
-		}
-		lexer = chroma.Coalesce(lexer)
+		return content
 	}
 
 	iterator, err := lexer.Tokenise(nil, content)
@@ -347,21 +345,19 @@ func highlightFilePreview(relPath, content string, opts RenderOptions) string {
 	return buf.String()
 }
 
-// lexerForPath returns the chroma lexer chroma's filename matching would pick for
-// relPath, memoized by file TYPE. lexers.Match globs the filename against every
+// lexerForPath selects by explicit configuration name or Chroma filename
+// matching, memoized by file TYPE. lexers.Match globs the filename against every
 // registered lexer via path/filepath.Match — ~86% of the sink preview's CPU when
 // highlighting hundreds of <file> blocks (e.g. `--snippet 'func' 0` in a Go repo
 // emits one block per matched file, and each re-scanned all ~250 lexers).
 //
-// The selection depends only on the filename's extension (or, for extension-less
-// files, the basename), so caching by that key makes the cost O(distinct types)
-// instead of O(blocks): 500 .go files do ONE match, not 500. It is exact, not
-// approximate — chroma's filename match is deterministic per filename, so every
-// file of a type resolves to the same lexer. The cached lexer is already coalesced
+// Common extensions share keys; explicit configuration names have their own
+// keys so they cannot poison another filename with the same suffix. This makes
+// 500 .go files do ONE match, not 500. The cached lexer is already coalesced
 // and safe to reuse across Tokenise calls (chroma lexers are stateless analyzers,
 // and reuse also avoids recompiling the lexer's regex rules per file). A cached
-// nil means "no filename-based lexer for this type"; the caller falls back to
-// per-file content analysis.
+// nil means no syntax coloring by filename. The caller may recognize a script
+// shebang, but never guesses a language from arbitrary body text.
 var (
 	lexerCacheMu sync.RWMutex
 	lexerCache   = map[string]chroma.Lexer{}
@@ -376,9 +372,15 @@ func lexerForPath(relPath string) chroma.Lexer {
 		return lexer
 	}
 
-	lexer = lexers.Match(relPath)
-	if lexer == nil {
-		lexer = lexers.Get(strings.TrimSpace(relPath))
+	if hint, known := previewFilenameHint(relPath); known {
+		if hint != "" {
+			lexer = lexers.Match(hint)
+		}
+	} else {
+		lexer = lexers.Match(relPath)
+		if lexer == nil {
+			lexer = lexers.Get(strings.TrimSpace(relPath))
+		}
 	}
 	if lexer != nil && lexer != lexers.Fallback {
 		lexer = chroma.Coalesce(lexer)
@@ -398,6 +400,9 @@ func lexerForPath(relPath string) chroma.Lexer {
 // like "Makefile" or "Dockerfile"). relPath is forward-slash, so path is correct.
 func lexerCacheKey(relPath string) string {
 	base := path.Base(strings.TrimSpace(relPath))
+	if _, known := previewFilenameHint(relPath); known {
+		return "name:" + base
+	}
 	if ext := path.Ext(base); ext != "" {
 		return "ext:" + strings.ToLower(ext)
 	}
