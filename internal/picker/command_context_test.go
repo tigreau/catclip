@@ -2,6 +2,7 @@ package picker
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -144,5 +145,74 @@ func TestRestoreCommandContextRequiresExplicitMarker(t *testing.T) {
 	}
 	if got := SelectionFilePath("relative.txt"); got != "relative.txt" {
 		t.Fatal(got)
+	}
+}
+
+func TestPrepareCommandRewritesOnlyExecutablePositions(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	executable := filepath.Join(project, "literal %name% $name {q}", "catclip.exe")
+	marker := "__catclip_exe_" + base64.RawURLEncoding.EncodeToString([]byte(executable)) + "__ " + commandContextFlag
+	cmd := exec.Command(self, "--query", marker, "--header", marker, "--preview", marker+" --quiet", "--bind", "enter:execute("+marker+")+execute("+marker+")")
+	cmd.Dir = project
+	cmd.Env = withCommandEnv(os.Environ(), "FZF_DEFAULT_OPTS_FILE", "config/fzf opts")
+	cmd.Env = withCommandEnv(cmd.Env, "CATCLIP_INTERNAL_EXEC_6", "stale executable")
+	cleanup, err := PrepareCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	if cmd.Args[2] != marker || cmd.Args[4] != marker {
+		t.Fatal("rewrote query/header data as a command")
+	}
+	if want := `"%CATCLIP_INTERNAL_EXEC_6%" ` + commandContextFlag + " --quiet"; cmd.Args[6] != want {
+		t.Fatalf("preview = %q, want %q", cmd.Args[6], want)
+	}
+	for _, key := range []string{"CATCLIP_INTERNAL_EXEC_6", "CATCLIP_INTERNAL_EXEC_8"} {
+		if got, _ := commandEnvValue(cmd.Env, key); got != executable {
+			t.Fatalf("%s = %q, want literal %q", key, got, executable)
+		}
+	}
+	if strings.Count(cmd.Args[8], `"%CATCLIP_INTERNAL_EXEC_8%"`) != 2 {
+		t.Fatalf("binding launches were not both rewritten: %s", cmd.Args[8])
+	}
+	if got, _ := commandEnvValue(cmd.Env, "FZF_DEFAULT_OPTS_FILE"); got != filepath.Join(project, "config/fzf opts") {
+		t.Fatalf("relative options file changed meaning: %q", got)
+	}
+}
+
+func TestRestoreCommandContextRecoversExactQuery(t *testing.T) {
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := commandContext{WorkingDir: root, TempDir: t.TempDir(), TempEnv: map[string]*string{}}
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		value := os.Getenv(key)
+		t.Setenv(key, value)
+		ctx.TempEnv[key] = &value
+	}
+	data, err := json.Marshal(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(commandContextEnv, string(data))
+	for _, query := range []string{"", `--changed | "double" 'single' $dollar %percent% ` + "`tick`", QuerySourceMarker} {
+		t.Run(query, func(t *testing.T) {
+			t.Setenv("FZF_QUERY", query)
+			for _, flag := range []string{"--contains", "--not-contains", "--snippet"} {
+				for _, tail := range [][]string{{}, {"shell-altered query"}} {
+					args := append([]string{commandContextFlag, "--quiet", QuerySourceMarker, flag}, tail...)
+					got, err := RestoreCommandContext(args)
+					want := []string{"--quiet", flag, query}
+					if err != nil || !reflect.DeepEqual(got, want) {
+						t.Fatalf("query recovery: got %q, %v; want %q", got, err, want)
+					}
+				}
+			}
+		})
 	}
 }

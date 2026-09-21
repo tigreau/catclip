@@ -23,8 +23,10 @@ type commandContext struct {
 	TempEnv    map[string]*string
 }
 
-// PrepareCommand confines fzf's raw selection filenames to a private working
-// directory. Fixed absolute paths never travel through raw placeholders.
+// PrepareCommand gives fzf a private working/temp directory and records the
+// original project context. Unix fzf produces safe relative selection filenames;
+// Windows canonicalizes TMP=. back to an absolute path, so shell-special temp
+// roots remain an unresolved raw-placeholder limitation there.
 // The caller must keep the returned cleanup alive until fzf has exited.
 func PrepareCommand(cmd *exec.Cmd) (func(), error) {
 	root := cmd.Dir

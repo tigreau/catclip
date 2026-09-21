@@ -92,7 +92,7 @@ func TestFzfCheckpointContentMatchListCommandRetainsScopeTargets(t *testing.T) {
 	if !strings.Contains(command, "--internal-prediscovered") {
 		t.Fatalf("expected checkpoint form, got: %s", command)
 	}
-	if !strings.HasSuffix(command, " --internal-checkpoint-scope --contains {q}") || strings.Contains(command, " vscode-main ") {
+	if !strings.HasSuffix(command, " --internal-checkpoint-scope --internal-query-env --contains {q}") || strings.Contains(command, " vscode-main ") {
 		t.Fatalf("expected raw live query and bounded scope transport: %s", command)
 	}
 	data, err := ReadCheckpoint(checkpointPath)

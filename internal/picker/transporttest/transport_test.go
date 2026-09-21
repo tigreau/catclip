@@ -152,6 +152,15 @@ func TestFzfShellTransport(t *testing.T) {
 					t.Fatalf("empty arguments changed: got %q, want %q", got.Args, want)
 				}
 			})
+			t.Run("all_matches_focus", func(t *testing.T) {
+				command := relocate(discovery.FzfContentPreviewCommand("--contains", checkpoint))
+				got := runTransport(t, bin, command, "needle", []string{"[all current matches]\tall\t\t\t\t1"}, false)
+				want := []string{"--quiet", "--internal-file-preview", "--internal-searching-preview", "--internal-file-path", "",
+					"--internal-tree-target", "[all current matches]", "--internal-prediscovered", checkpoint, "--contains", "needle"}
+				if !reflect.DeepEqual(got.Args, want) {
+					t.Fatalf("empty focus changed: got %q, want %q", got.Args, want)
+				}
+			})
 			t.Run("large_target_selection", func(t *testing.T) {
 				var matches []discovery.TargetMatch
 				for i := 0; i < 10000; i++ {

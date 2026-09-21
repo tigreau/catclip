@@ -75,8 +75,9 @@ func CommandArg(value string) string {
 const QuerySourceMarker = "--internal-query-env"
 
 // SelectionFilePlaceholder is fzf's raw filename exception. Unlike ordinary
-// fields, it is not shell-quoted by fzf. PrepareCommand confines these names to
-// the private working directory; shell-special absolute temp roots stay out.
+// fields, it is not shell-quoted by fzf. PrepareCommand keeps the substituted
+// name relative on Unix. Windows makes it absolute again: these quotes protect
+// spaces/backslashes but cannot protect every shell-special temp-root character.
 func SelectionFilePlaceholder() string { return `"{+f}"` }
 
 func quoteCommandArg(value string, shell commandShell) string {
