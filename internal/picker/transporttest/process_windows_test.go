@@ -4,10 +4,11 @@ import (
 	"context"
 	"os/exec"
 	"strconv"
+	"testing"
 	"time"
 )
 
-func configureTransportCancellation(cmd *exec.Cmd) {
+func configureTransportCancellation(_ *testing.T, cmd *exec.Cmd) {
 	cmd.Cancel = func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

@@ -202,7 +202,7 @@ func runTransport(t *testing.T, bin, command, query string, rows []string, selec
 	cmd.Env = append(os.Environ(), "CATCLIP_FZF_ARGV_PROBE="+resultPath)
 	cmd.Stdin = strings.NewReader(strings.Join(rows, "\n") + "\n")
 	cmd.WaitDelay = 3 * time.Second
-	configureTransportCancellation(cmd)
+	configureTransportCancellation(t, cmd)
 	out, runErr := cmd.CombinedOutput()
 	data, readErr := os.ReadFile(resultPath)
 	if artifacts := os.Getenv("CATCLIP_TRANSPORT_ARTIFACTS"); artifacts != "" {
