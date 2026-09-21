@@ -1,17 +1,21 @@
 package picker
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
 
 const commandContextEnv = "CATCLIP_INTERNAL_PICKER_CONTEXT"
 const commandContextFlag = "--internal-picker-command"
+
+var commandExecutableMarker = regexp.MustCompile(`__catclip_exe_([A-Za-z0-9_-]+)__ --internal-picker-command`)
 
 type commandContext struct {
 	WorkingDir string
@@ -36,16 +40,13 @@ func PrepareCommand(cmd *exec.Cmd) (func(), error) {
 		return nil, err
 	}
 	if !filepath.IsAbs(cmd.Path) {
-		cmd.Path, err = filepath.Abs(cmd.Path)
-		if err != nil {
-			return nil, err
-		}
+		cmd.Path = filepath.Join(root, cmd.Path)
 	}
-	dir, err := os.MkdirTemp("", "catclip-fzf-session-")
+	tempRoot, err := filepath.Abs(os.TempDir())
 	if err != nil {
 		return nil, err
 	}
-	dir, err = filepath.Abs(dir)
+	dir, err := os.MkdirTemp(tempRoot, "catclip-fzf-session-")
 	if err != nil {
 		return nil, err
 	}
@@ -68,12 +69,43 @@ func PrepareCommand(cmd *exec.Cmd) (func(), error) {
 	if shell, ok := commandEnvValue(env, "SHELL"); ok && !filepath.IsAbs(shell) && strings.ContainsAny(shell, `/\`) {
 		env = withCommandEnv(env, "SHELL", filepath.Join(root, shell))
 	}
+	if options, ok := commandEnvValue(env, "FZF_DEFAULT_OPTS_FILE"); ok && options != "" && !filepath.IsAbs(options) {
+		env = withCommandEnv(env, "FZF_DEFAULT_OPTS_FILE", filepath.Join(root, options))
+	}
 	data, err := json.Marshal(ctx)
 	if err != nil {
 		cleanup()
 		return nil, err
 	}
 	cmd.Env = withCommandEnv(env, commandContextEnv, string(data))
+	// Only process fzf command-bearing options, never query/row/header data.
+	for i := 1; i < len(cmd.Args); i++ {
+		if cmd.Args[i-1] != "--preview" && cmd.Args[i-1] != "--bind" {
+			continue
+		}
+		var actionExecutable string
+		cmd.Args[i] = commandExecutableMarker.ReplaceAllStringFunc(cmd.Args[i], func(marker string) string {
+			encoded := commandExecutableMarker.FindStringSubmatch(marker)[1]
+			path, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
+			if decodeErr != nil {
+				err = decodeErr
+				return marker
+			}
+			key := fmt.Sprintf("CATCLIP_INTERNAL_EXEC_%d", i)
+			// A binding can contain multiple launches of the same executable.
+			if actionExecutable != "" && actionExecutable != string(path) {
+				err = fmt.Errorf("mixed executables in one picker action")
+				return marker
+			}
+			actionExecutable = string(path)
+			cmd.Env = withCommandEnv(cmd.Env, key, string(path))
+			return `"%` + key + `%" ` + commandContextFlag
+		})
+	}
+	if err != nil {
+		cleanup()
+		return nil, err
+	}
 	cmd.Dir = dir
 	// Keep fixed quoting aligned with fzf's automatic SHELL executor even if
 	// inherited FZF_DEFAULT_OPTS specifies a different --with-shell command.
@@ -115,14 +147,17 @@ func RestoreCommandContext(args []string) ([]string, error) {
 	if !filepath.IsAbs(ctx.WorkingDir) || !filepath.IsAbs(ctx.TempDir) {
 		return nil, fmt.Errorf("picker command context requires absolute directories")
 	}
+	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
+		value, ok := ctx.TempEnv[key]
+		if !ok || value != nil && strings.ContainsRune(*value, 0) {
+			return nil, fmt.Errorf("picker command context has invalid %s", key)
+		}
+	}
 	if err := os.Chdir(ctx.WorkingDir); err != nil {
 		return nil, err
 	}
 	for _, key := range []string{"TMPDIR", "TMP", "TEMP"} {
-		value, ok := ctx.TempEnv[key]
-		if !ok {
-			return nil, fmt.Errorf("picker command context missing %s", key)
-		}
+		value := ctx.TempEnv[key]
 		var err error
 		if value == nil {
 			err = os.Unsetenv(key)
@@ -133,7 +168,22 @@ func RestoreCommandContext(args []string) ([]string, error) {
 			return nil, err
 		}
 	}
-	return args[1:], nil
+	args = args[1:]
+	for _, i := range []int{len(args) - 3, len(args) - 2} {
+		if i < 0 || args[i] != QuerySourceMarker {
+			continue
+		}
+		flag := args[i+1]
+		if flag != "--contains" && flag != "--not-contains" && flag != "--snippet" {
+			continue
+		}
+		query, ok := os.LookupEnv("FZF_QUERY")
+		if !ok {
+			return nil, fmt.Errorf("picker query environment is missing")
+		}
+		return append(append([]string(nil), args[:i]...), flag, query), nil
+	}
+	return args, nil
 }
 
 // SelectionFilePath resolves fzf-owned relative filenames after the helper has

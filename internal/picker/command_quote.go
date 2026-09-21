@@ -1,6 +1,7 @@
 package picker
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -40,6 +41,12 @@ func currentCommandShell() commandShell {
 // CommandExecutable quotes a fixed executable and, where necessary, invokes
 // it. This is a command prefix, not an argument for exec.Command.
 func CommandExecutable(path string) string {
+	if currentCommandShell() == commandCmd {
+		// cmd parses the executable position differently from native operands.
+		// PrepareCommand supplies this path through a quoted environment value;
+		// expansion is once-only, so percent characters in the path stay literal.
+		return "__catclip_exe_" + base64.RawURLEncoding.EncodeToString([]byte(path)) + "__ " + commandContextFlag
+	}
 	quoted := CommandArg(path)
 	if currentCommandShell() == commandPowerShell {
 		return "& " + quoted + " " + commandContextFlag
@@ -54,9 +61,18 @@ var commandPlaceholder = regexp.MustCompile(`\{(?:[+*sfr]*[0-9,-.]*|q(?::s?[0-9,
 // CommandArg protects a fixed operand across both fzf template substitution
 // and shell parsing. Ordinary dynamic placeholders must NOT use this function.
 func CommandArg(value string) string {
+	if value == "" && currentCommandShell() == commandPowerShell && strings.HasPrefix(filepath.Base(os.Getenv("SHELL")), "powershell") {
+		// Windows PowerShell's legacy native binder drops an empty string.
+		return `'""'`
+	}
 	quoted := quoteCommandArg(value, currentCommandShell())
 	return commandPlaceholder.ReplaceAllStringFunc(quoted, func(s string) string { return `\` + s })
 }
+
+// QuerySourceMarker preserves fzf's {q} refresh semantics while allowing the
+// helper to recover exact query bytes from FZF_QUERY. PowerShell 5 drops empty
+// native arguments; PowerShell 7's binder can preserve fzf's escape backslashes.
+const QuerySourceMarker = "--internal-query-env"
 
 // SelectionFilePlaceholder is fzf's raw filename exception. Unlike ordinary
 // fields, it is not shell-quoted by fzf. PrepareCommand confines these names to

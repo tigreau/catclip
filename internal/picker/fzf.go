@@ -124,11 +124,13 @@ func Run(bin string, req Request) (Result, error) {
 	if req.Env != nil {
 		cmd.Env = req.Env
 	}
-	cleanup, setupErr := PrepareCommand(cmd)
-	if setupErr != nil {
-		return Result{}, setupErr
+	if requestUsesCommandContext(req) {
+		cleanup, setupErr := PrepareCommand(cmd)
+		if setupErr != nil {
+			return Result{}, setupErr
+		}
+		defer cleanup()
 	}
-	defer cleanup()
 	if benchEnabled {
 		platform.InternalBenchLog("picker.fzf.ready", append(benchFields,
 			"args", platform.InternalBenchInt(len(args)),
@@ -194,6 +196,18 @@ func Run(bin string, req Request) (Result, error) {
 		"matches", platform.InternalBenchInt(len(result.Matches)),
 	)
 	return result, nil
+}
+
+func requestUsesCommandContext(req Request) bool {
+	if strings.Contains(req.PreviewCommand, commandContextFlag) {
+		return true
+	}
+	for _, binding := range req.Bindings {
+		if strings.Contains(binding, commandContextFlag) {
+			return true
+		}
+	}
+	return false
 }
 
 func pickerBenchFields(req Request) []string {

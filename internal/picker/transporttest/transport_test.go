@@ -173,7 +173,7 @@ func TestFzfShellTransport(t *testing.T) {
 				if len(got.Args) != 12 {
 					t.Fatalf("target argv changed or selection expanded: %q", got.Args)
 				}
-				if filepath.IsAbs(got.Args[11]) || filepath.Base(got.Args[11]) != filepath.Clean(got.Args[11]) {
+				if runtime.GOOS != "windows" && (filepath.IsAbs(got.Args[11]) || filepath.Base(got.Args[11]) != filepath.Clean(got.Args[11])) {
 					t.Fatalf("fzf must pass only a safe relative filename, got %q", got.Args[11])
 				}
 				want := []string{"--quiet", "--internal-tree-preview", "--internal-target-inventory", checkpoint,

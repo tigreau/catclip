@@ -96,6 +96,18 @@ func runSinkPreviewCommandRoot(t *testing.T, command string) string {
 
 func runShellCommandRoot(t *testing.T, command string) string {
 	t.Helper()
+	fzf, ok := discovery.FzfBinary()
+	if !ok {
+		t.Fatal("fzf unavailable")
+	}
+	setup := exec.Command(fzf, "--preview", command)
+	setup.Env = nativePreviewTestEnv(t)
+	cleanup, setupErr := picker.PrepareCommand(setup)
+	if setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	defer cleanup()
+	command = setup.Args[2]
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		batPath := filepath.Join(t.TempDir(), "run.bat")
@@ -106,16 +118,8 @@ func runShellCommandRoot(t *testing.T, command string) string {
 	} else {
 		cmd = exec.Command("/bin/sh", "-c", command)
 	}
-	cmd.Env = nativePreviewTestEnv(t)
-	// Reuse the real private cwd/environment setup. This test invokes the
-	// shell directly, so retain its argv instead of the fzf-only options.
-	shellArgs := append([]string(nil), cmd.Args...)
-	cleanup, setupErr := picker.PrepareCommand(cmd)
-	if setupErr != nil {
-		t.Fatal(setupErr)
-	}
-	defer cleanup()
-	cmd.Args = shellArgs
+	cmd.Env = setup.Env
+	cmd.Dir = setup.Dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q failed: %v\n%s", command, err, string(out))

@@ -95,7 +95,7 @@ func FzfContentPreviewCommand(flag, checkpointPath string) string {
 	}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
-	parts = append(parts, flag, "{q}")
+	parts = append(parts, picker.QuerySourceMarker, flag, "{q}")
 	return strings.Join(parts, " ")
 }
 
@@ -119,7 +119,7 @@ func FzfContentSearchingPreviewCommand(flag string) string {
 	}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
-	parts = append(parts, flag, "{q}")
+	parts = append(parts, picker.QuerySourceMarker, flag, "{q}")
 	return strings.Join(parts, " ")
 }
 
@@ -172,7 +172,7 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 	parts := []string{picker.CommandExecutable(self), "--quiet", "--internal-content-match-list", "--internal-prediscovered", picker.CommandArg(checkpointPath), "--internal-checkpoint-scope"}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
-	parts = append(parts, flag, "{q}")
+	parts = append(parts, picker.QuerySourceMarker, flag, "{q}")
 	return strings.Join(parts, " "), checkpointPath, func() {
 		_ = os.RemoveAll(tmpdir)
 	}, nil

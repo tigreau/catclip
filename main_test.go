@@ -2304,7 +2304,7 @@ func TestFzfContentPreviewCommandUsesFilePreviewRenderer(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --contains {q}`) {
+	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --internal-query-env --contains {q}`) {
 		t.Fatalf("expected contains preview to invoke file preview renderer, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
@@ -2319,7 +2319,7 @@ func TestFzfContentSearchingPreviewCommandUsesForcedSearchingRenderer(t *testing
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	want := picker.CommandExecutable(self) + ` --quiet --internal-file-preview --internal-searching-preview --internal-file-path ` + picker.CommandArg("") + ` --contains {q}`
+	want := picker.CommandExecutable(self) + ` --quiet --internal-file-preview --internal-searching-preview --internal-file-path ` + picker.CommandArg("") + ` --internal-query-env --contains {q}`
 	if !strings.Contains(command, want) {
 		t.Fatalf("expected searching preview to invoke forced file preview renderer, got %q", command)
 	}
@@ -2335,7 +2335,7 @@ func TestFzfContentSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --snippet {q}`) {
+	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --internal-query-env --snippet {q}`) {
 		t.Fatalf("expected snippet contains preview to forward --snippet, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
