@@ -1,6 +1,7 @@
 // Package transporttest exercises the real fzf executor, not a reimplementation
-// of its quoting. --sync load actions run before screen initialization, so these
-// shell-boundary checks need no TTY. They do not replace interactive UI tests.
+// of its quoting. --sync load actions accept before drawing the UI, but Linux
+// fzf still needs a controlling terminal (provided by the CI step). These
+// shell-boundary checks do not replace interactive UI tests.
 package transporttest
 
 import (
