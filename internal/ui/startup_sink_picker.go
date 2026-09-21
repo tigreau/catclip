@@ -581,20 +581,20 @@ func prepareStartupSinkPreviewFilesWithRenderer(ctx StartupSinkPickerContext, pr
 	if err != nil || strings.TrimSpace(self) == "" {
 		return fail(fmt.Errorf("failed to locate catclip executable"))
 	}
-	selfQuoted := discovery.ShellQuoteArg(self)
+	selfQuoted := picker.CommandExecutable(self)
 
 	previewCmd := strings.Join([]string{
 		selfQuoted,
 		"--internal-sink-preview",
-		discovery.ShellQuoteArg(modePath),
-		discovery.ShellQuoteArg(outputPath),
-		discovery.ShellQuoteArg(treePath),
+		picker.CommandArg(modePath),
+		picker.CommandArg(outputPath),
+		picker.CommandArg(treePath),
 	}, " ")
 
 	toggleCmd := strings.Join([]string{
 		selfQuoted,
 		"--internal-sink-toggle",
-		discovery.ShellQuoteArg(modePath),
+		picker.CommandArg(modePath),
 	}, " ")
 
 	renderCtx, renderCancel := context.WithCancel(context.Background())

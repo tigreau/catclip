@@ -21,6 +21,7 @@ import (
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 )
 
@@ -495,7 +496,7 @@ func TestStartupModifierCurrentScopePreviewCommandUsesCheckpointHandoff(t *testi
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
-	if !strings.HasPrefix(cmd, discovery.ShellQuoteArg(self)+" --quiet --internal-tree-preview --internal-prediscovered ") {
+	if !strings.HasPrefix(cmd, picker.CommandExecutable(self)+" --quiet --internal-tree-preview --internal-prediscovered ") {
 		t.Fatalf("expected checkpoint preview child, got %q", cmd)
 	}
 	if !strings.HasSuffix(cmd, " --internal-checkpoint-scope") || strings.Contains(cmd, " --recent ") {

@@ -2270,7 +2270,7 @@ func TestFzfPreviewCommandUsesInternalTreePreview(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-tree-preview --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} --internal-target-selection "{+f}"`) {
+	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-tree-preview --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} --internal-target-selection "{+f}"`) {
 		t.Fatalf("expected preview command to invoke internal tree preview, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
@@ -2284,7 +2284,7 @@ func TestFzfPreviewCommandIncludesBinaryPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+" --quiet --with-binaries --internal-tree-preview") {
+	if !strings.Contains(command, picker.CommandExecutable(self)+" --quiet --with-binaries --internal-tree-preview") {
 		t.Fatalf("expected target preview to preserve --with-binaries, got %q", command)
 	}
 }
@@ -2292,7 +2292,7 @@ func TestFzfPreviewCommandIncludesBinaryPolicy(t *testing.T) {
 func TestFzfPreviewCommandIncludesTargetInventory(t *testing.T) {
 	inventoryPath := "/tmp/catclip target inventory.bin"
 	command := discovery.FzfPreviewCommandWithInventory(inventoryPath, false)
-	if !strings.Contains(command, "--internal-target-inventory "+discovery.ShellQuoteArg(inventoryPath)) {
+	if !strings.Contains(command, "--internal-target-inventory "+picker.CommandArg(inventoryPath)) {
 		t.Fatalf("expected target inventory handoff, got %q", command)
 	}
 }
@@ -2304,7 +2304,7 @@ func TestFzfContentPreviewCommandUsesFilePreviewRenderer(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --contains {q}`) {
+	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --contains {q}`) {
 		t.Fatalf("expected contains preview to invoke file preview renderer, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
@@ -2319,7 +2319,7 @@ func TestFzfContentSearchingPreviewCommandUsesForcedSearchingRenderer(t *testing
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	want := discovery.ShellQuoteArg(self) + ` --quiet --internal-file-preview --internal-searching-preview --internal-file-path "" --contains {q}`
+	want := picker.CommandExecutable(self) + ` --quiet --internal-file-preview --internal-searching-preview --internal-file-path ` + picker.CommandArg("") + ` --contains {q}`
 	if !strings.Contains(command, want) {
 		t.Fatalf("expected searching preview to invoke forced file preview renderer, got %q", command)
 	}
@@ -2335,7 +2335,7 @@ func TestFzfContentSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --snippet {q}`) {
+	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --snippet {q}`) {
 		t.Fatalf("expected snippet contains preview to forward --snippet, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
@@ -2351,7 +2351,7 @@ func TestFzfDiffFilePreviewCommandUsesFilePreviewRenderer(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if want := discovery.ShellQuoteArg(self) + " --quiet --internal-file-preview --internal-diff-preview-state " + discovery.ShellQuoteArg(statePath) + " --internal-file-path {3}"; command != want {
+	if want := picker.CommandExecutable(self) + " --quiet --internal-file-preview --internal-diff-preview-state " + picker.CommandArg(statePath) + " --internal-file-path {3}"; command != want {
 		t.Fatalf("expected bounded diff file preview command, got %q, want %q", command, want)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {

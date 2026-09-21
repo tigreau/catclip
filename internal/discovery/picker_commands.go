@@ -41,7 +41,7 @@ func fzfPreviewCommand(inventoryPath string, withBinaries ...bool) string {
 		return ""
 	}
 
-	selfQ := ShellQuoteArg(self)
+	selfQ := picker.CommandExecutable(self)
 	binaryFlag := ""
 	if len(withBinaries) > 0 && withBinaries[0] {
 		binaryFlag = " --with-binaries"
@@ -52,11 +52,11 @@ func fzfPreviewCommand(inventoryPath string, withBinaries ...bool) string {
 	// {2}/{3}/{4} are the focused entry's metadata for tree highlight.
 	command := selfQ + ` --quiet` + binaryFlag + ` --internal-tree-preview`
 	if inventoryPath != "" {
-		command += ` --internal-target-inventory ` + ShellQuoteArg(inventoryPath)
+		command += ` --internal-target-inventory ` + picker.CommandArg(inventoryPath)
 	}
 	return command +
 		` --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4}` +
-		` --internal-target-selection ` + ShellQuoteArg("{+f}")
+		` --internal-target-selection ` + picker.SelectionFilePlaceholder()
 }
 
 // FzfContentPreviewCommand builds the preview-pane command for the
@@ -83,7 +83,7 @@ func FzfContentPreviewCommand(flag, checkpointPath string) string {
 	}
 
 	parts := []string{
-		ShellQuoteArg(self),
+		picker.CommandExecutable(self),
 		"--quiet",
 		"--internal-file-preview",
 		"--internal-searching-preview",
@@ -91,7 +91,7 @@ func FzfContentPreviewCommand(flag, checkpointPath string) string {
 		"--internal-tree-target", "{1}",
 	}
 	if checkpointPath != "" {
-		parts = append(parts, "--internal-prediscovered", ShellQuoteArg(checkpointPath))
+		parts = append(parts, "--internal-prediscovered", picker.CommandArg(checkpointPath))
 	}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
@@ -111,11 +111,11 @@ func FzfContentSearchingPreviewCommand(flag string) string {
 	}
 
 	parts := []string{
-		ShellQuoteArg(self),
+		picker.CommandExecutable(self),
 		"--quiet",
 		"--internal-file-preview",
 		"--internal-searching-preview",
-		"--internal-file-path", ShellQuoteArg(""),
+		"--internal-file-path", picker.CommandArg(""),
 	}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
@@ -169,7 +169,7 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 		return "", "", noop, err
 	}
 
-	parts := []string{ShellQuoteArg(self), "--quiet", "--internal-content-match-list", "--internal-prediscovered", ShellQuoteArg(checkpointPath), "--internal-checkpoint-scope"}
+	parts := []string{picker.CommandExecutable(self), "--quiet", "--internal-content-match-list", "--internal-prediscovered", picker.CommandArg(checkpointPath), "--internal-checkpoint-scope"}
 	// fzf already shell-quotes placeholders like {q}; adding our own quotes
 	// breaks regex input that includes spaces or quote characters.
 	parts = append(parts, flag, "{q}")

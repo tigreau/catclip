@@ -7,10 +7,11 @@ import (
 	"strings"
 
 	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/picker"
 )
 
 func readTargetSelection(selectionPath string) ([]string, error) {
-	f, err := os.Open(selectionPath)
+	f, err := os.Open(picker.SelectionFilePath(selectionPath))
 	if err != nil {
 		return nil, err
 	}

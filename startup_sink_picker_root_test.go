@@ -12,6 +12,7 @@ import (
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/output"
+	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/ui"
 )
 
@@ -105,7 +106,16 @@ func runShellCommandRoot(t *testing.T, command string) string {
 	} else {
 		cmd = exec.Command("/bin/sh", "-c", command)
 	}
-	cmd.Env = append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
+	cmd.Env = nativePreviewTestEnv(t)
+	// Reuse the real private cwd/environment setup. This test invokes the
+	// shell directly, so retain its argv instead of the fzf-only options.
+	shellArgs := append([]string(nil), cmd.Args...)
+	cleanup, setupErr := picker.PrepareCommand(cmd)
+	if setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	defer cleanup()
+	cmd.Args = shellArgs
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q failed: %v\n%s", command, err, string(out))

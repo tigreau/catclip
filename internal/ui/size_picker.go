@@ -420,11 +420,11 @@ func buildSizePickerPreview(view resolvedScopeView, tailArgs []string) (cmd stri
 	}
 
 	parts := []string{
-		discovery.ShellQuoteArg(self),
+		picker.CommandExecutable(self),
 		"--quiet",
 		"--internal-tree-preview",
 		"--internal-prediscovered",
-		discovery.ShellQuoteArg(checkpointPath),
+		picker.CommandArg(checkpointPath),
 	}
 	parts = append(parts, tailArgs...)
 	return strings.Join(parts, " "), tmpdir

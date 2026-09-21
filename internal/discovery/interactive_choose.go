@@ -475,7 +475,7 @@ func FzfDiffFilePreviewCommand(statePath string) string {
 		return ""
 	}
 
-	parts := []string{ShellQuoteArg(self), "--quiet", "--internal-file-preview", "--internal-diff-preview-state", ShellQuoteArg(statePath), "--internal-file-path", "{3}"}
+	parts := []string{picker.CommandExecutable(self), "--quiet", "--internal-file-preview", "--internal-diff-preview-state", picker.CommandArg(statePath), "--internal-file-path", "{3}"}
 	return strings.Join(parts, " ")
 }
 

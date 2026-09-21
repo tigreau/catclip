@@ -19,20 +19,27 @@ import (
 	"time"
 
 	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/picker"
 )
 
 type probeResult struct {
-	Args      []string
-	Selection string
-	Error     string
+	Args       []string
+	Selection  string
+	Error      string
+	WorkingDir string
 }
 
 func TestMain(m *testing.M) {
 	if resultPath := os.Getenv("CATCLIP_FZF_ARGV_PROBE"); resultPath != "" {
-		result := probeResult{Args: os.Args[1:]}
+		args, contextErr := picker.RestoreCommandContext(os.Args[1:])
+		result := probeResult{Args: args}
+		if contextErr != nil {
+			result.Error = contextErr.Error()
+		}
+		result.WorkingDir, _ = os.Getwd()
 		for i, arg := range result.Args {
 			if arg == "--internal-target-selection" && i+1 < len(result.Args) {
-				data, err := os.ReadFile(result.Args[i+1])
+				data, err := os.ReadFile(picker.SelectionFilePath(result.Args[i+1]))
 				result.Selection = string(data)
 				if err != nil {
 					result.Error = err.Error()
@@ -87,16 +94,14 @@ func TestFzfShellTransport(t *testing.T) {
 	t.Setenv("FZF_DEFAULT_OPTS_FILE", "")
 	t.Setenv("CATCLIP_EXPAND", "must-not-expand")
 
-	for _, special := range []bool{false, true} {
-		name := "spaces"
-		if special {
-			name = "literal_metacharacters"
-		}
+	for _, name := range []string{"spaces", "literal_metacharacters", "literal_placeholders", "temp_root_only"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			component := "launcher with spaces"
-			if special {
+			if name == "literal_metacharacters" {
 				component += " 'é' & $CATCLIP_EXPAND %CATCLIP_EXPAND% !CATCLIP_EXPAND!"
+			} else if name == "literal_placeholders" {
+				component += " {q} {2} {+f}"
 			}
 			launcherDir := filepath.Join(root, component)
 			if err := os.Mkdir(launcherDir, 0o700); err != nil {
@@ -121,11 +126,11 @@ func TestFzfShellTransport(t *testing.T) {
 			// fixed path contains the characters under test; argv is recorded by
 			// TestMain above before the test flag parser runs.
 			relocate := func(command string) string {
-				prefix := discovery.ShellQuoteArg(self)
+				prefix := picker.CommandExecutable(self)
 				if !strings.HasPrefix(command, prefix+" ") {
 					t.Fatalf("builder did not produce expected executable prefix: %s", command)
 				}
-				return discovery.ShellQuoteArg(probe) + strings.TrimPrefix(command, prefix)
+				return picker.CommandExecutable(probe) + strings.TrimPrefix(command, prefix)
 			}
 			checkpoint := filepath.Join(launcherDir, "scope.json")
 			path := "src/space 'é' & $CATCLIP_EXPAND %CATCLIP_EXPAND% !literal! [x].go"
@@ -168,6 +173,9 @@ func TestFzfShellTransport(t *testing.T) {
 				if len(got.Args) != 12 {
 					t.Fatalf("target argv changed or selection expanded: %q", got.Args)
 				}
+				if filepath.IsAbs(got.Args[11]) || filepath.Base(got.Args[11]) != filepath.Clean(got.Args[11]) {
+					t.Fatalf("fzf must pass only a safe relative filename, got %q", got.Args[11])
+				}
 				want := []string{"--quiet", "--internal-tree-preview", "--internal-target-inventory", checkpoint,
 					"--internal-tree-target", matches[0].Path, "--internal-tree-kind", "file", "--internal-tree-state", "text",
 					"--internal-target-selection", got.Args[11]}
@@ -184,6 +192,9 @@ func runTransport(t *testing.T, bin, command, query string, rows []string, selec
 	dir := t.TempDir()
 	// Verify the raw file-placeholder exception with an actual spaced temp path.
 	tempDir := filepath.Join(dir, "fzf temp with spaces")
+	if strings.Contains(t.Name(), "/temp_root_only/") {
+		tempDir = filepath.Join(dir, "fzf temp 'é' $CATCLIP_EXPAND %CATCLIP_EXPAND% !bang! {q}")
+	}
 	if err := os.Mkdir(tempDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -202,6 +213,15 @@ func runTransport(t *testing.T, bin, command, query string, rows []string, selec
 	cmd.Env = append(os.Environ(), "CATCLIP_FZF_ARGV_PROBE="+resultPath)
 	cmd.Stdin = strings.NewReader(strings.Join(rows, "\n") + "\n")
 	cmd.WaitDelay = 3 * time.Second
+	wantDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanup, err := picker.PrepareCommand(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
 	configureTransportCancellation(t, cmd)
 	out, runErr := cmd.CombinedOutput()
 	data, readErr := os.ReadFile(resultPath)
@@ -230,6 +250,15 @@ func runTransport(t *testing.T, bin, command, query string, rows []string, selec
 	}
 	if got.Error != "" {
 		t.Fatalf("helper could not read fzf selection file: %s", got.Error)
+	}
+	// Canonicalize aliases on Windows (short paths) and macOS (/var).
+	wantInfo, err := os.Stat(wantDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotInfo, err := os.Stat(got.WorkingDir)
+	if err != nil || !os.SameFile(wantInfo, gotInfo) {
+		t.Fatalf("helper cwd = %q, want %q: %v", got.WorkingDir, wantDir, err)
 	}
 	return got
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 )
 
@@ -191,8 +192,8 @@ func buildFileSetCheckpointPreview(currentArgs []string, view resolvedScopeView,
 	}
 	buildCommand := func(path string) string {
 		parts := []string{
-			discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
-			"--internal-prediscovered", discovery.ShellQuoteArg(path),
+			picker.CommandExecutable(self), "--quiet", "--internal-tree-preview",
+			"--internal-prediscovered", picker.CommandArg(path),
 		}
 		if previewFlag != "" {
 			// Unlike ordinary fzf placeholders, the `f` form inserts its
@@ -202,7 +203,7 @@ func buildFileSetCheckpointPreview(currentArgs []string, view resolvedScopeView,
 			// placeholder in the command template so the substituted path stays
 			// one argument under cmd, PowerShell, and POSIX shells.
 			parts = append(parts,
-				"--internal-file-set-selection", discovery.ShellQuoteArg("{+f}"),
+				"--internal-file-set-selection", picker.SelectionFilePlaceholder(),
 				"--internal-file-set-stage", strings.TrimPrefix(previewFlag, "--"),
 			)
 		}
@@ -271,21 +272,21 @@ func startupModifierCurrentScopePreviewCommand(currentArgs []string, state start
 	}
 	buildCommand := func(checkpointPath string) string {
 		parts := []string{
-			discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
-			"--internal-prediscovered", discovery.ShellQuoteArg(checkpointPath), "--internal-checkpoint-scope",
+			picker.CommandExecutable(self), "--quiet", "--internal-tree-preview",
+			"--internal-prediscovered", picker.CommandArg(checkpointPath), "--internal-checkpoint-scope",
 		}
 		return strings.Join(parts, " ")
 	}
 	buildTargetInventoryCommand := func(inventoryPath, rootsPath string) string {
 		parts := []string{
-			discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
-			"--internal-target-inventory", discovery.ShellQuoteArg(inventoryPath),
+			picker.CommandExecutable(self), "--quiet", "--internal-tree-preview",
+			"--internal-target-inventory", picker.CommandArg(inventoryPath),
 		}
 		if view.Invocation.WithBinaries {
 			parts = append(parts, "--with-binaries")
 		}
 		if rootsPath != "" {
-			parts = append(parts, "--internal-target-roots", discovery.ShellQuoteArg(rootsPath))
+			parts = append(parts, "--internal-target-roots", picker.CommandArg(rootsPath))
 		}
 		return strings.Join(parts, " ")
 	}
