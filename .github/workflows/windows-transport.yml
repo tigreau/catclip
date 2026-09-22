@@ -50,16 +50,18 @@ jobs:
           ref: eae8d9d27eaeffc777699c01bf8f8b8c071908c1
           path: .fzf-experiment
 
-      - name: Build fzf with selection-file quoting experiment
+      - name: Build fzf with transport fixes experiment
         if: matrix.fzf-build == 'quoted-files'
         shell: pwsh
         run: |
           $source = Join-Path $env:GITHUB_WORKSPACE '.fzf-experiment'
-          $patch = Join-Path $env:GITHUB_WORKSPACE '.github/patches/fzf-v0.74.1-quote-selection-files.patch'
-          git -C $source apply --check $patch
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          git -C $source apply $patch
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($patchName in @('fzf-v0.74.1-quote-selection-files.patch', 'fzf-v0.74.1-windows-custom-shell.patch')) {
+            $patch = Join-Path $env:GITHUB_WORKSPACE ".github/patches/$patchName"
+            git -C $source apply --check $patch
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            git -C $source apply $patch
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
           $fzf = Join-Path $env:RUNNER_TEMP 'fzf-quoted-files.exe'
           Push-Location $source
           go build -ldflags "-X main.version=$env:FZF_VERSION -X main.revision=quoted-files-experiment" -o $fzf .
@@ -83,6 +85,21 @@ jobs:
             # Do not accidentally select the WSL bash launcher from System32.
             $env:CATCLIP_TEST_FZF_SHELL = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
             if (-not (Test-Path -LiteralPath $env:CATCLIP_TEST_FZF_SHELL)) { throw 'Required Git Bash executable is missing' }
+          }
+          if ($env:CATCLIP_TEST_FZF_QUOTED_FILES -eq '1') {
+            # Exercise the dependency's custom executor directly. Catclip's
+            # remaining Windows override cannot mask these tests.
+            $env:FZF_EXECUTOR_TEST_SHELL = (Get-Command $env:CATCLIP_TEST_FZF_SHELL).Source
+            if (-not $env:FZF_EXECUTOR_TEST_SHELL) { throw 'Native test shell path is missing' }
+            Push-Location (Join-Path $env:GITHUB_WORKSPACE '.fzf-experiment')
+            go test -v -count=1 -timeout=2m ./src/util -run '^TestCustomShell'
+            $executorExit = $LASTEXITCODE
+            if ($executorExit -eq 0) {
+              go test -v -count=1 -timeout=2m ./src -run '^TestFilePlaceholderQuotingAndCleanup$'
+              $executorExit = $LASTEXITCODE
+            }
+            Pop-Location
+            if ($executorExit -ne 0) { exit $executorExit }
           }
           go test -json -count=1 -timeout=6m ./internal/picker/transporttest 2>&1 | Tee-Object -FilePath (Join-Path $env:CATCLIP_TRANSPORT_ARTIFACTS 'go-test.jsonl')
           $testExit = $LASTEXITCODE
