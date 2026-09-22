@@ -101,7 +101,7 @@ func TestFzfShellTransport(t *testing.T) {
 			if name == "literal_metacharacters" {
 				component += " 'é' & $CATCLIP_EXPAND %CATCLIP_EXPAND% !CATCLIP_EXPAND!"
 			} else if name == "literal_placeholders" {
-				component += " {q} {2} {+f}"
+				component += " {q} {2} {+f} __catclip_exe_YQ__ --internal-picker-command"
 			}
 			launcherDir := filepath.Join(root, component)
 			if err := os.Mkdir(launcherDir, 0o700); err != nil {
@@ -190,6 +190,49 @@ func TestFzfShellTransport(t *testing.T) {
 				}
 			})
 		})
+	}
+	if runtime.GOOS != "windows" {
+		for _, source := range []string{"environment", "options_file"} {
+			t.Run("inherited_shell/"+source, func(t *testing.T) {
+				bash, err := exec.LookPath("bash")
+				if err != nil {
+					t.Fatal(err)
+				}
+				sh, err := exec.LookPath("sh")
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("SHELL", sh)
+				dir := t.TempDir()
+				bindingResult := filepath.Join(dir, "inherited-binding.txt")
+				// This inherited binding needs both Bash and its configured extglob
+				// flag. The default SHELL executor cannot satisfy the assertion.
+				binding := "start:execute-silent(shopt -q extglob && printf ok > " + picker.CommandArg(bindingResult) + ")"
+				quoteOption := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
+				opts := "--with-shell " + quoteOption(quoteOption(bash)+" --noprofile -O extglob -c") + " --bind " + quoteOption(binding)
+				if source == "environment" {
+					t.Setenv("FZF_DEFAULT_OPTS", opts)
+				} else {
+					path := filepath.Join(dir, "fzf options")
+					if err := os.WriteFile(path, []byte(opts), 0o600); err != nil {
+						t.Fatal(err)
+					}
+					t.Setenv("FZF_DEFAULT_OPTS_FILE", path)
+				}
+				self, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := runTransport(t, bin, picker.CommandExecutable(self)+" --inherited-settings-helper", "", []string{"entry"}, false)
+				if !reflect.DeepEqual(got.Args, []string{"--inherited-settings-helper"}) {
+					t.Fatalf("catclip helper arguments changed: %q", got.Args)
+				}
+				data, err := os.ReadFile(bindingResult)
+				if err != nil || string(data) != "ok" {
+					t.Fatalf("inherited shell flags/binding did not run: %q, %v", data, err)
+				}
+			})
+		}
 	}
 }
 

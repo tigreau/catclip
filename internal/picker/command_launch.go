@@ -1,58 +1,64 @@
 package picker
 
 import (
-	"encoding/base64"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 )
 
 const commandContextFlag = "--internal-picker-command"
 
-var commandExecutableMarker = regexp.MustCompile(`__catclip_exe_([A-Za-z0-9_-]+)__ --internal-picker-command`)
+// Register executable aliases when constructing commands, not by interpreting
+// arbitrary text in a finished command. Production uses the current executable;
+// tests can register a relocated helper without changing the process environment.
+var commandExecutables sync.Map // environment key -> literal executable path
 
-// PrepareCommand supplies literal cmd executable paths and pins fzf's automatic
-// shell selection. It does not change cwd, temp settings, or create any files.
+var commandExecutableReference = regexp.MustCompile(`%CATCLIP_INTERNAL_EXE_[0-9A-F]{64}%`)
+
+func cmdCommandExecutable(path string) string {
+	sum := sha256.Sum256([]byte(path))
+	key := "CATCLIP_INTERNAL_EXE_" + strings.ToUpper(hex.EncodeToString(sum[:]))
+	commandExecutables.Store(key, path)
+	return `"%` + key + `%" ` + commandContextFlag
+}
+
+// PrepareCommand supplies registered cmd executable paths. It does not change
+// cwd, temp settings, or create any files.
 func PrepareCommand(cmd *exec.Cmd) error {
 	env := cmd.Env
 	if env == nil {
 		env = os.Environ()
 	}
 	cmd.Env = append([]string(nil), env...)
-	var err error
 	// Only process fzf command-bearing options, never query/row/header data.
+	seen := make(map[string]bool)
 	for i := 1; i < len(cmd.Args); i++ {
 		if cmd.Args[i-1] != "--preview" && cmd.Args[i-1] != "--bind" {
 			continue
 		}
-		var actionExecutable string
-		cmd.Args[i] = commandExecutableMarker.ReplaceAllStringFunc(cmd.Args[i], func(marker string) string {
-			encoded := commandExecutableMarker.FindStringSubmatch(marker)[1]
-			path, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
-			if decodeErr != nil {
-				err = decodeErr
-				return marker
+		for _, ref := range commandExecutableReference.FindAllString(cmd.Args[i], -1) {
+			key := strings.Trim(ref, "%")
+			path, registered := commandExecutables.Load(key)
+			if !registered || seen[key] {
+				continue
 			}
-			key := fmt.Sprintf("CATCLIP_INTERNAL_EXEC_%d", i)
-			// A binding can contain multiple launches of the same executable.
-			if actionExecutable != "" && actionExecutable != string(path) {
-				err = fmt.Errorf("mixed executables in one picker action")
-				return marker
-			}
-			actionExecutable = string(path)
-			cmd.Env = withCommandEnv(cmd.Env, key, string(path))
-			return `"%` + key + `%" ` + commandContextFlag
-		})
+			seen[key] = true
+			cmd.Env = withCommandEnv(cmd.Env, key, path.(string))
+		}
 	}
-	if err != nil {
-		return err
+	// Windows still needs a separate compatibility repair: pinned fzf does not
+	// select shell-specific placeholder quoting with a custom --with-shell.
+	// Do not apply this workaround on Unix, where it breaks inherited commands
+	// and shell flags without fixing any quoting problem.
+	if runtime.GOOS == "windows" {
+		cmd.Args = append(cmd.Args, "--with-shell", "")
 	}
-	// Keep fixed quoting aligned with fzf's automatic SHELL executor even if
-	// inherited FZF_DEFAULT_OPTS specifies a different --with-shell command.
-	cmd.Args = append(cmd.Args, "--with-shell", "")
 	return nil
 }
 

@@ -1,7 +1,6 @@
 package picker
 
 import (
-	"encoding/base64"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,7 +44,7 @@ func CommandExecutable(path string) string {
 		// cmd parses the executable position differently from native operands.
 		// PrepareCommand supplies this path through a quoted environment value;
 		// expansion is once-only, so percent characters in the path stay literal.
-		return "__catclip_exe_" + base64.RawURLEncoding.EncodeToString([]byte(path)) + "__ " + commandContextFlag
+		return cmdCommandExecutable(path)
 	}
 	quoted := CommandArg(path)
 	if currentCommandShell() == commandPowerShell {
