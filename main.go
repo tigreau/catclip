@@ -53,7 +53,7 @@ func newExitError(code int, message string) error {
 
 // Main parses the CLI and runs the selected action.
 func Main() {
-	args, contextErr := picker.RestoreCommandContext(os.Args[1:])
+	args, contextErr := picker.NormalizeCommandArgs(os.Args[1:])
 	if contextErr != nil {
 		exitWithError(contextErr, os.Stderr)
 		return

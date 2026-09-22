@@ -125,11 +125,9 @@ func Run(bin string, req Request) (Result, error) {
 		cmd.Env = req.Env
 	}
 	if requestUsesCommandContext(req) {
-		cleanup, setupErr := PrepareCommand(cmd)
-		if setupErr != nil {
+		if setupErr := PrepareCommand(cmd); setupErr != nil {
 			return Result{}, setupErr
 		}
-		defer cleanup()
 	}
 	if benchEnabled {
 		platform.InternalBenchLog("picker.fzf.ready", append(benchFields,

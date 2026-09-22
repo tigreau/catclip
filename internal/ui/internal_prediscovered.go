@@ -12,7 +12,6 @@ import (
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/output"
-	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 	"github.com/tigreau/catclip/internal/search"
 )
@@ -146,7 +145,7 @@ type fzfFileSetSelection struct {
 }
 
 func readFzfFileSetSelection(selectionPath string) (fzfFileSetSelection, error) {
-	f, err := os.Open(picker.SelectionFilePath(selectionPath))
+	f, err := os.Open(selectionPath)
 	if err != nil {
 		return fzfFileSetSelection{}, err
 	}

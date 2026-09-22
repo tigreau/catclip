@@ -31,7 +31,7 @@ type probeResult struct {
 
 func TestMain(m *testing.M) {
 	if resultPath := os.Getenv("CATCLIP_FZF_ARGV_PROBE"); resultPath != "" {
-		args, contextErr := picker.RestoreCommandContext(os.Args[1:])
+		args, contextErr := picker.NormalizeCommandArgs(os.Args[1:])
 		result := probeResult{Args: args}
 		if contextErr != nil {
 			result.Error = contextErr.Error()
@@ -39,7 +39,7 @@ func TestMain(m *testing.M) {
 		result.WorkingDir, _ = os.Getwd()
 		for i, arg := range result.Args {
 			if arg == "--internal-target-selection" && i+1 < len(result.Args) {
-				data, err := os.ReadFile(picker.SelectionFilePath(result.Args[i+1]))
+				data, err := os.ReadFile(result.Args[i+1])
 				result.Selection = string(data)
 				if err != nil {
 					result.Error = err.Error()
@@ -182,9 +182,6 @@ func TestFzfShellTransport(t *testing.T) {
 				if len(got.Args) != 12 {
 					t.Fatalf("target argv changed or selection expanded: %q", got.Args)
 				}
-				if runtime.GOOS != "windows" && (filepath.IsAbs(got.Args[11]) || filepath.Base(got.Args[11]) != filepath.Clean(got.Args[11])) {
-					t.Fatalf("fzf must pass only a safe relative filename, got %q", got.Args[11])
-				}
 				want := []string{"--quiet", "--internal-tree-preview", "--internal-target-inventory", checkpoint,
 					"--internal-tree-target", matches[0].Path, "--internal-tree-kind", "file", "--internal-tree-state", "text",
 					"--internal-target-selection", got.Args[11]}
@@ -198,6 +195,11 @@ func TestFzfShellTransport(t *testing.T) {
 
 func runTransport(t *testing.T, bin, command, query string, rows []string, selectAll bool) probeResult {
 	t.Helper()
+	if os.Getenv("CATCLIP_TEST_FZF_QUOTED_FILES") == "1" {
+		// Experiment only: the patched fzf quotes its generated filename, so
+		// our stock-fzf workaround must not add a second quoting layer.
+		command = strings.ReplaceAll(command, picker.SelectionFilePlaceholder(), "{+f}")
+	}
 	dir := t.TempDir()
 	// Verify the raw file-placeholder exception with an actual spaced temp path.
 	tempDir := filepath.Join(dir, "fzf temp with spaces")
@@ -226,11 +228,9 @@ func runTransport(t *testing.T, bin, command, query string, rows []string, selec
 	if err != nil {
 		t.Fatal(err)
 	}
-	cleanup, err := picker.PrepareCommand(cmd)
-	if err != nil {
+	if err := picker.PrepareCommand(cmd); err != nil {
 		t.Fatal(err)
 	}
-	defer cleanup()
 	configureTransportCancellation(t, cmd)
 	out, runErr := cmd.CombinedOutput()
 	data, readErr := os.ReadFile(resultPath)

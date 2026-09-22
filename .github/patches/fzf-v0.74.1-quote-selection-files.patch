@@ -1,0 +1,13 @@
+diff --git a/src/terminal.go b/src/terminal.go
+--- a/src/terminal.go
++++ b/src/terminal.go
+@@ -5561,6 +5561,9 @@
+ 			file := WriteTemporaryFile(replacements, params.printsep)
+ 			tempFiles = append(tempFiles, file)
++			if !flags.raw {
++				return params.executor.QuoteEntry(file)
++			}
+ 			return file
+ 		}
+ 		return strings.Join(replacements, " ")
+ 	})

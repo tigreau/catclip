@@ -102,11 +102,9 @@ func runShellCommandRoot(t *testing.T, command string) string {
 	}
 	setup := exec.Command(fzf, "--preview", command)
 	setup.Env = nativePreviewTestEnv(t)
-	cleanup, setupErr := picker.PrepareCommand(setup)
-	if setupErr != nil {
+	if setupErr := picker.PrepareCommand(setup); setupErr != nil {
 		t.Fatal(setupErr)
 	}
-	defer cleanup()
 	command = setup.Args[2]
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
