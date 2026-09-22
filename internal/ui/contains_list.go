@@ -19,6 +19,11 @@ import (
 
 const contentMatchAllMatchesLabel = "[all current matches]"
 
+// A nonempty preview operand survives legacy PowerShell's native argument
+// binding. "." cannot name a file; only the synthetic all-matches row uses it.
+// The selection column stays empty and retains its existing semantics.
+const contentMatchAllMatchesFocusPath = "."
+
 // contentMatchAllMatchesPreviewLine is the offset substituted into fzf's
 // --preview-window for the [all current matches] row. Any positive integer
 // works — the row's preview is the scope tree, not a file, so the line
@@ -91,7 +96,7 @@ func writeContentMatchRows(stdout io.Writer, rows []contentMatchRow) error {
 	lines = append(lines, strings.Join([]string{
 		contentMatchAllMatchesLabel,
 		"",
-		"",
+		contentMatchAllMatchesFocusPath,
 		"",
 		"",
 		contentMatchAllMatchesPreviewLine,

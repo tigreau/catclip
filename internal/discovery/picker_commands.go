@@ -66,7 +66,7 @@ func fzfPreviewCommand(inventoryPath string, withBinaries ...bool) string {
 //   - Empty {q}: emits the contextual hint document (smart-case tips +
 //     pattern examples). No checkpoint needed.
 //   - Non-empty {q}, empty {3}, empty {1}: emits the searching document.
-//   - Non-empty {q}, empty {3} (the `[all current matches]` row): if a
+//   - Non-empty {q}, synthetic "." {3} (the `[all current matches]` row): if a
 //     checkpoint path is wired in, emits the full scope tree from the
 //     checkpoint. Otherwise emits nothing.
 //   - Non-empty {q}, non-empty {3}: per-file preview with match

@@ -145,9 +145,9 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 //     "searching" document, including the Windows Defender explanation. This
 //     is the state between a query change and the reload producing rows.
 //
-//  3. Non-empty pattern + empty focused path (the `[all current matches]`
-//     row, whose TSV field 3 is empty). When a prediscovered checkpoint
-//     is attached, emits the full scope tree from the checkpoint — same
+//  3. Non-empty pattern + synthetic focused path (the `[all current matches]`
+//     row, whose TSV field 3 is ".", normalized to empty below). When a
+//     prediscovered checkpoint is attached, emits the full scope tree — same
 //     shape as --only / --exclude's `[all files]` preview. Without a
 //     checkpoint, emits nothing (the legacy behavior).
 //
@@ -162,6 +162,9 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 // shell branching in the command string. See fzfContentPreviewCommand for
 // the command builder.
 func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
+	if cfg.SearchingHint && cfg.FocusedLabel == contentMatchAllMatchesLabel && cfg.FilePath == contentMatchAllMatchesFocusPath {
+		cfg.FilePath = ""
+	}
 	if cfg.DiffStatePath != "" {
 		var err error
 		cfg, err = filePreviewWithDiffState(cfg)
@@ -218,9 +221,9 @@ func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
 		return err
 	}
 
-	// The content picker's [all current matches] row passes an empty
-	// `{3}` (FilePath). Detect that BEFORE consulting
-	// internalPreviewRelPath — that helper falls back to scope targets
+	// The content picker's [all current matches] row has an empty FilePath
+	// after normalization above (or from an older row producer). Detect that
+	// BEFORE consulting internalPreviewRelPath — that helper falls back to scope targets
 	// when FilePath is empty, which would surface "src" (the scope
 	// target) as the focused file instead of the [all matches] sentinel.
 	// When a checkpoint is wired in, emit the scope tree; otherwise stay

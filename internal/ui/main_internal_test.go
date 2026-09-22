@@ -4995,6 +4995,9 @@ func TestWriteContentMatchRowsIncludesFirstMatchLine(t *testing.T) {
 	if headerCols[0] != contentMatchAllMatchesLabel {
 		t.Fatalf("all-matches label = %q, want %q", headerCols[0], contentMatchAllMatchesLabel)
 	}
+	if headerCols[1] != "" || headerCols[2] != contentMatchAllMatchesFocusPath {
+		t.Fatalf("all-matches selection/preview columns changed: %q", headerCols)
+	}
 	if headerCols[5] != contentMatchAllMatchesPreviewLine {
 		t.Fatalf("all-matches column 6 = %q, want %q", headerCols[5], contentMatchAllMatchesPreviewLine)
 	}
@@ -5005,6 +5008,9 @@ func TestWriteContentMatchRowsIncludesFirstMatchLine(t *testing.T) {
 	}
 	if aCols[5] != "42" {
 		t.Fatalf("a.go first-match line column = %q, want 42", aCols[5])
+	}
+	if aCols[1] != "src/a.go" || aCols[2] != "src/a.go" {
+		t.Fatalf("real file selection/preview columns changed: %q", aCols)
 	}
 
 	bCols := strings.Split(lines[2], "\t")
