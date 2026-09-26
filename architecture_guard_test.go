@@ -103,9 +103,7 @@ var previewCommandBuilders = map[string]struct{}{
 	"FzfPreviewCommand":                         {},
 	"FzfContentPreviewCommand":                  {},
 	"FzfContentSearchingPreviewCommand":         {},
-	"FzfContentMatchListCommand":                {},
 	"fzfCheckpointContentMatchListCommand":      {},
-	"startupFileSetPreviewCommand":              {},
 	"buildFileSetCheckpointPreview":             {},
 	"startupModifierCurrentScopePreviewCommand": {},
 	"buildSnippetBoundaryPreviewForScope":       {},
@@ -140,7 +138,6 @@ var previewBuilderDiscoveryFunctions = map[string]struct{}{
 	"FzfPreviewCommand":                    {},
 	"FzfContentPreviewCommand":             {},
 	"FzfContentSearchingPreviewCommand":    {},
-	"FzfContentMatchListCommand":           {},
 	"fzfCheckpointContentMatchListCommand": {},
 }
 
@@ -309,7 +306,7 @@ func requireMultiFilePreviewHandlersWrapInPreviewCap(t *testing.T, files []parse
 	required := []string{
 		"RunInternalLinesPreview",
 		"RunInternalSnippetBoundaryPreview",
-		"renderSinkOutputTextPreview",
+		"readSinkOutputTextPreview",
 		"renderSinkTreeReportPreview",
 	}
 	requireFuncsCall(t, files, required, "output.NewPreviewCapWriter")

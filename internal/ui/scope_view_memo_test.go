@@ -13,6 +13,7 @@ import (
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/search"
 )
 
@@ -1245,7 +1246,7 @@ func TestBaseTargetStateUsesCommittedCompactInventoryBeforeJSONCheckpoint(t *tes
 	if tmpdir != "" {
 		t.Fatalf("base target preview created a temporary checkpoint directory: %q", tmpdir)
 	}
-	if !strings.Contains(cmd, "--internal-target-inventory "+discovery.ShellQuoteArg(inventoryPath)) {
+	if !strings.Contains(cmd, "--internal-target-inventory "+picker.CommandArg(inventoryPath)) {
 		t.Fatalf("base target preview did not reuse compact inventory: %s", cmd)
 	}
 	if strings.Contains(cmd, "--internal-prediscovered") {
@@ -1382,7 +1383,7 @@ func TestRetainedCheckpointIsSharedAcrossPickerKinds(t *testing.T) {
 	scopeViewMemoMu.Lock()
 	checkpointPath := scopeViewMemoValues[key].checkpointPath
 	scopeViewMemoMu.Unlock()
-	checkpointToken := discovery.ShellQuoteArg(checkpointPath)
+	checkpointToken := picker.CommandArg(checkpointPath)
 	if checkpointPath == "" || !strings.Contains(modifierCmd, checkpointToken) || !strings.Contains(fileSetCmd, checkpointToken) {
 		t.Fatalf("picker commands did not share checkpoint %q:\nmodifier=%s\nfile-set=%s", checkpointPath, modifierCmd, fileSetCmd)
 	}
@@ -1466,7 +1467,7 @@ func TestModifierCheckpointMenuOpenCorpusTiming(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(cmd, "--internal-tree-preview --internal-target-inventory "+discovery.ShellQuoteArg(committedInventoryPath)) || strings.Contains(cmd, "--internal-prediscovered") {
+	if !strings.Contains(cmd, "--internal-tree-preview --internal-target-inventory "+picker.CommandArg(committedInventoryPath)) || strings.Contains(cmd, "--internal-prediscovered") {
 		t.Fatalf("filter preview command does not use committed target inventory: %s", cmd)
 	}
 	if _, ok := scopeViewMemoCheckpointPath(args); ok {

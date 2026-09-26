@@ -9,6 +9,7 @@ import (
 
 	"github.com/tigreau/catclip/internal/cli"
 	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 	"github.com/tigreau/catclip/internal/ui"
 )
@@ -52,7 +53,11 @@ func newExitError(code int, message string) error {
 
 // Main parses the CLI and runs the selected action.
 func Main() {
-	args := os.Args[1:]
+	args, contextErr := picker.NormalizeCommandArgs(os.Args[1:])
+	if contextErr != nil {
+		exitWithError(contextErr, os.Stderr)
+		return
+	}
 	commandKind := internalBenchCommandKind(args)
 	// Opt-in diagnostic timeline for interactive Windows slowness. fzf spawns
 	// catclip --internal-* helpers repeatedly for --snippet/--lines; normal

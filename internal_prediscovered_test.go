@@ -278,12 +278,12 @@ func TestPrediscoveredCheckpointJSONFieldNames(t *testing.T) {
 }
 
 func TestPrediscoveredCheckpointRejectsUnsupportedVersion(t *testing.T) {
-	raw := []byte(`{"version":2,"git_context":{},"git_status":{},"entries":[]}`)
+	raw := []byte(`{"version":99,"git_context":{},"git_status":{},"entries":[]}`)
 	_, err := discovery.UnmarshalCheckpoint(raw)
 	if err == nil {
 		t.Fatal("expected unsupported checkpoint version to fail")
 	}
-	if !strings.Contains(err.Error(), "unsupported prediscovered checkpoint version 2") {
+	if !strings.Contains(err.Error(), "unsupported prediscovered checkpoint version 99") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

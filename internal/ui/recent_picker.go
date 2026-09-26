@@ -161,10 +161,10 @@ func recentPickerPreviewCommand(dataPath string) string {
 	}
 
 	parts := []string{
-		discovery.ShellQuoteArg(self),
+		picker.CommandExecutable(self),
 		"--quiet",
 		"--internal-recent-preview",
-		"--internal-recent-data", discovery.ShellQuoteArg(dataPath),
+		"--internal-recent-data", picker.CommandArg(dataPath),
 		"--internal-recent-selection", "{2}",
 	}
 	return strings.Join(parts, " ")

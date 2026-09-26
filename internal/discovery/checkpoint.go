@@ -20,6 +20,9 @@ import (
 // read it. Was root prediscoveredCheckpointData before the v0.6.0
 // discovery extraction.
 type CheckpointData struct {
+	// Scope describes the already-evaluated entries. Opt-in checkpoint-scope
+	// consumers use it for rendering or content-search roots, never rediscovery.
+	Scope      *command.ExecutionScope
 	GitContext git.Context
 	GitStatus  map[string]string
 	Entries    []Entry
@@ -30,14 +33,23 @@ type CheckpointData struct {
 	NoIgnore bool
 }
 
-const checkpointVersion = 1
+const (
+	checkpointVersion       = 1
+	sharedCheckpointVersion = 2
+)
 
 type checkpointDocument struct {
-	Version    int               `json:"version"`
-	GitContext checkpointGit     `json:"git_context"`
-	GitStatus  map[string]string `json:"git_status"`
-	Entries    []CheckpointEntry `json:"entries"`
-	NoIgnore   bool              `json:"no_ignore,omitempty"`
+	Scope        *command.ExecutionScope `json:"scope,omitempty"`
+	Version      int                     `json:"version"`
+	GitContext   checkpointGit           `json:"git_context"`
+	GitStatus    map[string]string       `json:"git_status"`
+	Entries      []CheckpointEntry       `json:"entries"`
+	NoIgnore     bool                    `json:"no_ignore,omitempty"`
+	Inventory    *CheckpointInventoryRef `json:"inventory,omitempty"`
+	FileIDs      []uint32                `json:"file_ids,omitempty"`
+	Projection   *checkpointProjection   `json:"projection,omitempty"`
+	Replacements map[int]CheckpointEntry `json:"replacements,omitempty"`
+	SnippetLines map[int][]int           `json:"snippet_lines,omitempty"`
 }
 
 type checkpointGit struct {
@@ -177,8 +189,11 @@ func encodeCheckpoint(w io.Writer, data CheckpointData) error {
 	// Checkpoints are private, short-lived transport files, not human-facing
 	// documents. Indentation added roughly 11.4 MB and 400 ms at the filter-menu
 	// boundary on the 196k-entry corpus without changing decoder semantics.
-	enc := json.NewEncoder(w)
-	return enc.Encode(newCheckpointDocument(data))
+	return encodeCheckpointDocument(w, newCheckpointDocument(data))
+}
+
+func encodeCheckpointDocument(w io.Writer, doc checkpointDocument) error {
+	return json.NewEncoder(w).Encode(doc)
 }
 
 func decodeCheckpoint(r io.Reader) (CheckpointData, error) {
@@ -188,7 +203,7 @@ func decodeCheckpoint(r io.Reader) (CheckpointData, error) {
 	if err := dec.Decode(&doc); err != nil {
 		return CheckpointData{}, err
 	}
-	if doc.Version != checkpointVersion {
+	if doc.Version != checkpointVersion && doc.Version != sharedCheckpointVersion {
 		return CheckpointData{}, fmt.Errorf("unsupported prediscovered checkpoint version %d", doc.Version)
 	}
 	var trailing any
@@ -198,7 +213,14 @@ func decodeCheckpoint(r io.Reader) (CheckpointData, error) {
 		}
 		return CheckpointData{}, err
 	}
+	if doc.Version == sharedCheckpointVersion {
+		return readSharedCheckpoint(doc)
+	}
+	if doc.Inventory != nil || doc.FileIDs != nil || doc.Projection != nil || doc.Replacements != nil || doc.SnippetLines != nil {
+		return CheckpointData{}, fmt.Errorf("standalone checkpoint contains shared fields")
+	}
 	return CheckpointData{
+		Scope:      doc.Scope,
 		GitContext: doc.GitContext.toGitContext(),
 		GitStatus:  cloneStringMapOrEmpty(doc.GitStatus),
 		Entries:    checkpointToEntries(doc.Entries),
@@ -208,6 +230,7 @@ func decodeCheckpoint(r io.Reader) (CheckpointData, error) {
 
 func newCheckpointDocument(data CheckpointData) checkpointDocument {
 	return checkpointDocument{
+		Scope:      data.Scope,
 		Version:    checkpointVersion,
 		GitContext: newCheckpointGit(data.GitContext),
 		GitStatus:  cloneStringMapOrEmpty(data.GitStatus),
@@ -235,31 +258,35 @@ func (g checkpointGit) toGitContext() git.Context {
 }
 
 func entriesToCheckpoint(entries []Entry) []CheckpointEntry {
-	out := make([]CheckpointEntry, 0, len(entries))
-	for _, entry := range entries {
-		out = append(out, CheckpointEntry{
-			// AbsPath intentionally not serialized — re-derived at read.
-			RelPath:             entry.RelPath,
-			ModTime:             entry.ModTime,
-			SizeBytes:           entry.SizeBytes,
-			SizeKnown:           entry.SizeKnown,
-			TargetRoot:          entry.TargetRoot,
-			GitVisible:          entry.GitVisible,
-			Mode:                entry.Mode,
-			SnippetPattern:      entry.SnippetPattern,
-			SnippetContextSet:   entry.SnippetContextSet,
-			SnippetContextLines: entry.SnippetContextLines,
-			SnippetMatchLines:   append([]int(nil), entry.SnippetMatchLines...),
-			Lines:               entry.Lines,
-			LinesStart:          entry.LinesStart,
-			LinesEnd:            entry.LinesEnd,
-			DiffWantStaged:      entry.DiffWantStaged,
-			DiffWantUnstaged:    entry.DiffWantUnstaged,
-			IgnoreBypassed:      entry.IgnoreBypassed,
-			BlockSource:         entry.BlockSource,
-		})
+	out := make([]CheckpointEntry, len(entries))
+	for i, entry := range entries {
+		out[i] = entryToCheckpoint(entry)
 	}
 	return out
+}
+
+func entryToCheckpoint(entry Entry) CheckpointEntry {
+	return CheckpointEntry{
+		// AbsPath intentionally not serialized — re-derived at read.
+		RelPath:             entry.RelPath,
+		ModTime:             entry.ModTime,
+		SizeBytes:           entry.SizeBytes,
+		SizeKnown:           entry.SizeKnown,
+		TargetRoot:          entry.TargetRoot,
+		GitVisible:          entry.GitVisible,
+		Mode:                entry.Mode,
+		SnippetPattern:      entry.SnippetPattern,
+		SnippetContextSet:   entry.SnippetContextSet,
+		SnippetContextLines: entry.SnippetContextLines,
+		SnippetMatchLines:   append([]int(nil), entry.SnippetMatchLines...),
+		Lines:               entry.Lines,
+		LinesStart:          entry.LinesStart,
+		LinesEnd:            entry.LinesEnd,
+		DiffWantStaged:      entry.DiffWantStaged,
+		DiffWantUnstaged:    entry.DiffWantUnstaged,
+		IgnoreBypassed:      entry.IgnoreBypassed,
+		BlockSource:         entry.BlockSource,
+	}
 }
 
 func checkpointToEntries(entries []CheckpointEntry) []Entry {

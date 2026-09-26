@@ -126,10 +126,11 @@ func resolveStartupWithUndo(resolver *discovery.Resolver, args []string, opts st
 							return startupUndoResult{}, prepareErr
 						}
 						preparedOutput = &StartupPreparedOutputState{
-							Git:       ctx.Git,
-							Discovery: ctx.Discovery,
-							Plan:      ctx.Plan,
-							Metadata:  ctx.Metadata,
+							Presentation: ctx.Presentation,
+							Git:          ctx.Git,
+							Discovery:    ctx.Discovery,
+							Plan:         ctx.Plan,
+							Metadata:     ctx.Metadata,
 						}
 						sinkResolved = true
 					}
@@ -311,7 +312,7 @@ func runStartupSinkFrame(frame startupInteractiveFrame, rawArgs []string) (start
 	if err != nil {
 		return startupInteractiveFrameResult{}, err
 	}
-	prepared := &StartupPreparedOutputState{Git: ctx.Git, Discovery: ctx.Discovery, Plan: ctx.Plan, Metadata: ctx.Metadata}
+	prepared := &StartupPreparedOutputState{Git: ctx.Git, Discovery: ctx.Discovery, Plan: ctx.Plan, Metadata: ctx.Metadata, Presentation: ctx.Presentation}
 	// Resolve this frame without fzf; normal execution owns empty-result
 	// diagnostics, and a sink menu cannot offer anything useful here.
 	if ctx.Plan.IsEmpty() {

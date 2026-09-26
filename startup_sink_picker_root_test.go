@@ -105,7 +105,7 @@ func runShellCommandRoot(t *testing.T, command string) string {
 	} else {
 		cmd = exec.Command("/bin/sh", "-c", command)
 	}
-	cmd.Env = append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
+	cmd.Env = nativePreviewTestEnv(t)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q failed: %v\n%s", command, err, string(out))

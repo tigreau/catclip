@@ -391,8 +391,8 @@ func buildSnippetBoundaryPreviewForScope(view resolvedScopeView, pattern string,
 	// Trivial-value property (depth-picker pattern): the boundary key {2} is a
 	// bare token fzf substitutes per focus; the hazardous source path is a fixed
 	// discovery.ShellQuoteArg-quoted argument catclip controls.
-	parts := []string{discovery.ShellQuoteArg(self), "--quiet", "--internal-snippet-boundary-preview",
-		"--internal-boundary-source", discovery.ShellQuoteArg(sourcePath), "--internal-boundary-key", "{2}"}
+	parts := []string{picker.CommandExecutable(self), "--quiet", "--internal-snippet-boundary-preview",
+		"--internal-boundary-source", picker.CommandArg(sourcePath), "--internal-boundary-key", "{2}"}
 	return strings.Join(parts, " "), tmpdir
 }
 
@@ -764,7 +764,9 @@ func resolveStartupGitScopeArgsWithEscHint(resolver *discovery.Resolver, current
 
 	previewCommand := ""
 	if diffPreview {
-		previewCommand = startupFileSetPreviewCommand(currentArgs, stageFlag, diffPreview)
+		var cleanup func()
+		previewCommand, cleanup = prepareDiffPreview(currentArgs)
+		defer cleanup()
 	}
 	stageValues, usedFzf, err := resolveStartupModifierStageValuesWithEscHint(currentArgs, stageFlag, prompt, values, allowInteractiveEmpty, previewCommand, escHint)
 	if err != nil {

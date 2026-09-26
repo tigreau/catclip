@@ -2,12 +2,51 @@ package search
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"testing"
 )
+
+func TestResidueScanKeepsResultsAcross1024FileBoundary(t *testing.T) {
+	if _, ok := RipgrepBinary(); !ok {
+		t.Skip("rg not available")
+	}
+	t.Setenv("CATCLIP_BENCH_RG", "1")
+	dir := t.TempDir()
+	paths := make([]string, 1025)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("%04d.xyz", i)
+		if i == 512 { // Missing input must not discard the rest of its batch.
+			continue
+		}
+		body := []byte("text\n")
+		if i == 1023 {
+			body = []byte("binary\x00data")
+		} else if i == 1024 {
+			body = []byte{0xff, 0xfe, 'x', 0, '\n', 0} // BOM-marked UTF-16 text.
+		}
+		if err := os.WriteFile(filepath.Join(dir, paths[i]), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := benchRgTextCalls.Load()
+	got, err := runRipgrepNulScanFiles(dir, paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls := benchRgTextCalls.Load() - before; calls != 2 {
+		t.Fatalf("classifier started %d processes, want 2", calls)
+	}
+	for i, path := range paths {
+		_, present := got[path]
+		if want := i != 512 && i != 1023; present != want {
+			t.Fatalf("%s text=%v, want %v", path, present, want)
+		}
+	}
+}
 
 // The two extension lists must be disjoint: a name in both is a build
 // bug, not a runtime preference.

@@ -16,7 +16,7 @@ func TestLexerForPathMatchesDirectMatch(t *testing.T) {
 		direct := lexers.Match(rel)
 		got := lexerForPath(rel)
 		// direct may be nil for unknown types; cache returns nil too (then the
-		// caller does content analysis). Compare by config name when present.
+		// caller only checks explicit script shebangs). Compare names when present.
 		var dName, gName string
 		if direct != nil {
 			dName = direct.Config().Name

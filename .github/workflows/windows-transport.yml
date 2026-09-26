@@ -1,0 +1,66 @@
+name: windows transport
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  FZF_VERSION: 0.74.1
+
+jobs:
+  shell-transport:
+    name: Windows fzf (${{ matrix.fzf-shell }})
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        fzf-shell: [cmd, powershell, pwsh, bash]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Install pinned native fzf
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'fzf-transport.zip'
+          $toolDir = Join-Path $env:RUNNER_TEMP 'catclip-transport-tools'
+          Invoke-WebRequest -Uri "https://github.com/junegunn/fzf/releases/download/v$env:FZF_VERSION/fzf-$env:FZF_VERSION-windows_amd64.zip" -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $toolDir -Force
+          $fzf = Join-Path $toolDir 'fzf.exe'
+          & $fzf --version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "CATCLIP_FZF=$fzf" >> $env:GITHUB_ENV
+          "CATCLIP_TRANSPORT_ARTIFACTS=$(Join-Path $env:RUNNER_TEMP 'catclip-transport-artifacts')" >> $env:GITHUB_ENV
+
+      - name: Real fzf shell argument and selection-file tests
+        shell: pwsh
+        env:
+          CATCLIP_RUN_FZF_TRANSPORT_TESTS: '1'
+          CATCLIP_TEST_FZF_SHELL: ${{ matrix.fzf-shell }}
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:CATCLIP_TRANSPORT_ARTIFACTS | Out-Null
+          if ($env:CATCLIP_TEST_FZF_SHELL -eq 'bash') {
+            # Do not accidentally select the WSL bash launcher from System32.
+            $env:CATCLIP_TEST_FZF_SHELL = Join-Path $env:ProgramFiles 'Git\bin\bash.exe'
+            if (-not (Test-Path -LiteralPath $env:CATCLIP_TEST_FZF_SHELL)) { throw 'Required Git Bash executable is missing' }
+          }
+          go test -json -count=1 -timeout=6m ./internal/picker/transporttest 2>&1 | Tee-Object -FilePath (Join-Path $env:CATCLIP_TRANSPORT_ARTIFACTS 'go-test.jsonl')
+          $testExit = $LASTEXITCODE
+          exit $testExit
+
+      - name: Upload transport diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-fzf-${{ matrix.fzf-shell }}
+          path: ${{ runner.temp }}/catclip-transport-artifacts
+          if-no-files-found: warn
+          retention-days: 7

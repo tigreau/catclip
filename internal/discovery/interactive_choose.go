@@ -464,20 +464,18 @@ func runFzfTargetFilterLines(bin, query string, lines []string) ([]string, error
 	return picker.FilterByNth(bin, query, lines, "2")
 }
 
-// FzfDiffFilePreviewCommand is intentionally not checkpoint-backed: diff
-// pickers preview one focused file via --internal-file-preview, so they do not
-// rerun project discovery for a tree payload.
-func FzfDiffFilePreviewCommand(currentArgs []string) string {
+// FzfDiffFilePreviewCommand carries fixed diff state separately from fzf's
+// focused path. Neither the original targets nor marked rows expand into argv.
+func FzfDiffFilePreviewCommand(statePath string) string {
+	if statePath == "" {
+		return ""
+	}
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
 		return ""
 	}
 
-	parts := []string{ShellQuoteArg(self), "--quiet", "--internal-file-preview", "--internal-file-path", "{3}"}
-	for _, arg := range currentArgs {
-		parts = append(parts, ShellQuoteArg(arg))
-	}
-	parts = append(parts, "--only", "{+2}")
+	parts := []string{picker.CommandExecutable(self), "--quiet", "--internal-file-preview", "--internal-diff-preview-state", picker.CommandArg(statePath), "--internal-file-path", "{3}"}
 	return strings.Join(parts, " ")
 }
 
@@ -487,8 +485,11 @@ func ChooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, f
 		return fzfChooseResult{}, err
 	}
 
-	command, checkpointPath, cleanup := fzfCheckpointContentMatchListCommand(currentArgs, flag)
+	command, checkpointPath, cleanup, err := fzfCheckpointContentMatchListCommand(currentArgs, flag)
 	defer cleanup()
+	if err != nil {
+		return fzfChooseResult{}, err
+	}
 	if command == "" {
 		return fzfChooseResult{}, ErrSelectionCancelled
 	}

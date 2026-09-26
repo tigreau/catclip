@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -75,10 +76,60 @@ func RunRipgrepIgnoreTrace(
 		enumeration.Reason = MembershipReasonMetadataIgnoreTrace
 	}
 	enumeration.Authority = MembershipAuthorityDiagnostic
+	batches, err := ripgrepFileArgBatches(bin, opts, true, runtime.GOOS)
+	if err != nil {
+		return counts, err
+	}
+	// The metadata caller compacts roots, but the search API also accepts
+	// overlapping roots. Deduplicate across batches so splitting transport
+	// cannot inflate visible coverage or ignored boundary counts.
+	var seenVisible map[string]struct{}
+	var seenIgnored map[string]struct{}
+	if len(batches) > 1 {
+		seenVisible = make(map[string]struct{})
+		seenIgnored = make(map[string]struct{})
+	}
+	for _, args := range batches {
+		_, err := runRipgrepIgnoreTraceBatch(ctx, bin, workingDir, args, enumeration, func(rel string) {
+			if seenVisible != nil {
+				if _, ok := seenVisible[rel]; ok {
+					return
+				}
+				seenVisible[rel] = struct{}{}
+			}
+			counts.Visible++
+			if onVisible != nil {
+				onVisible(rel)
+			}
+		}, func(record IgnoreTraceRecord) {
+			if seenIgnored != nil {
+				if _, ok := seenIgnored[record.Path]; ok {
+					return
+				}
+				seenIgnored[record.Path] = struct{}{}
+			}
+			counts.Ignored++
+			if onIgnored != nil {
+				onIgnored(record)
+			}
+		})
+		if err != nil {
+			return counts, err
+		}
+	}
+	return counts, nil
+}
+
+func runRipgrepIgnoreTraceBatch(ctx context.Context, bin, workingDir string, args []string, enumeration MembershipEnumerationContext, onVisible func(string), onIgnored func(IgnoreTraceRecord)) (counts IgnoreTraceCounts, retErr error) {
+	finishBench := platform.InternalBenchSpan("search.rg.ignore_trace_batch",
+		"argc", platform.InternalBenchInt(len(args)),
+		"arg_units_upper_bound", platform.InternalBenchInt(commandArgBudgetUnits(bin, args, runtime.GOOS)),
+	)
+	defer func() { finishBench("err", platform.InternalBenchError(retErr)) }()
 	span := beginMembershipEnumeration(MembershipEnumerationIgnoreDebug, MembershipVisible, enumeration)
 	defer func() { span.finish(counts.Visible, scanWasCancelled(ctx, retErr), retErr) }()
 
-	cmd := exec.CommandContext(ctx, bin, ripgrepFileArgs(opts, true)...)
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.Dir = workingDir
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

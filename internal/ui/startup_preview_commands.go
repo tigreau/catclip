@@ -10,6 +10,7 @@ import (
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
+	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 )
 
@@ -108,20 +109,6 @@ func startupFileSetRows(flag string, relPaths []string) []startupFileSetRow {
 	return rows
 }
 
-func startupFileSetPreviewCommand(currentArgs []string, flag string, diffPreview bool) string {
-	if diffPreview {
-		return discovery.FzfDiffFilePreviewCommand(currentArgs)
-	}
-	if activeDiffFlag := currentScopeDiffPreviewFlag(currentArgs); activeDiffFlag != "" {
-		return discovery.FzfDiffFilePreviewCommand(currentArgs)
-	}
-	// Non-diff file-set previews require a checkpoint so fzf can hand the
-	// selected rows to one bounded file argument. If checkpoint setup fails,
-	// omit the preview instead of falling back to expanding every marked path
-	// into argv and risking E2BIG.
-	return ""
-}
-
 // startupCheckpointFileSetPreviewCommand is the SCC path for free-form file-set
 // picker previews. If a short-lived checkpoint cannot be written, the picker
 // remains usable without a live preview; it must not fall back to an
@@ -141,39 +128,34 @@ func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, d
 			finishBench(fields...)
 		}
 	}
-	fallback := func() string {
-		return startupFileSetPreviewCommand(currentArgs, flag, diffPreview)
-	}
 	if diffPreview || currentScopeDiffPreviewFlag(currentArgs) != "" {
-		cmd := fallback()
+		cmd, cleanup := prepareDiffPreview(currentArgs)
 		if benchEnabled {
-			finish("route", "diff-fallback", "preview", platform.InternalBenchBool(cmd != ""))
+			finish("route", "diff-state", "preview", platform.InternalBenchBool(cmd != ""))
 		}
-		return cmd, func() {}
+		return cmd, cleanup
 	}
 	switch flag {
 	case "--only", "--exclude":
 	case "--changed", "--staged", "--unstaged", "--untracked":
 	default:
-		cmd := fallback()
 		if benchEnabled {
-			finish("route", "unsupported-fallback", "preview", platform.InternalBenchBool(cmd != ""))
+			finish("route", "unsupported", "preview", "false")
 		}
-		return cmd, func() {}
+		return "", func() {}
 	}
 
 	view, err := resolvedCurrentScopeViewForArgs(currentArgs)
 	if err != nil || len(view.Entries) == 0 {
-		cmd := fallback()
 		if benchEnabled {
 			finish(
-				"route", "scope-fallback",
+				"route", "scope-unavailable",
 				"err", platform.InternalBenchError(err),
 				"entries", platform.InternalBenchInt(len(view.Entries)),
-				"preview", platform.InternalBenchBool(cmd != ""),
+				"preview", "false",
 			)
 		}
-		return cmd, func() {}
+		return "", func() {}
 	}
 	previewFlag := flag
 	switch flag {
@@ -182,10 +164,9 @@ func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, d
 	}
 	cmd, tmpdir := buildFileSetCheckpointPreview(currentArgs, view, previewFlag)
 	if cmd == "" {
-		cmd = fallback()
 		if benchEnabled {
 			finish(
-				"route", "checkpoint-fallback",
+				"route", "checkpoint-unavailable",
 				"entries", platform.InternalBenchInt(len(view.Entries)),
 				"preview", platform.InternalBenchBool(cmd != ""),
 			)
@@ -211,8 +192,8 @@ func buildFileSetCheckpointPreview(currentArgs []string, view resolvedScopeView,
 	}
 	buildCommand := func(path string) string {
 		parts := []string{
-			discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
-			"--internal-prediscovered", discovery.ShellQuoteArg(path),
+			picker.CommandExecutable(self), "--quiet", "--internal-tree-preview",
+			"--internal-prediscovered", picker.CommandArg(path),
 		}
 		if previewFlag != "" {
 			// Unlike ordinary fzf placeholders, the `f` form inserts its
@@ -222,7 +203,7 @@ func buildFileSetCheckpointPreview(currentArgs []string, view resolvedScopeView,
 			// placeholder in the command template so the substituted path stays
 			// one argument under cmd, PowerShell, and POSIX shells.
 			parts = append(parts,
-				"--internal-file-set-selection", discovery.ShellQuoteArg("{+f}"),
+				"--internal-file-set-selection", picker.SelectionFilePlaceholder(),
 				"--internal-file-set-stage", strings.TrimPrefix(previewFlag, "--"),
 			)
 		}
@@ -291,21 +272,22 @@ func startupModifierCurrentScopePreviewCommand(currentArgs []string, state start
 	}
 	buildCommand := func(checkpointPath string) string {
 		parts := []string{
-			discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
-			"--internal-prediscovered", discovery.ShellQuoteArg(checkpointPath),
+			picker.CommandExecutable(self), "--quiet", "--internal-tree-preview",
+			"--internal-prediscovered", picker.CommandArg(checkpointPath), "--internal-checkpoint-scope",
 		}
-		parts = append(parts, command.CanonicalScopeArgs(state.Scopes[len(state.Scopes)-1])...)
 		return strings.Join(parts, " ")
 	}
-	buildTargetInventoryCommand := func(inventoryPath string) string {
+	buildTargetInventoryCommand := func(inventoryPath, rootsPath string) string {
 		parts := []string{
-			discovery.ShellQuoteArg(self), "--quiet", "--internal-tree-preview",
-			"--internal-target-inventory", discovery.ShellQuoteArg(inventoryPath),
+			picker.CommandExecutable(self), "--quiet", "--internal-tree-preview",
+			"--internal-target-inventory", picker.CommandArg(inventoryPath),
 		}
 		if view.Invocation.WithBinaries {
 			parts = append(parts, "--with-binaries")
 		}
-		parts = append(parts, command.CanonicalScopeArgs(state.Scopes[len(state.Scopes)-1])...)
+		if rootsPath != "" {
+			parts = append(parts, "--internal-target-roots", picker.CommandArg(rootsPath))
+		}
 		return strings.Join(parts, " ")
 	}
 
@@ -317,7 +299,14 @@ func startupModifierCurrentScopePreviewCommand(currentArgs []string, state start
 	if currentArgs != nil && len(currentScope.Stages) == 0 &&
 		!currentScope.Paths && currentScope.OutputMode() == command.EntryModeFull {
 		if inventoryPath, owned, inventoryErr := scopeViewMemoTargetPreviewInventory(currentArgs); owned && inventoryErr == nil {
-			return buildTargetInventoryCommand(inventoryPath), ""
+			if len(currentScope.Targets) == 1 && currentScope.Targets[0] == "." {
+				return buildTargetInventoryCommand(inventoryPath, ""), ""
+			}
+			if rootsPath, ok := scopeViewMemoTargetRoots(currentArgs); ok {
+				return buildTargetInventoryCommand(inventoryPath, rootsPath), ""
+			}
+			// Descriptor failure may use a general retained checkpoint, not
+			// unbounded scope argv or fresh discovery.
 		}
 	}
 
@@ -366,6 +355,7 @@ func startupModifierCurrentScopePreviewCommand(currentArgs []string, state start
 		"entries", platform.InternalBenchInt(len(view.Entries)),
 	)
 	err = discovery.WriteCheckpoint(checkpointPath, view.Invocation.WorkingDir, discovery.CheckpointData{
+		Scope:      &currentScope,
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,

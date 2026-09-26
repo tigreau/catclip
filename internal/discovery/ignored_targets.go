@@ -51,7 +51,7 @@ func (r *Resolver) ensureTargetPreviewSizeCapture(matches []TargetMatch) *search
 			paths = append(paths, match.Path)
 		}
 	}
-	r.targetPreviewSizes = search.StartTextSizeCapture(r.Cfg.WorkingDir, paths)
+	r.targetPreviewSizes = search.ResumeTextSizeCapture(r.Cfg.WorkingDir, paths, r.targetPreviewSizes)
 	return r.targetPreviewSizes
 }
 

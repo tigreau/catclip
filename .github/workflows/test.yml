@@ -78,6 +78,24 @@ jobs:
       - name: go test
         run: go test ./...
 
+      - name: Real fzf POSIX transport control
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          CATCLIP_RUN_FZF_TRANSPORT_TESTS: '1'
+          CATCLIP_TEST_FZF_SHELL: sh
+        run: |
+          export CATCLIP_FZF="$GITHUB_WORKSPACE/bin/fzf"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            # Linux fzf opens a controlling terminal even when synchronous
+            # load actions accept before drawing the UI. The hosted runner
+            # has none. util-linux script supplies it; --return preserves the
+            # Go test exit status instead of hiding failures.
+            script --quiet --return --command 'go test -v -count=1 -timeout=6m ./internal/picker/transporttest' /dev/null
+          else
+            go test -v -count=1 -timeout=6m ./internal/picker/transporttest
+          fi
+
       - name: Embedded version smoke test
         shell: bash
         run: |

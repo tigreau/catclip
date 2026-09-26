@@ -1,6 +1,9 @@
 package output
 
-import "fmt"
+import (
+	"fmt"
+	"maps"
+)
 
 // Report is the aggregated post-plan accounting shared by emit
 // and preview. Lifted out of main.go ahead of the v0.6.0 output
@@ -17,6 +20,15 @@ type Report struct {
 	Tokens    int64
 	CountWord string
 	Notices   []string
+}
+
+// Clone detaches mutable maps and notices while retaining immutable strings.
+func (r Report) Clone() Report {
+	r.Sizes = maps.Clone(r.Sizes)
+	r.Statuses = maps.Clone(r.Statuses)
+	r.ModeTags = maps.Clone(r.ModeTags)
+	r.Notices = append([]string(nil), r.Notices...)
+	return r
 }
 
 // UsageError is the typed error returned by output-side helpers when user

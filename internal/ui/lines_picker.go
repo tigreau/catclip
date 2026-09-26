@@ -338,9 +338,9 @@ func buildLinesPickerStartPreviewCommand(checkpointPath string) string {
 		return ""
 	}
 	parts := []string{
-		discovery.ShellQuoteArg(self),
+		picker.CommandExecutable(self),
 		"--quiet",
-		"--internal-prediscovered", discovery.ShellQuoteArg(checkpointPath),
+		"--internal-prediscovered", picker.CommandArg(checkpointPath),
 		"--internal-lines-preview",
 		"--lines", "{2}",
 	}
@@ -358,9 +358,9 @@ func buildLinesPickerEndPreviewCommand(checkpointPath string, startLine int) str
 	}
 	start := strconv.Itoa(startLine)
 	parts := []string{
-		discovery.ShellQuoteArg(self),
+		picker.CommandExecutable(self),
 		"--quiet",
-		"--internal-prediscovered", discovery.ShellQuoteArg(checkpointPath),
+		"--internal-prediscovered", picker.CommandArg(checkpointPath),
 		"--internal-lines-preview",
 		"--lines", start, "{2}",
 	}
