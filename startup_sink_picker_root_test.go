@@ -12,7 +12,6 @@ import (
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/output"
-	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/ui"
 )
 
@@ -96,16 +95,6 @@ func runSinkPreviewCommandRoot(t *testing.T, command string) string {
 
 func runShellCommandRoot(t *testing.T, command string) string {
 	t.Helper()
-	fzf, ok := discovery.FzfBinary()
-	if !ok {
-		t.Fatal("fzf unavailable")
-	}
-	setup := exec.Command(fzf, "--preview", command)
-	setup.Env = nativePreviewTestEnv(t)
-	if setupErr := picker.PrepareCommand(setup); setupErr != nil {
-		t.Fatal(setupErr)
-	}
-	command = setup.Args[2]
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
 		batPath := filepath.Join(t.TempDir(), "run.bat")
@@ -116,8 +105,7 @@ func runShellCommandRoot(t *testing.T, command string) string {
 	} else {
 		cmd = exec.Command("/bin/sh", "-c", command)
 	}
-	cmd.Env = setup.Env
-	cmd.Dir = setup.Dir
+	cmd.Env = nativePreviewTestEnv(t)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("command %q failed: %v\n%s", command, err, string(out))

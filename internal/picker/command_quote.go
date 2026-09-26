@@ -41,10 +41,10 @@ func currentCommandShell() commandShell {
 // it. This is a command prefix, not an argument for exec.Command.
 func CommandExecutable(path string) string {
 	if currentCommandShell() == commandCmd {
-		// cmd parses the executable position differently from native operands.
-		// PrepareCommand supplies this path through a quoted environment value;
-		// expansion is once-only, so percent characters in the path stay literal.
-		return cmdCommandExecutable(path)
+		// cmd's executable position needs ordinary quotes, not the caret-escaped
+		// native-argument form used below. This covers normal install paths,
+		// including Program Files, without altering fzf's environment or shell.
+		return `"` + path + `" ` + commandContextFlag
 	}
 	quoted := CommandArg(path)
 	if currentCommandShell() == commandPowerShell {
@@ -76,7 +76,7 @@ const QuerySourceMarker = "--internal-query-env"
 // SelectionFilePlaceholder is fzf's raw filename exception. Unlike ordinary
 // fields, it is not shell-quoted by stock fzf. These quotes protect spaces and
 // Windows backslashes, but not every shell-special temp-root character. The
-// dependency-side quoting fix is an experiment, not a production requirement.
+// unusual-temp-root limitation is deferred; catclip uses unmodified fzf.
 func SelectionFilePlaceholder() string { return `"{+f}"` }
 
 func quoteCommandArg(value string, shell commandShell) string {

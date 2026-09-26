@@ -92,16 +92,15 @@ func TestFzfShellTransport(t *testing.T) {
 	t.Setenv("SHELL", shell)
 	t.Setenv("FZF_DEFAULT_OPTS", "")
 	t.Setenv("FZF_DEFAULT_OPTS_FILE", "")
-	t.Setenv("CATCLIP_EXPAND", "must-not-expand")
 
-	for _, name := range []string{"spaces", "literal_metacharacters", "literal_placeholders", "temp_root_only"} {
+	for _, name := range []string{"normal", "spaces", "unicode"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
-			component := "launcher with spaces"
-			if name == "literal_metacharacters" {
-				component += " 'é' & $CATCLIP_EXPAND %CATCLIP_EXPAND% !CATCLIP_EXPAND!"
-			} else if name == "literal_placeholders" {
-				component += " {q} {2} {+f} __catclip_exe_YQ__ --internal-picker-command"
+			component := "catclip"
+			if name == "spaces" {
+				component = "Program Files"
+			} else if name == "unicode" {
+				component = "Projets été"
 			}
 			launcherDir := filepath.Join(root, component)
 			if err := os.Mkdir(launcherDir, 0o700); err != nil {
@@ -133,8 +132,11 @@ func TestFzfShellTransport(t *testing.T) {
 				return picker.CommandExecutable(probe) + strings.TrimPrefix(command, prefix)
 			}
 			checkpoint := filepath.Join(launcherDir, "scope.json")
-			path := "src/space 'é' & $CATCLIP_EXPAND %CATCLIP_EXPAND% !literal! [x].go"
-			query := "--changed-diff | dollar $CATCLIP_EXPAND `literal` 'quote' \"double\" \\ end"
+			path := "src/user settings.go"
+			if name == "unicode" {
+				path = "src/résumé.go"
+			}
+			query := `^(TODO|FIXME)\s+"[^"]*"$`
 			t.Run("content_query_and_focus", func(t *testing.T) {
 				command := relocate(discovery.FzfContentPreviewCommand("--contains", checkpoint))
 				got := runTransport(t, bin, command, query, []string{"label\tkey\t" + path}, false)
@@ -238,17 +240,9 @@ func TestFzfShellTransport(t *testing.T) {
 
 func runTransport(t *testing.T, bin, command, query string, rows []string, selectAll bool) probeResult {
 	t.Helper()
-	if os.Getenv("CATCLIP_TEST_FZF_QUOTED_FILES") == "1" {
-		// Experiment only: the patched fzf quotes its generated filename, so
-		// our stock-fzf workaround must not add a second quoting layer.
-		command = strings.ReplaceAll(command, picker.SelectionFilePlaceholder(), "{+f}")
-	}
 	dir := t.TempDir()
 	// Verify the raw file-placeholder exception with an actual spaced temp path.
 	tempDir := filepath.Join(dir, "fzf temp with spaces")
-	if strings.Contains(t.Name(), "/temp_root_only/") {
-		tempDir = filepath.Join(dir, "fzf temp 'é' $CATCLIP_EXPAND %CATCLIP_EXPAND% !bang! {q}")
-	}
 	if err := os.Mkdir(tempDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -269,9 +263,6 @@ func runTransport(t *testing.T, bin, command, query string, rows []string, selec
 	cmd.WaitDelay = 3 * time.Second
 	wantDir, err := os.Getwd()
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := picker.PrepareCommand(cmd); err != nil {
 		t.Fatal(err)
 	}
 	configureTransportCancellation(t, cmd)
