@@ -166,8 +166,13 @@ func ripgrepFileArgs(opts RipgrepFileOptions, debug bool) []string {
 // the whole run instead of once per resolver.
 var (
 	textFileSetCacheMu sync.Mutex
-	textFileSetCache   = map[string]map[string]struct{}{}
+	textFileSetCache   = map[string]textFileClassification{}
 )
+
+type textFileClassification struct {
+	text   map[string]struct{}
+	binary map[string]struct{}
+}
 
 // scopedCacheTargets returns a normalized, sorted, deduped list of target
 // paths suitable for use as both an rg cache key component and rg positional
@@ -226,6 +231,14 @@ func joinScopedCacheTargets(targets []string) string {
 // process get independent cache entries. Safe to call from multiple resolvers;
 // the underlying rg invocation runs at most once per distinct cache key.
 func ResolveTextFileSet(workingDir string, targets []string, enumeration ...MembershipEnumerationContext) (map[string]struct{}, error) {
+	set, _, err := ResolveTextFileSetWithBinaryEvidence(workingDir, targets, enumeration...)
+	return set, err
+}
+
+// ResolveTextFileSetWithBinaryEvidence retains per-path exclusion evidence with
+// the text-set cache, so exact targets share the existing batched classification.
+// Both returned maps are immutable observations owned by the cache.
+func ResolveTextFileSetWithBinaryEvidence(workingDir string, targets []string, enumeration ...MembershipEnumerationContext) (map[string]struct{}, map[string]struct{}, error) {
 	dirKey, err := filepath.Abs(workingDir)
 	if err != nil {
 		dirKey = workingDir
@@ -237,20 +250,20 @@ func ResolveTextFileSet(workingDir string, targets []string, enumeration ...Memb
 	textFileSetCacheMu.Lock()
 	if cached, ok := textFileSetCache[cacheKey]; ok {
 		textFileSetCacheMu.Unlock()
-		return cached, nil
+		return cached.text, cached.binary, nil
 	}
 	textFileSetCacheMu.Unlock()
 
 	context := membershipContextOrDefault(enumeration, MembershipReasonTextSetFallback)
-	set, err := runRipgrepTextFiles(workingDir, normTargets, context)
+	set, binary, err := runRipgrepTextFiles(workingDir, normTargets, context)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	textFileSetCacheMu.Lock()
-	textFileSetCache[cacheKey] = set
+	textFileSetCache[cacheKey] = textFileClassification{text: set, binary: binary}
 	textFileSetCacheMu.Unlock()
-	return set, nil
+	return set, binary, nil
 }
 
 // runRipgrepTextFiles returns the set of text files under workingDir.
@@ -281,7 +294,7 @@ func ResolveTextFileSet(workingDir string, targets []string, enumeration ...Memb
 // When targets is non-empty, the universe is restricted to those paths as
 // rg positional arguments — files outside the targets are never
 // enumerated. Pass nil/empty for the project-wide universe.
-func runRipgrepTextFiles(workingDir string, targets []string, enumeration MembershipEnumerationContext) (map[string]struct{}, error) {
+func runRipgrepTextFiles(workingDir string, targets []string, enumeration MembershipEnumerationContext) (map[string]struct{}, map[string]struct{}, error) {
 	finishBench := platform.InternalBenchSpan("search.rg.text_files",
 		"targets", platform.InternalBenchInt(len(targets)),
 		"classifier", "hybrid",
@@ -294,13 +307,13 @@ func runRipgrepTextFiles(workingDir string, targets []string, enumeration Member
 	})
 	if err != nil {
 		finishBench("err", "true")
-		return nil, fmt.Errorf("text classification: no-ignore enumeration under %q failed: %w", workingDir, err)
+		return nil, nil, fmt.Errorf("text classification: no-ignore enumeration under %q failed: %w", workingDir, err)
 	}
 
 	set, stats, err := classifyEnumeratedTextPaths(workingDir, allPaths)
 	if err != nil {
 		finishBench("err", "true", "residue_err", "true")
-		return nil, err
+		return nil, nil, err
 	}
 
 	finishBench("err", "false",
@@ -312,7 +325,7 @@ func runRipgrepTextFiles(workingDir string, targets []string, enumeration Member
 		"residue_stat_count", platform.InternalBenchInt(stats.statCount),
 		"residue_admitted_count", platform.InternalBenchInt(stats.admitted),
 	)
-	return set, nil
+	return set, stats.binaryPaths, nil
 }
 
 // ClassifyTextPaths applies Catclip's hybrid NUL classifier to an already
@@ -320,6 +333,15 @@ func runRipgrepTextFiles(workingDir string, targets []string, enumeration Member
 // a small visible project does not pay to enumerate and classify a large
 // ignored dependency tree merely to build an interactive picker.
 func ClassifyTextPaths(workingDir string, relPaths []string) (map[string]struct{}, error) {
+	set, _, err := ClassifyTextPathsWithBinaryEvidence(workingDir, relPaths)
+	return set, err
+}
+
+// ClassifyTextPathsWithBinaryEvidence also returns positive binary-exclusion
+// evidence from the existing classification pass. Absence from the text set
+// alone is insufficient: unreadable paths are also absent. No extra scan or
+// stat is performed to collect this diagnostic fact.
+func ClassifyTextPathsWithBinaryEvidence(workingDir string, relPaths []string) (map[string]struct{}, map[string]struct{}, error) {
 	finishBench := platform.InternalBenchSpan("search.rg.text_paths",
 		"paths", platform.InternalBenchInt(len(relPaths)),
 		"classifier", "hybrid",
@@ -327,7 +349,7 @@ func ClassifyTextPaths(workingDir string, relPaths []string) (map[string]struct{
 	set, stats, err := classifyEnumeratedTextPaths(workingDir, relPaths)
 	if err != nil {
 		finishBench("err", "true", "residue_err", "true")
-		return nil, err
+		return nil, nil, err
 	}
 	finishBench("err", "false",
 		"results", platform.InternalBenchInt(len(set)),
@@ -338,7 +360,7 @@ func ClassifyTextPaths(workingDir string, relPaths []string) (map[string]struct{
 		"residue_stat_count", platform.InternalBenchInt(stats.statCount),
 		"residue_admitted_count", platform.InternalBenchInt(stats.admitted),
 	)
-	return set, nil
+	return set, stats.binaryPaths, nil
 }
 
 // ClassifyTextPathsWithSizeCapture applies the same classifier as
@@ -372,6 +394,7 @@ func ClassifyTextPathsWithSizeCapture(workingDir string, relPaths []string) (map
 }
 
 type textClassificationStats struct {
+	binaryPaths  map[string]struct{}
 	nameText     int
 	nameBinary   int
 	residueCount int
@@ -390,7 +413,7 @@ func classifyEnumeratedTextPathsWithSizeCapture(workingDir string, allPaths []st
 }
 
 func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, captureSizes bool) (map[string]struct{}, textClassificationStats, *TextSizeCapture, error) {
-	stats := textClassificationStats{}
+	stats := textClassificationStats{binaryPaths: make(map[string]struct{})}
 	var capture *TextSizeCapture
 	if captureSizes {
 		capture = newTextSizeCapture(workingDir)
@@ -422,7 +445,7 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 		observed = make(map[string]os.FileInfo, len(residue))
 	}
 	if len(residue) > 0 {
-		scanned, scanErr := runRipgrepNulScanFiles(workingDir, residue, observed)
+		scanned, scanErr := runRipgrepNulScanFilesWithEvidence(workingDir, residue, observed, stats.binaryPaths)
 		if scanErr != nil {
 			if capture != nil {
 				capture.Stop()
@@ -446,7 +469,7 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 		}
 	}
 
-	stats.statCount, stats.admitted = admitEmptyFilesToTextSet(workingDir, allPaths, set, capture, observed)
+	stats.statCount, stats.admitted = admitEmptyFilesToTextSet(workingDir, allPaths, set, capture, observed, stats.binaryPaths)
 	stats.nameText = len(set) - stats.residueText - stats.admitted
 	recordTextClassificationResidue(residue, stats.residueText)
 	if capture != nil {
@@ -473,11 +496,19 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 // are fatal, with context so nothing surfaces as a bare "exit status 2"
 // (live failure 2026-07-04: one unreadable Desktop file killed the run).
 func runRipgrepNulScanFiles(workingDir string, relPaths []string, observations ...map[string]os.FileInfo) (map[string]struct{}, error) {
+	var observed map[string]os.FileInfo
+	if len(observations) > 0 {
+		observed = observations[0]
+	}
+	return runRipgrepNulScanFilesWithEvidence(workingDir, relPaths, observed, nil)
+}
+
+func runRipgrepNulScanFilesWithEvidence(workingDir string, relPaths []string, observed map[string]os.FileInfo, binaryPaths map[string]struct{}) (map[string]struct{}, error) {
 	bin, ok := RipgrepBinary()
 	if !ok {
 		return nil, errRipgrepUnavailable
 	}
-	out, remaining, err := scanTinyResidue(reloadCancelCtx, workingDir, relPaths, observations...)
+	out, remaining, err := scanTinyResidueWithEvidence(reloadCancelCtx, workingDir, relPaths, observed, binaryPaths)
 	if err != nil {
 		return nil, err
 	}
@@ -512,12 +543,28 @@ func runRipgrepNulScanFiles(workingDir string, relPaths []string, observations .
 			// rows classify binary. Fall through and parse whatever
 			// stdout was produced.
 		}
-		for _, rel := range splitNullSeparated(o) {
+		rows := splitNullSeparated(o)
+		// A clean explicit-path scan proves omitted paths matched NUL. Exit 2
+		// can omit unreadable paths, and user rg options can filter inputs; in
+		// either case retain the membership policy but make no binary claim.
+		cleanScan := err == nil
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			cleanScan = true
+		}
+		for _, rel := range rows {
 			rel = normalizeRelPath(rel)
 			if rel == "" || rel == "." {
 				continue
 			}
 			out[rel] = struct{}{}
+		}
+		if binaryPaths != nil && cleanScan && len(rows) < len(chunk) && os.Getenv("RIPGREP_CONFIG_PATH") == "" {
+			for _, rel := range chunk {
+				rel = normalizeRelPath(rel)
+				if _, text := out[rel]; !text {
+					binaryPaths[rel] = struct{}{}
+				}
+			}
 		}
 	}
 	return out, nil
@@ -574,7 +621,7 @@ func TextClassificationResidue() (paths []string, textCount int) {
 //
 // allPaths is the already-enumerated --no-ignore universe, so empty files in
 // blocked subtrees are considered too without a second rg walk.
-func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[string]struct{}, capture *TextSizeCapture, observed map[string]os.FileInfo) (statCount, admittedCount int) {
+func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[string]struct{}, capture *TextSizeCapture, observed map[string]os.FileInfo, binaryEvidence ...map[string]struct{}) (statCount, admittedCount int) {
 	for _, rel := range allPaths {
 		if _, ok := set[rel]; ok {
 			continue
@@ -588,8 +635,14 @@ func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[stri
 		if info == nil {
 			continue
 		}
+		if len(binaryEvidence) > 0 && binaryEvidence[0] != nil && info.Mode().IsRegular() && info.Size() > 0 && classifyPathByName(rel) == nameClassBinary {
+			binaryEvidence[0][rel] = struct{}{}
+		}
 		if info.Size() == 0 && info.Mode().IsRegular() {
 			set[rel] = struct{}{}
+			if len(binaryEvidence) > 0 {
+				delete(binaryEvidence[0], rel)
+			}
 			if capture != nil {
 				capture.record(rel, info)
 			}

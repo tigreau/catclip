@@ -97,7 +97,7 @@ func TestResolveTextFileSetCachesPerTargetSet(t *testing.T) {
 	// distinct entries land for three distinct target sets, and that
 	// repeated calls with the same target set don't create new entries.
 	textFileSetCacheMu.Lock()
-	textFileSetCache = map[string]map[string]struct{}{}
+	textFileSetCache = map[string]textFileClassification{}
 	textFileSetCacheMu.Unlock()
 
 	if _, err := ResolveTextFileSet(dir, []string{"src"}); err != nil {
@@ -137,7 +137,7 @@ func TestResolveTextFileSetWithTargetsRestrictsResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	textFileSetCacheMu.Lock()
-	textFileSetCache = map[string]map[string]struct{}{}
+	textFileSetCache = map[string]textFileClassification{}
 	textFileSetCacheMu.Unlock()
 
 	scoped, err := ResolveTextFileSet(dir, []string{"src"})

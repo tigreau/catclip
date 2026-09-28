@@ -192,7 +192,7 @@ func referenceIsBinary(data []byte) bool {
 
 func resetTextFileSetCache() {
 	textFileSetCacheMu.Lock()
-	textFileSetCache = map[string]map[string]struct{}{}
+	textFileSetCache = map[string]textFileClassification{}
 	textFileSetCacheMu.Unlock()
 }
 

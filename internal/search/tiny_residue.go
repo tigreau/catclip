@@ -15,6 +15,14 @@ const tinyResidueMaxBytes = 1 << 20
 // UTF-16 BOMs require rg's decoder, and special/large paths keep rg's handling.
 // Configured rg behavior is also left entirely to rg.
 func scanTinyResidue(ctx context.Context, workingDir string, paths []string, observations ...map[string]os.FileInfo) (map[string]struct{}, []string, error) {
+	var observed map[string]os.FileInfo
+	if len(observations) > 0 {
+		observed = observations[0]
+	}
+	return scanTinyResidueWithEvidence(ctx, workingDir, paths, observed, nil)
+}
+
+func scanTinyResidueWithEvidence(ctx context.Context, workingDir string, paths []string, observed map[string]os.FileInfo, binaryPaths map[string]struct{}) (map[string]struct{}, []string, error) {
 	if len(paths) > tinyResidueMaxFiles || os.Getenv("RIPGREP_CONFIG_PATH") != "" {
 		return nil, paths, nil
 	}
@@ -27,16 +35,20 @@ func scanTinyResidue(ctx context.Context, workingDir string, paths []string, obs
 		}
 		abs := filepath.Join(workingDir, filepath.FromSlash(rel))
 		info, _ := os.Lstat(abs)
-		if len(observations) > 0 && observations[0] != nil {
-			observations[0][normalizeRelPath(rel)] = info
+		if observed != nil {
+			observed[normalizeRelPath(rel)] = info
 		}
-		isText, handled, err := scanTinyResidueFile(ctx, abs, info, buf)
+		var binaryExcluded bool
+		isText, handled, err := scanTinyResidueFile(ctx, abs, info, buf, &binaryExcluded)
 		if err != nil {
 			return nil, nil, err
 		}
 		if !handled {
 			fallback = append(fallback, rel)
 			continue
+		}
+		if binaryExcluded && binaryPaths != nil {
+			binaryPaths[normalizeRelPath(rel)] = struct{}{}
 		}
 		if normalized := normalizeRelPath(rel); isText && normalized != "" && normalized != "." {
 			text[normalized] = struct{}{}
@@ -45,7 +57,7 @@ func scanTinyResidue(ctx context.Context, workingDir string, paths []string, obs
 	return text, fallback, ctx.Err()
 }
 
-func scanTinyResidueFile(ctx context.Context, abs string, info os.FileInfo, buf []byte) (isText, handled bool, err error) {
+func scanTinyResidueFile(ctx context.Context, abs string, info os.FileInfo, buf []byte, binaryExcluded *bool) (isText, handled bool, err error) {
 	if info == nil {
 		return false, true, nil
 	}
@@ -63,6 +75,9 @@ func scanTinyResidueFile(ctx context.Context, abs string, info os.FileInfo, buf 
 		return false, false, nil
 	}
 	if bytes.IndexByte(buf[:n], 0) >= 0 {
+		if binaryExcluded != nil {
+			*binaryExcluded = true
+		}
 		return false, true, nil
 	}
 	if firstErr == io.EOF || firstErr == io.ErrUnexpectedEOF {
@@ -82,6 +97,9 @@ func scanTinyResidueFile(ctx context.Context, abs string, info os.FileInfo, buf 
 			return false, false, nil
 		}
 		if bytes.IndexByte(buf[:n], 0) >= 0 {
+			if binaryExcluded != nil {
+				*binaryExcluded = true
+			}
 			return false, true, nil
 		}
 		if readErr == io.EOF {
