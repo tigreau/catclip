@@ -375,7 +375,8 @@ func (r *Resolver) discoverFilesUnderNoIgnore(rootRel string) ([]Entry, error) {
 	// classifyTextFile to lazily call ResolveTextFileSet would launch a second
 	// --no-ignore enumeration of the same roots before doing identical work.
 	if !r.WithBinaries {
-		r.textFileSet, err = search.ClassifyTextPaths(r.Cfg.WorkingDir, rels)
+		r.textFileSet, r.binaryFileSet, err = search.ClassifyTextPathsWithBinaryEvidence(r.Cfg.WorkingDir, rels)
+		r.lastClassificationExcludedBinary = len(r.binaryFileSet) > 0
 		if err != nil {
 			return nil, err
 		}

@@ -210,11 +210,11 @@ func buildDepthPickerPreview(view resolvedScopeView, buckets []discovery.DepthBu
 	}
 
 	parts := []string{
-		discovery.ShellQuoteArg(self),
+		picker.CommandExecutable(self),
 		"--quiet",
 		"--internal-tree-preview",
 		"--internal-prediscovered",
-		discovery.ShellQuoteArg(checkpointPath),
+		picker.CommandArg(checkpointPath),
 		// `--depth` is literal text; `{4}` is the per-row depth integer (see
 		// startupDepthPickerLines). fzf single-quotes substituted column
 		// values, so the flag must NOT be inside the substituted column —

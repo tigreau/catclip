@@ -14,6 +14,7 @@ import (
 )
 
 type RenderConfig struct {
+	prepared          *PreparedPresentation
 	NoTree            bool
 	Quiet             bool
 	ForceTreeMetadata bool
@@ -62,7 +63,7 @@ func RenderPreview(cfg RenderConfig, gitCtx git.Context, plan output.Plan, repor
 	}
 
 	if !cfg.NoTree {
-		if err := printPreviewTree(stdout, plan, report, colors); err != nil {
+		if err := printConfiguredPreviewTree(cfg, stdout, plan, report, colors); err != nil {
 			return err
 		}
 	}
@@ -87,7 +88,7 @@ func WriteNormalDiagnostics(
 			return false, err
 		}
 		if !cfg.NoTree {
-			if err := printPreviewTree(presentationWriter, plan, report, presentationColors); err != nil {
+			if err := printConfiguredPreviewTree(cfg, presentationWriter, plan, report, presentationColors); err != nil {
 				return false, err
 			}
 		}
@@ -142,7 +143,7 @@ func WriteMetadataDiagnostics(
 			return false, err
 		}
 		if !cfg.NoTree {
-			if err := printPreviewTree(presentationWriter, plan, report, presentationColors); err != nil {
+			if err := printConfiguredPreviewTree(cfg, presentationWriter, plan, report, presentationColors); err != nil {
 				return false, err
 			}
 		}

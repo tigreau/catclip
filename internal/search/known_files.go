@@ -197,4 +197,9 @@ var knownTextBasenames = map[string]struct{}{
 	".zshrc": {}, ".bashrc": {}, ".bash_profile": {}, ".profile": {}, ".inputrc": {}, ".gitconfig": {},
 	"notice": {}, "copying": {}, "copyright": {}, "install": {}, "news": {},
 	".hiss": {},
+	// 2026-09-09 exact-name audit: wrapper scripts, ignore syntax, and
+	// kernel build/configuration source. Do not generalize to all *config
+	// names or extensions; generic config/settings/platform remain residue.
+	"gradlew": {}, ".prettierignore": {},
+	"kconfig": {}, "kbuild": {}, ".kunitconfig": {},
 }

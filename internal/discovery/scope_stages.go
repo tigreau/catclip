@@ -24,6 +24,10 @@ type StageValueMatcher struct {
 	glob    compiledGlob
 	dirOnly bool
 	hasGlob bool
+	// A leading star followed only by an ASCII literal admits a suffix check.
+	// Keep the regexp as the authority for newline paths and all other globs.
+	suffixGlob    bool
+	literalSuffix string
 }
 
 // stageContext bundles the inputs every per-stage applier needs. The
@@ -448,9 +452,11 @@ func ClassifyStageValue(value string) (StageValueMatcher, error) {
 			return StageValueMatcher{}, err
 		}
 		return StageValueMatcher{
-			kind:    stageValueMatchGlob,
-			value:   normalized,
-			hasGlob: true,
+			kind:          stageValueMatchGlob,
+			value:         normalized,
+			hasGlob:       true,
+			suffixGlob:    isLiteralSuffixGlob(normalized),
+			literalSuffix: strings.TrimPrefix(normalized, "*"),
 			glob: compiledGlob{
 				raw: value,
 				re:  re,
@@ -467,6 +473,19 @@ func ClassifyStageValue(value string) (StageValueMatcher, error) {
 	default:
 		return StageValueMatcher{kind: stageValueMatchBare, value: normalized}, nil
 	}
+}
+
+func isLiteralSuffixGlob(pattern string) bool {
+	if !strings.HasPrefix(pattern, "*") {
+		return false
+	}
+	for i := 1; i < len(pattern); i++ {
+		ch := pattern[i]
+		if ch >= 0x80 || ch == '*' || ch == '?' || ch == '[' || ch == '/' || ch == '\n' {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizeStageValue(value string) (string, bool) {
@@ -503,6 +522,11 @@ func MatchesStageValue(relPath string, matcher StageValueMatcher) bool {
 	basename := path.Base(relPath)
 	switch matcher.kind {
 	case stageValueMatchGlob:
+		// Go's regexp dot does not consume newlines. Preserve that behavior
+		// rather than broadening matches for unusual but valid filenames.
+		if matcher.suffixGlob && !strings.ContainsRune(relPath, '\n') {
+			return strings.HasSuffix(basename, matcher.literalSuffix) || strings.HasSuffix(relPath, matcher.literalSuffix)
+		}
 		if matcher.glob.re.MatchString(basename) || matcher.glob.re.MatchString(relPath) {
 			return true
 		}

@@ -45,6 +45,34 @@ func flattenExecPathChunks(chunks [][]string) []string {
 	return paths
 }
 
+func TestResidueChunkingPreservesCountAndPlatformByteBoundaries(t *testing.T) {
+	for _, goos := range []string{"windows", "linux", "darwin"} {
+		for _, longPaths := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/long=%v", goos, longPaths), func(t *testing.T) {
+				paths := make([]string, 1025)
+				for i := range paths {
+					paths[i] = fmt.Sprintf("%04d.xyz", i)
+					if longPaths {
+						paths[i] = strings.Repeat("nested path/", 12) + paths[i]
+					}
+				}
+				budget := execPathChunkByteLimit(goos)
+				chunks := chunkExecArgs(paths, residuePathChunkMaxCount, budget)
+				assertExecPathChunksWithinLimits(t, chunks, residuePathChunkMaxCount, budget)
+				if !reflect.DeepEqual(flattenExecPathChunks(chunks), paths) {
+					t.Fatal("batching lost or reordered paths")
+				}
+				if !longPaths && (len(chunks) != 2 || len(chunks[0]) != 1024 || len(chunks[1]) != 1) {
+					t.Fatalf("short paths should split 1024+1; got %d chunks", len(chunks))
+				}
+				if longPaths && len(chunks[0]) >= residuePathChunkMaxCount {
+					t.Fatal("long paths did not split at the byte budget")
+				}
+			})
+		}
+	}
+}
+
 func assertExecPathChunksWithinLimits(t *testing.T, chunks [][]string, maxCount, maxBytes int) {
 	t.Helper()
 	for i, chunk := range chunks {

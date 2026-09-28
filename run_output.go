@@ -45,6 +45,7 @@ type outputExecutionContext struct {
 }
 
 type outputExecutionState struct {
+	Presentation     *ui.PreparedPresentation
 	Scopes           []command.ExecutionScope
 	DiscoveredScopes []discovery.Scope
 	Plan             output.Plan
@@ -86,11 +87,18 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 	}
 	reportStarted := time.Now()
 	finishReportBench := platform.InternalBenchSpan("output.report", "items", platform.InternalBenchInt(state.Plan.Len()))
-	report, err := output.BuildReportForPlan(ctx.Git, state.Plan, output.ReportOptions{
-		IncludeTreeMetadata: ui.NeedsTreeRender(ctx.Render) || ctx.Invocation.PayloadKind == command.PayloadMetadata,
-		Notices:             discovery.DedupePreserveOrder(state.Notices),
-	})
-	finishReportBench("err", platform.InternalBenchError(err))
+	notices := discovery.DedupePreserveOrder(state.Notices)
+	report, reused := state.Presentation.ReportForPlan(ctx.Git, state.Plan, notices)
+	var err error
+	if reused {
+		ctx.Render = ctx.Render.WithPreparedPresentation(state.Presentation)
+	} else {
+		report, err = output.BuildReportForPlan(ctx.Git, state.Plan, output.ReportOptions{
+			IncludeTreeMetadata: ui.NeedsTreeRender(ctx.Render) || ctx.Invocation.PayloadKind == command.PayloadMetadata,
+			Notices:             notices,
+		})
+	}
+	finishReportBench("err", platform.InternalBenchError(err), "reused", platform.InternalBenchBool(reused))
 	if err != nil {
 		return err
 	}

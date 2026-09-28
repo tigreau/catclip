@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -989,6 +990,10 @@ esac
 	if result.PreparedOutput == nil {
 		t.Fatal("explicit sink lost the retained prepared output")
 	}
+	prepared := result.PreparedOutput
+	if _, ok := prepared.Presentation.ReportForPlan(prepared.Git, prepared.Plan, discovery.DedupePreserveOrder(prepared.Discovery.Notices)); !ok {
+		t.Fatal("explicit sink lost the compatible prepared report")
+	}
 	got := result.PreparedOutput.Plan.DistinctRelPaths()
 	if slices.Contains(got, "src/later.go") || !slices.Contains(got, "src/a.go") || !slices.Contains(got, "src/b.go") {
 		t.Fatalf("explicit-sink membership = %v, want original rows and no later-created path", got)
@@ -1082,6 +1087,10 @@ func assertPreparedOutputReplays(t *testing.T, result StartupPickerResult) {
 	t.Helper()
 	if result.PreparedOutput == nil {
 		t.Fatal("expected prepared output")
+	}
+	prepared := result.PreparedOutput
+	if _, ok := prepared.Presentation.ReportForPlan(prepared.Git, prepared.Plan, discovery.DedupePreserveOrder(prepared.Discovery.Notices)); !ok {
+		t.Fatal("sink handoff lost the compatible prepared report")
 	}
 	if _, err := cli.ParseArgs(result.Args); err != nil {
 		t.Fatalf("resolved command must parse without interactive state: %v", err)
@@ -1186,7 +1195,7 @@ func TestMeasureStartupSinkPayloadUsesMetadataBytes(t *testing.T) {
 	if measurement.Bytes != wantBytes {
 		t.Fatalf("measurement = %#v, want bytes %d", measurement, wantBytes)
 	}
-	if measurement.PreviewReady || len(measurement.OutputPreview.Body) != 0 {
+	if measurement.RawPreview != nil {
 		t.Fatalf("metadata measurement eagerly rendered the picker preview: %#v", measurement)
 	}
 }
@@ -1229,19 +1238,25 @@ func TestPrepareStartupSinkPreviewFilesReusesMeasuredOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	measurement := measureOutputForSinkMenu(plan, output.EmitConfig{})
-	if measurement.Err != nil || len(measurement.OutputPreview.Body) == 0 {
+	if measurement.Err != nil || measurement.RawPreview == nil || len(measurement.RawPreview.Body) == 0 {
 		t.Fatalf("measurement did not retain its output preview: %#v", measurement)
 	}
 	if err := os.Remove(filepath.Join(project, "src", "main.go")); err != nil {
 		t.Fatal(err)
 	}
 
-	files, err := prepareStartupSinkPreviewFiles(StartupSinkPickerContext{
-		Emit:   output.EmitConfig{},
-		Render: RenderConfig{ForceTreeMetadata: true},
-		Plan:   plan,
-		Report: report,
-	}, &measurement.OutputPreview)
+	pickerCtx := StartupSinkPickerContext{
+		rawOutputPreview: measurement.RawPreview,
+		Emit:             output.EmitConfig{},
+		Render:           RenderConfig{ForceTreeMetadata: true},
+		Plan:             plan,
+		Report:           report,
+	}
+	preview, err := renderSinkPreviewWithModeContext(context.Background(), pickerCtx, sinkPreviewModeOutputText, output.PreviewByteLimit)
+	if err != nil || !bytes.Equal(preview.Body, highlightFileBlocksForSinkPreview(measurement.RawPreview.Body)) {
+		t.Fatalf("small preview was re-read instead of reused: %v", err)
+	}
+	files, err := prepareStartupSinkPreviewFiles(pickerCtx, nil)
 	if err != nil {
 		t.Fatalf("preview setup re-read output after measurement: %v", err)
 	}

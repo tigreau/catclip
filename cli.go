@@ -65,6 +65,25 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		if err := validateImplementedFeatureSet(internalCfg); err != nil {
 			return err
 		}
+		if cfg.TargetSelectionPath != "" {
+			var err error
+			cfg.Command, err = specWithTargetSelection(cfg.Command, cfg.TargetSelectionPath)
+			if err != nil {
+				return err
+			}
+		}
+		if cfg.TargetRootsPath != "" {
+			scopes := command.ExecutionScopesFromSpec(cfg.Command)
+			if !freshTargetTreePreviewScopesEligible(scopes) || len(scopes[0].Targets) != 1 || scopes[0].Targets[0] != "." || scopes[0].NoIgnore {
+				return fmt.Errorf("retained target roots require an implicit, unfiltered target scope")
+			}
+			targets, err := discovery.ReadTargetRoots(cfg.TargetRootsPath)
+			if err != nil {
+				return err
+			}
+			scopes[0].Targets = targets
+			cfg.Command = command.FinalizedSpecFromExecutionScopes(scopes)
+		}
 		restorePromptGuard := ui.PushHeadlessPromptGuard(cfg.Headless || cfg.IsInternalKind())
 		defer restorePromptGuard()
 		if cfg.IsInternalKind() {
@@ -323,6 +342,7 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		}
 		if prepared != nil {
 			outputState.Metadata = prepared.Metadata
+			outputState.Presentation = prepared.Presentation
 		}
 		if cfg.TreePreview {
 			return executeTreePreview(outputCtx, outputState)
@@ -568,10 +588,30 @@ func runResetHiss(cfg hissConfig, stderr io.Writer) error {
 	return nil
 }
 
+// specWithTargetSelection decodes transport into a detached command model,
+// without parsing row paths as CLI options or enumerating their membership.
+func specWithTargetSelection(spec command.Spec, selectionPath string) (command.Spec, error) {
+	scopes := command.ExecutionScopesFromSpec(spec)
+	if len(scopes) != 1 || !freshTargetTreePreviewScopesEligible(scopes) ||
+		len(scopes[0].Targets) != 1 || scopes[0].Targets[0] != "." || scopes[0].NoIgnore {
+		return command.Spec{}, fmt.Errorf("target selection file requires an implicit, unfiltered target scope")
+	}
+	targets, err := readTargetSelection(selectionPath)
+	if err != nil {
+		return command.Spec{}, err
+	}
+	scopes[0].Targets = targets
+	return command.FinalizedSpecFromExecutionScopes(scopes), nil
+}
+
 type internalCommandConfig struct {
+	DiffPreviewStatePath   string
+	TargetRootsPath        string
+	CheckpointScope        bool
 	TreePreview            bool
 	PrediscoveredPath      string
 	TargetPreviewInventory string
+	TargetSelectionPath    string
 	TreeInputDir           string
 	TreeInputStem          string
 	FileSetSelectionPath   string
@@ -588,9 +628,13 @@ type internalCommandConfig struct {
 
 func internalCommandConfigFromParsedCommand(cfg command.Parsed) internalCommandConfig {
 	return internalCommandConfig{
+		DiffPreviewStatePath:   cfg.DiffPreviewStatePath,
+		TargetRootsPath:        cfg.TargetRootsPath,
+		CheckpointScope:        cfg.CheckpointScope,
 		TreePreview:            cfg.TreePreview,
 		PrediscoveredPath:      cfg.PrediscoveredPath,
 		TargetPreviewInventory: cfg.TargetPreviewInventory,
+		TargetSelectionPath:    cfg.TargetSelectionPath,
 		TreeInputDir:           cfg.TreeInputDir,
 		TreeInputStem:          cfg.TreeInputStem,
 		FileSetSelectionPath:   cfg.FileSetSelectionPath,
@@ -607,6 +651,20 @@ func internalCommandConfigFromParsedCommand(cfg command.Parsed) internalCommandC
 }
 
 func validateImplementedFeatureSet(cfg internalCommandConfig) error {
+	if cfg.DiffPreviewStatePath != "" && (!cfg.FilePreview || cfg.TreePreview || cfg.ContentMatchList ||
+		cfg.PrediscoveredPath != "" || cfg.FileSearchingPreview || cfg.SnippetBoundaryPreview ||
+		cfg.RecentPreview || cfg.LinesPreview || cfg.SinkTogglePath != "" || cfg.SinkPreviewModePath != "") {
+		return newUsageError("Error: --internal-diff-preview-state requires a file preview without other preview inputs.")
+	}
+	if cfg.TargetRootsPath != "" && (!cfg.TreePreview || cfg.TargetPreviewInventory == "" || cfg.TargetSelectionPath != "") {
+		return newUsageError("Error: --internal-target-roots requires a target inventory preview without fzf selection input.")
+	}
+	if cfg.CheckpointScope && (cfg.PrediscoveredPath == "" || (!cfg.TreePreview && !cfg.ContentMatchList) || cfg.FileSetSelectionPath != "" || cfg.FileSetSelectionStage != "") {
+		return newUsageError("Error: --internal-checkpoint-scope requires a checkpoint-backed tree or content-list preview without file-set selection.")
+	}
+	if cfg.TargetSelectionPath != "" && (!cfg.TreePreview || cfg.PrediscoveredPath != "" || cfg.TreeInputDir != "" || cfg.FileSetSelectionPath != "" || cfg.FileSetSelectionStage != "") {
+		return newUsageError("Error: --internal-target-selection requires a target tree preview, without other tree inputs or file-set stages.")
+	}
 	if cfg.PrediscoveredPath != "" && !cfg.TreePreview && !cfg.ContentMatchList && !cfg.LinesPreview && !cfg.FilePreview {
 		return newUsageError("Error: --internal-prediscovered requires --internal-tree-preview, --internal-content-match-list, --internal-lines-preview, or --internal-file-preview.")
 	}

@@ -40,12 +40,17 @@ type Resolver struct {
 	// interactive target picker. It lets the visible-file classifier start an
 	// opportunistic metadata snapshot without adding size work to headless or
 	// direct discovery.
-	CaptureTargetPreviewSizes  bool
-	WantedBasenames            map[string]struct{}
-	ScopeTargets               []string
-	StartupEscHint             string
-	textFileSet                map[string]struct{}
-	textFileSetReady           bool
+	CaptureTargetPreviewSizes bool
+	WantedBasenames           map[string]struct{}
+	ScopeTargets              []string
+	StartupEscHint            string
+	textFileSet               map[string]struct{}
+	binaryFileSet             map[string]struct{}
+	textFileSetReady          bool
+	// Only the most recent target-bounded classification supplies this fact;
+	// it is not inferred from missing text membership or reused across targets.
+	lastClassificationExcludedBinary bool
+
 	interactiveTargets         []TargetMatch
 	interactiveTargetsOk       bool
 	resolvedTargets            []ResolvedTarget
@@ -176,7 +181,7 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		// resolveVisibleFilesByBasename's skipped-set, populating a notice but
 		// preventing the warning (and therefore the inline probe). See
 		// docs/versions/v0.5.7/reports/ACTIVE_PLAN_surface_ignored_ancestor.md.
-		if len(discovered) == 0 && len(targetDiagnostics) == 0 && !hasGlobChars(target) {
+		if !exactPath && len(discovered) == 0 && len(targetDiagnostics) == 0 && !hasGlobChars(target) {
 			if cands := resolver.findIgnoredAncestors(target); len(cands) > 0 {
 				result.Diagnostics = append(result.Diagnostics, Diagnostic{
 					Message:          ignoredAncestorMessage(target, scopeIndex, cands, colors),
@@ -856,6 +861,7 @@ func (r *Resolver) resolveTargetMatch(match TargetMatch, colors platform.Palette
 }
 
 func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors platform.Palette) ([]Entry, bool, *Diagnostic, error) {
+	r.lastClassificationExcludedBinary = false
 	absTarget := filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(relTarget))
 	info, err := os.Lstat(absTarget)
 	if err != nil {
@@ -873,7 +879,7 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 		if r.NoIgnore {
 			files, err := r.discoverFilesUnderNoIgnore(relTarget)
 			r.markNoIgnoreTargetWalk(relTarget)
-			return withTargetRoot(files, relTarget), true, nil, err
+			return withTargetRoot(files, relTarget), true, r.exactTargetEmptyDiagnostic(relTarget, len(files), err), err
 		}
 		// An exact directory target is an explicit traversal root. Ripgrep
 		// admits that root even when an ancestor ignore rule hides it, while
@@ -881,7 +887,7 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 		// project-wide permission scan and mirrors ordinary path-oriented CLI
 		// tools.
 		files, err := r.discoverVisibleFilesUnder(relTarget)
-		return withTargetRoot(files, relTarget), true, nil, err
+		return withTargetRoot(files, relTarget), true, r.exactTargetEmptyDiagnostic(relTarget, len(files), err), err
 	}
 
 	if !info.Mode().IsRegular() {
@@ -893,7 +899,8 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 		return nil, true, nil, err
 	}
 	if !text {
-		return nil, true, nil, nil
+		_, r.lastClassificationExcludedBinary = r.binaryFileSet[normalizeRelPath(relTarget)]
+		return nil, true, r.exactTargetEmptyDiagnostic(relTarget, 0, nil), nil
 	}
 	entry := Entry{
 		AbsPath:    absTarget,
@@ -924,6 +931,14 @@ func (r *Resolver) resolveExactTarget(relTarget string, fromChained bool, colors
 	return []Entry{entry}, true, nil, nil
 }
 
+func (r *Resolver) exactTargetEmptyDiagnostic(target string, count int, err error) *Diagnostic {
+	if err != nil || count != 0 || !r.lastClassificationExcludedBinary {
+		return nil
+	}
+	message := fmt.Sprintf("No eligible files found for exact target %s.\n  Binary files were excluded. Use --with-binaries to include them.", SingleQuoted(target))
+	return &Diagnostic{Message: message, ExplainsEmptyResult: true}
+}
+
 // ensureTextFileSet pulls the rg-derived NUL-free file set for the resolver's
 // working directory from the process-level cache. The cache amortizes one rg
 // scan across every resolver in a catclip run; without it, each resolver
@@ -932,11 +947,12 @@ func (r *Resolver) ensureTextFileSet() error {
 	if r.textFileSetReady {
 		return nil
 	}
-	set, err := search.ResolveTextFileSet(r.Cfg.WorkingDir, r.ScopeTargets, r.membershipEnumeration(search.MembershipReasonTextSetFallback))
+	set, binarySet, err := search.ResolveTextFileSetWithBinaryEvidence(r.Cfg.WorkingDir, r.ScopeTargets, r.membershipEnumeration(search.MembershipReasonTextSetFallback))
 	if err != nil {
 		return err
 	}
 	r.textFileSet = set
+	r.binaryFileSet = binarySet
 	r.textFileSetReady = true
 	return nil
 }
@@ -1158,6 +1174,10 @@ func (r *Resolver) BuildVisibleDirIndex() error {
 	for _, entry := range r.VisibleFileList {
 		dir := path.Dir(entry.RelPath)
 		for dir != "." && dir != "" {
+			// A previously indexed directory already contributed all its ancestors.
+			if _, exists := dirSet[dir]; exists {
+				break
+			}
 			dirSet[dir] = struct{}{}
 			dir = path.Dir(dir)
 		}
@@ -1321,7 +1341,9 @@ func (r *Resolver) textEntriesFromRipgrepPaths(relPaths []string) ([]Entry, erro
 	var textSet map[string]struct{}
 	if !r.WithBinaries {
 		var err error
-		textSet, err = search.ClassifyTextPaths(r.Cfg.WorkingDir, relPaths)
+		var binarySet map[string]struct{}
+		textSet, binarySet, err = search.ClassifyTextPathsWithBinaryEvidence(r.Cfg.WorkingDir, relPaths)
+		r.lastClassificationExcludedBinary = len(binarySet) > 0
 		if err != nil {
 			return nil, err
 		}

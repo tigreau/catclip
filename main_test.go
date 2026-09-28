@@ -49,6 +49,32 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
+// Native preview children run inside fixture projects, outside the repository
+// containing CI's bin directory. Forward the parent's resolved dependencies so
+// these tests do not accidentally require globally installed rg/fzf.
+func nativePreviewTestEnv(t *testing.T) []string {
+	t.Helper()
+	env := append(os.Environ(), "CATCLIP_TEST_RUN_MAIN=1")
+	for _, dependency := range []struct {
+		key     string
+		resolve func() (string, bool)
+	}{
+		{"CATCLIP_RG", search.RipgrepBinary},
+		{"CATCLIP_FZF", discovery.FzfBinary},
+	} {
+		path, ok := dependency.resolve()
+		if !ok {
+			t.Fatalf("required dependency %s unavailable", dependency.key)
+		}
+		path, err := filepath.Abs(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		env = append(env, dependency.key+"="+path)
+	}
+	return env
+}
+
 func skipUnlessLinux(t *testing.T, feature string) {
 	t.Helper()
 	if runtime.GOOS != "linux" {
@@ -2244,7 +2270,7 @@ func TestFzfPreviewCommandUsesInternalTreePreview(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+" --quiet --internal-tree-preview --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} {+2}") {
+	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-tree-preview --internal-tree-target {2} --internal-tree-kind {3} --internal-tree-state {4} --internal-target-selection "{+f}"`) {
 		t.Fatalf("expected preview command to invoke internal tree preview, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
@@ -2258,7 +2284,7 @@ func TestFzfPreviewCommandIncludesBinaryPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+" --quiet --with-binaries --internal-tree-preview") {
+	if !strings.Contains(command, picker.CommandExecutable(self)+" --quiet --with-binaries --internal-tree-preview") {
 		t.Fatalf("expected target preview to preserve --with-binaries, got %q", command)
 	}
 }
@@ -2266,7 +2292,7 @@ func TestFzfPreviewCommandIncludesBinaryPolicy(t *testing.T) {
 func TestFzfPreviewCommandIncludesTargetInventory(t *testing.T) {
 	inventoryPath := "/tmp/catclip target inventory.bin"
 	command := discovery.FzfPreviewCommandWithInventory(inventoryPath, false)
-	if !strings.Contains(command, "--internal-target-inventory "+discovery.ShellQuoteArg(inventoryPath)) {
+	if !strings.Contains(command, "--internal-target-inventory "+picker.CommandArg(inventoryPath)) {
 		t.Fatalf("expected target inventory handoff, got %q", command)
 	}
 }
@@ -2278,7 +2304,7 @@ func TestFzfContentPreviewCommandUsesFilePreviewRenderer(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --contains {q}`) {
+	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --internal-query-env --contains {q}`) {
 		t.Fatalf("expected contains preview to invoke file preview renderer, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
@@ -2293,7 +2319,7 @@ func TestFzfContentSearchingPreviewCommandUsesForcedSearchingRenderer(t *testing
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	want := discovery.ShellQuoteArg(self) + ` --quiet --internal-file-preview --internal-searching-preview --internal-file-path "" --contains {q}`
+	want := picker.CommandExecutable(self) + ` --quiet --internal-file-preview --internal-searching-preview --internal-file-path ` + picker.CommandArg("") + ` --internal-query-env --contains {q}`
 	if !strings.Contains(command, want) {
 		t.Fatalf("expected searching preview to invoke forced file preview renderer, got %q", command)
 	}
@@ -2309,7 +2335,7 @@ func TestFzfContentSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --snippet {q}`) {
+	if !strings.Contains(command, picker.CommandExecutable(self)+` --quiet --internal-file-preview --internal-searching-preview --internal-file-path {3} --internal-tree-target {1} --internal-query-env --snippet {q}`) {
 		t.Fatalf("expected snippet contains preview to forward --snippet, got %q", command)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
@@ -2317,27 +2343,16 @@ func TestFzfContentSnippetPreviewCommandUsesSnippetFlag(t *testing.T) {
 	}
 }
 
-func TestFzfContentMatchListCommandQuotesMultiwordQuery(t *testing.T) {
-	command := discovery.FzfContentMatchListCommand([]string{".", "--exclude", "uninstall"}, "--snippet")
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable returned error: %v", err)
-	}
-
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+` --quiet --internal-content-match-list . --exclude uninstall --snippet {q}`) {
-		t.Fatalf("expected content match list command to pass raw {q} placeholder, got %q", command)
-	}
-}
-
 func TestFzfDiffFilePreviewCommandUsesFilePreviewRenderer(t *testing.T) {
-	command := discovery.FzfDiffFilePreviewCommand([]string{"cmd", "--no-ignore", "--changed-diff"})
+	statePath := filepath.Join(t.TempDir(), "diff state.json")
+	command := discovery.FzfDiffFilePreviewCommand(statePath)
 	self, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable returned error: %v", err)
 	}
 
-	if !strings.Contains(command, discovery.ShellQuoteArg(self)+" --quiet --internal-file-preview --internal-file-path {3} cmd --no-ignore --changed-diff --only {+2}") {
-		t.Fatalf("expected diff file preview command to invoke internal file preview renderer with scope-narrowing --only, got %q", command)
+	if want := picker.CommandExecutable(self) + " --quiet --internal-file-preview --internal-diff-preview-state " + picker.CommandArg(statePath) + " --internal-file-path {3}"; command != want {
+		t.Fatalf("expected bounded diff file preview command, got %q, want %q", command, want)
 	}
 	if strings.Contains(command, "catclip-tree") || strings.Contains(command, "|") {
 		t.Fatalf("expected diff file preview command to avoid catclip-tree pipe, got %q", command)
