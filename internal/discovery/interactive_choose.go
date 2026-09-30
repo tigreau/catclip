@@ -24,17 +24,12 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	}
 	stopSpinner := func() {}
 	if !r.interactiveTargetsOk {
-		// Renamed from "Loading targets..." to plain English; the
-		// 5 s delayed hint acknowledges the unavoidable cold-boot
-		// scan cost so users don't think it's hung and Ctrl-C out.
-		// On Windows, platform.SlowFileScanHint names the Defender
-		// once-per-boot scan explicitly; elsewhere it returns no hint.
-		// See
-		// RESOLVED_PLAN_target_picker_spinner_reassurance.md.
+		// A scan that takes over five seconds may be rooted in a wider
+		// directory than the user intended. Name that directory on every platform.
 		stopSpinner = platform.StartLoadingSpinnerWithDelayedHint(
 			os.Stderr,
 			"Scanning files...",
-			platform.SlowFileScanHint(),
+			platform.SlowFileScanHint(r.Cfg.WorkingDir),
 			5*time.Second,
 		)
 	}

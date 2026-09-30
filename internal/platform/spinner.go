@@ -3,7 +3,6 @@ package platform
 import (
 	"fmt"
 	"os"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -43,20 +42,10 @@ func StartLoadingSpinnerWithDelayedHint(output *os.File, message, hint string, h
 	return startLoadingSpinner(output, message, hint, hintDelay)
 }
 
-// SlowFileScanHint returns the delayed spinner hint used for file-tree and
-// content-search scans. Windows gets the explicit Defender explanation because
-// the first content scan after reboot pays the on-access antivirus cost once.
-// Other platforms return no hint; normal Unix filesystem scans should not be
-// framed as inherently slow.
-func SlowFileScanHint() string {
-	return slowFileScanHintForGOOS(runtime.GOOS)
-}
-
-func slowFileScanHintForGOOS(goos string) string {
-	if goos == "windows" {
-		return "This first Windows content search can be much slower while antivirus scans each file.\nOn large projects, this can feel 10x+ slower than later searches.\nLater searches should reuse the antivirus cache until the next reboot."
-	}
-	return ""
+// SlowFileScanHint names the directory being scanned when picker discovery
+// takes longer than usual. The same message is used on every platform.
+func SlowFileScanHint(workingDir string) string {
+	return fmt.Sprintf("Still scanning files after 5 seconds; this is unusual.\nIs %s the project you want to run Catclip in?", workingDir)
 }
 
 func startLoadingSpinner(output *os.File, message, hint string, hintDelay time.Duration) func() {

@@ -36,15 +36,14 @@ func TestSpinnerHintLines(t *testing.T) {
 	}
 }
 
-func TestSlowFileScanHintForGOOS(t *testing.T) {
-	windows := slowFileScanHintForGOOS("windows")
-	for _, want := range []string{"antivirus", "later searches", "next reboot"} {
-		if !strings.Contains(windows, want) {
-			t.Fatalf("Windows scan hint missing %q: %q", want, windows)
+func TestSlowFileScanHint(t *testing.T) {
+	for _, dir := range []string{`C:\Users\ExampleUser`, "/home/example/project"} {
+		hint := SlowFileScanHint(dir)
+		for _, want := range []string{"after 5 seconds", dir, "project you want to run Catclip in?"} {
+			if !strings.Contains(hint, want) {
+				t.Fatalf("scan hint for %q missing %q: %q", dir, want, hint)
+			}
 		}
-	}
-	if got := slowFileScanHintForGOOS("darwin"); got != "" {
-		t.Fatalf("non-Windows scan hint = %q, want empty", got)
 	}
 }
 

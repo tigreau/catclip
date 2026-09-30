@@ -97,6 +97,10 @@ func filterArgs(query, nth string) []string {
 
 // Run executes an interactive fzf picker and returns the parsed selection.
 func Run(bin string, req Request) (Result, error) {
+	return runPicker(bin, req, preparePickerTerminal)
+}
+
+func runPicker(bin string, req Request, prepareTerminal func() (func() error, error)) (result Result, runErr error) {
 	// Opt-in interactive diagnostic. This is the parent-side fzf duration:
 	// picker input has already been prepared, and preview child processes log
 	// separately via CATCLIP_INTERNAL_BENCH_LOG. Do not log query text,
@@ -131,8 +135,23 @@ func Run(bin string, req Request) (Result, error) {
 		)...)
 	}
 
+	restoreTerminal, err := prepareTerminal()
+	if err != nil {
+		finishBench("err", "true")
+		return Result{}, err
+	}
+	defer func() {
+		if err := restoreTerminal(); err != nil {
+			if runErr == ErrSelectionCancelled {
+				// Cleanup failure must not be swallowed as ordinary Escape/undo.
+				runErr = err
+			} else {
+				runErr = errors.Join(runErr, err)
+			}
+		}
+	}()
+
 	var out []byte
-	var err error
 	if benchEnabled {
 		// Split process creation from the complete interactive lifetime only in
 		// diagnostic mode. The normal path keeps exec.Cmd.Output unchanged.
@@ -178,7 +197,7 @@ func Run(bin string, req Request) (Result, error) {
 		return result, nil
 	}
 
-	result := Result{Matches: parseMatches(text)}
+	result = Result{Matches: parseMatches(text)}
 	if len(result.Matches) == 0 {
 		finishBench("err", "false", "cancelled", "true")
 		return Result{}, ErrSelectionCancelled

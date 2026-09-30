@@ -40,10 +40,10 @@ func TestBuildVisibleFileListClassifiesOnlyVisibleWalkPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	log := string(raw)
-	if !strings.Contains(log, `event="search.rg.text_paths" paths="2"`) {
+	if !strings.Contains(log, `event="search.classify.paths" paths="2"`) {
 		t.Fatalf("visible conversion did not classify the bounded path set:\n%s", log)
 	}
-	if strings.Contains(log, `event="search.rg.text_files"`) {
+	if strings.Contains(log, `event="search.classify.files"`) {
 		t.Fatalf("visible conversion unexpectedly classified the project-wide no-ignore universe:\n%s", log)
 	}
 }

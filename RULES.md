@@ -32,7 +32,8 @@ Resolution and discovery:
 
 - **resolver**: target resolution (path, glob, fzf) and file discovery
 - **discovery**: walking, visibility indexes, file classification
-- **ripgrep**: rg invocations (visible-file enumeration, NUL-byte text classification, content matching)
+- **ripgrep**: rg invocations (visible-file enumeration and content matching)
+- **text_classifier**: Go-only decoded-NUL classification of already-enumerated unknown-format regular files
 - **ignore / git**: `.hiss` loading, git-aware filtering, changed-file logic
 - **bundled_tools**: app-private fzf/rg discovery and toolchain capability checks (PCRE2, `multi:refresh-preview`)
 
@@ -108,7 +109,7 @@ Subpackages and platform shims:
 
 10. **Interactive is a convenience layer** — catclip is both a scripting CLI and an interactive tool, so complete deterministic commands must remain directly executable; startup fzf only helps resolve ambiguity or unfinished human input.
 
-11. **The full NUL scan is the definition; the hybrid classifier approximates it** — a file is binary ⇔ the full-file scan `rg --text -e '\x00'` says so, i.e. a NUL byte anywhere in rg's *decoded* view. rg BOM-sniffs before matching, so BOM'd UTF-16 (e.g. `desktop.ini`) transcodes and is TEXT by the definition — its clipboard-truncation risk is handled by the default `.hiss` name rule, not by classification — while BOM-less UTF-16 keeps raw NULs and is binary (verified 2026-07-04). Since v0.6.5 the classifier is hybrid (`internal/search/known_files.go` + `runRipgrepTextFiles`): known-text and known-binary names classify without opening the file; the residue (undecidable names) pays the definitional full NUL scan via rg with explicit paths; empty files are text by definition (no NUL) and are lstat-admitted regardless of name class. rg remains the sole CONTENT classifier — no Go byte-sniff; the Go-side lists are read-avoidance approximations of the rule, pinned by a golden agreement test (`TestHybridMatchesFullNulScanGolden`) and a collision-disposition test. Membership bars are asymmetric: blocklist entries require formats that structurally guarantee NULs (a wrong entry silently drops a text file); allowlist entries tolerate rare violations (a wrong entry fails visibly at the sink — the one accepted divergence, NUL bytes under a known-text name, is pinned by `TestHybridKnownTextNameDivergence`). Rationale: the pre-v0.6.5 full corpus scan cost ~50 s cold Windows on `vscode-main`; the hybrid reads only the residue. See `docs/versions/v0.6.5/reports/RESOLVED_PLAN_binary_detection_replacement.md` ("Option C revisited" / "List design") and `docs/architecture/ACTIVE_NOTE_ripgrep_is_required.md`.
+11. **Decoded NUL defines binary content; filename shortcuts remain deliberate approximations.** Unknown-format regular files use a bounded parallel Go scanner: reject on the first decoded NUL, otherwise read to EOF. UTF-16 LE/BE BOMs select aligned code-unit scanning; BOM-less input uses byte NULs. Invalid encoding alone is not binary. Classification always runs in Go and is independent of `RIPGREP_CONFIG_PATH`; that variable still affects rg discovery and content queries. Keep known-text/known-binary name shortcuts and empty-file admission. Do not open symlinks or special files in the Go scanner, infer binary content from read failures, or broaden already-enumerated membership. Reuse scanner metadata for empty admission and preview capture. Cancellation must join workers and discard partial results. The name lists remain asymmetric: binary names require formats that structurally guarantee NULs; known-text names accept rare NUL-bearing misnames as a pinned divergence. Keep independent bundled-rg parity tests and separate hybrid-selection tests.
 
 12. **No silent skips** — if catclip excludes something significant, that should remain a deliberate product decision, not an accidental side effect.
 
@@ -233,7 +234,7 @@ Subpackages and platform shims:
    - `--only` / `--exclude`
    - known binary basename/extension denylist
 
-6. Classify text/binary via rg's NUL-byte text-file set (see rule 11). No per-file Go byte-sniff fallback, no Go-side name allowlist.
+6. Classify text/binary through the shared hybrid classifier (rule 11): filename shortcuts, Go-only decoded-NUL scanning, and empty-file admission. Classification never expands discovery membership.
 
 7. Keep ripgrep-backed candidate entries lightweight:
    - picker/index candidates are stored with `RelPath` first

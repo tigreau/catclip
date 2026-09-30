@@ -961,9 +961,8 @@ func (r *Resolver) classifyTextFile(relPath, absPath string) (bool, error) {
 	if r.WithBinaries {
 		return true, nil
 	}
-	// rg's NUL-detection text-set is the sole content classifier.
-	// No Go fallback — rg's answer is final. A path absent from the set
-	// is classified as binary; --with-binaries to override.
+	// The shared hybrid decoded-NUL text set owns content classification.
+	// A path absent from the set is excluded; --with-binaries overrides it.
 	rel := normalizeRelPath(relPath)
 	if rel == "" || rel == "." {
 		return false, nil

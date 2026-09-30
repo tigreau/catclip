@@ -14,7 +14,6 @@ func TestResidueScanKeepsResultsAcross1024FileBoundary(t *testing.T) {
 	if _, ok := RipgrepBinary(); !ok {
 		t.Skip("rg not available")
 	}
-	t.Setenv("CATCLIP_BENCH_RG", "1")
 	dir := t.TempDir()
 	paths := make([]string, 1025)
 	for i := range paths {
@@ -32,13 +31,9 @@ func TestResidueScanKeepsResultsAcross1024FileBoundary(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	before := benchRgTextCalls.Load()
-	got, err := runRipgrepNulScanFiles(dir, paths)
+	got, err := ClassifyTextPaths(dir, paths)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if calls := benchRgTextCalls.Load() - before; calls != 2 {
-		t.Fatalf("classifier started %d processes, want 2", calls)
 	}
 	for i, path := range paths {
 		_, present := got[path]

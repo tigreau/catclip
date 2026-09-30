@@ -35,7 +35,7 @@ func TestClassificationBinaryEvidence(t *testing.T) {
 		{"missing residue", []string{"missing.unknown"}, false, 0},
 		{"missing binary name", []string{"missing.png"}, false, 0},
 		{"rg read errors", []string{"missing.unknown", "text.unknown", "other.unknown"}, false, 2},
-		{"rg uncertain mixed batch", []string{"missing.unknown", "nul.unknown", "text.unknown"}, false, 1},
+		{"independent binary evidence despite unreadable neighbor", []string{"missing.unknown", "nul.unknown", "text.unknown"}, true, 1},
 		{"no candidates", nil, false, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,7 +47,7 @@ func TestClassificationBinaryEvidence(t *testing.T) {
 	}
 }
 
-func TestConfiguredClassifierDoesNotInferBinaryFromMissingOutput(t *testing.T) {
+func TestClassifierIgnoresRipgrepConfigGlobs(t *testing.T) {
 	root := t.TempDir()
 	config := filepath.Join(root, "rg-config")
 	if err := os.WriteFile(config, []byte("--glob\n*.txt\n"), 0600); err != nil {
@@ -57,9 +57,9 @@ func TestConfiguredClassifierDoesNotInferBinaryFromMissingOutput(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "file.unknown"), []byte("hello"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, binary, err := ClassifyTextPathsWithBinaryEvidence(root, []string{"file.unknown"})
-	if err != nil || len(binary) > 0 {
-		t.Fatalf("configured classifier inferred binary: binary=%v err=%v", binary, err)
+	text, binary, err := ClassifyTextPathsWithBinaryEvidence(root, []string{"file.unknown"})
+	if err != nil || len(binary) > 0 || len(text) != 1 {
+		t.Fatalf("rg glob affected classifier: text=%v binary=%v err=%v", text, binary, err)
 	}
 }
 

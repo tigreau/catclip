@@ -1,6 +1,7 @@
 package picker
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,10 +16,82 @@ const pickerBenchHelperEnv = "CATCLIP_TEST_PICKER_BENCH_HELPER"
 func TestMain(m *testing.M) {
 	if os.Getenv(pickerBenchHelperEnv) == "1" {
 		_, _ = io.Copy(io.Discard, os.Stdin)
+		switch os.Getenv("CATCLIP_TEST_PICKER_RESULT") {
+		case "cancel":
+			os.Exit(130)
+		case "empty":
+			os.Exit(0)
+		case "failure":
+			os.Exit(2)
+		}
 		fmt.Fprintln(os.Stdout, "chosen\tchosen/path.ts")
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+func TestRunPickerRestoresTerminalOnEveryExit(t *testing.T) {
+	for _, bench := range []bool{false, true} {
+		for _, outcome := range []string{"success", "cancel", "empty", "failure", "start-failure"} {
+			t.Run(fmt.Sprintf("bench=%t/%s", bench, outcome), func(t *testing.T) {
+				if bench {
+					t.Setenv("CATCLIP_INTERNAL_BENCH_LOG", filepath.Join(t.TempDir(), "bench.log"))
+				} else {
+					t.Setenv("CATCLIP_INTERNAL_BENCH_LOG", "")
+				}
+				bin := os.Args[0]
+				if outcome == "start-failure" {
+					bin = filepath.Join(t.TempDir(), "missing-fzf")
+				}
+				prepared, restored := 0, 0
+				result, err := runPicker(bin, Request{
+					Lines: []string{"chosen\tchosen/path.ts"},
+					Env:   append(os.Environ(), pickerBenchHelperEnv+"=1", "CATCLIP_TEST_PICKER_RESULT="+outcome),
+				}, func() (func() error, error) {
+					prepared++
+					return func() error { restored++; return nil }, nil
+				})
+				if prepared != 1 || restored != 1 {
+					t.Fatalf("prepare/restore = %d/%d", prepared, restored)
+				}
+				switch outcome {
+				case "success":
+					if err != nil || !slices.Equal(result.Matches, []string{"chosen/path.ts"}) {
+						t.Fatalf("result=%+v err=%v", result, err)
+					}
+				case "cancel", "empty":
+					// Preserve identity for callers that compare the sentinel directly.
+					if err != ErrSelectionCancelled {
+						t.Fatalf("got %v, want cancellation sentinel", err)
+					}
+				default:
+					if err == nil || errors.Is(err, ErrSelectionCancelled) {
+						t.Fatalf("expected process failure, got %v", err)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRunPickerTerminalFailure(t *testing.T) {
+	failure := errors.New("console failure")
+	_, err := runPicker("unused-fzf", Request{}, func() (func() error, error) {
+		return nil, failure
+	})
+	if err != failure {
+		t.Fatalf("terminal preparation failure was replaced: %v", err)
+	}
+	for _, outcome := range []string{"success", "cancel", "failure"} {
+		_, err = runPicker(os.Args[0], Request{
+			Env: append(os.Environ(), pickerBenchHelperEnv+"=1", "CATCLIP_TEST_PICKER_RESULT="+outcome),
+		}, func() (func() error, error) {
+			return func() error { return failure }, nil
+		})
+		if !errors.Is(err, failure) || errors.Is(err, ErrSelectionCancelled) {
+			t.Fatalf("terminal cleanup failure was lost or treated as cancellation: %v", err)
+		}
+	}
 }
 
 func TestBuildArgsUsesLargerLabeledPreviewPane(t *testing.T) {

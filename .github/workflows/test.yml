@@ -78,6 +78,10 @@ jobs:
       - name: go test
         run: go test ./...
 
+      - name: Classifier and metadata race checks
+        if: runner.os == 'Linux'
+        run: go test -race ./internal/search -run 'Test(GoClassifier|ClassifierConfig|TextSizeCapture|ClassificationBinaryEvidence)' -count=1
+
       - name: Real fzf POSIX transport control
         if: runner.os != 'Windows'
         shell: bash

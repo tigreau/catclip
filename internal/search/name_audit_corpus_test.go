@@ -60,7 +60,11 @@ func TestUnknownNameCorpusAudit(t *testing.T) {
 			unknown = append(unknown, p)
 		}
 	}
-	textPaths, err := runRipgrepNulScanFiles(corpus, unknown)
+	bin, ok := RipgrepBinary()
+	if !ok {
+		t.Fatal("rg required for audit oracle")
+	}
+	textPaths, _, err := scaleClassifyRg(corpus, bin, unknown)
 	if err != nil {
 		t.Fatal(err)
 	}

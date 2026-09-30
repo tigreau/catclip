@@ -22,21 +22,17 @@ import (
 
 var (
 	benchRgFilesTotal   atomic.Int64
-	benchRgTextTotal    atomic.Int64
+	benchGoTextTotal    atomic.Int64
 	benchRgMatchesTotal atomic.Int64
 	benchRgVisibleTotal atomic.Int64
 	benchRgFilesCalls   atomic.Int64
-	benchRgTextCalls    atomic.Int64
+	benchGoTextCalls    atomic.Int64
 	benchRgMatchesCalls atomic.Int64
 	benchRgVisibleCalls atomic.Int64
 )
 
 const (
-	execPathChunkMaxCount = 256
-	// Residue classification benefits from fewer process launches on large
-	// inventories. Keep other content operations at their existing batch size;
-	// both limits still yield to the platform path-argument byte budget.
-	residuePathChunkMaxCount  = 1024
+	execPathChunkMaxCount     = 256
 	execPathChunkMaxBytes     = 60 * 1024
 	windowsExecPathChunkBytes = 24 * 1024
 )
@@ -66,7 +62,7 @@ func BenchReport() {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "  rg --files (%dx):         %s\n", benchRgFilesCalls.Load(), time.Duration(benchRgFilesTotal.Load()))
-	fmt.Fprintf(os.Stderr, "  rg --files-without-match: %s (%dx)\n", time.Duration(benchRgTextTotal.Load()), benchRgTextCalls.Load())
+	fmt.Fprintf(os.Stderr, "  Go text/binary scan: %s (%dx)\n", time.Duration(benchGoTextTotal.Load()), benchGoTextCalls.Load())
 	fmt.Fprintf(os.Stderr, "  rg --files-with-matches:  %s (%dx)\n", time.Duration(benchRgMatchesTotal.Load()), benchRgMatchesCalls.Load())
 	fmt.Fprintf(os.Stderr, "  rg --files (visible):     %s (%dx)\n", time.Duration(benchRgVisibleTotal.Load()), benchRgVisibleCalls.Load())
 }
@@ -269,22 +265,19 @@ func ResolveTextFileSetWithBinaryEvidence(workingDir string, targets []string, e
 // runRipgrepTextFiles returns the set of text files under workingDir.
 //
 // Hybrid classifier (2026-07-04, RESOLVED_PLAN_binary_detection_replacement.md
-// "Option C revisited"): THE DEFINITION of binary is "contains a NUL byte
-// anywhere" — what the pre-v0.6.5 full-file scan implemented. The hybrid
-// preserves that definition while avoiding corpus content reads:
+// "Option C revisited"): binary content contains a decoded NUL. The hybrid
+// preserves filename shortcuts while reducing content reads:
 //
-//  1. Enumerate the --no-ignore universe (path list only; Defender does
-//     not toll directory enumeration the way it tolls ReadFile).
+//  1. Enumerate the --no-ignore universe (path list only).
 //  2. Classify by name (known_files.go): known-text and known-binary
 //     extensions/basenames are never opened.
-//  3. The residue (names the lists cannot decide) pays the definitional
-//     full NUL scan with explicit path args — exact, and mode-independent
-//     because --text bypasses rg's own binary heuristics.
+//  3. Unknown names use the parallel Go decoded-NUL scanner. It stops at a
+//     NUL or reads to EOF, independently of ripgrep configuration.
 //  4. Empty files contain no NUL → text by definition regardless of name
 //     class (an empty .png is text under the rule, matching the prior
 //     full-scan behavior); an Lstat-only pass re-admits 0-byte regular
 //     files the name pass called binary. Residue empties are already
-//     admitted by the scan itself (--files-without-match reports them).
+//     admitted by the scan itself.
 //
 // Known divergence from the definition (accepted; pinned by
 // TestHybridKnownTextNameDivergence): a NUL-bearing file with a
@@ -295,9 +288,9 @@ func ResolveTextFileSetWithBinaryEvidence(workingDir string, targets []string, e
 // rg positional arguments — files outside the targets are never
 // enumerated. Pass nil/empty for the project-wide universe.
 func runRipgrepTextFiles(workingDir string, targets []string, enumeration MembershipEnumerationContext) (map[string]struct{}, map[string]struct{}, error) {
-	finishBench := platform.InternalBenchSpan("search.rg.text_files",
+	finishBench := platform.InternalBenchSpan("search.classify.files",
 		"targets", platform.InternalBenchInt(len(targets)),
-		"classifier", "hybrid",
+		"classifier", "hybrid-go",
 	)
 
 	allPaths, err := RunRipgrepFiles(workingDir, RipgrepFileOptions{
@@ -342,9 +335,9 @@ func ClassifyTextPaths(workingDir string, relPaths []string) (map[string]struct{
 // alone is insufficient: unreadable paths are also absent. No extra scan or
 // stat is performed to collect this diagnostic fact.
 func ClassifyTextPathsWithBinaryEvidence(workingDir string, relPaths []string) (map[string]struct{}, map[string]struct{}, error) {
-	finishBench := platform.InternalBenchSpan("search.rg.text_paths",
+	finishBench := platform.InternalBenchSpan("search.classify.paths",
 		"paths", platform.InternalBenchInt(len(relPaths)),
-		"classifier", "hybrid",
+		"classifier", "hybrid-go",
 	)
 	set, stats, err := classifyEnumeratedTextPaths(workingDir, relPaths)
 	if err != nil {
@@ -372,9 +365,9 @@ func ClassifyTextPathsWithBinaryEvidence(workingDir string, relPaths []string) (
 // existing empty-file admission pass proves one is an empty text file, its
 // already-known zero size is recorded directly.
 func ClassifyTextPathsWithSizeCapture(workingDir string, relPaths []string) (map[string]struct{}, *TextSizeCapture, error) {
-	finishBench := platform.InternalBenchSpan("search.rg.text_paths",
+	finishBench := platform.InternalBenchSpan("search.classify.paths",
 		"paths", platform.InternalBenchInt(len(relPaths)),
-		"classifier", "hybrid+sizes",
+		"classifier", "hybrid-go+sizes",
 	)
 	set, stats, capture, err := classifyEnumeratedTextPathsWithSizeCapture(workingDir, relPaths)
 	if err != nil {
@@ -414,6 +407,9 @@ func classifyEnumeratedTextPathsWithSizeCapture(workingDir string, allPaths []st
 
 func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, captureSizes bool) (map[string]struct{}, textClassificationStats, *TextSizeCapture, error) {
 	stats := textClassificationStats{binaryPaths: make(map[string]struct{})}
+	if err := reloadCancelCtx.Err(); err != nil {
+		return nil, stats, nil, err
+	}
 	var capture *TextSizeCapture
 	if captureSizes {
 		capture = newTextSizeCapture(workingDir)
@@ -441,20 +437,19 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 
 	stats.residueCount = len(residue)
 	var observed map[string]os.FileInfo
-	if len(residue) > 0 && len(residue) <= tinyResidueMaxFiles {
-		observed = make(map[string]os.FileInfo, len(residue))
-	}
 	if len(residue) > 0 {
-		scanned, scanErr := runRipgrepNulScanFilesWithEvidence(workingDir, residue, observed, stats.binaryPaths)
+		classified, scanErr := classifyResidue(reloadCancelCtx, workingDir, residue)
 		if scanErr != nil {
 			if capture != nil {
 				capture.Stop()
 			}
 			return nil, stats, nil, scanErr
 		}
-		stats.residueText = len(scanned)
-		acceptedResidue := make([]string, 0, len(scanned))
-		for rel := range scanned {
+		observed = classified.observed
+		stats.binaryPaths = classified.binary
+		stats.residueText = len(classified.text)
+		acceptedResidue := make([]string, 0, len(classified.text))
+		for rel := range classified.text {
 			set[rel] = struct{}{}
 			if info := observed[rel]; capture != nil && info != nil && info.Mode().IsRegular() {
 				// The local classifier already completed this Lstat. Publish
@@ -470,6 +465,12 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 	}
 
 	stats.statCount, stats.admitted = admitEmptyFilesToTextSet(workingDir, allPaths, set, capture, observed, stats.binaryPaths)
+	if err := reloadCancelCtx.Err(); err != nil {
+		if capture != nil {
+			capture.Stop()
+		}
+		return nil, stats, nil, err
+	}
 	stats.nameText = len(set) - stats.residueText - stats.admitted
 	recordTextClassificationResidue(residue, stats.residueText)
 	if capture != nil {
@@ -477,97 +478,6 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 		capture.closeInput()
 	}
 	return set, stats, capture, nil
-}
-
-// runRipgrepNulScanFiles runs the definitional full-file NUL scan
-// (`--files-without-match --text -e '\x00'`) over explicit relative paths,
-// chunked for command-line limits, and returns the subset containing no
-// NUL byte. --text forces rg's mode 3 so its own binary heuristics never
-// preempt the pattern; with explicit file args the scan is
-// mode-independent, exactly like the pre-v0.6.5 Stage 2.
-//
-// Error tolerance (matching the direct and chunked content-match
-// helpers): with explicit file args, rg exits 2 when ANY listed file
-// cannot be opened (locked, permission-denied, cloud placeholder) — even
-// under --no-messages — while still printing the rows it could classify.
-// That must not fail the scan: an unreadable file is simply absent from
-// the without-match output and classifies binary, the definitionally
-// correct answer ("cannot prove NUL-free"). Only spawn-level failures
-// are fatal, with context so nothing surfaces as a bare "exit status 2"
-// (live failure 2026-07-04: one unreadable Desktop file killed the run).
-func runRipgrepNulScanFiles(workingDir string, relPaths []string, observations ...map[string]os.FileInfo) (map[string]struct{}, error) {
-	var observed map[string]os.FileInfo
-	if len(observations) > 0 {
-		observed = observations[0]
-	}
-	return runRipgrepNulScanFilesWithEvidence(workingDir, relPaths, observed, nil)
-}
-
-func runRipgrepNulScanFilesWithEvidence(workingDir string, relPaths []string, observed map[string]os.FileInfo, binaryPaths map[string]struct{}) (map[string]struct{}, error) {
-	bin, ok := RipgrepBinary()
-	if !ok {
-		return nil, errRipgrepUnavailable
-	}
-	out, remaining, err := scanTinyResidueWithEvidence(reloadCancelCtx, workingDir, relPaths, observed, binaryPaths)
-	if err != nil {
-		return nil, err
-	}
-	if out == nil {
-		out = make(map[string]struct{}, len(relPaths))
-	}
-	fixed := []string{"--files-without-match", "--text", "--no-messages", "-0", "-e", `\x00`, "--"}
-	pathChunks, err := contentPathChunks(bin, fixed, remaining, residuePathChunkMaxCount, runtime.GOOS)
-	if err != nil {
-		return nil, err
-	}
-	for _, chunk := range pathChunks {
-		args := append(append([]string(nil), fixed...), chunk...)
-		cmd := exec.CommandContext(reloadCancelCtx, bin, args...)
-		cmd.Dir = workingDir
-		t0 := time.Now()
-		o, err := cmd.Output()
-		if benchEnabled() {
-			benchRgTextTotal.Add(int64(time.Since(t0)))
-			benchRgTextCalls.Add(1)
-		}
-		if cancelErr := reloadCancelCtx.Err(); cancelErr != nil {
-			return nil, cancelErr
-		}
-		if err != nil {
-			if _, isExit := err.(*exec.ExitError); !isExit {
-				return nil, fmt.Errorf("text classification: NUL scan of %d residue file(s) under %q failed to run: %w", len(chunk), workingDir, err)
-			}
-			// Exit 1: every file in the chunk matched \x00 (all binary) —
-			// output is empty. Exit 2: some listed file was unreadable —
-			// output still carries the rows rg could classify; absent
-			// rows classify binary. Fall through and parse whatever
-			// stdout was produced.
-		}
-		rows := splitNullSeparated(o)
-		// A clean explicit-path scan proves omitted paths matched NUL. Exit 2
-		// can omit unreadable paths, and user rg options can filter inputs; in
-		// either case retain the membership policy but make no binary claim.
-		cleanScan := err == nil
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			cleanScan = true
-		}
-		for _, rel := range rows {
-			rel = normalizeRelPath(rel)
-			if rel == "" || rel == "." {
-				continue
-			}
-			out[rel] = struct{}{}
-		}
-		if binaryPaths != nil && cleanScan && len(rows) < len(chunk) && os.Getenv("RIPGREP_CONFIG_PATH") == "" {
-			for _, rel := range chunk {
-				rel = normalizeRelPath(rel)
-				if _, text := out[rel]; !text {
-					binaryPaths[rel] = struct{}{}
-				}
-			}
-		}
-	}
-	return out, nil
 }
 
 // textResidue accumulates the residue (name-undecidable, content-scanned)
@@ -615,14 +525,17 @@ func TextClassificationResidue() (paths []string, textCount int) {
 // whose NAME said binary (an empty .png). Empty files contain no NUL
 // byte, so they are text by the rule-11 definition regardless of name,
 // matching the prior full-scan behavior. Lstat-only: metadata, not
-// content classification, so rg remains the sole content classifier.
+// content classification; reuse observations from the Go scanner when present.
 // Symlinks are excluded by policy (discovery doesn't emit symlink
-// entries). Individual Lstat failures skip the file (it stays binary).
+// entries). Individual Lstat failures leave the file unconfirmed.
 //
 // allPaths is the already-enumerated --no-ignore universe, so empty files in
 // blocked subtrees are considered too without a second rg walk.
 func admitEmptyFilesToTextSet(workingDir string, allPaths []string, set map[string]struct{}, capture *TextSizeCapture, observed map[string]os.FileInfo, binaryEvidence ...map[string]struct{}) (statCount, admittedCount int) {
 	for _, rel := range allPaths {
+		if reloadCancelCtx.Err() != nil {
+			return statCount, admittedCount
+		}
 		if _, ok := set[rel]; ok {
 			continue
 		}

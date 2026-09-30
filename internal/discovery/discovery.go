@@ -164,15 +164,8 @@ func catclipControlHissRel(workingDir string) string {
 }
 
 // ShellStyleExtension is kept for non-classification consumers (e.g.,
-// extension counting in startup_picker). Catclip's text/binary
-// classification flows entirely through rg per
-// docs/architecture/ACTIVE_NOTE_ripgrep_is_required.md; no Go-side
-// allowlist exists. A previous `knownTextLikeFile` attempt was
-// reverted — see
-// docs/versions/v0.5.0/reports/RESOLVED_BUG_windows_contains_slow.md
-// for the analysis (the allowlist almost never actually avoided the
-// rg text-set call in practice, since real projects always contain at
-// least one non-allowlisted file like a `.git` blob or build artifact).
+// extension counting in startup_picker). Classification belongs to the
+// internal/search hybrid classifier, including its filename policy.
 func ShellStyleExtension(relPath string) string {
 	base := strings.ToLower(path.Base(relPath))
 	lastDot := strings.LastIndexByte(base, '.')

@@ -7,12 +7,11 @@ import (
 
 // Name-based text/binary classification for the hybrid Stage 2 classifier.
 //
-// THE DEFINITION (RULES.md rule 11): a file is binary ⇔ the full-file
-// scan `rg --files-without-match --text -e '\x00'` says so — i.e. a NUL
-// byte anywhere in rg's DECODED view of the file. rg BOM-sniffs before
-// matching, so BOM'd UTF-16 transcodes and is TEXT by the definition
-// (verified 2026-07-04: desktop.ini with FF FE BOM is "without match");
-// only BOM-less UTF-16 and genuine binary carry NULs the pattern sees.
+// THE DEFINITION (RULES.md rule 11): binary content contains a decoded NUL.
+// The Go scanner checks UTF-16 code units when a LE/BE BOM is present,
+// and raw byte NULs otherwise. UTF-16 text with a BOM remains text unless
+// it contains a zero code unit. Independent unconfigured rg scans serve
+// as the test oracle for this definition.
 // The lists below are read-avoidance approximations of that definition,
 // never a competing one. Membership bars are asymmetric because the
 // failure modes differ:
@@ -26,7 +25,8 @@ import (
 //     admits binary bytes that fail visibly at the sink. Medium bar —
 //     population NUL-free in practice.
 //   - Anything the lists cannot decide goes to the residue, which pays
-//     the definitional full NUL scan (see runRipgrepNulScanFiles).
+//     the definitional decoded-NUL scan (see classifyResidue). Go performs
+//     this scan independently of ripgrep configuration.
 //
 // Collision dispositions (pinned by TestKnownFilesCollisionDispositions;
 // see RESOLVED_PLAN_binary_detection_replacement.md "List design"):

@@ -248,17 +248,11 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		} else {
 			discoverySpinnerStop := func() {}
 			if !cfg.Quiet {
-				// Same 5 s delayed reassurance as the target-picker
-				// spinner; this discovery phase is the one that
-				// dominates cold runs on big trees. On Windows the
-				// dominant cold cost is Defender scanning every file a
-				// content search reads (once per boot), so the hint
-				// says why, matching the content picker's searching
-				// preview document.
+				// Use the same five-second directory hint as the target picker.
 				discoverySpinnerStop = platform.StartLoadingSpinnerWithDelayedHint(
 					platform.SpinnerOutputFile(stderr),
 					"Scanning files...",
-					platform.SlowFileScanHint(),
+					platform.SlowFileScanHint(invocationCfg.WorkingDir),
 					5*time.Second,
 				)
 			}
