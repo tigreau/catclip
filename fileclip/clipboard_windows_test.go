@@ -7,7 +7,6 @@ import (
 	"errors"
 	"os/exec"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -25,32 +24,50 @@ func TestClipboardPowerShellRejectsInteractivePrompt(t *testing.T) {
 			name = "stdin"
 		}
 		t.Run(name, func(t *testing.T) {
-			script := "Read-Host"
+			const ready = "catclip-prompt-probe-ready"
+			probe := "Write-Output '" + ready + "'; Read-Host"
+			script := probe
 			if stdin {
 				script = "-"
 			}
 			cmd := powershellClipboardCommand("powershell", script)
 			if stdin {
-				cmd.Stdin = strings.NewReader("Read-Host")
+				cmd.Stdin = strings.NewReader(probe)
 			}
-			var stderr bytes.Buffer
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
 			cmd.Stderr = &stderr
+			// Bound pipe cleanup too, even if a child retains an output handle.
+			cmd.WaitDelay = 5 * time.Second
+			started := time.Now()
 			if err := cmd.Start(); err != nil {
 				t.Fatal(err)
 			}
-			var timedOut atomic.Bool
-			timer := time.AfterFunc(10*time.Second, func() {
-				timedOut.Store(true)
-				_ = cmd.Process.Kill()
-			})
+			// Cold PowerShell startup competes with other packages on CI. This
+			// is a liveness guard, not a ten-second startup performance contract.
+			timer := time.NewTimer(time.Minute)
 			defer timer.Stop()
-			err := cmd.Wait()
-			if timedOut.Load() {
-				t.Fatal("clipboard helper hung waiting for interactive input")
+			done := make(chan error, 1)
+			go func() { done <- cmd.Wait() }()
+			var err error
+			select {
+			case err = <-done:
+			case <-timer.C:
+				_ = cmd.Process.Kill()
+				err = <-done
+				phase := "before the prompt probe started"
+				if strings.Contains(stdout.String(), ready) {
+					phase = "after the prompt probe started"
+				}
+				t.Fatalf("clipboard helper timed out %s after %s: err=%v stdout=%q stderr=%q",
+					phase, time.Since(started), err, stdout.String(), stderr.String())
 			}
 			var exit *exec.ExitError
-			if !errors.As(err, &exit) || exit.ExitCode() != 1 || stderr.Len() == 0 {
-				t.Fatalf("prompt did not fail cleanly: err=%v stderr=%s", err, stderr.String())
+			if !errors.As(err, &exit) || exit.ExitCode() != 1 ||
+				!strings.Contains(stdout.String(), ready) ||
+				!strings.Contains(stderr.String(), "Microsoft.PowerShell.Commands.ReadHostCommand") {
+				t.Fatalf("prompt did not fail cleanly after %s: err=%v stdout=%q stderr=%q",
+					time.Since(started), err, stdout.String(), stderr.String())
 			}
 		})
 	}
