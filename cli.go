@@ -88,75 +88,86 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		defer restorePromptGuard()
 		if cfg.IsInternalKind() {
 			// Internal reload/preview commands are short-lived fzf-spawned
-			// helpers. Arm signal-driven cancellation so a superseded reload's
-			// rg child is killed when fzf terminates this process, instead of
-			// orphaning a full-corpus scan.
+			// helpers. Keep cooperative cancellation for catchable signals;
+			// fzf groups on Unix and owned jobs on Windows cover hard kills.
 			search.InstallReloadCancellation()
+			if err := platform.BeginInternalWork(); err != nil {
+				return err
+			}
 		}
 		if cfg.TreePreview && cfg.TreeInputDir != "" {
 			return ui.RunInternalTreePayloadFilePreview(cfg.TreeInputDir, cfg.TreeInputStem, stdout)
 		}
 		if cfg.TreePreview && cfg.TargetPreviewInventory != "" {
-			ui.KillSupersededTargetTreePreview()
+			if err := ui.KillSupersededTargetTreePreview(); err != nil {
+				return err
+			}
 			resolved := command.ResolvedFromParsed(cfg)
 			if !freshTargetTreePreviewScopesEligible(resolved.Scopes) || len(resolved.Scopes) != 1 {
 				return fmt.Errorf("target inventory preview does not accept filter or output stages")
 			}
-			finishRead := platform.InternalBenchSpan("ui.target_tree_preview.inventory_read")
-			inventory, err := discovery.ReadTargetPreviewInventory(cfg.TargetPreviewInventory, resolved.Config.WorkingDir)
-			finishRead(
-				"err", platform.InternalBenchError(err),
-				"entries", platform.InternalBenchInt(len(inventory.Entries)),
-			)
-			if err != nil {
-				return err
-			}
-			// Prefer the completed session snapshot when it already exists. The
-			// base inventory remains the immediate path that lets fzf open while
-			// the parent-owned size capture is still finishing.
-			if inventory.SizesPending {
-				if sized, sizedErr := discovery.ReadTargetPreviewInventory(
-					discovery.TargetPreviewSizedInventoryPath(cfg.TargetPreviewInventory),
-					resolved.Config.WorkingDir,
-				); sizedErr == nil {
-					inventory = sized
-				} else if !os.IsNotExist(sizedErr) {
-					return sizedErr
+			key := struct {
+				WorkingDir string
+				Render     ui.RenderConfig
+				Scopes     []command.ExecutionScope
+			}{cfg.WorkingDir, ui.RenderConfigFromParsedCommand(cfg), resolved.Scopes}
+			return ui.RunSessionPreview(search.ReloadCancelContext(), stdout, cfg.TargetPreviewInventory, "target-tree", key, func(previewOutput io.Writer) error {
+				finishRead := platform.InternalBenchSpan("ui.target_tree_preview.inventory_read")
+				inventory, err := discovery.ReadTargetPreviewInventory(cfg.TargetPreviewInventory, resolved.Config.WorkingDir)
+				finishRead(
+					"err", platform.InternalBenchError(err),
+					"entries", platform.InternalBenchInt(len(inventory.Entries)),
+				)
+				if err != nil {
+					return err
 				}
-			}
-			finishSelect := platform.InternalBenchSpan("ui.target_tree_preview.inventory_select",
-				"entries", platform.InternalBenchInt(len(inventory.Entries)),
-			)
-			entries := discovery.SelectTargetPreviewEntries(inventory.Entries, resolved.Scopes[0].Targets)
-			finishSelect("selected", platform.InternalBenchInt(len(entries)))
-			if inventory.SizesPending && targetPreviewUnknownSizeCount(entries) >= targetPreviewSharedSizeWaitThreshold {
-				finishWait := platform.InternalBenchSpan("ui.target_tree_preview.inventory_size_wait",
-					"selected", platform.InternalBenchInt(len(entries)),
-				)
-				sized, ok, waitErr := discovery.WaitForTargetPreviewSizedInventory(
-					search.ReloadCancelContext(),
-					cfg.TargetPreviewInventory,
-					resolved.Config.WorkingDir,
-				)
-				finishWait("err", platform.InternalBenchError(waitErr), "ready", platform.InternalBenchBool(ok))
-				if waitErr != nil {
-					if search.ReloadWasCancelled() {
-						return nil
+				// Prefer the completed session snapshot when it already exists. The
+				// base inventory remains the immediate path that lets fzf open while
+				// the parent-owned size capture is still finishing.
+				if inventory.SizesPending {
+					if sized, sizedErr := discovery.ReadTargetPreviewInventory(
+						discovery.TargetPreviewSizedInventoryPath(cfg.TargetPreviewInventory),
+						resolved.Config.WorkingDir,
+					); sizedErr == nil {
+						inventory = sized
+					} else if !os.IsNotExist(sizedErr) {
+						return sizedErr
 					}
-					return waitErr
 				}
-				if ok {
-					inventory = sized
-					entries = discovery.SelectTargetPreviewEntries(inventory.Entries, resolved.Scopes[0].Targets)
+				finishSelect := platform.InternalBenchSpan("ui.target_tree_preview.inventory_select",
+					"entries", platform.InternalBenchInt(len(inventory.Entries)),
+				)
+				entries := discovery.SelectTargetPreviewEntries(inventory.Entries, resolved.Scopes[0].Targets)
+				finishSelect("selected", platform.InternalBenchInt(len(entries)))
+				if inventory.SizesPending && targetPreviewUnknownSizeCount(entries) >= targetPreviewSharedSizeWaitThreshold {
+					finishWait := platform.InternalBenchSpan("ui.target_tree_preview.inventory_size_wait",
+						"selected", platform.InternalBenchInt(len(entries)),
+					)
+					sized, ok, waitErr := discovery.WaitForTargetPreviewSizedInventory(
+						search.ReloadCancelContext(),
+						cfg.TargetPreviewInventory,
+						resolved.Config.WorkingDir,
+					)
+					finishWait("err", platform.InternalBenchError(waitErr), "ready", platform.InternalBenchBool(ok))
+					if waitErr != nil {
+						if search.ReloadWasCancelled() {
+							return nil
+						}
+						return waitErr
+					}
+					if ok {
+						inventory = sized
+						entries = discovery.SelectTargetPreviewEntries(inventory.Entries, resolved.Scopes[0].Targets)
+					}
 				}
-			}
-			return executeFreshTargetTreePreview(
-				stdout,
-				ui.RenderConfigFromParsedCommand(cfg),
-				inventory.GitContext,
-				entries,
-				DiagnosticSummary{},
-			)
+				return executeFreshTargetTreePreview(
+					previewOutput,
+					ui.RenderConfigFromParsedCommand(cfg),
+					inventory.GitContext,
+					entries,
+					DiagnosticSummary{},
+				)
+			})
 		}
 		if cfg.PrediscoveredPath != "" {
 			prediscoveredCfg := ui.PrediscoveredCommandConfigFromParsedCommand(cfg)
@@ -210,7 +221,9 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 			return ui.RunInternalSinkPreview(cfg.SinkPreviewModePath, cfg.SinkPreviewOutputPath, cfg.SinkPreviewTreePath, stdout)
 		}
 		if cfg.TreePreview {
-			ui.KillSupersededTargetTreePreview()
+			if err := ui.KillSupersededTargetTreePreview(); err != nil {
+				return err
+			}
 		}
 
 		colors := platform.ActivePalette()
@@ -219,12 +232,17 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		invocationCfg := resolved.Config
 		emitCfg := emitConfigFromParsedCommand(cfg)
 		renderCfg := ui.RenderConfigFromParsedCommand(cfg)
-		finishGitBench := platform.InternalBenchSpan("cli.run.git_detect")
-		gitCtx := git.Detect(invocationCfg.WorkingDir)
-		finishGitBench(
-			"enabled", platform.InternalBenchBool(gitCtx.Enabled),
-			"has_head", platform.InternalBenchBool(gitCtx.HasHead),
-		)
+		var gitCtx git.Context
+		if prepared != nil {
+			gitCtx = prepared.Git
+		} else {
+			finishGitBench := platform.InternalBenchSpan("cli.run.git_detect")
+			gitCtx = git.Detect(invocationCfg.WorkingDir)
+			finishGitBench(
+				"enabled", platform.InternalBenchBool(gitCtx.Enabled),
+				"has_head", platform.InternalBenchBool(gitCtx.HasHead),
+			)
+		}
 		commandScopes := resolved.Scopes
 		freshTargetScopesEligible := freshTargetTreePreviewScopesEligible(commandScopes)
 		if cfg.TreePreview && prepared == nil && ui.TargetTreePreviewSessionActive() && !freshTargetScopesEligible {
@@ -242,7 +260,6 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		)
 		freshTargetTreePreview := cfg.TreePreview && prepared == nil && freshTargetScopesEligible
 		if prepared != nil {
-			gitCtx = prepared.Git
 			discoveryResult = prepared.Discovery
 			outputPlan = prepared.Plan
 		} else {
@@ -486,6 +503,9 @@ func formatByteCount(totalBytes int64) string {
 }
 
 func exitWithError(err error, stderr io.Writer) {
+	if errors.Is(err, platform.ErrWorkSuperseded) {
+		return
+	}
 	if err == nil {
 		return
 	}

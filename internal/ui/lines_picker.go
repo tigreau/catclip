@@ -161,7 +161,7 @@ func writeLinesPickerCheckpoint(view resolvedScopeView, entries []discovery.Entr
 	if err != nil {
 		return "", func() {}, err
 	}
-	cleanup := func() { _ = os.RemoveAll(tmpdir) }
+	cleanup := func() { removePreviewSession(tmpdir) }
 	checkpointPath := filepath.Join(tmpdir, "scope.json")
 
 	statuses := map[string]string{}

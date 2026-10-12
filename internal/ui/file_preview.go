@@ -142,7 +142,7 @@ func FilePreviewConfigFromParsedCommand(cfg command.Parsed) filePreviewConfig {
 //     row is focused on the left.
 //
 //  2. Non-empty pattern + empty focused path + no focused row yet. Emits the
-//     "searching" document, including the Windows Defender explanation. This
+//     "searching" document. This
 //     is the state between a query change and the reload producing rows.
 //
 //  3. Non-empty pattern + synthetic focused path (the `[all current matches]`
@@ -165,20 +165,39 @@ func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
 	if cfg.SearchingHint && cfg.FocusedLabel == contentMatchAllMatchesLabel && cfg.FilePath == contentMatchAllMatchesFocusPath {
 		cfg.FilePath = ""
 	}
-	if cfg.DiffStatePath != "" {
-		var err error
-		cfg, err = filePreviewWithDiffState(cfg)
-		if err != nil {
-			return err
-		}
-	}
 	// Before any work: terminate the prior focus-change's child if it's
 	// still alive. The checkpoint_tree mode (empty FilePath + non-empty
 	// checkpoint) ran 5–9 s of rg.matches + build_plan in v0.6.2 traces,
 	// piling up against new previews on rapid focus moves. Separate
 	// bucket from content-match-list so they don't kill each other's
 	// children (both spawn from the same picker tmpdir).
-	killSupersededPredecessor(cfg.CheckpointPath, predecessorBucketFilePreview)
+	if err := killSupersededPredecessor(cfg.CheckpointPath, predecessorBucketFilePreview); err != nil {
+		return err
+	}
+	artifact := cfg.CheckpointPath
+	if artifact == "" && cfg.DiffStatePath != "" {
+		artifact = cfg.DiffStatePath
+		if err := killSupersededPredecessor(artifact, predecessorBucketFilePreview); err != nil {
+			return err
+		}
+	}
+	key := struct {
+		Config     filePreviewConfig
+		MatchCount string
+	}{cfg, os.Getenv("FZF_MATCH_COUNT")}
+	return RunSessionPreview(search.ReloadCancelContext(), stdout, artifact, "file", key, func(w io.Writer) error {
+		if cfg.DiffStatePath != "" {
+			var err error
+			cfg, err = filePreviewWithDiffState(cfg)
+			if err != nil {
+				return err
+			}
+		}
+		return runInternalFilePreview(cfg, w)
+	})
+}
+
+func runInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
 	finishBench := platform.InternalBenchSpan("ui.internal.file_preview",
 		"checkpoint", fmt.Sprint(cfg.CheckpointPath != ""),
 		"file_path_empty", fmt.Sprint(strings.TrimSpace(cfg.FilePath) == ""),
@@ -242,7 +261,10 @@ func RunInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
 		return nil
 	}
 
-	gitCtx := git.Detect(cfg.WorkingDir)
+	var gitCtx git.Context
+	if internalPreviewScope(cfg).OutputMode() == command.EntryModeDiff {
+		gitCtx = git.Detect(cfg.WorkingDir)
+	}
 	finishBuildBench := platform.InternalBenchSpan("ui.internal.file_preview.build_document")
 	doc, ok := buildInternalPreviewDocument(cfg, gitCtx, relPath)
 	finishBuildBench("ok", fmt.Sprint(ok))
@@ -269,7 +291,12 @@ func runInternalContentCheckpointTreePreview(cfg filePreviewConfig, stdout io.Wr
 		Render:         cfg.Render,
 		Scopes:         cfg.Scopes,
 	}
-	return RunInternalPrediscoveredTreePreview(prediscoveredCfg, stdout)
+	if memo, ok := readContentMatchMemo(contentMatchMemoPath(cfg.CheckpointPath)); ok {
+		prediscoveredCfg.ContentMatchMemo = &memo
+	}
+	// The outer file preview already owns this request's frame and process
+	// claim. Avoid a second capture/cache of the same all-matches tree.
+	return runInternalPrediscoveredTreePreview(prediscoveredCfg, stdout)
 }
 
 func internalPreviewRelPath(cfg filePreviewConfig) string {
@@ -360,26 +387,15 @@ func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string, opts 
 	return buildTreeFilePreviewDocument(relPath, "", content, pattern, false, focusLines), true
 }
 
-// buildInternalSearchingHintDocument renders the preview shown while a
-// typed pattern has zero matches so far (search still running, or a
-// genuine zero-match). goos is a parameter for testability; only Windows
-// gets the antivirus paragraph — the once-per-boot cold toll is a
-// Defender phenomenon (rg reads every candidate through the on-access
-// filter on first touch after boot; later searches hit the per-boot
-// scan cache and are fast).
+// fzf may retain this message while the completed result's preview is prepared.
+// Explain possible Windows first-access delays without promising a cache lifetime.
 func buildInternalSearchingHintDocument(goos string) treeDocument {
-	var b strings.Builder
-	b.WriteString("Searching — no matches for this pattern yet.\n")
-	b.WriteString("\nMatches appear here when the search completes;\nrefining the pattern restarts it.\n")
+	text := "Searching file contents...\n\nMatches and previews update when the search completes.\nRefining the pattern restarts it.\n"
 	if goos == "windows" {
-		b.WriteString("\nFirst content search after a reboot is slow on Windows:\n")
-		b.WriteString("the antivirus scans every file the search reads, once per\n")
-		b.WriteString("boot. This can take ~30s on large projects. Searches after\n")
-		b.WriteString("this one reuse the antivirus cache and finish in seconds —\n")
-		b.WriteString("the wait will not recur until the next reboot.\n")
+		text += "\nOn Windows, Microsoft Defender may inspect files as they\nare opened, making a first search slower. Later searches\nmay be faster while file data and scan results are cached.\n"
 	}
 	// HighlightPath "hint.txt" keeps the document plain (no lexer match).
-	return buildTreeFilePreviewDocument("", "hint.txt", b.String(), "", false, nil)
+	return buildTreeFilePreviewDocument("", "hint.txt", text, "", false, nil)
 }
 
 func buildInternalSnippetHintDocument() treeDocument {

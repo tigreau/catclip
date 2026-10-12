@@ -288,7 +288,7 @@ func scopeViewMemoReset() {
 	scopeViewMemoCond.Broadcast()
 	scopeViewMemoMu.Unlock()
 	for _, dir := range dirs {
-		_ = os.RemoveAll(dir)
+		removePreviewSession(dir)
 	}
 }
 

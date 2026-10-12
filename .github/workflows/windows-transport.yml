@@ -40,7 +40,7 @@ jobs:
           "CATCLIP_FZF=$fzf" >> $env:GITHUB_ENV
           "CATCLIP_TRANSPORT_ARTIFACTS=$(Join-Path $env:RUNNER_TEMP 'catclip-transport-artifacts')" >> $env:GITHUB_ENV
 
-      - name: Real fzf shell argument and selection-file tests
+      - name: Real fzf shell transport and owned-descendant tests
         shell: pwsh
         env:
           CATCLIP_RUN_FZF_TRANSPORT_TESTS: '1'

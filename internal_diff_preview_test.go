@@ -19,8 +19,9 @@ func TestDiffPreviewStateNativeProcess(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(project, "source folder/a.go"), []byte("package after\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	statePath := filepath.Join(t.TempDir(), "diff state.json")
 	for _, targets := range [][]string{{"source folder/a.go"}, nil} {
+		// Each retained state is immutable and owns a distinct artifact identity.
+		statePath := filepath.Join(t.TempDir(), "diff state.json")
 		data, err := json.Marshal(struct {
 			Version int                    `json:"version"`
 			Scope   command.ExecutionScope `json:"scope"`

@@ -58,7 +58,18 @@ func Main() {
 		exitWithError(contextErr, os.Stderr)
 		return
 	}
+	// Only descendants carrying a private live picker owner opt in. Establish
+	// their lifetime before tool checks or any other operation can spawn work.
+	// This is inert for ordinary invocations and on Unix.
+	if err := platform.BeginInternalWork(); err != nil {
+		exitWithError(err, os.Stderr)
+		return
+	}
 	commandKind := internalBenchCommandKind(args)
+	if err := platform.ClaimInternalWork(commandKind); err != nil {
+		exitWithError(err, os.Stderr)
+		return
+	}
 	// Opt-in diagnostic timeline for interactive Windows slowness. fzf spawns
 	// catclip --internal-* helpers repeatedly for --snippet/--lines; normal
 	// process profiles miss those child processes. This span is inert unless

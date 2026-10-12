@@ -151,7 +151,7 @@ func copyWSL(paths []string) error {
 	}
 
 	script := fmt.Sprintf("Set-Clipboard -Path %s", strings.Join(winPaths, ","))
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command", "-")
+	cmd := powershellClipboardCommand("powershell.exe", "-")
 	cmd.Stdin = strings.NewReader(script)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -207,7 +207,7 @@ func pasteWayland() ([]string, error) {
 }
 
 func pasteWSL() ([]string, error) {
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command",
+	cmd := powershellClipboardCommand("powershell.exe",
 		"Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }")
 	out, err := cmd.Output()
 	if err != nil {
@@ -291,7 +291,7 @@ func hasWayland() (bool, error) {
 }
 
 func hasWSL() (bool, error) {
-	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command",
+	cmd := powershellClipboardCommand("powershell.exe",
 		"if (Get-Clipboard -Format FileDropList) { 'true' } else { 'false' }")
 	out, err := cmd.Output()
 	if err != nil {

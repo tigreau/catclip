@@ -638,6 +638,9 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 
 	// ── Limitations ────────────────────────────────────────────────────
 	head("LIMITATIONS")
+	b.WriteString("  Interactive membership stays fixed within a run. Completed previews may\n")
+	b.WriteString("  be reused when revisited, including file contents and Git badges. Restart\n")
+	b.WriteString("  catclip to observe external changes; final output uses its normal reads.\n\n")
 	b.WriteString("  By default catclip skips binary files and ignored paths.\n")
 	fmt.Fprintf(&b, "  Use %s to include binaries, %s to include ignored paths,\n", flag("--with-binaries"), flag("--no-ignore"))
 	b.WriteString("  or both for a complete inventory equivalent to find:\n\n")

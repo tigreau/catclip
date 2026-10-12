@@ -29,6 +29,7 @@ type prediscoveredCommandConfig struct {
 	Invocation            command.Invocation
 	Render                RenderConfig
 	Scopes                []command.ExecutionScope
+	ContentMatchMemo      *contentMatchMemo
 }
 
 func PrediscoveredCommandConfigFromParsedCommand(cfg command.Parsed) prediscoveredCommandConfig {
@@ -48,6 +49,31 @@ func PrediscoveredCommandConfigFromParsedCommand(cfg command.Parsed) prediscover
 // old producer-to-renderer pipe produced, but removes one process spawn plus
 // the intermediate payload JSON encode/decode on every fzf refresh.
 func RunInternalPrediscoveredTreePreview(cfg prediscoveredCommandConfig, stdout io.Writer) error {
+	if err := killSupersededPredecessor(cfg.CheckpointPath, predecessorBucketFilePreview); err != nil {
+		return err
+	}
+	keyCfg := cfg
+	keyCfg.ContentMatchMemo = nil // optimization input, not semantic identity
+	keyCfg.FileSetSelectionPath = ""
+	var selection *fzfFileSetSelection
+	if cfg.FileSetSelectionPath != "" {
+		value, err := readFzfFileSetSelection(cfg.FileSetSelectionPath)
+		if err != nil {
+			return err
+		}
+		sort.Strings(value.Values)
+		selection = &value
+	}
+	key := struct {
+		Config    prediscoveredCommandConfig
+		Selection *fzfFileSetSelection
+	}{keyCfg, selection}
+	return RunSessionPreview(search.ReloadCancelContext(), stdout, cfg.CheckpointPath, "checkpoint-tree", key, func(w io.Writer) error {
+		return runInternalPrediscoveredTreePreview(cfg, w)
+	})
+}
+
+func runInternalPrediscoveredTreePreview(cfg prediscoveredCommandConfig, stdout io.Writer) error {
 	finishBench := platform.InternalBenchSpan("ui.internal.tree_preview",
 		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
 	)
@@ -113,10 +139,14 @@ func buildPrediscoveredTreePlan(cfg prediscoveredCommandConfig) (output.Plan, di
 		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
 		"checkpoint_entries", platform.InternalBenchInt(len(checkpoint.Entries)),
 	)
-	entries, err := discovery.ApplyPrediscoveredScopeTail(cfg.Invocation, checkpoint.GitContext, scope, checkpoint.Entries)
+	entries, memoHit := contentPreviewEntriesFromMemo(cfg, scope, checkpoint.Entries)
+	if !memoHit {
+		entries, err = discovery.ApplyPrediscoveredScopeTail(cfg.Invocation, checkpoint.GitContext, scope, checkpoint.Entries)
+	}
 	finishTailBench(
 		"err", platform.InternalBenchError(err),
 		"entries", platform.InternalBenchInt(len(entries)),
+		"content_memo_hit", platform.InternalBenchBool(memoHit),
 	)
 	if err != nil {
 		return output.Plan{}, discovery.CheckpointData{}, err
@@ -137,6 +167,38 @@ func buildPrediscoveredTreePlan(cfg prediscoveredCommandConfig) (output.Plan, di
 		return output.Plan{}, discovery.CheckpointData{}, err
 	}
 	return plan, checkpoint, nil
+}
+
+// The content picker owns one checkpoint/memo pair for one live predicate.
+// Reuse only its completed, exact-query membership for the all-matches preview.
+// Other preview callers and more complicated scope tails retain canonical
+// evaluation; a prefix match alone cannot establish the current result set.
+func contentPreviewEntriesFromMemo(cfg prediscoveredCommandConfig, scope command.ExecutionScope, entries []discovery.Entry) ([]discovery.Entry, bool) {
+	if cfg.ContentMatchMemo == nil || len(scope.Stages) != 1 {
+		return nil, false
+	}
+	if _, ok := liveContentMatchKind(scope); !ok {
+		return nil, false
+	}
+	pattern := contentMatchScopePattern(scope)
+	if cfg.ContentMatchMemo.Pattern != pattern || strings.TrimSpace(pattern) == "" {
+		return nil, false
+	}
+	entries, ok := restrictEntriesByMemo(discovery.EnsureEntryAbsPaths(entries, cfg.Invocation.WorkingDir), *cfg.ContentMatchMemo, pattern)
+	if !ok {
+		return nil, false
+	}
+	if scope.Diff || scope.Snippet || scope.Lines {
+		discovery.StampEntriesWithScopeOutputMode(entries, scope.OutputMode(), scope)
+	}
+	if scope.Snippet {
+		// The membership memo has no line offsets. Resolve every matching line
+		// in the surviving files, rather than reusing pins from an earlier stage.
+		for i := range entries {
+			entries[i].SnippetMatchLines = nil
+		}
+	}
+	return entries, true
 }
 
 type fzfFileSetSelection struct {
@@ -208,14 +270,26 @@ func FzfFilterTreeRenderOptions() treeRenderOptions {
 //     preview pane renders a constant number of lines; emitting the
 //     full plan (1.6–3.7 MiB on vscode-main) is pure waste, and on
 //     Windows + Defender every per-file os.Open is intercepted.
-//  2. Cancellation: when fzf moves focus, it SIGTERMs the previous
-//     preview child. Honoring search.ReloadCancelContext lets the
-//     write loop bail mid-emit instead of finishing a giant file scan
-//     and delaying the next focus's preview.
+//  2. Cancellation: honoring search.ReloadCancelContext lets the write
+//     loop bail mid-emit on cooperative cancellation. Hard supersession
+//     is handled by Unix process groups or Windows job ownership.
 //
 // Either condition surfaces as output.ErrPreviewLimitReached, which we
 // treat as success-with-(truncation|cancellation), not failure.
 func RunInternalLinesPreview(cfg prediscoveredCommandConfig, emitCfg output.EmitConfig, stdout io.Writer) error {
+	if err := killSupersededPredecessor(cfg.CheckpointPath, predecessorBucketFilePreview); err != nil {
+		return err
+	}
+	key := struct {
+		Config prediscoveredCommandConfig
+		Emit   output.EmitConfig
+	}{cfg, emitCfg}
+	return RunSessionPreview(search.ReloadCancelContext(), stdout, cfg.CheckpointPath, "lines", key, func(w io.Writer) error {
+		return runInternalLinesPreview(cfg, emitCfg, w)
+	})
+}
+
+func runInternalLinesPreview(cfg prediscoveredCommandConfig, emitCfg output.EmitConfig, stdout io.Writer) error {
 	finishBench := platform.InternalBenchSpan("ui.internal.lines_preview",
 		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
 	)
@@ -283,13 +357,12 @@ func RunInternalLinesPreview(cfg prediscoveredCommandConfig, emitCfg output.Emit
 }
 
 func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, stdout io.Writer) error {
-	// Before any work: terminate the prior keystroke's child if it's
-	// still alive. On Windows fzf does not SIGTERM superseded reload
-	// children, so without this they pile up — four typed characters
-	// = four parallel 6.5 s rg scans fighting for CPU and Defender.
-	// See killSupersededPredecessor doc for the file-coordination
-	// design. No-op on POSIX (fzf already killed prior).
-	killSupersededPredecessor(cfg.CheckpointPath, predecessorBucketContentMatch)
+	// Cancel the prior reload before scanning. Managed Windows helpers
+	// already claimed their reload role at entry; this call delegates.
+	// Unix retains its existing fallback bookkeeping alongside fzf groups.
+	if err := killSupersededPredecessor(cfg.CheckpointPath, predecessorBucketContentMatch); err != nil {
+		return err
+	}
 	finishBench := platform.InternalBenchSpan("ui.internal.content_match_list",
 		"scopes", platform.InternalBenchInt(len(cfg.Scopes)),
 	)

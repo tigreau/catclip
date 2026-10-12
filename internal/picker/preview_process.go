@@ -5,8 +5,11 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 const (
@@ -16,10 +19,13 @@ const (
 
 // ClaimPreviewProcess records this helper as the active process for a picker
 // preview bucket and terminates the previously recorded helper, if any.
-func ClaimPreviewProcess(sessionDir, bucket string) {
+func ClaimPreviewProcess(sessionDir, bucket string) error {
 	pidPath := previewPIDPath(sessionDir, bucket)
 	if pidPath == "" {
-		return
+		return nil
+	}
+	if runtime.GOOS == "windows" {
+		return platform.ClaimPickerWork(pidPath)
 	}
 	self := os.Getpid()
 	prior := readPreviewPID(pidPath)
@@ -27,6 +33,7 @@ func ClaimPreviewProcess(sessionDir, bucket string) {
 	if prior != 0 && prior != self {
 		killPID(prior)
 	}
+	return nil
 }
 
 // StopPreviewProcess terminates the last helper recorded for a picker session.
@@ -35,6 +42,10 @@ func ClaimPreviewProcess(sessionDir, bucket string) {
 func StopPreviewProcess(sessionDir, bucket string) {
 	pidPath := previewPIDPath(sessionDir, bucket)
 	if pidPath == "" {
+		return
+	}
+	if runtime.GOOS == "windows" {
+		_ = platform.StopPickerWork(pidPath)
 		return
 	}
 	pid := readPreviewPID(pidPath)
@@ -76,8 +87,16 @@ func writePreviewPID(path string, pid int) {
 }
 
 func killPID(pid int) {
+	if pid == os.Getpid() || pid == os.Getppid() {
+		return
+	}
 	process, err := os.FindProcess(pid)
 	if err == nil {
-		_ = process.Kill()
+		defer process.Release()
+		if process.Kill() == nil && runtime.GOOS == "windows" {
+			// Wait for Windows to close the terminated helper's cache/file
+			// handles before its session owner deletes temporary artifacts.
+			_, _ = process.Wait()
+		}
 	}
 }

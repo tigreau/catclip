@@ -126,14 +126,23 @@ func streamSnippetBoundaryPreview(source snippetBoundarySource, choice startupSn
 //  1. Per-focus emission is bounded by output.PreviewByteLimit (fzf only
 //     renders a screenful; emitting the full payload across hundreds of
 //     matched files is pure waste).
-//  2. When fzf moves focus and SIGTERMs the preview child, the inner
-//     write loop bails on the next entry instead of finishing all
-//     remaining file reads.
+//  2. On cooperative context cancellation the inner write loop bails
+//     on the next entry. Hard supersession is owned by Unix process
+//     groups or Windows jobs, including descendants.
 //
 // streamSnippetBoundaryPreview swallows write errors as "fzf closed the
 // pipe," so we read cap.Truncated() after the call to decide on the
 // truncation footer.
 func RunInternalSnippetBoundaryPreview(sourcePath, key string, stdout io.Writer) error {
+	if err := killSupersededPredecessor(sourcePath, predecessorBucketFilePreview); err != nil {
+		return err
+	}
+	return RunSessionPreview(search.ReloadCancelContext(), stdout, sourcePath, "snippet-boundary", key, func(w io.Writer) error {
+		return runInternalSnippetBoundaryPreview(sourcePath, key, w)
+	})
+}
+
+func runInternalSnippetBoundaryPreview(sourcePath, key string, stdout io.Writer) error {
 	finishBench := platform.InternalBenchSpan("ui.internal.snippet_boundary_preview",
 		"key", key,
 	)

@@ -261,13 +261,17 @@ func requireInternalRenderHandlersAvoidDerivation(t *testing.T, files []parsedGo
 	requireFuncsAvoidCalls(t, files,
 		[]string{
 			"RunInternalPrediscoveredTreePreview",
+			"runInternalPrediscoveredTreePreview",
 			"RunInternalLinesPreview",
+			"runInternalLinesPreview",
 			"RunInternalPrediscoveredContentMatchList",
 			"RunInternalFilePreview",
+			"runInternalFilePreview",
 			"RunInternalRecentPreview",
 			"RunInternalSinkPreview",
 			"RunInternalSinkToggle",
 			"RunInternalSnippetBoundaryPreview",
+			"runInternalSnippetBoundaryPreview",
 			"RunInternalTreePayloadFilePreview",
 		},
 		[]string{
@@ -304,12 +308,14 @@ func requireInternalRenderHandlersAvoidDerivation(t *testing.T, files []parsedGo
 func requireMultiFilePreviewHandlersWrapInPreviewCap(t *testing.T, files []parsedGoFile) {
 	t.Helper()
 	required := []string{
-		"RunInternalLinesPreview",
-		"RunInternalSnippetBoundaryPreview",
+		"runInternalLinesPreview",
+		"runInternalSnippetBoundaryPreview",
 		"readSinkOutputTextPreview",
 		"renderSinkTreeReportPreview",
 	}
 	requireFuncsCall(t, files, required, "output.NewPreviewCapWriter")
+	requireFuncsCall(t, files, []string{"RunInternalLinesPreview"}, "runInternalLinesPreview")
+	requireFuncsCall(t, files, []string{"RunInternalSnippetBoundaryPreview"}, "runInternalSnippetBoundaryPreview")
 }
 
 // previewCapAllowedFiles lists the source files that may construct an
@@ -490,7 +496,7 @@ func parseProductionGoFiles(t *testing.T) []parsedGoFile {
 	fset := token.NewFileSet()
 	files := make([]parsedGoFile, 0, len(paths))
 	for _, path := range paths {
-		if strings.HasSuffix(path, "_test.go") {
+		if strings.HasSuffix(path, "_test.go") || strings.HasPrefix(filepath.Base(path), ".") || strings.HasPrefix(filepath.Base(path), "_") {
 			continue
 		}
 		file, err := parser.ParseFile(fset, path, nil, 0)
@@ -805,7 +811,7 @@ func parsePackageGoFiles(t *testing.T, dir, label string) []parsedGoFile {
 	fset := token.NewFileSet()
 	files := make([]parsedGoFile, 0, len(paths))
 	for _, path := range paths {
-		if strings.HasSuffix(path, "_test.go") {
+		if strings.HasSuffix(path, "_test.go") || strings.HasPrefix(filepath.Base(path), ".") || strings.HasPrefix(filepath.Base(path), "_") {
 			continue
 		}
 		file, err := parser.ParseFile(fset, path, nil, 0)

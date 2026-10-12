@@ -59,7 +59,7 @@ func chooseStartupDepthWithEscHint(currentArgs []string, query string, escHint s
 
 	previewCmd, tmpdir := buildDepthPickerPreview(view, buckets)
 	if tmpdir != "" {
-		defer os.RemoveAll(tmpdir)
+		defer removePreviewSession(tmpdir)
 	}
 
 	selected, err := chooseDepthWithFzf(query, startupDepthPickerLines(buckets), previewCmd, escHint)

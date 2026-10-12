@@ -30,7 +30,7 @@ func copyPlatform(paths []string) error {
 	}
 
 	script := fmt.Sprintf("Set-Clipboard -Path %s", strings.Join(psPaths, ","))
-	cmd := exec.Command("powershell", "-NoProfile", "-Command", "-")
+	cmd := powershellClipboardCommand("powershell", "-")
 	cmd.Stdin = strings.NewReader(script)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -60,7 +60,7 @@ func pastePlatform() ([]string, error) {
 		return nil, ErrNoFileRefs
 	}
 
-	cmd := exec.Command("powershell", "-NoProfile", "-Command",
+	cmd := powershellClipboardCommand("powershell",
 		"Get-Clipboard -Format FileDropList | ForEach-Object { $_.FullName }")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -87,7 +87,7 @@ func pastePlatform() ([]string, error) {
 // ---------------------------------------------------------------------------
 
 func hasPlatform() (bool, error) {
-	cmd := exec.Command("powershell", "-NoProfile", "-Command",
+	cmd := powershellClipboardCommand("powershell",
 		"if (Get-Clipboard -Format FileDropList) { 'true' } else { 'false' }")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout

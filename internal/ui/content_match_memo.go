@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 // contentMatchMemo is the per-session literal-prefix-extension cache for
@@ -25,9 +26,7 @@ import (
 // parent (fzfCheckpointContentMatchListCommand) and cleaned up when
 // the picker closes, so memo lifetime = picker session lifetime.
 //
-// Read/write races: on macOS/Linux fzf SIGTERMs the previous child before
-// spawning the next, so reads/writes are serialized. On Windows fzf does NOT
-// terminate the previous child (Part Two Item 7), so two children can overlap.
+// Superseded writers can overlap briefly while cancellation completes.
 // Every writer therefore owns a unique temporary file. A reader sees one
 // complete pattern/path pair or a cache miss; it never sees two writers sharing
 // and mutating the same temporary inode.
@@ -82,7 +81,7 @@ func exactContentMatchMemo(data []byte, pattern string) (contentMatchMemo, bool)
 // silent — a failed write costs the next keystroke a full scan, not
 // correctness.
 func writeContentMatchMemo(path, pattern string, absPaths []string) {
-	if path == "" {
+	if path == "" || !platform.InternalWorkCanPublish() {
 		return
 	}
 	body, err := json.Marshal(contentMatchMemo{Pattern: pattern, AbsPaths: absPaths})
@@ -100,6 +99,9 @@ func writeContentMatchMemo(path, pattern string, absPaths []string) {
 		return
 	}
 	if err := tmp.Close(); err != nil {
+		return
+	}
+	if !platform.InternalWorkCanPublish() {
 		return
 	}
 	if err := os.Rename(tmpPath, path); err == nil {

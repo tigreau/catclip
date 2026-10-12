@@ -1,7 +1,6 @@
 package picker
 
 import (
-	"bytes"
 	"errors"
 	"os"
 	"os/exec"
@@ -151,22 +150,12 @@ func runPicker(bin string, req Request, prepareTerminal func() (func() error, er
 		}
 	}()
 
-	var out []byte
+	var started func(error)
 	if benchEnabled {
-		// Split process creation from the complete interactive lifetime only in
-		// diagnostic mode. The normal path keeps exec.Cmd.Output unchanged.
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
 		finishStartBench := platform.InternalBenchSpan("picker.fzf.start", benchFields...)
-		err = cmd.Start()
-		finishStartBench("err", platform.InternalBenchError(err))
-		if err == nil {
-			err = cmd.Wait()
-		}
-		out = stdout.Bytes()
-	} else {
-		out, err = cmd.Output()
+		started = func(err error) { finishStartBench("err", platform.InternalBenchError(err)) }
 	}
+	out, err := platform.PickerOutput(cmd, started)
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok && (exitErr.ExitCode() == 1 || exitErr.ExitCode() == 130) {
 			finishBench("err", "false", "cancelled", "true")

@@ -3,7 +3,6 @@ package ui
 import (
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -151,6 +150,8 @@ func maybeResolveStartupInteractiveArgs(args []string, includeSink bool) (Startu
 	if direct {
 		return StartupPickerResult{}, false, nil
 	}
+	finishPreviewSession := beginPreviewFrameSession()
+	defer finishPreviewSession()
 
 	if includeSink {
 		result, err := resolveStartupPickerResultWithUndo(resolver, args)
@@ -957,20 +958,23 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 }
 
 func startupScopeContainsNoIgnore(args []string, at int) bool {
-	start := at
-	for start > 0 && args[start-1] != "--then" {
-		start--
-	}
-	end := at + 1
-	for end < len(args) && args[end] != "--then" {
-		end++
-	}
-	for _, arg := range args[start:end] {
-		if arg == "--no-ignore" {
-			return true
+	noIgnore := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--then":
+			if i > at {
+				return noIgnore
+			}
+			noIgnore = false
+		case "--no-ignore":
+			noIgnore = true
 		}
+		// Regex operands can literally be --no-ignore or --then. Skip
+		// fixed operands using the parser's arity metadata so data neither
+		// broadens the target inventory nor creates a false scope boundary.
+		i += cli.FixedValueCount(args[i])
 	}
-	return false
+	return noIgnore
 }
 
 func startupLeadingModifierNeedsInitialScope(arg string) bool {
@@ -1103,7 +1107,7 @@ func chooseStartupModifierChoiceWithProgress(currentArgs []string, escHint strin
 		"has_preview", platform.InternalBenchBool(previewCmd != ""),
 	)
 	if previewTmpdir != "" {
-		defer os.RemoveAll(previewTmpdir)
+		defer removePreviewSession(previewTmpdir)
 	}
 	req := picker.Request{
 		Prompt:       "filter> ",

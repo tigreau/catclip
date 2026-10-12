@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tigreau/catclip/internal/cli"
 	"github.com/tigreau/catclip/internal/discovery"
 )
 
@@ -417,5 +418,47 @@ func TestStartupScopeContainsNoIgnore(t *testing.T) {
 		if got := startupScopeContainsNoIgnore(args, tt.at); got != tt.want {
 			t.Fatalf("startupScopeContainsNoIgnore(args, %d) = %v, want %v", tt.at, got, tt.want)
 		}
+	}
+}
+
+func TestStartupTargetFrameIgnorePolicyTreatsRegexValuesAsData(t *testing.T) {
+	for _, flag := range []string{"--contains", "--not-contains", "--snippet"} {
+		t.Run(flag, func(t *testing.T) {
+			args := []string{flag, "--no-ignore"}
+			spec, err := cli.StartupPreflightCommandSpec(args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if scopes := spec.Scopes(); len(scopes) != 1 || scopes[0].NoIgnore() {
+				t.Fatal("regex operand must not enable no-ignore in the command spec")
+			}
+			if startupTargetFrameUsesNoIgnore(startupInteractiveFrame{PendingArgs: args}) {
+				t.Fatal("initial target picker broadened discovery for a regex operand")
+			}
+			if startupScopeContainsNoIgnore(append([]string{"src"}, args...), 0) {
+				t.Fatal("typed target broadened discovery for a regex operand")
+			}
+		})
+	}
+
+	for _, tt := range []struct {
+		name string
+		args []string
+		at   int
+		want bool
+	}{
+		{"real flag and regex", []string{"src", "--no-ignore", "--contains", "--no-ignore"}, 0, true},
+		{"regex before a new scope", []string{"src", "--contains", "--no-ignore", "--then", "docs"}, 4, false},
+		{"real flag in next scope", []string{"src", "--contains", "--no-ignore", "--then", "docs", "--no-ignore"}, 4, true},
+		{"next scope cannot broaden first", []string{"src", "--contains", "--no-ignore", "--then", "docs", "--no-ignore"}, 0, false},
+		{"then as regex in previous scope", []string{"src", "--no-ignore", "--contains", "--then", "--then", "docs"}, 5, false},
+		{"then as regex keeps current scope", []string{"src", "--no-ignore", "--contains", "--then"}, 3, true},
+		{"placeholder before real flag", []string{"src", "--", "--no-ignore"}, 0, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := startupScopeContainsNoIgnore(tt.args, tt.at); got != tt.want {
+				t.Fatalf("startupScopeContainsNoIgnore(%q, %d) = %v, want %v", tt.args, tt.at, got, tt.want)
+			}
+		})
 	}
 }

@@ -129,7 +129,7 @@ func chooseStartupMinSizeWithEscHint(view resolvedScopeView, entries []discovery
 	// for the preview.
 	previewCmd, tmpdir := buildSizePickerPreview(view, []string{"--size", "{4}"})
 	if tmpdir != "" {
-		defer os.RemoveAll(tmpdir)
+		defer removePreviewSession(tmpdir)
 	}
 
 	selected, err := chooseSizeWithFzf("min-size> ", sizePickerMinHeaderWithEscHint(escHint), sizePickerLines(candidates, sizePickerMinColumn), previewCmd)
@@ -160,7 +160,7 @@ func chooseStartupMaxSize(view resolvedScopeView, entries []discovery.Entry, min
 	// "every file >= min" — the same set "no max" would actually select.
 	previewCmd, tmpdir := buildSizePickerPreview(view, []string{"--size", strconv.Itoa(min), "{4}"})
 	if tmpdir != "" {
-		defer os.RemoveAll(tmpdir)
+		defer removePreviewSession(tmpdir)
 	}
 
 	selected, err := chooseSizeWithFzf("max-size> ", sizePickerMaxHeader(), sizePickerLines(candidates, sizePickerMaxColumn), previewCmd)

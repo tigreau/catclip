@@ -5,10 +5,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/tigreau/catclip/internal/picker"
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 // Predecessor-kill identifiers. Each preview handler that wants the
@@ -23,12 +25,12 @@ const (
 // KillSupersededTargetTreePreview stops the previous focus-preview helper in
 // this target picker session. fzf terminates superseded helpers on Unix; this
 // explicit coordination supplies the equivalent behavior on Windows.
-func KillSupersededTargetTreePreview() {
+func KillSupersededTargetTreePreview() error {
 	sessionDir := strings.TrimSpace(os.Getenv(picker.TargetPreviewSessionEnv))
 	if sessionDir == "" {
-		return
+		return nil
 	}
-	picker.ClaimPreviewProcess(sessionDir, picker.TargetPreviewPIDFile)
+	return picker.ClaimPreviewProcess(sessionDir, picker.TargetPreviewPIDFile)
 }
 
 // TargetTreePreviewSessionActive reports whether this helper was launched by
@@ -38,69 +40,45 @@ func TargetTreePreviewSessionActive() bool {
 	return strings.TrimSpace(os.Getenv(picker.TargetPreviewSessionEnv)) != ""
 }
 
-// killSupersededPredecessor is the Windows orphan-child workaround for
-// preview handlers fzf re-spawns on every keystroke / focus change.
-// fzf's `change:reload:` rebinding spawns a new child on every keystroke,
-// and on macOS/Linux fzf SIGTERMs the previous child so it dies before
-// the new one's rg starts. On Windows fzf does NOT send SIGTERM (Part
-// Two Item 7 / v0.6.1 finding 2), so the previous child runs to
-// completion — typically a multi-second ripgrep scan over the full
-// corpus — in parallel with the new child. Four keystrokes = four
-// concurrent scans, fighting for CPU and Defender. This also defeats
-// Item 6a's prefix-extension memo because new children read the memo
-// file before any prior child has finished writing it.
+// killSupersededPredecessor delegates managed Windows work to the per-picker
+// role claimed at executable entry. Direct library/diagnostic calls use the
+// artifact's separate reload and preview buckets. Windows claims are locked
+// and validate process creation identity before termination; helper jobs stop
+// descendants even when the helper is killed abruptly.
 //
-// The fix is decentralized PID coordination via a file in the same
-// tmpdir as the picker's checkpoint. Each new child:
-//
-//  1. Reads the PID file. If it contains a non-zero PID different from
-//     its own, it terminates that process (Kill = TerminateProcess on
-//     Windows, SIGKILL on POSIX).
-//  2. Writes its own PID into the file atomically (rename) so the next
-//     child sees it.
-//
-// `bucket` separates handler classes. Content-match-list and
-// file-preview both spawn from the same picker tmpdir; using a shared
-// PID file would cause them to kill each other on every event. Each
-// handler owns its own bucket name (see the predecessorBucket*
-// constants).
-//
-// PID reuse risk: PID files live only for the picker session. The
-// window for an OS to recycle a PID into an unrelated process during
-// that lifetime is small enough that we accept it rather than building
-// a process-fingerprint scheme. The kill is a no-op when the named
-// process is already gone (os.Process.Kill on a dead PID returns an
-// error that we silently swallow — the dead/missing case is the common
-// one on POSIX).
-//
-// Race: two children that read concurrently may both try to kill the
-// same predecessor; Kill is idempotent. They both then race to write
-// their own PID via rename; one wins, the other's PID is lost (only
-// matters for a third sibling, which is rare). Acceptable.
-func killSupersededPredecessor(checkpointPath, bucket string) {
+// Unix keeps its existing PID bookkeeping pending native route coverage.
+// Normal fzf supersession there kills the entire inherited process group.
+func killSupersededPredecessor(checkpointPath, bucket string) error {
 	if strings.TrimSpace(checkpointPath) == "" || bucket == "" {
-		return
+		return nil
 	}
 	pidPath := predecessorPidPath(checkpointPath, bucket)
 	if pidPath == "" {
-		return
+		return nil
+	}
+	if runtime.GOOS == "windows" {
+		return platform.ClaimPickerWork(pidPath)
 	}
 	self := os.Getpid()
 	prior := readPredecessorPID(pidPath)
 	writePredecessorPID(pidPath, self)
-	if prior == 0 || prior == self {
-		return
+	// Library callers may render a reference frame before launching a helper
+	// with the same artifact. The helper must never terminate its launcher.
+	if prior == 0 || prior == self || prior == os.Getppid() {
+		return nil
 	}
 	proc, err := os.FindProcess(prior)
 	if err != nil {
 		// On Windows FindProcess fails for non-existent PIDs.
-		return
+		return nil
 	}
+	defer proc.Release()
 	// Kill returns an error on POSIX when the process is already gone
 	// (ESRCH); swallow because the gone-case is exactly what we wanted.
 	// On Windows, returns an error if the process handle can't be opened
 	// (also gone-equivalent).
 	_ = proc.Kill()
+	return nil
 }
 
 // predecessorPidPath conventionally lives next to the checkpoint, with

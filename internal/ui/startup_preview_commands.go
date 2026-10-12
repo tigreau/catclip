@@ -181,7 +181,7 @@ func startupCheckpointFileSetPreviewCommand(currentArgs []string, flag string, d
 		)
 	}
 	return cmd, func() {
-		_ = os.RemoveAll(tmpdir)
+		removePreviewSession(tmpdir)
 	}
 }
 

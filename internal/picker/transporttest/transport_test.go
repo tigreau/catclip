@@ -29,7 +29,11 @@ type probeResult struct {
 	WorkingDir string
 }
 
+// Windows installs the owned-fzf helper dispatch before the test flag parser.
+var runOwnedFzfHelper = func() {}
+
 func TestMain(m *testing.M) {
+	runOwnedFzfHelper()
 	if resultPath := os.Getenv("CATCLIP_FZF_ARGV_PROBE"); resultPath != "" {
 		args, contextErr := picker.NormalizeCommandArgs(os.Args[1:])
 		result := probeResult{Args: args}

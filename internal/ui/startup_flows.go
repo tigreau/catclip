@@ -330,7 +330,7 @@ func buildSnippetBoundaryPreviewCommand(view resolvedScopeView, pattern string, 
 		return "", noop
 	}
 	return cmd, func() {
-		_ = os.RemoveAll(tmpdir)
+		removePreviewSession(tmpdir)
 	}
 }
 

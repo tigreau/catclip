@@ -25,8 +25,8 @@ var ErrPreviewLimitReached = errors.New("preview limit reached")
 //     writes return (0, ErrPreviewLimitReached). The write that hits
 //     the cap returns the partial byte count actually flushed plus the
 //     sentinel.
-//  2. Cancellation: if `ctx` fires (e.g. fzf SIGTERMed the preview
-//     child because the user moved focus), Write returns
+//  2. Cancellation: if `ctx` fires (e.g. a catchable termination signal
+//     or an explicit cancellation), Write returns
 //     (0, ErrPreviewLimitReached) on the next call without touching
 //     the underlying writer.
 //

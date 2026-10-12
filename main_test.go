@@ -5913,7 +5913,7 @@ func TestRunInternalFilePreviewOutputsSearchingHintWhenForcedByPicker(t *testing
 		t.Fatalf("run returned error: %v", err)
 	}
 	out := rootAnsiEscape.ReplaceAllString(stdout.String(), "")
-	if !strings.Contains(out, "no matches for this pattern yet") {
+	if !strings.Contains(out, "Searching file contents...") {
 		t.Fatalf("expected forced searching hint, got %q", out)
 	}
 }
@@ -5933,7 +5933,7 @@ func TestRunInternalFilePreviewOutputsSearchingHintWhileZeroRows(t *testing.T) {
 		t.Fatalf("run returned error: %v", err)
 	}
 	out := rootAnsiEscape.ReplaceAllString(stdout.String(), "")
-	if !strings.Contains(out, "no matches for this pattern yet") {
+	if !strings.Contains(out, "Searching file contents...") {
 		t.Fatalf("expected searching hint with FZF_MATCH_COUNT=0, got %q", out)
 	}
 

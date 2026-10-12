@@ -44,7 +44,7 @@ func prepareDiffPreview(currentArgs []string) (string, func()) {
 	if err != nil {
 		return "", noop
 	}
-	cleanup := func() { _ = os.RemoveAll(dir) }
+	cleanup := func() { removePreviewSession(dir) }
 	path := filepath.Join(dir, "state.json")
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		cleanup()
