@@ -29,6 +29,23 @@ func TestFzfColorSpecsSkipDisabledPalette(t *testing.T) {
 	}
 }
 
+func TestMetadataPreviewUsesTerminalDefaultColors(t *testing.T) {
+	specs := metadataPreviewColorSpecs(fzfColorSpecs(platform.ANSIPalette(), true))
+	for _, want := range []string{"preview-bg:-1", "preview-fg:-1", "preview-label:6", "prompt:6"} {
+		if !containsString(specs, want) {
+			t.Fatalf("missing %s in %v", want, specs)
+		}
+	}
+	for _, old := range []string{"preview-bg:0", "preview-fg:7"} {
+		if containsString(specs, old) {
+			t.Fatalf("still overriding terminal defaults: %v", specs)
+		}
+	}
+	if len(metadataPreviewColorSpecs(nil)) != 0 {
+		t.Fatal("enabled a disabled theme")
+	}
+}
+
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

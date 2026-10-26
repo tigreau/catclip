@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/platform"
 )
 
 type DiagnosticSummary struct {
@@ -49,14 +50,19 @@ func (s DiagnosticSummary) AllEmptyScopesExplained(scopeCount int) bool {
 	return true
 }
 
-func writeDiscoveryDiagnostics(diags []discovery.Diagnostic, stderr io.Writer) error {
+func writeDiscoveryDiagnostics(diags []discovery.Diagnostic, stderr io.Writer, palettes ...platform.Palette) error {
+	var colors platform.Palette
+	if len(palettes) > 0 {
+		colors = palettes[0]
+	}
 	seen := make(map[string]struct{}, len(diags))
 	for _, diag := range diags {
 		if _, duplicate := seen[diag.Message]; duplicate {
 			continue
 		}
 		seen[diag.Message] = struct{}{}
-		if _, err := fmt.Fprintln(stderr, diag.Message); err != nil {
+		message := styleDiagnosticMessage(diag.Message, colors, diag.IsError || diag.IsScopeUnsatisfiable)
+		if _, err := fmt.Fprintln(stderr, message); err != nil {
 			return err
 		}
 	}

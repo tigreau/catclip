@@ -212,10 +212,18 @@ func EmitFullOutput(cfg EmitConfig, env RuntimeEnvironment, units []PreparedFile
 	return EmitOutputPlan(cfg, env, BuildPlan(units), stdout, colors)
 }
 
-func EmitOutputPlan(cfg EmitConfig, env RuntimeEnvironment, plan Plan, stdout io.Writer, colors platform.Palette) (EmitStats, error) {
-	return WithPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
-		return WriteOutputPlanPayload(w, cfg, plan)
+func EmitOutputPlan(cfg EmitConfig, env RuntimeEnvironment, plan Plan, stdout io.Writer, colors platform.Palette, presentation ...PrintPresentation) (EmitStats, error) {
+	var print *printPresentation
+	if len(presentation) > 0 && printPresentationEnabled(cfg, presentation[0], stdout) {
+		print = &printPresentation{highlight: presentation[0].Highlight, limit: printHighlightLimit}
+	}
+	stats, err := WithPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
+		return writeOutputPlanPayloadPresented(w, cfg, plan, true, print)
 	})
+	if print != nil && err == nil {
+		stats.PayloadBytes -= print.addedBytes
+	}
+	return stats, err
 }
 
 func WriteOutputPlanPayload(w io.Writer, cfg EmitConfig, plan Plan) error {
@@ -227,6 +235,10 @@ func WriteOutputPlanPayloadWithoutPrefetch(w io.Writer, cfg EmitConfig, plan Pla
 }
 
 func writeOutputPlanPayloadWithPrefetch(w io.Writer, cfg EmitConfig, plan Plan, prefetch bool) error {
+	return writeOutputPlanPayloadPresented(w, cfg, plan, prefetch, nil)
+}
+
+func writeOutputPlanPayloadPresented(w io.Writer, cfg EmitConfig, plan Plan, prefetch bool, print *printPresentation) error {
 	if cfg.Raw {
 		return WriteRawOutputPlanPayload(w, plan)
 	}
@@ -235,14 +247,22 @@ func writeOutputPlanPayloadWithPrefetch(w io.Writer, cfg EmitConfig, plan Plan, 
 		"prefetch", platform.InternalBenchBool(prefetch),
 	)
 	bc := &emitByteCounter{w: w}
+	var priorANSI int64
+	if print != nil {
+		priorANSI = print.addedBytes
+	}
 	var err error
 	if plan.HasPaths() {
-		err = writeSectionedOutputPlanPayload(bc, plan, prefetch)
+		err = writeSectionedOutputPlanPayload(bc, plan, prefetch, print)
 	} else {
-		err = writeFileOutputPlanPayload(bc, plan, prefetch)
+		err = writeFileOutputPlanPayload(bc, plan, prefetch, print)
+	}
+	plainBytes := bc.n
+	if print != nil {
+		plainBytes -= print.addedBytes - priorANSI
 	}
 	finish(
-		"bytes", strconv.FormatInt(bc.n, 10),
+		"bytes", strconv.FormatInt(plainBytes, 10),
 		"err", platform.InternalBenchError(err),
 	)
 	return err
@@ -320,9 +340,8 @@ func emitLinesSliceRaw(w io.Writer, absPath string, linesStart, linesEnd int) er
 // line exceeds file length), zero bytes are emitted — no open tag, no
 // close tag. This matches the convention used by sed, awk, Python
 // slicing, and every line-range tool surveyed: short files contribute
-// nothing rather than empty wrappers. The picker preview path inherits
-// this behavior automatically because it routes through the same emit
-// pipeline.
+// nothing rather than empty wrappers. The lines picker also omits empty slices;
+// the final report explains omissions separately from payload content.
 func emitLinesFile(w io.Writer, entry discovery.Entry) error {
 	openFinish := platform.InternalBenchSpan("output.write_payload.lines.open_file")
 	f, err := os.Open(entry.AbsPath)
@@ -455,7 +474,7 @@ func formatLineNumber(n int) []byte {
 	return []byte(fmt.Sprintf("%d\t", n))
 }
 
-func writeSectionedOutputPlanPayload(w io.Writer, plan Plan, prefetch bool) error {
+func writeSectionedOutputPlanPayload(w io.Writer, plan Plan, prefetch bool, print *printPresentation) error {
 	for i, section := range plan.sections {
 		if i > 0 {
 			separator := outputSectionSeparator(plan.sections[i-1].kind, section.kind)
@@ -474,7 +493,7 @@ func writeSectionedOutputPlanPayload(w io.Writer, plan Plan, prefetch bool) erro
 			}
 		case SectionKindFiles:
 			subplan := Plan{items: section.items}
-			if err := writeFileOutputPlanPayload(w, subplan, prefetch); err != nil {
+			if err := writeFileOutputPlanPayload(w, subplan, prefetch, print); err != nil {
 				return err
 			}
 		}
@@ -482,7 +501,7 @@ func writeSectionedOutputPlanPayload(w io.Writer, plan Plan, prefetch bool) erro
 	return nil
 }
 
-func writeFileOutputPlanPayload(w io.Writer, plan Plan, prefetch bool) error {
+func writeFileOutputPlanPayload(w io.Writer, plan Plan, prefetch bool, print *printPresentation) error {
 	var prefetcher *emitPrefetcher
 	if prefetch {
 		prefetcher = startEmitPrefetch(plan)
@@ -491,7 +510,13 @@ func writeFileOutputPlanPayload(w io.Writer, plan Plan, prefetch bool) error {
 		defer prefetcher.Close()
 	}
 	for i, item := range plan.items {
-		if err := emitEntry(w, item.unit, i, prefetcher); err != nil {
+		var err error
+		if print == nil {
+			err = emitEntry(w, item.unit, i, prefetcher)
+		} else {
+			err = print.emitEntry(w, item.unit, i, prefetcher)
+		}
+		if err != nil {
 			return err
 		}
 	}

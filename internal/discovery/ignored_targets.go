@@ -340,12 +340,12 @@ func (r *Resolver) targetInventoryUnderNoIgnore(scopeTargets []string, ignoredOn
 	if err != nil {
 		return nil, err
 	}
-	// The text set narrows with the SAME list so the walked universe and
-	// the classification universe agree (ResolveTextFileSet re-applies the
-	// identical literal-targets rule internally; nil = wide for both).
+	// This is the complete no-ignore inventory for these literal roots. Reuse
+	// it on a text-cache miss instead of walking the same roots again. Keep the
+	// shared cache: another resolver may already have classified this universe.
 	var projectTextSet map[string]struct{}
 	if !r.WithBinaries {
-		projectTextSet, err = search.ResolveTextFileSet(r.Cfg.WorkingDir, narrowed, r.membershipEnumeration(search.MembershipReasonTextSetFallback))
+		projectTextSet, err = search.ResolveTextFileSetFromNoIgnoreInventory(r.Cfg.WorkingDir, narrowed, rgPaths)
 		if err != nil {
 			return nil, err
 		}

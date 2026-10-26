@@ -108,6 +108,11 @@ func EncodePayload(w io.Writer, doc Document) error {
 		}
 	}
 
+	for _, notice := range doc.FooterNotices {
+		if err := writePayloadRecord(bw, payloadRecord{Type: "notice", Content: notice}); err != nil {
+			return err
+		}
+	}
 	if doc.Summary != nil {
 		count := doc.Summary.Count
 		totalBytes := doc.Summary.Bytes
@@ -193,6 +198,8 @@ func DecodePayload(r io.Reader) (Document, error) {
 				IgnoreBypassed: record.IgnoreBypassed,
 				BlockSource:    record.BlockSource,
 			})
+		case "notice":
+			doc.FooterNotices = append(doc.FooterNotices, record.Content)
 		case "summary":
 			summary := DocumentSummary{
 				HumanSize: record.HumanSize,

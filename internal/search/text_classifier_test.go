@@ -281,6 +281,9 @@ func BenchmarkGoClassification(b *testing.B) {
 		b.Run(fmt.Sprint(count), func(b *testing.B) {
 			b.ReportAllocs()
 			for b.Loop() {
+				// Model a fresh invocation. Reusing the process cache here would
+				// silently turn this historical scan benchmark into a hit test.
+				invocationClassifications = pathClassificationCache{}
 				if _, _, err := classifyEnumeratedTextPaths(root, paths); err != nil {
 					b.Fatal(err)
 				}

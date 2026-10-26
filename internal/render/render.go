@@ -46,6 +46,11 @@ func RenderDocument(w io.Writer, doc Document, opts RenderOptions, colors Palett
 		}
 	}
 
+	for _, notice := range doc.FooterNotices {
+		if _, err := fmt.Fprintf(w, "\n%s%s%s\n", colors.Warn, notice, colors.Reset); err != nil {
+			return err
+		}
+	}
 	if opts.ShowSummary {
 		return RenderSummarySection(w, doc.Summary, opts, colors)
 	}
@@ -765,11 +770,15 @@ func treeIndent(depth int, colors Palette) string {
 	return strings.Repeat(colors.Tree+"│   "+colors.Reset, depth) + colors.Tree + "├── " + colors.Reset
 }
 
+// SizeWarnBytes and SizeErrorBytes keep size emphasis consistent across reports.
+const SizeWarnBytes int64 = 40000
+const SizeErrorBytes int64 = 200000
+
 func styleSize(label string, size int64, colors Palette) string {
 	switch {
-	case size < 40000:
+	case size < SizeWarnBytes:
 		return colors.Dim + "(" + label + ")" + colors.Reset
-	case size < 200000:
+	case size < SizeErrorBytes:
 		return colors.Warn + "(" + label + ")" + colors.Reset
 	default:
 		return colors.Err + "(" + label + ")" + colors.Reset

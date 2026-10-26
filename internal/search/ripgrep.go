@@ -156,10 +156,9 @@ func ripgrepFileArgs(opts RipgrepFileOptions, debug bool) []string {
 	return args
 }
 
-// textFileSetCache memoizes runRipgrepTextFiles by canonicalized working
-// directory. catclip is short-lived; multiple resolvers within one invocation
-// hit the same working dir, so paying the rg-text scan once amortizes across
-// the whole run instead of once per resolver.
+// textFileSetCache memoizes complete hybrid classifications by working directory
+// and normalized target roots. Multiple resolvers in a short-lived invocation
+// reuse these observations, including inventories enumerated by discovery.
 var (
 	textFileSetCacheMu sync.Mutex
 	textFileSetCache   = map[string]textFileClassification{}
@@ -220,12 +219,12 @@ func joinScopedCacheTargets(targets []string) string {
 	return strings.Join(targets, "\x00")
 }
 
-// ResolveTextFileSet returns the cached rg-derived set of NUL-free files for
+// ResolveTextFileSet returns the cached hybrid-classified text set for
 // workingDir restricted to the given scope targets. Pass nil/empty targets to
 // get the project-wide set (the pre-scope-aware behavior); pass a non-empty
 // list to scope the enumeration to those paths only. Multiple scopes in one
 // process get independent cache entries. Safe to call from multiple resolvers;
-// the underlying rg invocation runs at most once per distinct cache key.
+// completed entries are reused, but concurrent misses may compute independently.
 func ResolveTextFileSet(workingDir string, targets []string, enumeration ...MembershipEnumerationContext) (map[string]struct{}, error) {
 	set, _, err := ResolveTextFileSetWithBinaryEvidence(workingDir, targets, enumeration...)
 	return set, err
@@ -235,6 +234,27 @@ func ResolveTextFileSet(workingDir string, targets []string, enumeration ...Memb
 // the text-set cache, so exact targets share the existing batched classification.
 // Both returned maps are immutable observations owned by the cache.
 func ResolveTextFileSetWithBinaryEvidence(workingDir string, targets []string, enumeration ...MembershipEnumerationContext) (map[string]struct{}, map[string]struct{}, error) {
+	context := membershipContextOrDefault(enumeration, MembershipReasonTextSetFallback)
+	return resolveCachedTextFileSet(workingDir, targets, func(normTargets []string) (map[string]struct{}, map[string]struct{}, error) {
+		return runRipgrepTextFiles(workingDir, normTargets, context)
+	})
+}
+
+// ResolveTextFileSetFromNoIgnoreInventory reuses the existing scope text cache
+// while avoiding another enumeration on a cache miss. paths must be the complete,
+// unfiltered RunRipgrepFiles(NoIgnore: true) result for targets (already narrowed
+// to literal roots, or nil for the whole working directory). A filtered glob,
+// visible-only list or partial picker result must never be supplied here: those
+// subsets do not cover the cache key. Use ClassifyTextPaths for such subsets.
+// An empty inventory is complete too; it must not trigger a fallback walk.
+func ResolveTextFileSetFromNoIgnoreInventory(workingDir string, targets, paths []string) (map[string]struct{}, error) {
+	set, _, err := resolveCachedTextFileSet(workingDir, targets, func(_ []string) (map[string]struct{}, map[string]struct{}, error) {
+		return ClassifyTextPathsWithBinaryEvidence(workingDir, paths)
+	})
+	return set, err
+}
+
+func resolveCachedTextFileSet(workingDir string, targets []string, classify func([]string) (map[string]struct{}, map[string]struct{}, error)) (map[string]struct{}, map[string]struct{}, error) {
 	dirKey, err := filepath.Abs(workingDir)
 	if err != nil {
 		dirKey = workingDir
@@ -250,8 +270,7 @@ func ResolveTextFileSetWithBinaryEvidence(workingDir string, targets []string, e
 	}
 	textFileSetCacheMu.Unlock()
 
-	context := membershipContextOrDefault(enumeration, MembershipReasonTextSetFallback)
-	set, binary, err := runRipgrepTextFiles(workingDir, normTargets, context)
+	set, binary, err := classify(normTargets)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -435,7 +454,8 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 		capture.add(knownText)
 	}
 
-	stats.residueCount = len(residue)
+	var scanned []string
+	var scannedText int
 	var observed map[string]os.FileInfo
 	if len(residue) > 0 {
 		classified, scanErr := classifyResidue(reloadCancelCtx, workingDir, residue)
@@ -446,6 +466,8 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 			return nil, stats, nil, scanErr
 		}
 		observed = classified.observed
+		scanned, scannedText = classified.scanned, classified.scannedText
+		stats.residueCount = len(scanned)
 		stats.binaryPaths = classified.binary
 		stats.residueText = len(classified.text)
 		acceptedResidue := make([]string, 0, len(classified.text))
@@ -472,7 +494,7 @@ func classifyEnumeratedTextPathsInternal(workingDir string, allPaths []string, c
 		return nil, stats, nil, err
 	}
 	stats.nameText = len(set) - stats.residueText - stats.admitted
-	recordTextClassificationResidue(residue, stats.residueText)
+	recordTextClassificationResidue(scanned, scannedText)
 	if capture != nil {
 		capture.boostWorkers()
 		capture.closeInput()

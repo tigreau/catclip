@@ -200,7 +200,7 @@ func PathOnlyStageDiagnostics(stage command.Stage, scopeIndex int, colors platfo
 	return diagnostics
 }
 
-func applyScopeStagesWithDiagnostics(resolver *Resolver, gitCtx git.Context, s command.ExecutionScope, entries []Entry, scopeIndex int, colors platform.Palette) ([]Entry, []Diagnostic, error) {
+func applyScopeStagesWithDiagnostics(resolver *Resolver, gitCtx git.Context, s command.ExecutionScope, entries []Entry, scopeIndex int, colors platform.Palette, refinements ...*EmptyRefinement) ([]Entry, []Diagnostic, error) {
 	if len(entries) == 0 {
 		return entries, nil, nil
 	}
@@ -217,6 +217,9 @@ func applyScopeStagesWithDiagnostics(resolver *Resolver, gitCtx git.Context, s c
 		next, err := applier(ctx, entries)
 		if err != nil {
 			return nil, nil, err
+		}
+		if len(refinements) > 0 && refinements[0] != nil && IsRefinementStage(s, stage) {
+			refinements[0].Record(entries, next)
 		}
 		entries = next
 		diagnostics = append(diagnostics, PathOnlyStageDiagnostics(stage, scopeIndex, colors, len(entries) == 0)...)

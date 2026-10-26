@@ -207,6 +207,11 @@ func TestHomeClassifierTiming(t *testing.T) {
 			for round := 0; round < rounds; round++ {
 				for offset := range variants {
 					workers := variants[(round+offset)%len(variants)]
+					if workers == 0 {
+						// Each sample models a separate invocation, even though the
+						// diagnostic runs all variants in this one test process.
+						invocationClassifications = pathClassificationCache{}
+					}
 					runtime.GC()
 					var before, after runtime.MemStats
 					runtime.ReadMemStats(&before)

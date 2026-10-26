@@ -32,9 +32,10 @@ type treeRenderOptions = renderpkg.RenderOptions
 
 func buildTreeDocumentFromPreview(cfg RenderConfig, plan output.Plan, report output.Report) treeDocument {
 	doc := treeDocument{
-		Mode:    treeDocumentModeTree,
-		Target:  buildTreeDocumentTargetForPlan(cfg, plan),
-		Entries: treeEntriesFromPlan(plan, report),
+		FooterNotices: plan.RefinementNoticeText(),
+		Mode:          treeDocumentModeTree,
+		Target:        buildTreeDocumentTargetForPlan(cfg, plan),
+		Entries:       treeEntriesFromPlan(plan, report),
 	}
 
 	doc.Entries = renderpkg.SortedEntries(doc.Entries)

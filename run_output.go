@@ -12,6 +12,7 @@ import (
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/output"
 	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/render"
 	"github.com/tigreau/catclip/internal/search"
 	"github.com/tigreau/catclip/internal/ui"
 )
@@ -79,7 +80,13 @@ func executeTreePreview(ctx outputExecutionContext, state outputExecutionState) 
 }
 
 func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) error {
-	if err := writeDiscoveryDiagnostics(state.Diagnostics, ctx.Stderr); err != nil {
+	if ctx.Invocation.Headless {
+		ctx.Colors = platform.Palette{}
+	}
+	if err := writeDiscoveryDiagnostics(state.Diagnostics, ctx.Stderr, ctx.Colors); err != nil {
+		return err
+	}
+	if err := state.Plan.WriteLineOmissions(ctx.Stderr, ctx.Colors); err != nil {
 		return err
 	}
 	if state.Plan.IsEmpty() {
@@ -112,12 +119,19 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 }
 
 func executeEmptyOutput(ctx outputExecutionContext, state outputExecutionState) error {
+	if err := state.Plan.WriteRefinementNotices(ctx.Stderr, ctx.Colors); err != nil {
+		return err
+	}
 	if !ctx.Invocation.Quiet {
 		for _, notice := range discovery.DedupePreserveOrder(state.Notices) {
 			fmt.Fprintln(ctx.Stderr, notice)
 		}
 	}
-	if !state.Summary.AllEmptyScopesExplained(len(state.Scopes)) {
+	if state.Plan.HasLineOmissions() {
+		if _, err := fmt.Fprintf(ctx.Stderr, "%sNo output was emitted.%s\n", ctx.Colors.Warn, ctx.Colors.Reset); err != nil {
+			return err
+		}
+	} else if !state.Summary.AllEmptyScopesExplained(len(state.Scopes)) {
 		if err := discovery.WriteNoFilesMatchedMessage(state.Scopes, ctx.Stderr, ctx.Colors, state.Summary.HadSelectionCancel); err != nil {
 			return err
 		}
@@ -182,9 +196,16 @@ func executeMetadata(ctx outputExecutionContext, state outputExecutionState, rep
 	}
 	outputStarted := time.Now()
 	finishEmitBench := platform.InternalBenchSpan("output.metadata.emit")
+	metadataColors := output.TerminalPrintPalette(ctx.Emit, ctx.Invocation.Headless, ctx.Invocation.Quiet, ctx.Stdout)
+	var metadataANSIBytes int64
 	emitStats, err := output.WithPayloadWriter(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), ctx.Stdout, ctx.Colors, func(w io.Writer) error {
-		return ui.WriteMetadataReport(w, metadata)
+		var writeErr error
+		metadataANSIBytes, writeErr = ui.WriteMetadataReportWithPalette(w, metadata, metadataColors)
+		return writeErr
 	})
+	if err == nil {
+		emitStats.PayloadBytes -= metadataANSIBytes
+	}
 	finishEmitBench("err", platform.InternalBenchError(err), "bytes", fmt.Sprintf("%d", emitStats.PayloadBytes))
 	if err != nil {
 		return err
@@ -256,7 +277,8 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 		fmt.Fprintln(ctx.Stderr)
 	}
 	outputStarted := time.Now()
-	emitStats, err := output.EmitOutputPlan(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), state.Plan, ctx.Stdout, ctx.Colors)
+	emitStats, err := output.EmitOutputPlan(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), state.Plan, ctx.Stdout, ctx.Colors,
+		output.PrintPresentation{Headless: ctx.Invocation.Headless, Quiet: ctx.Invocation.Quiet, Highlight: render.HighlightPrintSource})
 	if err != nil {
 		outputSpinnerStop()
 		return err

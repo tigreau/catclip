@@ -87,6 +87,7 @@ type MetadataLargestFile struct {
 }
 
 type MetadataRow struct {
+	Bytes    int64
 	Path     string
 	Size     string
 	Tokens   string
@@ -159,6 +160,7 @@ func BuildMetadataReport(workingDir string, gitCtx git.Context, scopes []discove
 		result.TotalBytes += size
 		humanSize, tokens := renderpkg.FormatSizeAndTokens(size, 1)
 		row := MetadataRow{
+			Bytes:    size,
 			Path:     entry.RelPath,
 			Size:     humanSize,
 			Tokens:   fmt.Sprintf("~%s", formatMetadataInteger(tokens)),
@@ -501,26 +503,43 @@ type metadataIgnoredCollector struct {
 	workingDir     string
 	globalHissPath string
 	total          int
-	rows           []search.IgnoreTraceRecord
+	rows           []metadataIgnoredCandidate
+}
+
+type metadataIgnoredCandidate struct {
+	search.IgnoreTraceRecord
+	depth int
+}
+
+func metadataIgnoredCandidateLess(a, b metadataIgnoredCandidate) bool {
+	if a.RuleDirectoryOnly != b.RuleDirectoryOnly {
+		return a.RuleDirectoryOnly
+	}
+	if a.depth != b.depth {
+		return a.depth < b.depth
+	}
+	if a.Path != b.Path {
+		return a.Path < b.Path
+	}
+	return a.Source < b.Source
 }
 
 func (collector *metadataIgnoredCollector) add(record search.IgnoreTraceRecord) {
 	collector.total++
-	collector.rows = append(collector.rows, record)
-	sort.Slice(collector.rows, func(i, j int) bool {
-		left, right := metadataSlashPath(collector.rows[i].Path), metadataSlashPath(collector.rows[j].Path)
-		leftDepth, rightDepth := strings.Count(left, "/"), strings.Count(right, "/")
-		if leftDepth != rightDepth {
-			return leftDepth < rightDepth
-		}
-		if left != right {
-			return left < right
-		}
-		return collector.rows[i].Source < collector.rows[j].Source
-	})
-	if len(collector.rows) > metadataIgnoredDisplayLimit {
-		collector.rows = collector.rows[:metadataIgnoredDisplayLimit]
+	// Directory-only rules already provide useful type evidence. Retain a
+	// bounded priority list without statting every rejected path or repeatedly
+	// cleaning/sorting the same twenty paths for every incoming record.
+	record.Path = metadataSlashPath(record.Path)
+	candidate := metadataIgnoredCandidate{IgnoreTraceRecord: record, depth: strings.Count(record.Path, "/")}
+	index := sort.Search(len(collector.rows), func(i int) bool { return metadataIgnoredCandidateLess(candidate, collector.rows[i]) })
+	if index >= metadataIgnoredDisplayLimit {
+		return
 	}
+	if len(collector.rows) < metadataIgnoredDisplayLimit {
+		collector.rows = append(collector.rows, metadataIgnoredCandidate{})
+	}
+	copy(collector.rows[index+1:], collector.rows[index:len(collector.rows)-1])
+	collector.rows[index] = candidate
 }
 
 func (collector *metadataIgnoredCollector) summary() MetadataIgnoredSummary {
@@ -559,6 +578,36 @@ func (collector *metadataIgnoredCollector) summary() MetadataIgnoredSummary {
 			Pattern: metadataInlineValue(record.Pattern),
 		})
 	}
+	// Only the retained rows incur the existing bounded metadata checks.
+	// A rule without a trailing slash may also name a directory; promote it
+	// after those checks, but never probe the entire ignored inventory.
+	sort.Slice(summary.Rows, func(i, j int) bool {
+		a, b := summary.Rows[i], summary.Rows[j]
+		if (a.Kind == "directory") != (b.Kind == "directory") {
+			return a.Kind == "directory"
+		}
+		if da, db := strings.Count(a.Path, "/"), strings.Count(b.Path, "/"); da != db {
+			return da < db
+		}
+		if a.Path != b.Path {
+			return a.Path < b.Path
+		}
+		return a.Source < b.Source
+	})
+	kept := summary.Rows[:0]
+	for _, row := range summary.Rows {
+		covered := false
+		for _, parent := range kept {
+			if parent.Kind == "directory" && strings.HasPrefix(row.Path, parent.Path+"/") {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			kept = append(kept, row)
+		}
+	}
+	summary.Rows = kept
 	return summary
 }
 
@@ -723,64 +772,89 @@ func metadataLargestBefore(left, right MetadataLargestFile) bool {
 }
 
 // WriteMetadataReport emits the canonical plain-text metadata payload. It is
-// intentionally color-free so clipboard, stdout, headless, bundle, and the
-// output picker's payload preview share byte-for-byte content.
+// intentionally color-free for clipboard, pipes, headless, bundles, accounting,
+// and byte accounting. Terminal and fzf preview styling are separate callers.
 func WriteMetadataReport(w io.Writer, report *MetadataReport) error {
+	return writeMetadataReport(w, report, nil)
+}
+
+func writeMetadataReport(w io.Writer, report *MetadataReport, style *metadataStyle) error {
 	if report == nil {
 		return fmt.Errorf("internal error: metadata report is unavailable")
 	}
-	if _, err := fmt.Fprintf(w, "Root: %s\n", report.Root); err != nil {
+	root := report.Root
+	if style != nil {
+		root = style.text(root, style.colors.Prompt)
+	}
+	if _, err := fmt.Fprintf(w, "Root: %s\n", root); err != nil {
 		return err
 	}
 	if report.Generated != "" {
-		if _, err := fmt.Fprintf(w, "Generated: %s\n", report.Generated); err != nil {
+		generated := report.Generated
+		if style != nil {
+			generated = style.text(generated, style.colors.Dim)
+		}
+		if _, err := fmt.Fprintf(w, "Generated: %s\n", generated); err != nil {
 			return err
 		}
 	}
 	if report.Git != nil {
-		if err := writeMetadataGitSummary(w, report.Git); err != nil {
+		if err := writeMetadataGitSummary(w, report.Git, style); err != nil {
 			return err
 		}
 	}
 	if len(report.Scopes) == 1 {
-		if _, err := fmt.Fprintf(w, "Scope: %s\n", report.Scopes[0].Summary); err != nil {
+		summary := report.Scopes[0].Summary
+		if style != nil {
+			summary = style.text(summary, style.colors.Prompt)
+		}
+		if _, err := fmt.Fprintf(w, "Scope: %s\n", summary); err != nil {
 			return err
 		}
-		if err := writeMetadataScopeFacts(w, report.Scopes[0], ""); err != nil {
+		if err := writeMetadataScopeFacts(w, report.Scopes[0], "", style); err != nil {
 			return err
 		}
 	} else if len(report.Scopes) > 1 {
-		if _, err := io.WriteString(w, "Scopes:\n"); err != nil {
+		heading := "Scopes:\n"
+		if style != nil {
+			heading = style.text(heading, style.colors.Bold)
+		}
+		if _, err := io.WriteString(w, heading); err != nil {
 			return err
 		}
 		for i, scope := range report.Scopes {
-			if _, err := fmt.Fprintf(w, "  %d. %s\n", i+1, scope.Summary); err != nil {
+			summary := scope.Summary
+			if style != nil {
+				summary = style.text(summary, style.colors.Prompt)
+			}
+			if _, err := fmt.Fprintf(w, "  %d. %s\n", i+1, summary); err != nil {
 				return err
 			}
-			if err := writeMetadataScopeFacts(w, scope, "     "); err != nil {
+			if err := writeMetadataScopeFacts(w, scope, "     ", style); err != nil {
 				return err
 			}
 		}
 	}
-	if err := writeMetadataAggregates(w, "Composition (largest 5 by size)", report.Composition); err != nil {
+	if err := writeMetadataAggregates(w, "Composition (largest 5 by size)", report.Composition, style); err != nil {
 		return err
 	}
-	if err := writeMetadataAggregates(w, "Directory groups (largest 5 by size)", report.DirectoryGroups); err != nil {
+	if err := writeMetadataAggregates(w, "Directory groups (largest 5 by size)", report.DirectoryGroups, style); err != nil {
 		return err
 	}
-	if err := writeMetadataLargestFiles(w, report.LargestFiles); err != nil {
+	if err := writeMetadataLargestFiles(w, report.LargestFiles, style); err != nil {
 		return err
 	}
 	if _, err := io.WriteString(w, "\n"); err != nil {
 		return err
 	}
-	if err := writeMetadataRows(w, report.Rows); err != nil {
+	if err := writeMetadataRows(w, report.Rows, style); err != nil {
 		return err
 	}
-	return writeMetadataFooter(w, report)
+	return writeMetadataFooter(w, report, style)
 }
 
-func writeMetadataGitSummary(w io.Writer, summary *MetadataGitSummary) error {
+func writeMetadataGitSummary(w io.Writer, summary *MetadataGitSummary, styles ...*metadataStyle) error {
+	style := metadataStyleFrom(styles)
 	identity := summary.Branch
 	if summary.Commit != "" {
 		identity += " @ " + summary.Commit
@@ -802,14 +876,21 @@ func writeMetadataGitSummary(w io.Writer, summary *MetadataGitSummary) error {
 		}
 	}
 	if len(changes) == 0 {
+		if style != nil {
+			return style.line(w, style.colors.Git, "Git: %s · clean selection\n", identity)
+		}
 		_, err := fmt.Fprintf(w, "Git: %s · clean selection\n", identity)
 		return err
+	}
+	if style != nil {
+		return style.line(w, style.colors.Git, "Git: %s · %s\n", identity, strings.Join(changes, " · "))
 	}
 	_, err := fmt.Fprintf(w, "Git: %s · %s\n", identity, strings.Join(changes, " · "))
 	return err
 }
 
-func writeMetadataScopeFacts(w io.Writer, scope MetadataScope, indent string) error {
+func writeMetadataScopeFacts(w io.Writer, scope MetadataScope, indent string, styles ...*metadataStyle) error {
+	style := metadataStyleFrom(styles)
 	if scope.NoIgnore {
 		_, err := fmt.Fprintf(w, "%sSelected: %d %s\n", indent, scope.Selected, metadataFileWord(scope.Selected))
 		return err
@@ -834,6 +915,12 @@ func writeMetadataScopeFacts(w io.Writer, scope MetadataScope, indent string) er
 		return err
 	}
 	for _, row := range scope.Ignored.Rows {
+		if style != nil {
+			if err := style.line(w, style.colors.Dim, "%s  %s [%s] · source: %s · pattern: %s\n", indent, row.Path, row.Kind, row.Source, row.Pattern); err != nil {
+				return err
+			}
+			continue
+		}
 		if _, err := fmt.Fprintf(w, "%s  %s [%s] · source: %s · pattern: %s\n", indent, row.Path, row.Kind, row.Source, row.Pattern); err != nil {
 			return err
 		}
@@ -852,9 +939,12 @@ func metadataFileWord(count int) string {
 	return "files"
 }
 
-func writeMetadataAggregates(w io.Writer, heading string, groups []MetadataAggregate) error {
+func writeMetadataAggregates(w io.Writer, heading string, groups []MetadataAggregate, styles ...*metadataStyle) error {
 	if len(groups) == 0 {
 		return nil
+	}
+	if style := metadataStyleFrom(styles); style != nil {
+		heading = style.text(heading, style.colors.Bold+style.colors.Prompt)
 	}
 	if _, err := fmt.Fprintf(w, "\n%s:\n", heading); err != nil {
 		return err
@@ -873,18 +963,27 @@ func writeMetadataAggregates(w io.Writer, heading string, groups []MetadataAggre
 			}
 			tokenLabel = fmt.Sprintf("~%s text tokens · %d %s", formatMetadataInteger(group.Tokens), group.BinaryCount, binaryWord)
 		}
-		if _, err := fmt.Fprintf(w, "  %-16s %5d %s · %9s · %s\n", group.Label, group.Count, fileWord, humanSize, tokenLabel); err != nil {
+		sizeLabel := fmt.Sprintf("%9s", humanSize)
+		if style := metadataStyleFrom(styles); style != nil {
+			sizeLabel = style.size(sizeLabel, group.Bytes)
+		}
+		if _, err := fmt.Fprintf(w, "  %-16s %5d %s · %s · %s\n", group.Label, group.Count, fileWord, sizeLabel, tokenLabel); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func writeMetadataLargestFiles(w io.Writer, rows []MetadataLargestFile) error {
+func writeMetadataLargestFiles(w io.Writer, rows []MetadataLargestFile, styles ...*metadataStyle) error {
+	style := metadataStyleFrom(styles)
 	if len(rows) == 0 {
 		return nil
 	}
-	if _, err := io.WriteString(w, "\nLargest selected files:\n"); err != nil {
+	heading := "\nLargest selected files:\n"
+	if style != nil {
+		heading = style.text(heading, style.colors.Bold+style.colors.Prompt)
+	}
+	if _, err := io.WriteString(w, heading); err != nil {
 		return err
 	}
 	for _, row := range rows {
@@ -893,14 +992,20 @@ func writeMetadataLargestFiles(w io.Writer, rows []MetadataLargestFile) error {
 		if row.Binary {
 			tokenLabel = "binary"
 		}
-		if _, err := fmt.Fprintf(w, "  %s · %s · %s\n", row.Path, humanSize, tokenLabel); err != nil {
+		path := row.Path
+		if style != nil {
+			path = style.path(path)
+			humanSize = style.size(humanSize, row.Bytes)
+		}
+		if _, err := fmt.Fprintf(w, "  %s · %s · %s\n", path, humanSize, tokenLabel); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func writeMetadataRows(w io.Writer, rows []MetadataRow) error {
+func writeMetadataRows(w io.Writer, rows []MetadataRow, styles ...*metadataStyle) error {
+	style := metadataStyleFrom(styles)
 	widths := []int{len("PATH"), len("SIZE"), len("TOKENS"), len("GIT"), len("MODIFIED")}
 	withFlags := false
 	for _, row := range rows {
@@ -912,7 +1017,15 @@ func writeMetadataRows(w io.Writer, rows []MetadataRow) error {
 		}
 		withFlags = withFlags || row.Flag != ""
 	}
-	if withFlags {
+	if style != nil {
+		heading := fmt.Sprintf("%-*s  %*s  %*s  %-*s  %s\n", widths[0], "PATH", widths[1], "SIZE", widths[2], "TOKENS", widths[3], "GIT", "MODIFIED")
+		if withFlags {
+			heading = fmt.Sprintf("%-*s  %*s  %*s  %-*s  %-*s  FLAGS\n", widths[0], "PATH", widths[1], "SIZE", widths[2], "TOKENS", widths[3], "GIT", widths[4], "MODIFIED")
+		}
+		if _, err := io.WriteString(w, style.text(heading, style.colors.Bold)); err != nil {
+			return err
+		}
+	} else if withFlags {
 		if _, err := fmt.Fprintf(w, "%-*s  %*s  %*s  %-*s  %-*s  FLAGS\n", widths[0], "PATH", widths[1], "SIZE", widths[2], "TOKENS", widths[3], "GIT", widths[4], "MODIFIED"); err != nil {
 			return err
 		}
@@ -920,6 +1033,25 @@ func writeMetadataRows(w io.Writer, rows []MetadataRow) error {
 		return err
 	}
 	for _, row := range rows {
+		if style != nil {
+			paddedPath := fmt.Sprintf("%-*s", widths[0], row.Path)
+			path := style.path(row.Path) + paddedPath[len(row.Path):]
+			size := style.size(fmt.Sprintf("%*s", widths[1], row.Size), row.Bytes)
+			git := style.text(fmt.Sprintf("%-*s", widths[3], row.Git), style.gitColor(row.Git))
+			modified := row.Modified
+			if withFlags {
+				modified = fmt.Sprintf("%-*s", widths[4], modified)
+			}
+			modified = style.modified(modified)
+			if withFlags {
+				if _, err := fmt.Fprintf(w, "%s  %s  %*s  %s  %s  %s\n", path, size, widths[2], row.Tokens, git, modified, style.text(row.Flag, style.colors.Dim)); err != nil {
+					return err
+				}
+			} else if _, err := fmt.Fprintf(w, "%s  %s  %*s  %s  %s\n", path, size, widths[2], row.Tokens, git, modified); err != nil {
+				return err
+			}
+			continue
+		}
 		if withFlags {
 			if _, err := fmt.Fprintf(w, "%-*s  %*s  %*s  %-*s  %-*s  %s\n", widths[0], row.Path, widths[1], row.Size, widths[2], row.Tokens, widths[3], row.Git, widths[4], row.Modified, row.Flag); err != nil {
 				return err
@@ -931,7 +1063,7 @@ func writeMetadataRows(w io.Writer, rows []MetadataRow) error {
 	return nil
 }
 
-func writeMetadataFooter(w io.Writer, report *MetadataReport) error {
+func writeMetadataFooter(w io.Writer, report *MetadataReport, styles ...*metadataStyle) error {
 	humanSize, _ := renderpkg.FormatSizeAndTokens(report.TotalBytes, len(report.Rows))
 	word := "files"
 	if len(report.Rows) == 1 {
@@ -941,7 +1073,12 @@ func writeMetadataFooter(w io.Writer, report *MetadataReport) error {
 	if report.BinaryCount > 0 {
 		tokenLabel = "text tokens"
 	}
-	footer := fmt.Sprintf("\n%d %s · %s · ~%s %s", len(report.Rows), word, humanSize, formatMetadataInteger(report.TextTokens), tokenLabel)
+	countLabel := fmt.Sprintf("%d %s", len(report.Rows), word)
+	if style := metadataStyleFrom(styles); style != nil {
+		countLabel = style.text(countLabel, style.colors.Bold)
+		humanSize = style.size(humanSize, report.TotalBytes)
+	}
+	footer := fmt.Sprintf("\n%s · %s · ~%s %s", countLabel, humanSize, formatMetadataInteger(report.TextTokens), tokenLabel)
 	if report.BinaryCount > 0 {
 		binaryWord := "binaries"
 		if report.BinaryCount == 1 {

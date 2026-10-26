@@ -27,14 +27,17 @@ const (
 )
 
 type fileClassification struct {
-	class contentClass
-	info  os.FileInfo
+	class  contentClass
+	info   os.FileInfo
+	reused bool
 }
 
 type residueClassification struct {
-	text     map[string]struct{}
-	binary   map[string]struct{}
-	observed map[string]os.FileInfo
+	text        map[string]struct{}
+	binary      map[string]struct{}
+	observed    map[string]os.FileInfo
+	scanned     []string
+	scannedText int
 }
 
 // scanDecodedNUL implements rg's unconfigured decoded-NUL definition. UTF-16
@@ -106,7 +109,13 @@ func classifyRegularFile(ctx context.Context, abs string, buf []byte) fileClassi
 }
 
 func classifyResidue(ctx context.Context, root string, paths []string) (residueClassification, error) {
-	return classifyResidueGo(ctx, root, paths, classifyRegularFile)
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return residueClassification{}, err
+	}
+	return classifyResidueGo(ctx, absRoot, paths, func(ctx context.Context, abs string, buf []byte) fileClassification {
+		return invocationClassifications.classify(ctx, abs, buf, classifyRegularFile)
+	})
 }
 
 // The scanner parameter lets cancellation tests hold real worker lifetimes
@@ -183,6 +192,12 @@ func classifyResidueGo(ctx context.Context, root string, paths []string, scan fu
 			continue
 		}
 		out.observed[rel] = result.info
+		if !result.reused {
+			out.scanned = append(out.scanned, rel)
+			if result.class == contentText {
+				out.scannedText++
+			}
+		}
 		switch result.class {
 		case contentText:
 			out.text[rel] = struct{}{}
@@ -197,6 +212,7 @@ func classifyResidueGo(ctx context.Context, root string, paths []string, scan fu
 		return residueClassification{}, err
 	}
 	finish("cancelled", "false", "text", platform.InternalBenchInt(len(out.text)),
+		"scanned", platform.InternalBenchInt(len(out.scanned)), "reused", platform.InternalBenchInt(len(paths)-len(out.scanned)),
 		"binary", platform.InternalBenchInt(len(out.binary)), "unconfirmed", platform.InternalBenchInt(unconfirmed),
 		"stat_observations", platform.InternalBenchInt(len(out.observed)))
 	return out, nil

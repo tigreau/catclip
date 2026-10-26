@@ -105,6 +105,7 @@ type Resolver struct {
 // Phase 0 of the SCC + pipeline-linearity refactor — see
 // docs/versions/v0.5.1/reports/ACTIVE_PLAN_stage_chain_checkpoints.md.
 type Scope struct {
+	EmptyRefinement EmptyRefinement
 	Scope           command.ExecutionScope
 	GitContext      git.Context
 	ResolvedTargets []ResolvedTarget
@@ -114,7 +115,7 @@ type Scope struct {
 	SelectionCancel bool
 }
 
-func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s command.ExecutionScope, stderr io.Writer, colors platform.Palette) (result Scope, err error) {
+func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s command.ExecutionScope, stderr io.Writer, colors platform.Palette, retainRefinements ...bool) (result Scope, err error) {
 	mode := s.OutputMode()
 	result = Scope{Scope: s, GitContext: gitCtx}
 	defer func() {
@@ -247,7 +248,13 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	}
 
 	var stageDiagnostics []Diagnostic
-	entries, stageDiagnostics, err = applyScopeStagesWithDiagnostics(&resolver, gitCtx, s, entries, scopeIndex, colors)
+	var refinement *EmptyRefinement
+	// Interactive callers retain evidence even before another scope is added.
+	// Direct single-scope discovery explicitly opts out.
+	if len(retainRefinements) == 0 || retainRefinements[0] {
+		refinement = &result.EmptyRefinement
+	}
+	entries, stageDiagnostics, err = applyScopeStagesWithDiagnostics(&resolver, gitCtx, s, entries, scopeIndex, colors, refinement)
 	if err != nil {
 		return result, err
 	}
@@ -397,6 +404,13 @@ func (r *Resolver) caseFoldCandidateIsSameFile(relPath string, candidates []stri
 // --no-ignore, the caller routes through the bypass path; here we
 // synthesize a block so callers that branch on block != nil pick that path.
 func (r *Resolver) dirBlockedBy(relPath string) (*BlockInfo, error) {
+	return r.dirBlockedByWithDescendant(relPath, false)
+}
+
+// hasDescendant is evidence from an existing rg file inventory, not a guess
+// based on directory existence. Ignore diagnostics already have that evidence
+// for every ancestor of their candidate, so they need no emptiness walk.
+func (r *Resolver) dirBlockedByWithDescendant(relPath string, hasDescendant bool) (*BlockInfo, error) {
 	if r.NoIgnore {
 		return &BlockInfo{Source: ""}, nil
 	}
@@ -425,6 +439,9 @@ func (r *Resolver) dirBlockedBy(relPath string) (*BlockInfo, error) {
 	}
 	if r.caseFoldCandidateIsSameFile(relPath, r.visibleAllDirsFold[lowered]) {
 		return &BlockInfo{Source: ".hiss"}, nil
+	}
+	if hasDescendant {
+		return &BlockInfo{Source: ".gitignore"}, nil
 	}
 	paths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, search.RipgrepFileOptions{
 		NoIgnore:    true,
@@ -775,25 +792,12 @@ func (r *Resolver) resolveGlobTarget(scopeIndex int, pattern string, colors plat
 	if strings.Contains(pattern, "**") {
 		return nil, nil, nil, false, newUsageError("%s", unsupportedTargetDoublestarMessage(pattern))
 	}
-	allFiles, err := r.discoverGlobCandidateFiles()
+	matched, err := r.discoverGlobCandidateFiles(pattern)
 	if err != nil {
 		return nil, nil, nil, false, err
 	}
 	if r.NoIgnore {
 		r.markNoIgnoreTargetWalk(pattern)
-	}
-	var matched []Entry
-	for _, entry := range allFiles {
-		ok, matchErr := path.Match(pattern, path.Base(entry.RelPath))
-		if matchErr != nil {
-			return nil, nil, nil, false, newUsageError("Error: Invalid glob pattern %s: %v", SingleQuoted(pattern), matchErr)
-		}
-		if !ok {
-			ok, _ = path.Match(pattern, entry.RelPath)
-		}
-		if ok {
-			matched = append(matched, entry)
-		}
 	}
 	if len(matched) == 0 {
 		diag := Diagnostic{
@@ -805,17 +809,6 @@ func (r *Resolver) resolveGlobTarget(scopeIndex int, pattern string, colors plat
 		return nil, []Diagnostic{diag}, nil, false, nil
 	}
 	return withTargetRoot(matched, "."), nil, nil, false, nil
-}
-
-func (r *Resolver) discoverGlobCandidateFiles() ([]Entry, error) {
-	if r.NoIgnore {
-		return r.discoverFilesUnderNoIgnore(".")
-	}
-	entries, err := r.discoverVisibleFilesUnder(".")
-	if err != nil {
-		return nil, err
-	}
-	return entries, nil
 }
 
 func (r *Resolver) resolveRankedTargetMatches(query string, matches []TargetMatch, stderr io.Writer, colors platform.Palette) ([]Entry, bool, error) {

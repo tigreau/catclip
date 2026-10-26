@@ -113,6 +113,7 @@ func materializeScopeViewWithMetadata(entry scopeViewMemoEntry, includeCaptured 
 	view.Scopes = cloneExecutionScopes(view.Scopes)
 	view.Scope = cloneExecutionScope(view.Scope)
 	view.Discovered.Scope = cloneExecutionScope(view.Discovered.Scope)
+	view.Discovered.EmptyRefinement = view.Discovered.EmptyRefinement.Clone()
 	view.Discovered.ResolvedTargets = append([]discovery.ResolvedTarget(nil), view.Discovered.ResolvedTargets...)
 	view.Discovered.Entries = cloneDiscoveryEntries(view.Discovered.Entries)
 	view.Discovered.Diagnostics = append([]discovery.Diagnostic(nil), view.Discovered.Diagnostics...)
@@ -593,6 +594,7 @@ func scopeViewMemoLookup(key string) (scopeViewMemoEntry, bool) {
 }
 
 func scopeViewMemoStoreFresh(key string, args []string, view resolvedScopeView) scopeViewMemoEntry {
+	view.Discovered.EmptyRefinement = view.Discovered.EmptyRefinement.Clone()
 	scopeViewMemoMu.Lock()
 	defer scopeViewMemoMu.Unlock()
 	if existing, ok := scopeViewMemoValues[key]; ok {
@@ -641,6 +643,7 @@ func scopeViewMemoStoreFresh(key string, args []string, view resolvedScopeView) 
 }
 
 func scopeViewMemoStoreDerived(key string, args []string, view resolvedScopeView, parent scopeViewMemoEntry, fileIDs []uint32) scopeViewMemoEntry {
+	view.Discovered.EmptyRefinement = view.Discovered.EmptyRefinement.Clone()
 	scopeViewMemoMu.Lock()
 	defer scopeViewMemoMu.Unlock()
 	if existing, ok := scopeViewMemoValues[key]; ok {
@@ -1280,6 +1283,27 @@ func deriveScopeViewFromParent(parent scopeViewMemoEntry, requested command.Reso
 	view.snippetMatchLines = snippetMatchLines
 	view.Entries = nil
 	view.Discovered.Scope = requestedScope
+	view.Discovered.EmptyRefinement = parent.view.Discovered.EmptyRefinement.Clone()
+	if err == nil && discovery.IsRefinementStage(requestedScope, stage) &&
+		(!isRetainedGitStage(stage.Kind) || parent.view.GitContext.Enabled) && len(parent.fileIDs) > 0 {
+		view.Discovered.EmptyRefinement.Evaluated = true
+		if len(fileIDs) != len(parent.fileIDs) {
+			paths := make([]string, len(view.Discovered.EmptyRefinement.Paths), len(view.Discovered.EmptyRefinement.Paths)+len(parent.fileIDs)-len(fileIDs))
+			copy(paths, view.Discovered.EmptyRefinement.Paths)
+			view.Discovered.EmptyRefinement.Paths = paths
+			kept := make(map[uint32]struct{}, len(fileIDs))
+			for _, id := range fileIDs {
+				kept[id] = struct{}{}
+			}
+			parent.inventory.mu.RLock()
+			for _, id := range parent.fileIDs {
+				if _, ok := kept[id]; !ok {
+					view.Discovered.EmptyRefinement.Paths = append(view.Discovered.EmptyRefinement.Paths, parent.inventory.entries[id].RelPath)
+				}
+			}
+			parent.inventory.mu.RUnlock()
+		}
+	}
 	view.Discovered.Entries = nil
 	view.Discovered.Diagnostics = append([]discovery.Diagnostic(nil), parent.view.Discovered.Diagnostics...)
 	if isRetainedGitStage(stage.Kind) && !parent.view.GitContext.Enabled {

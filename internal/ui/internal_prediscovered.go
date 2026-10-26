@@ -338,7 +338,7 @@ func runInternalLinesPreview(cfg prediscoveredCommandConfig, emitCfg output.Emit
 	finishWriteBench := platform.InternalBenchSpan("ui.internal.lines_preview.write_payload",
 		"items", platform.InternalBenchInt(plan.Len()),
 	)
-	err = output.WriteOutputPlanPayloadWithoutPrefetch(cap, emitCfg, plan)
+	err = output.WriteLinesPreview(cap, emitCfg, plan)
 	if errors.Is(err, output.ErrPreviewLimitReached) {
 		err = nil
 	}

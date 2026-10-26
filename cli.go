@@ -227,6 +227,9 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		}
 
 		colors := platform.ActivePalette()
+		if cfg.Headless {
+			colors = platform.Palette{}
+		}
 		started := time.Now()
 		resolved := command.ResolvedFromParsed(cfg)
 		invocationCfg := resolved.Config
@@ -502,7 +505,7 @@ func formatByteCount(totalBytes int64) string {
 	}
 }
 
-func exitWithError(err error, stderr io.Writer) {
+func exitWithError(err error, stderr io.Writer, args []string) {
 	if errors.Is(err, platform.ErrWorkSuperseded) {
 		return
 	}
@@ -510,7 +513,7 @@ func exitWithError(err error, stderr io.Writer) {
 		return
 	}
 	if msg := strings.TrimSpace(err.Error()); msg != "" {
-		fmt.Fprintln(stderr, msg)
+		fmt.Fprintln(stderr, styleErrorMessage(msg, args, platform.ActivePaletteForWriter(stderr)))
 	}
 	os.Exit(exitCodeForError(err))
 }

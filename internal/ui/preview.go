@@ -68,6 +68,9 @@ func RenderPreview(cfg RenderConfig, gitCtx git.Context, plan output.Plan, repor
 		}
 	}
 
+	if err := plan.WriteRefinementNotices(stderr, colors); err != nil {
+		return err
+	}
 	return writeSummary(stdout, report, colors)
 }
 
@@ -80,6 +83,11 @@ func WriteNormalDiagnostics(
 	presentationWriter, diagnosticWriter io.Writer,
 	presentationColors, diagnosticColors platform.Palette,
 ) (bool, error) {
+	if cfg.Quiet {
+		if err := plan.WriteRefinementNotices(diagnosticWriter, diagnosticColors); err != nil {
+			return false, err
+		}
+	}
 	if !cfg.Quiet {
 		if err := writeFilterSummary(diagnosticWriter, gitCtx, diagnosticColors); err != nil {
 			return false, err
@@ -91,6 +99,9 @@ func WriteNormalDiagnostics(
 			if err := printConfiguredPreviewTree(cfg, presentationWriter, plan, report, presentationColors); err != nil {
 				return false, err
 			}
+		}
+		if err := plan.WriteRefinementNotices(diagnosticWriter, diagnosticColors); err != nil {
+			return false, err
 		}
 		if err := writeSummary(presentationWriter, report, presentationColors); err != nil {
 			return false, err

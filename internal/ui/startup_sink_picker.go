@@ -465,7 +465,7 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 	if err != nil {
 		return nil, false, err
 	}
-	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
+	result, err := picker.Run(bin, themedSinkFzfRequest(picker.Request{
 		Prompt:         "output> ",
 		WithNth:        "1,3",
 		Nth:            "1,3",
@@ -478,7 +478,7 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 		NoSort:         true,
 		Exact:          true,
 		Lines:          lines,
-	}))
+	}, ctx.Config.PayloadKind == command.PayloadMetadata))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return nil, true, discovery.ErrSelectionCancelled
 	}
@@ -684,19 +684,38 @@ func renderSinkPreviewWithModeContext(renderCtx context.Context, ctx StartupSink
 }
 
 func renderSinkMetadataPreviewContext(ctx context.Context, report *MetadataReport, limit int64) (sinkPreview, error) {
+	if err := ctx.Err(); err != nil {
+		return sinkPreview{}, err
+	}
 	var buf bytes.Buffer
 	w := output.NewPreviewCapWriter(&buf, ctx, limit)
-	err := WriteMetadataReport(w, report)
+	colors := platform.ANSIPalette()
+	addedBytes, err := WriteMetadataReportWithPalette(w, report, colors)
 	if err != nil && !errors.Is(err, output.ErrPreviewLimitReached) {
 		return sinkPreview{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return sinkPreview{}, err
+	}
 	body := append([]byte(nil), buf.Bytes()...)
+	fullBytes, fullBytesKnown := int64(len(body))-addedBytes, !w.Truncated()
+	if w.Truncated() {
+		// As with the styled tree/report preview, bound presentation bytes.
+		// Never let a cut color sequence leak into the truncation footer.
+		if start := bytes.LastIndexByte(body, '\x1b'); start >= 0 && !bytes.ContainsRune(body[start:], 'm') {
+			body = body[:start]
+		}
+		body = append(body, colors.Reset...)
+		// Startup measures the plain report before rendering the preview. Use
+		// that cached size; colors must not change payload or bundle accounting.
+		fullBytes, fullBytesKnown = report.encodedBytes, report.encodedKnown
+	}
 	return sinkPreview{
 		Mode:           sinkPreviewModeOutputText,
 		Body:           body,
 		Truncated:      w.Truncated(),
-		FullBytesKnown: !w.Truncated(),
-		FullBytes:      int64(len(body)),
+		FullBytesKnown: fullBytesKnown,
+		FullBytes:      fullBytes,
 	}, nil
 }
 
@@ -876,7 +895,11 @@ func renderSinkTreeReportPreviewContext(renderCtx context.Context, ctx StartupSi
 }
 
 func renderSinkTreeReportPreviewToWriter(ctx StartupSinkPickerContext, buf *bytes.Buffer, w *output.PreviewCapWriter) (sinkPreview, error) {
-	err := RenderPreview(ctx.Render, ctx.Git, ctx.Plan, ctx.Report, w, w, platform.ANSIPalette())
+	colors := platform.ANSIPalette()
+	err := ctx.Plan.WriteLineOmissions(w, colors)
+	if err == nil {
+		err = RenderPreview(ctx.Render, ctx.Git, ctx.Plan, ctx.Report, w, w, colors)
+	}
 	if err != nil && !errors.Is(err, output.ErrPreviewLimitReached) {
 		return sinkPreview{}, err
 	}

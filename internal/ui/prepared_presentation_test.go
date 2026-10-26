@@ -112,6 +112,55 @@ func TestPreparedPresentationCappedAndFinalParity(t *testing.T) {
 	}
 }
 
+func TestSinkOmissionReportReusesPreparedTreeForFinalOutput(t *testing.T) {
+	project := setupTestProject(t, map[string]string{"src/short.txt": "a\n", "src/long.txt": "a\nb\nc\nd\n"})
+	t.Chdir(project)
+	defer scopeViewMemoReset()
+	ctx, err := buildStartupSinkPickerContext([]string{"src", "--lines", "3", "3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := renderSinkTreeReportPreview(ctx, output.PreviewByteLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	colors := platform.ANSIPalette()
+	wantPrefix := colors.Warn + "Omitted src/short.txt: requested lines 3-3; file has 1 line." + colors.Reset + "\n\n"
+	if !strings.HasPrefix(string(preview.Body), wantPrefix) {
+		t.Fatalf("tree/report missing spaced warning: %q", preview.Body)
+	}
+	p := ctx.Presentation
+	if p == nil || p.tree == nil {
+		t.Fatal("sink preview did not use prepared tree")
+	}
+	tree := p.tree
+	report, reused := p.ReportForPlan(ctx.Git, ctx.Plan, ctx.Report.Notices)
+	if !reused {
+		t.Fatal("final output could not reuse prepared report")
+	}
+	var final bytes.Buffer
+	if err := ctx.Plan.WriteLineOmissions(&final, colors); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteNormalDiagnostics(ctx.Render.WithPreparedPresentation(p), ctx.Git, ctx.Plan, report,
+		command.EmissionNever, &final, &final, colors, colors); err != nil {
+		t.Fatal(err)
+	}
+	if p.tree != tree {
+		t.Fatal("final output rebuilt prepared tree")
+	}
+	if !bytes.Equal(final.Bytes(), preview.Body) {
+		t.Fatalf("preview/final report mismatch:\npreview=%q\nfinal=%q", preview.Body, final.Bytes())
+	}
+	content, err := renderSinkPreviewWithModeContext(context.Background(), ctx, sinkPreviewModeOutputText, output.PreviewByteLimit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(content.Body, []byte("Omitted")) || bytes.Contains(content.Body, []byte("short.txt")) {
+		t.Fatalf("content preview leaked omission: %q", content.Body)
+	}
+}
+
 func TestPreparedPresentationSuppressedTreeStaysLazy(t *testing.T) {
 	project := setupTestProject(t, map[string]string{"a.go": "package a\n"})
 	plan := testSinkOutputPlan(t, project, "a.go")

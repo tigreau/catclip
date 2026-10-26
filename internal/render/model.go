@@ -26,6 +26,7 @@ const (
 
 // Document is the tree/file preview model rendered by catclip.
 type Document struct {
+	FooterNotices []string
 	Mode          DocumentMode
 	Root          string
 	Target        *DocumentTarget

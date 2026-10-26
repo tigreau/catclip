@@ -85,7 +85,11 @@ func TestPlanAllocationStrategyPreservesScopesAndPayload(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(want, got) {
+		// This oracle predates omission diagnostics; compare the payload plan.
+		// Diagnostic retention/aggregation has its own contract tests.
+		payloadPlan := got
+		payloadPlan.lineOmissions = lineOmissions{}
+		if !reflect.DeepEqual(want, payloadPlan) {
 			t.Fatalf("iteration %d: plan differs from allocation oracle", iteration)
 		}
 		after, err := json.Marshal(inv)

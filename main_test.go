@@ -1254,8 +1254,8 @@ func TestRunLinesOpenEndedRange(t *testing.T) {
 	}
 
 	got := stdout.String()
-	if !strings.Contains(got, `lines="3-"`) {
-		t.Fatalf("expected open-ended lines attribute, got:\n%s", got)
+	if !strings.Contains(got, `lines="3-5"`) {
+		t.Fatalf("expected actual emitted lines attribute, got:\n%s", got)
 	}
 	if !strings.Contains(got, "     3\tc\n") {
 		t.Fatalf("expected line 3, got:\n%s", got)
@@ -1318,8 +1318,11 @@ func TestRunLinesSliceDropsShortFilesFromTreeAndCount(t *testing.T) {
 	}
 
 	tree := stderr.String()
-	if strings.Contains(tree, "short.txt") {
+	if strings.Contains(tree, "short.txt (") {
 		t.Fatalf("short.txt should be absent from the tree (no lines in range 5-10), got:\n%s", tree)
+	}
+	if !strings.Contains(tree, "Omitted short.txt: requested lines 5-10; file has 3 lines.") {
+		t.Fatalf("missing omission diagnostic: %s", tree)
 	}
 	if !strings.Contains(tree, "long.txt") {
 		t.Fatalf("long.txt should be present in the tree, got:\n%s", tree)

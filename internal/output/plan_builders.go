@@ -23,17 +23,47 @@ func BuildPlanForResolvedScopes(
 	scopes []command.ExecutionScope,
 	evaluatedScopes []EvaluatedScope,
 	allEntries []discovery.Entry,
-) (Plan, error) {
+) (plan Plan, err error) {
+	filtered, refinements := beginRefinementMerge(scopes, evaluatedScopes)
+	if refinements != nil {
+		defer func() {
+			if err == nil {
+				refinements.finish(&plan)
+			}
+		}()
+		evaluatedScopes = filtered
+		if refinements.filtered {
+			allEntries = nil
+		}
+	}
 	if ExecutionScopesUsePathsStage(scopes) {
 		return prepareSectionedOutputPlan(gitCtx, evaluatedScopes, ExecutionScopesPreserveEvaluatedOrder(scopes))
 	}
+	if allEntries == nil && len(evaluatedScopes) > 0 {
+		count := 0
+		for _, s := range evaluatedScopes {
+			count += len(s.Entries)
+		}
+		allEntries = make([]discovery.Entry, 0, count)
+		for _, s := range evaluatedScopes {
+			allEntries = append(allEntries, s.Entries...)
+		}
+	}
 	entries := allEntries
+	var omissions lineOmissions
+	if len(evaluatedScopes) == 0 {
+		omissions.noteExplicit(entries)
+	} else {
+		for _, scope := range evaluatedScopes {
+			omissions.noteScopeExplicit(scope)
+		}
+	}
 	if ExecutionScopesPreserveEvaluatedOrder(scopes) {
 		entries = discovery.DedupeEntriesByPathPreserveOrder(entries)
 	} else {
 		entries = discovery.DedupeEntriesByPath(entries)
 	}
-	return PreparePlan(gitCtx, entries)
+	return preparePlan(gitCtx, entries, omissions)
 }
 
 // BuildLinesPreviewPlanForResolvedScopes is the lighter-weight planner
@@ -57,27 +87,24 @@ func BuildLinesPreviewPlanForResolvedScopes(scopes []command.ExecutionScope, all
 func BuildPlanForDiscoveredInvocation(gitCtx git.Context, inv discovery.Discovered) (Plan, error) {
 	evaluatedScopes := make([]EvaluatedScope, 0, len(inv.Scopes))
 	resolvedScopes := make([]command.ExecutionScope, 0, len(inv.Scopes))
-	entryCount := 0
 	for _, scope := range inv.Scopes {
 		resolvedScopes = append(resolvedScopes, scope.Scope)
-		entryCount += len(scope.Entries)
 		// Section preparation copies candidates before sorting/merging; it
 		// only reads these scope slices. Do not make a redundant input copy.
+		explained := false
+		for _, d := range scope.Diagnostics {
+			explained = explained || d.ExplainsEmptyResult || d.IsTargetNotFound || d.IsError || d.IsScopeUnsatisfiable
+		}
 		evaluatedScopes = append(evaluatedScopes, EvaluatedScope{
-			Paths:   scope.Scope.Paths,
-			Entries: scope.Entries,
+			EmptyRefinement: scope.EmptyRefinement,
+			EmptyExplained:  explained,
+			Paths:           scope.Scope.Paths,
+			Entries:         scope.Entries,
+			ResolvedTargets: scope.ResolvedTargets,
 		})
 	}
-	var allEntries []discovery.Entry
-	if !ExecutionScopesUsePathsStage(resolvedScopes) {
-		// Non-sectioned deduplication mutates its slice, so this owned copy
-		// remains required. Sectioned planning never consumes allEntries.
-		allEntries = make([]discovery.Entry, 0, entryCount)
-		for _, scope := range inv.Scopes {
-			allEntries = append(allEntries, scope.Entries...)
-		}
-	}
-	return BuildPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, allEntries)
+	// Flatten once, after empty refinements have suppressed whole bodies.
+	return BuildPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, nil)
 }
 
 // BuildMetadataPlanForDiscoveredInvocation constructs the same deduped,

@@ -208,6 +208,28 @@ func TestMetadataIgnoredCollectorCapsRowsButRetainsExactTotal(t *testing.T) {
 	}
 }
 
+func BenchmarkMetadataIgnoredCollector(b *testing.B) {
+	records := make([]search.IgnoreTraceRecord, 100000)
+	for i := range records {
+		records[i] = search.IgnoreTraceRecord{Path: fmt.Sprintf("pkg/%06d/cache.tmp", i), Source: ".gitignore", Pattern: "*.tmp"}
+		if i%1000 == 0 {
+			records[i].RuleDirectoryOnly = true
+			records[i].Path = fmt.Sprintf("pkg/%06d/node_modules", i)
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		var collector metadataIgnoredCollector
+		for _, record := range records {
+			collector.add(record)
+		}
+		if len(collector.rows) != metadataIgnoredDisplayLimit || collector.total != len(records) {
+			b.Fatal("lost count or cap")
+		}
+	}
+}
+
 func TestMetadataStripWindowsExtendedPath(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

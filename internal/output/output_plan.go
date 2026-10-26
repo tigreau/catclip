@@ -18,8 +18,10 @@ const (
 )
 
 type Plan struct {
-	sections []PlanSection
-	items    []PlanItem
+	refinementNotices []refinementNotice
+	sections          []PlanSection
+	items             []PlanItem
+	lineOmissions     lineOmissions
 }
 
 // SameInstance identifies value copies of one immutable prepared plan. Equal
@@ -49,8 +51,11 @@ type PlanItem struct {
 }
 
 type EvaluatedScope struct {
-	Paths   bool
-	Entries []discovery.Entry
+	EmptyRefinement discovery.EmptyRefinement
+	EmptyExplained  bool
+	Paths           bool
+	Entries         []discovery.Entry
+	ResolvedTargets []discovery.ResolvedTarget
 }
 
 type scopedFileCandidate struct {
@@ -100,11 +105,20 @@ func newPathOutputPlanItem(entry discovery.Entry) PlanItem {
 }
 
 func PreparePlan(gitCtx git.Context, entries []discovery.Entry) (Plan, error) {
-	units, err := PrepareFileUnits(gitCtx, entries)
+	var omissions lineOmissions
+	omissions.noteExplicit(entries)
+	return preparePlan(gitCtx, entries, omissions)
+}
+
+func preparePlan(gitCtx git.Context, entries []discovery.Entry, omissions lineOmissions) (Plan, error) {
+	units, err := prepareFileUnits(gitCtx, entries, &omissions)
 	if err != nil {
 		return Plan{}, err
 	}
-	return BuildPlan(units), nil
+	plan := BuildPlan(units)
+	omissions.explicit = nil // construction-only provenance
+	plan.lineOmissions = omissions
+	return plan, nil
 }
 
 // buildLinesPreviewPlan prepares the file-output items needed by the hovered
@@ -132,14 +146,22 @@ func buildLinesPreviewPlan(entries []discovery.Entry) Plan {
 }
 
 func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, preserveFileOrder bool) (Plan, error) {
-	fileItemsByScope, err := prepareSectionedFileItems(gitCtx, scopes, preserveFileOrder)
+	var omissions lineOmissions
+	for _, scope := range scopes {
+		if !scope.Paths {
+			omissions.noteScopeExplicit(scope)
+		}
+	}
+	fileItemsByScope, err := prepareSectionedFileItems(gitCtx, scopes, preserveFileOrder, &omissions)
 	if err != nil {
 		return Plan{}, err
 	}
 
 	plan := Plan{
-		sections: make([]PlanSection, 0, len(scopes)),
+		sections:      make([]PlanSection, 0, len(scopes)),
+		lineOmissions: omissions,
 	}
+	plan.lineOmissions.explicit = nil
 
 	var currentPathSeen map[string]struct{}
 	for scopeIndex, scope := range scopes {
@@ -197,7 +219,7 @@ func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, pre
 	return plan, nil
 }
 
-func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, preserveOrder bool) (map[int][]PlanItem, error) {
+func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, preserveOrder bool, omissions *lineOmissions) (map[int][]PlanItem, error) {
 	candidateCount := 0
 	for _, scope := range scopes {
 		if !scope.Paths {
@@ -237,7 +259,7 @@ func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, pres
 		}
 	}
 	for _, candidate := range candidates {
-		unit, keep, err := PrepareFileUnit(gitCtx, candidate.entry, snippetMatches)
+		unit, keep, err := prepareFileUnit(gitCtx, candidate.entry, snippetMatches, omissions)
 		if err != nil {
 			return nil, err
 		}

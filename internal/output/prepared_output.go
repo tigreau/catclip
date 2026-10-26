@@ -26,6 +26,10 @@ type PreparedFileUnit struct {
 }
 
 func PrepareFileUnits(gitCtx git.Context, entries []discovery.Entry) ([]PreparedFileUnit, error) {
+	return prepareFileUnits(gitCtx, entries, nil)
+}
+
+func prepareFileUnits(gitCtx git.Context, entries []discovery.Entry, omissions *lineOmissions) ([]PreparedFileUnit, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -37,7 +41,7 @@ func PrepareFileUnits(gitCtx git.Context, entries []discovery.Entry) ([]Prepared
 
 	units := make([]PreparedFileUnit, 0, len(entries))
 	for _, entry := range entries {
-		unit, keep, err := PrepareFileUnit(gitCtx, entry, snippetMatches)
+		unit, keep, err := prepareFileUnit(gitCtx, entry, snippetMatches, omissions)
 		if err != nil {
 			return nil, err
 		}
@@ -110,6 +114,10 @@ func BatchSnippetMatches(entries []discovery.Entry) (SnippetMatchCache, error) {
 }
 
 func PrepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches SnippetMatchCache) (PreparedFileUnit, bool, error) {
+	return prepareFileUnit(gitCtx, entry, snippetMatches, nil)
+}
+
+func prepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches SnippetMatchCache, omissions *lineOmissions) (PreparedFileUnit, bool, error) {
 	unit := PreparedFileUnit{Entry: entry}
 
 	switch entry.Mode {
@@ -157,7 +165,7 @@ func PrepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches S
 		return unit, true, nil
 	default:
 		if entry.Mode == command.EntryModeLines && (entry.LinesStart > 0 || entry.LinesEnd > 0) {
-			bodyBytes, err := slicedLinesBodySize(entry.AbsPath, entry.LinesStart, entry.LinesEnd)
+			bodyBytes, lastLine, err := slicedLinesBodySize(entry.AbsPath, entry.LinesStart, entry.LinesEnd)
 			if err != nil {
 				return PreparedFileUnit{}, false, err
 			}
@@ -169,9 +177,11 @@ func PrepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches S
 				// for this case; dropping here keeps the tree/count in
 				// step with the body. Mirrors the snippet branch above,
 				// which drops units with empty payload.
+				omissions.add(entry, lastLine)
 				return PreparedFileUnit{}, false, nil
 			}
 			unit.BodyBytes = bodyBytes
+			unit.Entry.LinesEnd = lastLine
 			return unit, true, nil
 		}
 		bodyBytes, err := FileBodySize(entry)
@@ -183,10 +193,10 @@ func PrepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches S
 	}
 }
 
-func slicedLinesBodySize(absPath string, start, end int) (int64, error) {
+func slicedLinesBodySize(absPath string, start, end int) (int64, int, error) {
 	f, err := os.Open(absPath)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer f.Close()
 
@@ -199,15 +209,15 @@ func slicedLinesBodySize(absPath string, start, end int) (int64, error) {
 		if start > 0 && lineNum < start {
 			continue
 		}
-		if end > 0 && lineNum > end {
+		total += int64(len(scanner.Bytes())) + 1
+		if end > 0 && lineNum == end {
 			break
 		}
-		total += int64(len(scanner.Bytes())) + 1
 	}
 	if err := scanner.Err(); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return total, nil
+	return total, lineNum, nil
 }
 
 func PrepareNumericSnippetRanges(entry discovery.Entry, matchedLines []int) ([]SnippetRange, int64, error) {

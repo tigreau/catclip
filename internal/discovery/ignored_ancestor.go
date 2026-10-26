@@ -171,7 +171,9 @@ func (r *Resolver) findBlockerForPath(rel string, isDir bool) *ignoredAncestorCa
 	var initial *BlockInfo
 	var err error
 	if isDir {
-		initial, err = r.dirBlockedBy(rel)
+		// Directory candidates were derived from a file below them in rg's
+		// inventory; file candidates likewise prove all their parents nonempty.
+		initial, err = r.dirBlockedByWithDescendant(rel, true)
 	} else {
 		initial, err = r.fileBlockedBy(rel)
 	}
@@ -187,7 +189,7 @@ func (r *Resolver) findBlockerForPath(rel string, isDir bool) *ignoredAncestorCa
 		if parent == "" || parent == "." || parent == "/" {
 			break
 		}
-		block, parentErr := r.dirBlockedBy(parent)
+		block, parentErr := r.dirBlockedByWithDescendant(parent, true)
 		if parentErr != nil || block == nil || block.Source == "" {
 			break
 		}

@@ -33,7 +33,7 @@ func DiscoverInvocation(inv command.Resolved, gitCtx git.Context, stderr io.Writ
 	}
 	for i, scope := range inv.Scopes {
 		started := time.Now()
-		discovered, err := EvaluateScope(inv.Config, gitCtx, i, scope, stderr, colors)
+		discovered, err := EvaluateScope(inv.Config, gitCtx, i, scope, stderr, colors, len(inv.Scopes) > 1)
 		if err != nil {
 			return Result{}, err
 		}

@@ -55,19 +55,19 @@ func newExitError(code int, message string) error {
 func Main() {
 	args, contextErr := picker.NormalizeCommandArgs(os.Args[1:])
 	if contextErr != nil {
-		exitWithError(contextErr, os.Stderr)
+		exitWithError(contextErr, os.Stderr, os.Args[1:])
 		return
 	}
 	// Only descendants carrying a private live picker owner opt in. Establish
 	// their lifetime before tool checks or any other operation can spawn work.
 	// This is inert for ordinary invocations and on Unix.
 	if err := platform.BeginInternalWork(); err != nil {
-		exitWithError(err, os.Stderr)
+		exitWithError(err, os.Stderr, args)
 		return
 	}
 	commandKind := internalBenchCommandKind(args)
 	if err := platform.ClaimInternalWork(commandKind); err != nil {
-		exitWithError(err, os.Stderr)
+		exitWithError(err, os.Stderr, args)
 		return
 	}
 	// Opt-in diagnostic timeline for interactive Windows slowness. fzf spawns
@@ -98,7 +98,7 @@ func Main() {
 	finishGateBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "linux_session_gate")
 	if err := linuxSessionGateError(); err != nil {
 		finishGateBench("err", platform.InternalBenchError(err))
-		exitWithError(err, os.Stderr)
+		exitWithError(err, os.Stderr, args)
 		return
 	}
 	finishGateBench("err", "false")
@@ -120,7 +120,7 @@ func Main() {
 	normResult, err := normalizePositionalGlobArgs(args)
 	finishNormalizeBench("err", platform.InternalBenchError(err))
 	if err != nil {
-		exitWithError(err, os.Stderr)
+		exitWithError(err, os.Stderr, args)
 		return
 	}
 	args = normResult.Args
@@ -133,7 +133,7 @@ func Main() {
 		"handled", fmt.Sprint(handled),
 	)
 	if err != nil {
-		exitWithError(err, os.Stderr)
+		exitWithError(err, os.Stderr, args)
 		return
 	} else if handled {
 		if startupResult.Args == nil {
@@ -146,12 +146,12 @@ func Main() {
 	cfg, err := cli.ParseArgs(args)
 	finishParseBench("err", platform.InternalBenchError(err))
 	if err != nil {
-		exitWithError(err, os.Stderr)
+		exitWithError(err, os.Stderr, args)
 		return
 	}
 	if shouldWriteResolvedStartupCommand(startupResult, cfg.Quiet) {
 		if err := writeResolvedStartupCommand(os.Stderr, args); err != nil {
-			exitWithError(err, os.Stderr)
+			exitWithError(err, os.Stderr, args)
 			return
 		}
 	}
@@ -159,7 +159,7 @@ func Main() {
 	finishRunBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "run")
 	if err := run(cfg, os.Stdout, os.Stderr, startupResult.PreparedOutput); err != nil {
 		finishRunBench("err", platform.InternalBenchError(err))
-		exitWithError(err, os.Stderr)
+		exitWithError(err, os.Stderr, args)
 		return
 	}
 	finishRunBench("err", "false")

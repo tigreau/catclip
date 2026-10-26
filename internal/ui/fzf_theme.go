@@ -23,6 +23,29 @@ func themedFzfRequest(req picker.Request) picker.Request {
 	return req
 }
 
+func themedSinkFzfRequest(req picker.Request, metadata bool) picker.Request {
+	req = themedFzfRequest(req)
+	if metadata {
+		req.ColorSpecs = metadataPreviewColorSpecs(req.ColorSpecs)
+	}
+	return req
+}
+
+func metadataPreviewColorSpecs(specs []string) []string {
+	// Metadata uses terminal-style text, not the source preview's dark syntax
+	// theme. ANSI reset should land on the terminal's default foreground and
+	// background, just as it does for --metadata --print.
+	for i, spec := range specs {
+		switch spec {
+		case "preview-bg:" + fzfANSIColorPreviewBg:
+			specs[i] = "preview-bg:-1"
+		case "preview-fg:" + fzfANSIColorValue:
+			specs[i] = "preview-fg:-1"
+		}
+	}
+	return specs
+}
+
 func fzfColorSpecs(palette platform.Palette, hasPreview bool) []string {
 	if palette == (platform.Palette{}) {
 		return nil

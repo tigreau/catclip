@@ -44,6 +44,10 @@ type positionalGlobScopeNormalization struct {
 }
 
 func normalizePositionalGlobArgs(args []string) (positionalGlobNormalizationResult, error) {
+	return normalizePositionalGlobArgsWithLookup(args, lookupIgnoredDotfiles)
+}
+
+func normalizePositionalGlobArgsWithLookup(args []string, lookup func(string) []string) (positionalGlobNormalizationResult, error) {
 	scopes := splitPositionalGlobScopes(args)
 	if len(scopes) == 0 {
 		return positionalGlobNormalizationResult{Args: append([]string(nil), args...)}, nil
@@ -69,8 +73,10 @@ func normalizePositionalGlobArgs(args []string) (positionalGlobNormalizationResu
 			onlyCommand := joinPositionalGlobCommand(normalizedScopes, [][]string{norm.rewritten}, suffix)
 			targetsCommand := joinPositionalGlobCommand(normalizedScopes, [][]string{norm.rewrittenAsTargets}, suffix)
 			noun := "pattern"
+			hint := ""
 			if norm.fixItKind == positionalGlobBareExt {
 				noun = "bare extension"
+				hint = positionalDotfileHint(norm.fixItRaw, lookup(norm.fixItRaw), scope, normalizedScopes, suffix)
 			}
 			// When the scope had real targets typed alongside the pattern,
 			// the --only form and the targets-list form mean different
@@ -81,20 +87,22 @@ func normalizePositionalGlobArgs(args []string) (positionalGlobNormalizationResu
 			// equivalent and we show just the shorter glob-as-target form.
 			if reflect.DeepEqual(onlyCommand, targetsCommand) {
 				return positionalGlobNormalizationResult{}, newUsageError(
-					"Error: %s is a %s, not a target.\n  Use it as a glob target:\n    %s",
+					"Error: %s is a %s, not a target.\n  Use it as a glob target:\n    %s%s",
 					discovery.SingleQuoted(norm.fixItRaw),
 					noun,
 					cli.FormatResolvedStartupCommand(targetsCommand),
+					hint,
 				)
 			}
 			return positionalGlobNormalizationResult{}, newUsageError(
-				"Error: %s is a %s, not a target.\n  To filter the existing targets to %s:\n    %s\n  To also include %s files anywhere in the project:\n    %s",
+				"Error: %s is a %s, not a target.\n  To filter the existing targets to %s:\n    %s\n  To also include %s files anywhere in the project:\n    %s%s",
 				discovery.SingleQuoted(norm.fixItRaw),
 				noun,
 				norm.fixItRaw,
 				cli.FormatResolvedStartupCommand(onlyCommand),
 				norm.fixItRaw,
 				cli.FormatResolvedStartupCommand(targetsCommand),
+				hint,
 			)
 		}
 
