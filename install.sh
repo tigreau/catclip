@@ -501,7 +501,10 @@ warn_existing_target_install "$BIN_DIR/$PROGRAM_NAME"
 
 TMP_ROOT="$(mktemp -d)"
 
-if SOURCE_DIR="$(find_local_source_dir)"; then
+# Bash 3.2 can fire an inherited ERR trap for this probe's expected "no checkout"
+# result. Disable the trap only in the probe's subshell; real install errors
+# must still reach the parent's error handler.
+if SOURCE_DIR="$(trap - ERR; find_local_source_dir)"; then
   INSTALL_METHOD='source'
   need_go_for_source_build "$SOURCE_DIR"
 

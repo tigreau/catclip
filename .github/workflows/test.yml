@@ -26,6 +26,11 @@ jobs:
         if: runner.os == 'Linux'
         run: make workflow-check
 
+      - name: Installer smoke tests
+        if: runner.os != 'Windows'
+        shell: bash
+        run: /bin/bash scripts/test-install.sh
+
       - name: Install bundled tools (rg, fzf)
         shell: bash
         run: |
