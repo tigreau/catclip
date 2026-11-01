@@ -1186,8 +1186,8 @@ if [ "$prompt" = "extras> " ]; then
 		echo "extras picker should not offer --no-bundle; output picker owns it" >&2
 		exit 91
 	}
-	printf '%%s\n' "$input" | grep -F -- "--metadata" >/dev/null || {
-		echo "extras picker should offer --metadata" >&2
+	printf '%%s\n' "$input" | grep -F -- "--metadata" >/dev/null && {
+		echo "extras picker should not offer --metadata; the scope modifier menu owns it" >&2
 		exit 91
 	}
 	printf '%%s\n' "$input" | grep -F $'\traw' | head -n 1

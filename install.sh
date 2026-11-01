@@ -178,7 +178,7 @@ ensure_source_rg_is_compatible() {
   if ! "$rg_bin" --files --hidden -0 "$source_dir" >/dev/null 2>&1; then
     die "Your local ripgrep is too old for catclip source installs.
   catclip's current file discovery requires an rg build that supports --files with -0 output.
-  Upgrade ripgrep to >= v14.1.1, or use the published release installer instead of building from source."
+  Upgrade ripgrep to >= v15.2.0, or use the published release installer instead of building from source."
   fi
 
   tmp_file="$(mktemp)"
@@ -187,7 +187,7 @@ ensure_source_rg_is_compatible() {
     rm -f "$tmp_file"
     die "Your local ripgrep is too old for catclip source installs.
   catclip's current content filtering requires an rg build that supports --files-with-matches with -0 output.
-  Upgrade ripgrep to >= v14.1.1, or use the published release installer instead of building from source."
+  Upgrade ripgrep to >= v15.2.0, or use the published release installer instead of building from source."
   fi
 
   if ! "$rg_bin" --pcre2 -e 'a' /dev/null >/dev/null 2>&1; then
@@ -196,7 +196,7 @@ ensure_source_rg_is_compatible() {
       rm -f "$tmp_file"
       die "Your local ripgrep is too old for catclip source installs.
   catclip requires a ripgrep build with PCRE2 support.
-  Upgrade ripgrep to >= v14.1.1, or use the published release installer instead of building from source."
+  Upgrade ripgrep to >= v15.2.0, or use the published release installer instead of building from source."
     fi
   fi
 
