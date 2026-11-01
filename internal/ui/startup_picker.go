@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,6 +23,7 @@ const (
 	startupModifierModeFlags       startupModifierMode = "flags"
 	startupModifierModeFinish      startupModifierMode = "finish"
 	startupModifierModeExtras      startupModifierMode = "extras"
+	startupModifierModeInclusion   startupModifierMode = "inclusion"
 	startupModifierModeThen        startupModifierMode = "then"
 	startupModifierModeOnly        startupModifierMode = "only"
 	startupModifierModeExclude     startupModifierMode = "exclude"
@@ -85,9 +87,18 @@ type StartupPickerResult struct {
 	UsedFzf              bool
 	PreparedOutput       *StartupPreparedOutputState
 	ForceResolvedCommand bool
+	InitialGit           *StartupGitContext
+}
+
+// StartupGitContext is observation-only: a direct startup probe can hand its
+// context to execution without pretending to have prepared output/membership.
+type StartupGitContext struct {
+	WorkingDir string
+	Context    git.Context
 }
 
 type startupCurrentScopeState struct {
+	AllBinary      bool
 	Known          bool
 	Empty          bool
 	GitKnown       bool
@@ -148,7 +159,9 @@ func maybeResolveStartupInteractiveArgs(args []string, includeSink bool) (Startu
 		return StartupPickerResult{}, true, err
 	}
 	if direct {
-		return StartupPickerResult{}, false, nil
+		return StartupPickerResult{InitialGit: &StartupGitContext{
+			WorkingDir: resolver.Cfg.WorkingDir, Context: resolver.GitCtx,
+		}}, false, nil
 	}
 	finishPreviewSession := beginPreviewFrameSession()
 	defer finishPreviewSession()
@@ -197,15 +210,13 @@ func newStartupPickerResolverForArgs(args []string) (*discovery.Resolver, error)
 	if err != nil {
 		return nil, err
 	}
-	for _, arg := range args {
-		if arg != "--with-binaries" {
-			continue
-		}
-		resolver.WithBinaries = true
-		resolver.Cfg.WithBinaries = true
-		break
-	}
 	return resolver, nil
+}
+
+// Inclusion remains in its original scope; target frames read it ahead before
+// discovery and seal it together with the confirmed targets.
+func startupBinaryPolicyArgs(args []string) (globals, pending []string) {
+	return nil, cloneStringSlice(args)
 }
 
 func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (bool, error) {
@@ -222,6 +233,10 @@ func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (
 	if err != nil {
 		return false, nil
 	}
+	if !cfg.Quiet && !cfg.Headless {
+		stop := platform.StartFileScanProgress(os.Stderr, resolver.Cfg.WorkingDir, search.ObserveClassificationProgress)
+		defer stop()
+	}
 	// Probe every target once before resolving modifier values. Missing targets
 	// bypass startup pickers immediately because no modifier can make an absent
 	// path selectable. Ambiguous targets retain the mixed
@@ -237,7 +252,7 @@ func startupCommandCanRunDirectly(resolver *discovery.Resolver, args []string) (
 			ScopeKnown: true,
 		}
 		scopeTargets := scopeSpec.Targets()
-		scopeResolverCopy.NoIgnore = scopeSpec.NoIgnore()
+		scopeResolverCopy.SetFileInclusion(scopeSpec.NoIgnore(), command.ExecutionScopeFromScopeSpec(scopeSpec).WithBinaries)
 		for _, target := range scopeTargets {
 			probe, err := scopeResolverCopy.ProbeStartupTarget(target)
 			if err != nil {
@@ -305,7 +320,7 @@ func startupHasUnresolvedScope(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
 			continue
 		case "--then":
 			if !scopeHasExplicitTarget {
@@ -339,7 +354,7 @@ func startupHasUnresolvedScope(args []string) bool {
 				}
 			}
 			continue
-		case "--no-ignore", "--paths", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
+		case "--no-ignore", "--paths", "--metadata", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
 			if !scopeHasExplicitTarget {
 				return true
 			}
@@ -442,7 +457,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 				i++
 			}
 			continue
-		case "--no-ignore", "--paths":
+		case "--no-ignore", "--paths", "--metadata":
 			continue
 		case "--lines":
 			for i+1 < len(args) {
@@ -463,7 +478,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 		case "--then":
 			continue
 		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-			"--no-bundle", "--metadata", "--with-binaries", "--changed", "--staged", "--unstaged", "--untracked",
+			"--no-bundle", "--with-binaries", "-b", "--changed", "--staged", "--unstaged", "--untracked",
 			"--changed-diff", "--staged-diff", "--unstaged-diff", "--", "--diff":
 			continue
 		}
@@ -517,8 +532,8 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 		seenModifier = true
 		switch tokens[i] {
 		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-			"--no-bundle", "--metadata", "--with-binaries", "--changed", "--staged", "--unstaged", "--untracked",
-			"--changed-diff", "--staged-diff", "--unstaged-diff", "--paths":
+			"--no-bundle", "--with-binaries", "-b", "--changed", "--staged", "--unstaged", "--untracked",
+			"--changed-diff", "--staged-diff", "--unstaged-diff", "--paths", "--metadata":
 			parsed.modifiers = append(parsed.modifiers, tokens[i])
 		case "--lines":
 			parsed.modifiers = append(parsed.modifiers, tokens[i])
@@ -826,7 +841,7 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 		}
 
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
 			finalArgs = append(finalArgs, arg)
 			i++
 		case "--then":
@@ -917,7 +932,7 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 			i += 1 + consumed
 			modifierMode = true
 			hadScopeInput = true
-		case "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff":
+		case "--metadata", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff":
 			argsAfterStage, newScopeTargets, stageUsedFzf, consumed, err := resolveStartupModifierStage(resolver, finalArgs, currentScopeTargets, currentScopeExplicitTargets, []string{arg}, args[i+1:], false)
 			if err != nil {
 				return nil, nil, false, err
@@ -981,7 +996,7 @@ func startupLeadingModifierNeedsInitialScope(arg string) bool {
 	switch arg {
 	case "--then":
 		return false
-	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
+	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
 		return true
 	case "--", "--no-ignore", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths",
 		"--changed", "--staged", "--unstaged", "--untracked",
@@ -1051,10 +1066,15 @@ func chooseStartupModifierWithProgress(currentArgs []string, escHint string, fil
 		if err != nil {
 			return StartupModifierChoice{}, err
 		}
-		if choice.Mode != startupModifierModeExtras {
+		if choice.Mode != startupModifierModeExtras && choice.Mode != startupModifierModeInclusion {
 			return choice, nil
 		}
-		args, err := chooseStartupExtrasWithEscHint(escHint)
+		var args []string
+		if choice.Mode == startupModifierModeInclusion {
+			args, err = chooseStartupInclusion(currentArgs, escHint)
+		} else {
+			args, err = chooseStartupExtrasWithEscHint(escHint, currentArgs)
+		}
 		if errors.Is(err, discovery.ErrSelectionCancelled) {
 			// extras> is a submenu. Esc returns to filter>; Esc from filter>
 			// itself still exits/undoes through the normal frame handling.
@@ -1062,6 +1082,10 @@ func chooseStartupModifierWithProgress(currentArgs []string, escHint string, fil
 		}
 		if err != nil {
 			return StartupModifierChoice{}, err
+		}
+		if choice.Mode == startupModifierModeInclusion {
+			choice.Args = args
+			return choice, nil
 		}
 		return StartupModifierChoice{
 			Key:         "extras-selected",
@@ -1089,7 +1113,7 @@ func chooseStartupModifierChoiceWithProgress(currentArgs []string, escHint strin
 	if len(lines) == 0 {
 		if state.Known && state.Empty {
 			finishBench("err", "false", "no_files", "true")
-			return StartupModifierChoice{}, startupNoFilesMatchedError(state.Scopes)
+			return StartupModifierChoice{}, startupNoFilesMatchedError(state.Scopes, view.Discovered.Diagnostics...)
 		}
 		finishBench("err", "false", "no_choices", "true")
 		return StartupModifierChoice{}, discovery.ErrSelectionCancelled
@@ -1150,8 +1174,16 @@ func chooseStartupModifierChoiceWithProgress(currentArgs []string, escHint strin
 	return choice, nil
 }
 
-func chooseStartupExtrasWithEscHint(escHint string) ([]string, error) {
-	lines, index := startupModifierChoiceLines(startupExtrasChoices)
+func chooseStartupExtrasWithEscHint(escHint string, currentArgs ...[]string) ([]string, error) {
+	choices := startupExtrasChoices
+	if len(currentArgs) > 0 {
+		choices = startupAvailableExtras(currentArgs[0])
+	}
+	return chooseStartupMultipleOptions(choices, "extras> ", startupExtrasPickerHeaderWithEscHint(escHint))
+}
+
+func chooseStartupMultipleOptions(choices []StartupModifierChoice, prompt, header string) ([]string, error) {
+	lines, index := startupModifierChoiceLines(choices)
 	if len(lines) == 0 {
 		return nil, discovery.ErrSelectionCancelled
 	}
@@ -1160,10 +1192,10 @@ func chooseStartupExtrasWithEscHint(escHint string) ([]string, error) {
 		return nil, err
 	}
 	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
-		Prompt:   "extras> ",
+		Prompt:   prompt,
 		WithNth:  "1,3",
 		Nth:      "1",
-		Header:   startupExtrasPickerHeaderWithEscHint(escHint),
+		Header:   header,
 		Multi:    true,
 		Bindings: discovery.MultiSelectPickerBindings(),
 		NoSort:   true,
@@ -1252,6 +1284,13 @@ func startupCurrentScopeStateForArgs(currentArgs []string) (startupCurrentScopeS
 		Empty:          len(view.Entries) == 0,
 		Scopes:         append([]command.ExecutionScope(nil), view.Scopes...),
 		ProgressExtras: view.Progress,
+	}
+	state.AllBinary = len(view.Entries) > 0
+	for _, entry := range view.Entries {
+		if !entry.HasBinaryHint() {
+			state.AllBinary = false
+			break
+		}
 	}
 	if state.Empty || !view.GitContext.Enabled {
 		return state, view, nil
@@ -1353,8 +1392,23 @@ func startupAnyAllForCurrentScope(total int, set map[string]struct{}) (bool, boo
 	return true, len(set) == total
 }
 
-func startupNoFilesMatchedError(scopes []command.ExecutionScope) error {
+func startupNoFilesMatchedError(scopes []command.ExecutionScope, diagnostics ...discovery.Diagnostic) error {
 	var b strings.Builder
+	code := 1
+	for _, diagnostic := range diagnostics {
+		if diagnostic.ExplainsEmptyResult {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(diagnostic.Message)
+			if diagnostic.IsScopeUnsatisfiable {
+				code = 2
+			}
+		}
+	}
+	if b.Len() > 0 {
+		return newExitError(code, strings.TrimRight(b.String(), "\n"))
+	}
 	if err := discovery.WriteNoFilesMatchedMessage(scopes, &b, platform.ActivePalette(), false); err != nil {
 		return err
 	}

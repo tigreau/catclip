@@ -31,6 +31,11 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 	}
 
 	validateScopeSemantics := func() error {
+		if current.WithBinaries {
+			if err := validateWithBinariesCompatibility(current.ExecutionScope); err != nil {
+				return err
+			}
+		}
 		switch stageState.outputModeKind {
 		case command.StageSnippet:
 			if current.SnippetPattern == "" {
@@ -77,13 +82,32 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		switch arg {
 		case "-h", "--help", "--help-all", "--version", "-V", "--check-update", "--hiss", "--hiss-reset", "--all-ignore-rules":
 			continue
-		case "-v", "--verbose", "-t", "--no-tree", "--no-bundle", "--with-binaries":
+		case "-v", "--verbose", "-t", "--no-tree", "--no-bundle":
+			continue
+		case "-b", "--with-binaries":
+			inModifierMode = true
+			if err := stageState.apply(command.StageWithBinaries); err != nil {
+				return command.Spec{}, err
+			}
+			current.WithBinaries = true
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageWithBinaries})
+			if i+1 < len(args) && !IsModifierBoundaryToken(args[i+1]) {
+				return command.Spec{}, NoValueModifierError(arg)
+			}
 			continue
 		case "-r", "--raw":
 			emissionCfg.Raw = true
 			continue
 		case "--metadata":
-			emissionCfg.PayloadKind = command.PayloadMetadata
+			inModifierMode = true
+			if err := stageState.apply(command.StageMetadata); err != nil {
+				return command.Spec{}, err
+			}
+			current.Metadata = true
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageMetadata})
+			if i+1 < len(args) && !IsModifierBoundaryToken(args[i+1]) {
+				return command.Spec{}, NoValueModifierError(arg)
+			}
 			continue
 		case "-q", "--quiet":
 			emissionCfg.Quiet = true

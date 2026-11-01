@@ -137,6 +137,12 @@ func writeFreshTargetTreeDocument(ctx context.Context, w io.Writer, doc treeDocu
 }
 
 func buildFreshTargetTreeDocument(cfg RenderConfig, entries []discovery.Entry, sizes map[string]int64, statuses map[string]string) treeDocument {
+	if cfg.TreeKind == TreeTargetKindFile && len(entries) == 1 {
+		entry := entries[0]
+		if entry.HasBinaryHint() {
+			return buildBinaryFilePreview(entry.RelPath, entry.SizeBytes)
+		}
+	}
 	doc := treeDocument{
 		Mode:    treeDocumentModeTree,
 		Target:  buildTreeDocumentTargetForEntries(cfg, entries),
@@ -145,6 +151,7 @@ func buildFreshTargetTreeDocument(cfg RenderConfig, entries []discovery.Entry, s
 	for index := range entries {
 		entry := &entries[index]
 		doc.Entries = append(doc.Entries, treeDocumentEntry{
+			Binary:         entry.HasBinaryHint(),
 			Path:           entry.RelPath,
 			Size:           &entry.SizeBytes,
 			GitStatus:      statuses[entry.RelPath],

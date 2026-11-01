@@ -13,15 +13,17 @@ import (
 type SectionKind string
 
 const (
-	SectionKindFiles SectionKind = "files"
-	SectionKindPaths SectionKind = "paths"
+	SectionKindFiles    SectionKind = "files"
+	SectionKindPaths    SectionKind = "paths"
+	SectionKindMetadata SectionKind = "metadata"
 )
 
 type Plan struct {
-	refinementNotices []refinementNotice
-	sections          []PlanSection
-	items             []PlanItem
-	lineOmissions     lineOmissions
+	representedRequests map[outputRequest]bool
+	refinementNotices   []refinementNotice
+	sections            []PlanSection
+	items               []PlanItem
+	lineOmissions       lineOmissions
 }
 
 // SameInstance identifies value copies of one immutable prepared plan. Equal
@@ -34,8 +36,11 @@ func (p Plan) SameInstance(other Plan) bool {
 }
 
 type PlanSection struct {
-	kind  SectionKind
-	items []PlanItem
+	scopeIndices  []int
+	metadata      MetadataPayload
+	metadataBytes int64
+	kind          SectionKind
+	items         []PlanItem
 }
 
 type PlanItem struct {
@@ -54,6 +59,7 @@ type EvaluatedScope struct {
 	EmptyRefinement discovery.EmptyRefinement
 	EmptyExplained  bool
 	Paths           bool
+	Metadata        bool
 	Entries         []discovery.Entry
 	ResolvedTargets []discovery.ResolvedTarget
 }
@@ -110,8 +116,8 @@ func PreparePlan(gitCtx git.Context, entries []discovery.Entry) (Plan, error) {
 	return preparePlan(gitCtx, entries, omissions)
 }
 
-func preparePlan(gitCtx git.Context, entries []discovery.Entry, omissions lineOmissions) (Plan, error) {
-	units, err := prepareFileUnits(gitCtx, entries, &omissions)
+func preparePlan(gitCtx git.Context, entries []discovery.Entry, omissions lineOmissions, raw ...bool) (Plan, error) {
+	units, err := prepareFileUnits(gitCtx, entries, &omissions, raw...)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -145,26 +151,59 @@ func buildLinesPreviewPlan(entries []discovery.Entry) Plan {
 	return plan
 }
 
-func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, preserveFileOrder bool) (Plan, error) {
+func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, preserveFileOrder bool, raw ...bool) (Plan, error) {
 	var omissions lineOmissions
 	for _, scope := range scopes {
-		if !scope.Paths {
+		if !scope.Paths && !scope.Metadata {
 			omissions.noteScopeExplicit(scope)
 		}
 	}
-	fileItemsByScope, err := prepareSectionedFileItems(gitCtx, scopes, preserveFileOrder, &omissions)
+	var fileItemsByScope map[int][]PlanItem
+	var represented map[outputRequest]bool
+	var err error
+	if needsRequestMerge(scopes) {
+		var prepared []scopedPreparedUnit
+		prepared, represented, err = prepareMergedFileItems(gitCtx, scopes, preserveFileOrder, &omissions, raw...)
+		fileItemsByScope = make(map[int][]PlanItem, len(scopes))
+		for _, item := range prepared {
+			fileItemsByScope[item.scopeIndex] = append(fileItemsByScope[item.scopeIndex], newFileOutputPlanItem(item.unit))
+		}
+	} else {
+		fileItemsByScope, err = prepareSectionedFileItems(gitCtx, scopes, preserveFileOrder, &omissions, raw...)
+	}
 	if err != nil {
 		return Plan{}, err
 	}
 
 	plan := Plan{
-		sections:      make([]PlanSection, 0, len(scopes)),
-		lineOmissions: omissions,
+		representedRequests: represented,
+		sections:            make([]PlanSection, 0, len(scopes)),
+		lineOmissions:       omissions,
 	}
 	plan.lineOmissions.explicit = nil
 
 	var currentPathSeen map[string]struct{}
+	var metadataSeen map[string]bool
 	for scopeIndex, scope := range scopes {
+		if scope.Metadata {
+			if len(scope.Entries) == 0 {
+				continue
+			}
+			if len(plan.sections) == 0 || plan.sections[len(plan.sections)-1].kind != SectionKindMetadata {
+				plan.sections = append(plan.sections, PlanSection{kind: SectionKindMetadata})
+				metadataSeen = make(map[string]bool, len(scope.Entries))
+			}
+			section := &plan.sections[len(plan.sections)-1]
+			section.scopeIndices = append(section.scopeIndices, scopeIndex)
+			for _, entry := range scope.Entries {
+				if metadataSeen[entry.RelPath] {
+					continue
+				}
+				metadataSeen[entry.RelPath] = true
+				section.items = append(section.items, PlanItem{kind: SectionKindMetadata, entry: entry, relPath: entry.RelPath})
+			}
+			continue
+		}
 		if scope.Paths {
 			if len(scope.Entries) == 0 {
 				continue
@@ -219,16 +258,16 @@ func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, pre
 	return plan, nil
 }
 
-func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, preserveOrder bool, omissions *lineOmissions) (map[int][]PlanItem, error) {
+func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, preserveOrder bool, omissions *lineOmissions, raw ...bool) (map[int][]PlanItem, error) {
 	candidateCount := 0
 	for _, scope := range scopes {
-		if !scope.Paths {
+		if !scope.Paths && !scope.Metadata {
 			candidateCount += len(scope.Entries)
 		}
 	}
 	candidates := make([]scopedFileCandidate, 0, candidateCount)
 	for scopeIndex, scope := range scopes {
-		if scope.Paths {
+		if scope.Paths || scope.Metadata {
 			continue
 		}
 		for _, entry := range scope.Entries {
@@ -248,6 +287,10 @@ func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, pres
 	if err != nil {
 		return nil, err
 	}
+	diffs, err := prepareDiffCache(gitCtx, entries)
+	if err != nil {
+		return nil, err
+	}
 	itemsByScope := make(map[int][]PlanItem, len(scopes))
 	counts := make([]int, len(scopes))
 	for _, candidate := range candidates {
@@ -259,7 +302,7 @@ func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, pres
 		}
 	}
 	for _, candidate := range candidates {
-		unit, keep, err := prepareFileUnit(gitCtx, candidate.entry, snippetMatches, omissions)
+		unit, keep, err := prepareFileUnitForOutput(gitCtx, candidate.entry, snippetMatches, omissions, rawPreparation(raw), diffs)
 		if err != nil {
 			return nil, err
 		}
@@ -428,12 +471,12 @@ func (p Plan) DistinctRelPaths() []string {
 func (p Plan) SummaryCountWord() (int, string) {
 	count := len(p.DistinctRelPaths())
 	switch {
-	case p.HasPaths() && !p.HasFiles():
+	case p.HasPaths() && !p.HasFiles() && !p.HasMetadata():
 		if count == 1 {
 			return count, "path"
 		}
 		return count, "paths"
-	case !p.HasPaths() && p.HasFiles():
+	case !p.HasPaths() && (p.HasFiles() || p.HasMetadata()):
 		if count == 1 {
 			return count, "file"
 		}
@@ -452,34 +495,70 @@ type previewLinesRange struct {
 }
 
 func (p Plan) PreviewModeTags(statuses map[string]string) map[string]string {
+	// Ordinary full files have no mode tags, even when several scopes select
+	// them. Avoid building the larger combined-mode map for every such path.
+	// Inspect every item: a later excerpt, metadata section or untracked
+	// fallback still needs the complete aggregation below.
+	plainFiles := true
+	for _, item := range p.items {
+		if item.kind != SectionKindFiles ||
+			(item.mode != "" && item.mode != command.EntryModeFull) ||
+			item.unit.sourceType == "untracked" {
+			plainFiles = false
+			break
+		}
+	}
+	if plainFiles {
+		return map[string]string{}
+	}
+
 	type presence struct {
-		hasPath       bool
-		hasFile       bool
-		mode          command.EntryMode
-		linesRanges   []previewLinesRange
-		snippetRanges []SnippetRange
+		hasMetadata                              bool
+		hasPath                                  bool
+		hasFile                                  bool
+		mode                                     command.EntryMode
+		linesRanges                              []previewLinesRange
+		snippetRanges                            []SnippetRange
+		hasSnippet, hasLines, hasDiff, untracked bool
+		diffKinds                                []string
 	}
 
 	seen := make(map[string]presence)
 	for _, item := range p.items {
 		state := seen[item.relPath]
 		switch item.kind {
+		case SectionKindMetadata:
+			state.hasMetadata = true
 		case SectionKindPaths:
 			state.hasPath = true
 		case SectionKindFiles:
 			state.hasFile = true
+			state.untracked = state.untracked || item.unit.sourceType == "untracked"
 			mode := item.mode
 			if mode == command.EntryModeDiff && statuses[item.relPath] == "?" {
 				mode = command.EntryModeFull
 			}
 			if mode == command.EntryModeLines {
+				state.hasLines = true
 				state.linesRanges = append(state.linesRanges, previewLinesRange{
 					start: item.linesStart,
 					end:   item.linesEnd,
 				})
 			}
 			if mode == command.EntryModeSnippet {
+				state.hasSnippet = true
 				state.snippetRanges = append(state.snippetRanges, item.snippetRanges...)
+			}
+			if mode == command.EntryModeDiff {
+				state.hasDiff = true
+				kind := diffOutputType(item.entry)
+				found := false
+				for _, old := range state.diffKinds {
+					found = found || old == kind
+				}
+				if !found {
+					state.diffKinds = append(state.diffKinds, kind)
+				}
 			}
 			if discovery.EntryModePriority(mode) >= discovery.EntryModePriority(state.mode) {
 				state.mode = mode
@@ -490,15 +569,26 @@ func (p Plan) PreviewModeTags(statuses map[string]string) map[string]string {
 
 	tags := make(map[string]string)
 	for relPath, state := range seen {
-		modeTag := ""
-		switch state.mode {
-		case command.EntryModeSnippet:
-			modeTag = snippetTagFromRanges(state.snippetRanges)
-		case command.EntryModeDiff:
-			modeTag = "diff"
-		case command.EntryModeLines:
-			modeTag = linesTagFromRanges(state.linesRanges)
+		var parts []string
+		if state.untracked {
+			parts = append(parts, "untracked")
 		}
+		if state.hasDiff {
+			if len(state.diffKinds) > 1 {
+				for _, kind := range state.diffKinds {
+					parts = append(parts, strings.ReplaceAll(kind, "-", " "))
+				}
+			} else {
+				parts = append(parts, "diff")
+			}
+		}
+		if state.hasSnippet {
+			parts = append(parts, snippetTagFromRanges(state.snippetRanges))
+		}
+		if state.hasLines {
+			parts = append(parts, linesTagFromRanges(state.linesRanges))
+		}
+		modeTag := strings.Join(parts, " + ")
 
 		switch {
 		case state.hasPath && !state.hasFile:
@@ -507,12 +597,23 @@ func (p Plan) PreviewModeTags(statuses map[string]string) map[string]string {
 			tags[relPath] = "path + " + modeTag
 		case state.hasPath && state.hasFile:
 			tags[relPath] = "path + file"
+		case len(parts) > 1 || state.untracked:
+			tags[relPath] = modeTag
 		case state.mode == command.EntryModeLines:
 			tags[relPath] = modeTag
 		case state.mode == command.EntryModeSnippet:
 			tags[relPath] = modeTag
 		case modeTag != "":
 			tags[relPath] = modeTag + " only"
+		}
+		if state.hasMetadata {
+			if tag := tags[relPath]; tag != "" {
+				tags[relPath] = "metadata + " + strings.TrimSuffix(tag, " only")
+			} else if state.hasFile {
+				tags[relPath] = "metadata + file"
+			} else {
+				tags[relPath] = "metadata only"
+			}
 		}
 	}
 	return tags
@@ -571,8 +672,27 @@ func (p Plan) PayloadSizes() (map[string]int64, int64) {
 	sizes := make(map[string]int64, len(p.items))
 	var total int64
 	for _, item := range p.items {
+		if item.kind == SectionKindMetadata {
+			continue
+		}
 		sizes[item.relPath] += item.bodyBytes
 		total += item.bodyBytes
+	}
+	for _, section := range p.sections {
+		if section.kind == SectionKindMetadata {
+			total += section.metadataBytes
+			for _, item := range section.items {
+				// --no reports selected files without materializing a metadata
+				// payload or its diagnostic ignore walk. Real emission prepares
+				// the report first and counts its encoded bytes above instead.
+				if section.metadata == nil {
+					total += item.entry.SizeBytes
+				}
+				if _, ok := sizes[item.relPath]; !ok {
+					sizes[item.relPath] = item.entry.SizeBytes
+				}
+			}
+		}
 	}
 	return sizes, total
 }

@@ -9,7 +9,7 @@ import (
 )
 
 func TestRunExactBinaryOnlyTargetGuidance(t *testing.T) {
-	for _, target := range []string{"bin/tool", "bin", "./bin/"} {
+	for _, target := range []string{"bin", "./bin/"} {
 		for _, shape := range []string{"", "--paths", "--metadata"} {
 			t.Run(target+shape, func(t *testing.T) {
 				project := setupTestProject(t, map[string]string{".gitignore": "bin/\n", "bin/tool": "a\x00b"})
@@ -35,7 +35,7 @@ func TestRunExactBinaryOnlyTargetGuidance(t *testing.T) {
 				} // Binary full-body transport has separate sink rules.
 				stdout.Reset()
 				stderr.Reset()
-				args = append(args, "--with-binaries")
+				args = append([]string{target, "--with-binaries"}, args[1:]...)
 				if err := run(parseInProject(t, project, args), &stdout, &stderr); err != nil {
 					t.Fatalf("binary override failed: %v\n%s", err, stderr.String())
 				}

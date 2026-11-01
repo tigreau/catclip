@@ -72,6 +72,7 @@ type checkpointGit struct {
 // from the serialized form. Zero values round-trip transparently (absent →
 // decoded as zero). RelPath, ModTime, and Mode are kept unconditional.
 type CheckpointEntry struct {
+	Binary              bool              `json:"binary,omitempty"`
 	RelPath             string            `json:"rel"`
 	ModTime             time.Time         `json:"mod_time"`
 	SizeBytes           int64             `json:"size_bytes,omitempty"`
@@ -286,6 +287,7 @@ func entryToCheckpoint(entry Entry) CheckpointEntry {
 		DiffWantUnstaged:    entry.DiffWantUnstaged,
 		IgnoreBypassed:      entry.IgnoreBypassed,
 		BlockSource:         entry.BlockSource,
+		Binary:              entry.HasBinaryHint(),
 	}
 }
 
@@ -313,6 +315,7 @@ func checkpointToEntries(entries []CheckpointEntry) []Entry {
 			DiffWantUnstaged:    entry.DiffWantUnstaged,
 			IgnoreBypassed:      entry.IgnoreBypassed,
 			BlockSource:         entry.BlockSource,
+			Binary:              entry.Binary,
 		})
 	}
 	return out
@@ -339,7 +342,7 @@ func ApplyPrediscoveredScopeTail(cfg command.Invocation, gitCtx git.Context, sco
 		Cfg:               cfg,
 		GitCtx:            gitCtx,
 		AllowFileSymlinks: false,
-		WithBinaries:      cfg.WithBinaries,
+		WithBinaries:      cfg.WithBinaries || scope.WithBinaries,
 		NoIgnore:          scope.NoIgnore || scope.HasStage(command.StageNoIgnore),
 		WantedBasenames:   CollectWantedBasenames(scope.Targets),
 		ScopeTargets:      append([]string(nil), scope.Targets...),

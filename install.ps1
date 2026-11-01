@@ -393,7 +393,7 @@ function Download-File {
         Invoke-WebRequest -Uri $Url -OutFile $Destination
     } catch {
         Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
-        Fail "failed to download $Url`nThe requested catclip release bundle may not be published yet.`nTry again later, or run .\install.ps1 from a cloned checkout."
+        Fail "failed to download $Url`nThe requested catclip release bundle may not be published yet.`nTry again later, or build from a cloned checkout:`n  powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\install.ps1"
     }
 }
 

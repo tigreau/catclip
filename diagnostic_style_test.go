@@ -30,9 +30,9 @@ func TestDiagnosticColorsPreserveErrorText(t *testing.T) {
 			t.Fatalf("plain changed: %q", got)
 		}
 	}
-	message := "Error: failed\n  Guidance.\n    catclip src\n  Example: catclip docs"
+	message := "Error: failed\n  Guidance.\n    cd \"C:\\path\\to\\my-project\"\n    catclip src\n  Example: catclip docs"
 	got := styleDiagnosticMessage(message, colors, true)
-	for _, fragment := range []string{colors.Bold + colors.Err + "Error:", colors.Dim + "Guidance.", colors.OK + "catclip src", colors.OK + "catclip docs"} {
+	for _, fragment := range []string{colors.Bold + colors.Err + "Error:", colors.Dim + "Guidance.", colors.OK + `cd "C:\path\to\my-project"`, colors.OK + "catclip src", colors.OK + "catclip docs"} {
 		if !strings.Contains(got, fragment) {
 			t.Fatalf("missing %q in %q", fragment, got)
 		}

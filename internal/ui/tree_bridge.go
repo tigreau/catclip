@@ -54,6 +54,7 @@ func treeEntriesFromPlan(plan output.Plan, report output.Report) []treeDocumentE
 	out := make([]treeDocumentEntry, 0, len(merged))
 	for _, entry := range merged {
 		row := treeDocumentEntry{
+			Binary:         entry.HasBinaryHint(),
 			Path:           entry.RelPath,
 			GitStatus:      report.Statuses[entry.RelPath],
 			ModeTag:        report.ModeTags[entry.RelPath],
@@ -78,7 +79,7 @@ func buildTreeDocumentTargetForPlan(cfg RenderConfig, plan output.Plan) *treeDoc
 	if target := buildTreeDocumentTarget(cfg); target != nil {
 		return target
 	}
-	if len(cfg.Scopes) != 1 || plan.IsEmpty() {
+	if len(cfg.Scopes) == 0 || plan.IsEmpty() {
 		return nil
 	}
 	targets := cfg.Scopes[0].Targets
@@ -90,7 +91,12 @@ func buildTreeDocumentTargetForPlan(cfg RenderConfig, plan output.Plan) *treeDoc
 	if targetPath == "" {
 		return nil
 	}
-	if firstRel, ok := plan.FirstRelPath(); plan.Len() == 1 && ok && normalizeRelPath(firstRel) == targetPath {
+	for _, scope := range cfg.Scopes[1:] {
+		if len(scope.Targets) != 1 || normalizeRelPath(scope.Targets[0]) != targetPath {
+			return nil
+		}
+	}
+	if paths := plan.DistinctRelPaths(); len(paths) == 1 && normalizeRelPath(paths[0]) == targetPath {
 		return renderpkg.BuildTarget(targetPath, TreeTargetKindFile, TreeTargetStateText)
 	}
 	return renderpkg.BuildTarget(targetPath, treeTargetKindDir, treeTargetStateOK)

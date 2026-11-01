@@ -157,7 +157,7 @@ func Main() {
 	}
 
 	finishRunBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "run")
-	if err := run(cfg, os.Stdout, os.Stderr, startupResult.PreparedOutput); err != nil {
+	if err := runFromParsedCommand(cfg, os.Stdout, os.Stderr, startupResult.InitialGit, startupResult.PreparedOutput); err != nil {
 		finishRunBench("err", platform.InternalBenchError(err))
 		exitWithError(err, os.Stderr, args)
 		return

@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
@@ -54,7 +55,7 @@ func TreeDocumentRenderConfig(cfg RenderConfig) RenderConfig {
 // optional tree, and the final size/token summary.
 func RenderPreview(cfg RenderConfig, gitCtx git.Context, plan output.Plan, report output.Report, stdout, stderr io.Writer, colors platform.Palette) error {
 	if !cfg.Quiet {
-		if err := writeFilterSummary(stderr, gitCtx, colors); err != nil {
+		if err := writeFilterSummary(stderr, gitCtx, colors, cfg.Scopes...); err != nil {
 			return err
 		}
 		if err := writeReportNotices(stderr, report, colors); err != nil {
@@ -89,7 +90,7 @@ func WriteNormalDiagnostics(
 		}
 	}
 	if !cfg.Quiet {
-		if err := writeFilterSummary(diagnosticWriter, gitCtx, diagnosticColors); err != nil {
+		if err := writeFilterSummary(diagnosticWriter, gitCtx, diagnosticColors, cfg.Scopes...); err != nil {
 			return false, err
 		}
 		if err := writeReportNotices(diagnosticWriter, report, diagnosticColors); err != nil {
@@ -147,7 +148,7 @@ func WriteMetadataDiagnostics(
 	presentationColors, diagnosticColors platform.Palette,
 ) (bool, error) {
 	if !cfg.Quiet {
-		if err := writeFilterSummary(diagnosticWriter, gitCtx, diagnosticColors); err != nil {
+		if err := writeFilterSummary(diagnosticWriter, gitCtx, diagnosticColors, cfg.Scopes...); err != nil {
 			return false, err
 		}
 		if err := writeReportNotices(diagnosticWriter, report, diagnosticColors); err != nil {
@@ -195,17 +196,31 @@ func WriteMetadataDiagnostics(
 	return false, nil
 }
 
-func writeFilterSummary(w io.Writer, gitCtx git.Context, colors platform.Palette) error {
+func writeFilterSummary(w io.Writer, gitCtx git.Context, colors platform.Palette, scopes ...command.ExecutionScope) error {
+	noIgnore := 0
+	for _, scope := range scopes {
+		if scope.NoIgnore {
+			noIgnore++
+		}
+	}
+	if noIgnore > 0 {
+		if noIgnore == len(scopes) {
+			_, err := fmt.Fprintf(w, "  %sIgnore rules disabled (--no-ignore).%s\n", colors.Git, colors.Reset)
+			return err
+		}
+		_, err := fmt.Fprintf(w, "  %sIgnore rules apply per scope; %d scope(s) use --no-ignore.%s\n", colors.Git, noIgnore, colors.Reset)
+		return err
+	}
 	shortConfig := platform.DisplayPath(discovery.GlobalHissPath())
 	if gitCtx.Enabled && repoHasGitIgnore(gitCtx) {
 		_, err := fmt.Fprintf(w, "  %sFiltered by .gitignore + %s%s\n", colors.Git, shortConfig, colors.Reset)
 		return err
 	}
 	if gitCtx.Enabled {
-		_, err := fmt.Fprintf(w, "  %sGit repo, but no .gitignore; only %s applies.%s\n", colors.Warn, shortConfig, colors.Reset)
+		_, err := fmt.Fprintf(w, "  %sGit repo; %s and applicable .gitignore rules apply.%s\n", colors.Warn, shortConfig, colors.Reset)
 		return err
 	}
-	_, err := fmt.Fprintf(w, "  %sNot a git repo; only %s applies.%s\n", colors.Warn, shortConfig, colors.Reset)
+	_, err := fmt.Fprintf(w, "  %sNot a git repo; %s and applicable .gitignore rules apply.%s\n", colors.Warn, shortConfig, colors.Reset)
 	return err
 }
 
@@ -235,7 +250,7 @@ func WriteClipboardSuccess(w io.Writer, plan output.Plan, stats output.EmitStats
 	last := relPaths[len(relPaths)-1]
 
 	if stats.SinkName == "bundle" {
-		return writeBundleSuccess(w, count, word, stats, colors)
+		return writeBundleSuccess(w, bundleDescription(plan, count, word, false), bundleOverviewHint(plan, false), stats, colors)
 	}
 
 	switch {
@@ -261,39 +276,78 @@ func WriteMetadataClipboardSuccess(w io.Writer, plan output.Plan, stats output.E
 		word = "file"
 	}
 	if stats.SinkName == "bundle" {
-		path := platform.DisplayPath(stats.BundlePath)
-		if _, err := fmt.Fprintf(w, "\n%sBundled%s metadata for %s%d %s%s %s→%s %s%s%s %s(%s)%s\n%sPaste attaches a file — works in web UIs and file managers, not terminals.%s\n%sUse --no-bundle to copy text instead.%s\n",
-			colors.OK, colors.Reset, colors.Bold, count, word, colors.Reset,
-			colors.OK, colors.Reset, colors.Bold, path, colors.Reset,
-			colors.Dim, humanByteSize(stats.PayloadBytes), colors.Reset,
-			colors.Dim, colors.Reset, colors.Dim, colors.Reset); err != nil {
-			return err
-		}
-		for _, warning := range stats.Warnings {
-			if _, err := fmt.Fprintf(w, "%sWarning: %s%s\n", colors.Warn, warning, colors.Reset); err != nil {
-				return err
-			}
-		}
-		return nil
+		return writeBundleSuccess(w, bundleDescription(plan, count, word, true), bundleOverviewHint(plan, true), stats, colors)
 	}
 	_, err := fmt.Fprintf(w, "\n%sCopied%s metadata for %s%d %s%s %sto clipboard%s\n",
 		colors.OK, colors.Reset, colors.Bold, count, word, colors.Reset, colors.OK, colors.Reset)
 	return err
 }
 
-func writeBundleSuccess(w io.Writer, count int, word string, stats output.EmitStats, colors platform.Palette) error {
+// Describe surviving output kinds, not requested flags: an empty source scope
+// must not make an overview-only bundle claim to contain code. The dedicated
+// metadata-only transport still uses an ordinary file-facts plan.
+func bundleDescription(plan output.Plan, count int, word string, metadataOnly bool) string {
+	metadata := metadataOnly || plan.HasMetadata()
+	paths := !metadata && plan.HasPaths()
+	if !metadata && !paths {
+		return fmt.Sprintf("%d %s", count, word)
+	}
+	var parts []string
+	if metadata {
+		parts = append(parts, "file metadata")
+	}
+	if paths {
+		parts = append(parts, "file list")
+	}
+	if !metadataOnly && plan.HasFiles() {
+		parts = append(parts, "code")
+	}
+	label := strings.Join(parts, " + ")
+	if len(parts) == 1 {
+		word = "files"
+		if paths {
+			word = "paths"
+		}
+		if count == 1 {
+			word = strings.TrimSuffix(word, "s")
+		}
+		label += fmt.Sprintf(" (%d %s)", count, word)
+	}
+	return label
+}
+
+func bundleOverviewHint(plan output.Plan, metadataOnly bool) string {
+	if !metadataOnly && plan.HasFiles() {
+		return ""
+	}
+	if metadataOnly || plan.HasMetadata() {
+		return "File details only — no file contents.\nAn AI can use this overview to suggest which files to share next."
+	}
+	if plan.HasPaths() {
+		return "File paths only — no file contents.\nAn AI can use this list to suggest which files to share next."
+	}
+	return ""
+}
+
+func writeBundleSuccess(w io.Writer, description, overviewHint string, stats output.EmitStats, colors platform.Palette) error {
 	size := humanByteSize(stats.PayloadBytes)
 	path := platform.DisplayPath(stats.BundlePath)
 	if _, err := fmt.Fprintf(w,
-		"\n%sBundled%s %s%d %s%s %s→%s %s%s%s %s(%s)%s\n%sPaste attaches a file — works in web UIs and file managers, not terminals.%s\n%sUse --no-bundle to copy text instead.%s\n",
+		"\n%sCopied%s %s%s%s %sto clipboard as a bundle%s\n%s%s%s %s(%s)%s\n\n",
 		colors.OK, colors.Reset,
-		colors.Bold, count, word, colors.Reset,
+		colors.Bold, description, colors.Reset,
 		colors.OK, colors.Reset,
 		colors.Bold, path, colors.Reset,
 		colors.Dim, size, colors.Reset,
-		colors.Dim, colors.Reset,
-		colors.Dim, colors.Reset,
 	); err != nil {
+		return err
+	}
+	if overviewHint != "" {
+		if _, err := fmt.Fprintf(w, "%s%s%s\n\n", colors.Dim, overviewHint, colors.Reset); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w, "%sPaste attaches a file%s%s — works in web UIs and file managers, not terminals.%s\n%sUse --no-bundle to copy text instead.%s\n", colors.OK, colors.Reset, colors.Dim, colors.Reset, colors.Dim, colors.Reset); err != nil {
 		return err
 	}
 	for _, warning := range stats.Warnings {

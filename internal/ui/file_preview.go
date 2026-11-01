@@ -335,13 +335,31 @@ func internalPreviewScope(cfg filePreviewConfig) command.ExecutionScope {
 
 func buildInternalFullFilePreviewDocument(relPath, absPath, matchPattern string) (treeDocument, bool) {
 	finishBench := platform.InternalBenchSpan("ui.internal.file_preview.full_document")
+	if search.BinaryHint(absPath, relPath, 0, false) {
+		if info, err := os.Stat(absPath); err == nil && info.Size() > 0 {
+			finishBench("err", "false", "is_text", "false")
+			return buildBinaryFilePreview(relPath, info.Size()), true
+		}
+	}
 	snapshot, err := output.LoadTextSnapshot(absPath, relPath)
+	if err == nil && !snapshot.IsText {
+		finishBench("err", "false", "is_text", "false")
+		return buildBinaryFilePreview(relPath, snapshot.Size), true
+	}
 	if err != nil || !snapshot.IsText {
 		finishBench("err", platform.InternalBenchError(err), "is_text", fmt.Sprint(snapshot.IsText))
 		return treeDocument{}, false
 	}
 	finishBench("err", "false", "is_text", "true")
 	return buildTreeFilePreviewDocument(relPath, "", snapshot.PreviewText(), matchPattern, false, nil), true
+}
+
+func buildBinaryFilePreview(relPath string, size int64) treeDocument {
+	return buildTreeFilePreviewDocument(relPath, "binary-info.txt", binaryPreviewText(relPath, size), "", false, nil)
+}
+
+func binaryPreviewText(relPath string, size int64) string {
+	return "[binary]\n" + output.BinaryDescription(relPath, size)
 }
 
 func buildInternalSnippetPreviewDocument(relPath, absPath, pattern string, opts output.SnippetOptions) (treeDocument, bool) {

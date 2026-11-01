@@ -158,6 +158,7 @@ func TestPrediscoveredCheckpointRoundtripPreservesData(t *testing.T) {
 
 func TestPrediscoveredCheckpointFileEntrySchemaCoversAllFields(t *testing.T) {
 	wantSerialized := []string{
+		"Binary",
 		"RelPath",
 		"ModTime",
 		"SizeBytes",

@@ -91,8 +91,7 @@ func resolveStartupWithUndo(resolver *discovery.Resolver, args []string, opts st
 	defer scopeViewMemoReset()
 	defer resolver.ReleaseRetainedTargetPreviewInventory()
 
-	currentArgs := []string{}
-	pendingArgs := cloneStringSlice(args)
+	currentArgs, pendingArgs := startupBinaryPolicyArgs(args)
 	history := make([]startupInteractiveFrame, 0, 8)
 	var queuedFrame *startupInteractiveFrame
 	usedFzf := false
@@ -233,7 +232,7 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 		}
 
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
 			args = append(args, arg)
 			pending = pending[1:]
 			continue
@@ -247,7 +246,7 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 				StartArgs:   cloneStringSlice(args),
 				PendingArgs: cloneStringSlice(pending[1:]),
 			}, nil, false, nil
-		case "--no-ignore", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--lines",
+		case "--no-ignore", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths", "--metadata", "--lines",
 			"--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff":
 			return startupInteractiveFrame{
 				Kind:                       startupInteractiveFrameStage,
@@ -377,12 +376,10 @@ func runStartupLinesEndFrame(frame startupInteractiveFrame) (startupInteractiveF
 func runStartupTargetFrame(resolver *discovery.Resolver, frame startupInteractiveFrame) (startupInteractiveFrameResult, error) {
 	currentScopeTargets, currentScopeExplicitTargets := startupFrameCurrentScopeSelections(frame.StartArgs)
 	oldEscHint := resolver.StartupEscHint
-	oldNoIgnore := resolver.NoIgnore
 	resolver.StartupEscHint = frame.EscHint
-	resolver.NoIgnore = startupTargetFrameUsesNoIgnore(frame)
+	resolver.SetFileInclusion(startupTargetFrameUsesNoIgnore(frame), startupTargetFrameUsesBinaries(frame))
 	defer func() {
 		resolver.StartupEscHint = oldEscHint
-		resolver.NoIgnore = oldNoIgnore
 	}()
 	resolvedArgs, resolvedTargets, _, usedFzf, err := resolveStartupScopeInputsWithPrompt(
 		resolver,
@@ -396,10 +393,20 @@ func runStartupTargetFrame(resolver *discovery.Resolver, frame startupInteractiv
 		return startupInteractiveFrameResult{UsedFzf: usedFzf}, err
 	}
 	finalArgs := append(cloneStringSlice(frame.StartArgs), resolvedArgs...)
+	// Seal the confirmed target membership with the policy that produced it.
+	pending := cloneStringSlice(frame.PendingArgs)
+	for len(pending) > 0 {
+		arg := pending[0]
+		if arg != "--no-ignore" && arg != "--with-binaries" && arg != "-b" && !startupInclusionGlobalFlag(arg) {
+			break
+		}
+		finalArgs = append(finalArgs, arg)
+		pending = pending[1:]
+	}
 	resolver.FinalizeTargetSelection(append(currentScopeTargets, resolvedTargets...))
 	return startupInteractiveFrameResult{
 		Args:       finalArgs,
-		Pending:    cloneStringSlice(frame.PendingArgs),
+		Pending:    pending,
 		UsedFzf:    usedFzf,
 		ScopePaths: append(currentScopeTargets, resolvedTargets...),
 	}, nil
@@ -435,6 +442,9 @@ func runStartupModifierFrame(frame startupInteractiveFrame) (startupInteractiveF
 
 	finalArgs := trimTrailingModifierPlaceholders(cloneStringSlice(frame.StartArgs))
 	switch choice.Mode {
+	case startupModifierModeInclusion:
+		next := startupInclusionTargetFrame(frame, choice.Args)
+		return startupInteractiveFrameResult{Args: next.StartArgs, Pending: next.PendingArgs, NextFrame: &next, UsedFzf: true}, nil
 	case startupModifierModeFinish:
 		return startupInteractiveFrameResult{
 			Args:    finalArgs,
@@ -551,7 +561,7 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 			selected = selected[:0]
 			explicit = explicit[:0]
 			inModifierMode = false
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
 			continue
 		case "--no-ignore":
 			inModifierMode = true
@@ -587,7 +597,7 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 				}
 				i++
 			}
-		case "--paths", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
+		case "--paths", "--metadata", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
 			inModifierMode = true
 		default:
 			if strings.HasPrefix(arg, "-") {
@@ -610,7 +620,7 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 		switch arg {
 		case "--then":
 			inModifierMode = false
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
 			continue
 		case "--no-ignore":
 			inModifierMode = true
@@ -646,7 +656,7 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 				}
 				i++
 			}
-		case "--paths", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
+		case "--paths", "--metadata", "--changed", "--staged", "--unstaged", "--untracked", "--changed-diff", "--staged-diff", "--unstaged-diff", "--":
 			inModifierMode = true
 		}
 	}
@@ -658,7 +668,7 @@ func startupFrameTargetPrompt(args []string) string {
 		switch args[i] {
 		case "--then":
 			return "then> "
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--with-binaries":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
 			continue
 		default:
 			return "select> "

@@ -962,7 +962,7 @@ func checkpointMatchesRetainedScope(got resolvedScopeView, entry scopeViewMemoEn
 func sameCheckpointEntryProjection(a, b discovery.Entry) bool {
 	return a.RelPath == b.RelPath && a.TargetRoot == b.TargetRoot &&
 		a.GitVisible == b.GitVisible && a.IgnoreBypassed == b.IgnoreBypassed &&
-		a.BlockSource == b.BlockSource && a.Mode == b.Mode &&
+		a.BlockSource == b.BlockSource && a.Mode == b.Mode && a.Binary == b.Binary &&
 		a.SnippetPattern == b.SnippetPattern && a.SnippetContextSet == b.SnippetContextSet &&
 		a.SnippetContextLines == b.SnippetContextLines &&
 		(a.SnippetMatchLines == nil) == (b.SnippetMatchLines == nil) &&
@@ -1160,7 +1160,11 @@ func resolvedCurrentScopeViewForArgs(args []string) (resolvedScopeView, error) {
 }
 
 func deriveScopeViewFromParent(parent scopeViewMemoEntry, requested command.Resolved, renderCfg RenderConfig, requestedKey string) (resolvedScopeView, []uint32, bool, error) {
-	if len(parent.view.Scopes) == 0 || len(parent.view.Scopes) != len(requested.Scopes) || !reflect.DeepEqual(parent.view.Invocation, requested.Config) {
+	parentConfig := parent.view.Invocation
+	// Metadata's dedicated transport is derived from scope output modes; it
+	// cannot invalidate the retained membership when one such stage is added.
+	parentConfig.PayloadKind = requested.Config.PayloadKind
+	if len(parent.view.Scopes) == 0 || len(parent.view.Scopes) != len(requested.Scopes) || !reflect.DeepEqual(parentConfig, requested.Config) {
 		return resolvedScopeView{}, nil, false, nil
 	}
 	last := len(requested.Scopes) - 1
@@ -1229,6 +1233,8 @@ func deriveScopeViewFromParent(parent scopeViewMemoEntry, requested command.Reso
 	case command.StageDepth:
 	case command.StagePaths:
 		expected.Paths = true
+	case command.StageMetadata:
+		expected.Metadata = true
 	case command.StageLines:
 		expected.Lines = true
 		expected.LinesStart = requestedScope.LinesStart
@@ -1256,7 +1262,7 @@ func deriveScopeViewFromParent(parent scopeViewMemoEntry, requested command.Reso
 	} else if stage.Kind == command.StageContains || stage.Kind == command.StageNotContains || stage.Kind == command.StageSnippet {
 		retained, retainedOK := scopeViewMemoTakeContentStage(requestedKey, stage)
 		var stageLines map[uint32][]int
-		fileIDs, stageLines, eligible, err = applyContentScopeStageIDs(parent.inventory, parent.fileIDs, stage, requested.Config.WorkingDir, retained, retainedOK)
+		fileIDs, stageLines, eligible, err = applyContentScopeStageIDs(parent.inventory, parent.fileIDs, stage, requested.Config.WorkingDir, retained, retainedOK, requestedScope.WithBinaries)
 		if stage.Kind == command.StageSnippet && eligible && err == nil {
 			snippetMatchLines = stageLines
 		}
@@ -1306,6 +1312,26 @@ func deriveScopeViewFromParent(parent scopeViewMemoEntry, requested command.Reso
 	}
 	view.Discovered.Entries = nil
 	view.Discovered.Diagnostics = append([]discovery.Diagnostic(nil), parent.view.Discovered.Diagnostics...)
+	if err == nil && len(fileIDs) == 0 && (stage.Kind == command.StageContains || stage.Kind == command.StageSnippet || stage.Kind == command.StageNotContains) {
+		// Inspect retained IDs directly. Stop at the first text/unknown file;
+		// a failed broad query needs no new inventory-sized diagnostic slice.
+		priorEntries := func(yield func(discovery.Entry) bool) {
+			parent.inventory.mu.RLock()
+			defer parent.inventory.mu.RUnlock()
+			for _, id := range parent.fileIDs {
+				entry := parent.inventory.entries[id]
+				if !entry.Binary && entry.AbsPath == "" {
+					entry.AbsPath = filepath.Join(requested.Config.WorkingDir, filepath.FromSlash(entry.RelPath))
+				}
+				if !yield(entry) {
+					return
+				}
+			}
+		}
+		if diagnostic := discovery.BinaryOnlyContentDiagnostic(stage, priorEntries, last, platform.ActivePalette()); diagnostic != nil {
+			view.Discovered.Diagnostics = append(view.Discovered.Diagnostics, *diagnostic)
+		}
+	}
 	if isRetainedGitStage(stage.Kind) && !parent.view.GitContext.Enabled {
 		view.Discovered.Diagnostics = append(view.Discovered.Diagnostics, discovery.GitSelectionUnavailableDiagnostic(last))
 	} else {
@@ -1466,7 +1492,7 @@ func applyNoIgnoreScopeStageIDs(parent scopeViewMemoEntry, scope command.Executi
 // current retained membership. Both routes reuse the preceding inventory and
 // ordered IDs, avoiding target discovery, text classification, and metadata
 // work during the handoff to the next filter or output picker.
-func applyContentScopeStageIDs(inventory *scopeViewInventory, ids []uint32, stage command.Stage, workingDir string, retained retainedContentStageResult, retainedOK bool) ([]uint32, map[uint32][]int, bool, error) {
+func applyContentScopeStageIDs(inventory *scopeViewInventory, ids []uint32, stage command.Stage, workingDir string, retained retainedContentStageResult, retainedOK bool, textOnly ...bool) ([]uint32, map[uint32][]int, bool, error) {
 	finishBench := platform.InternalBenchSpan("ui.scope_view.apply_content_delta",
 		"stage", string(stage.Kind),
 		"entries", platform.InternalBenchInt(len(ids)),
@@ -1535,6 +1561,13 @@ func applyContentScopeStageIDs(inventory *scopeViewInventory, ids []uint32, stag
 	inventory.mu.RUnlock()
 
 	entries = discovery.EnsureEntryAbsPaths(entries, workingDir)
+	if len(textOnly) > 0 && textOnly[0] {
+		var err error
+		entries, err = discovery.TextEntries(entries, workingDir)
+		if err != nil {
+			return nil, nil, true, err
+		}
+	}
 	var (
 		matched []discovery.Entry
 		err     error
@@ -1678,11 +1711,12 @@ func ScopeViewForDiscoveryArgs(args []string) (discovery.ScopeView, bool) {
 		return discovery.ScopeView{}, false
 	}
 	return discovery.ScopeView{
-		WorkingDir: view.Invocation.WorkingDir,
-		GitContext: view.GitContext,
-		Entries:    view.Entries,
-		Targets:    view.Scope.Targets,
-		NoIgnore:   view.Scope.NoIgnore,
+		WithBinaries: view.Scope.WithBinaries,
+		WorkingDir:   view.Invocation.WorkingDir,
+		GitContext:   view.GitContext,
+		Entries:      view.Entries,
+		Targets:      view.Scope.Targets,
+		NoIgnore:     view.Scope.NoIgnore,
 	}, true
 }
 

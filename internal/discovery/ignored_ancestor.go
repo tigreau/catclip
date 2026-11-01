@@ -34,7 +34,11 @@ func targetNotFoundOrIgnoredAncestorMessage(r *Resolver, target string, scopeInd
 	if cands := r.findIgnoredAncestors(target); len(cands) > 0 {
 		return ignoredAncestorMessage(target, scopeIndex, cands, colors)
 	}
-	return targetNotFoundWarning(target, scopeIndex, colors)
+	message := targetNotFoundWarning(target, scopeIndex, colors)
+	if !r.WithBinaries {
+		message += fmt.Sprintf("\n  %sFor binary files, name the complete relative path or add -b (--with-binaries).%s", colors.Dim, colors.Reset)
+	}
+	return message
 }
 
 // findIgnoredAncestors runs the lookup-miss probe. Returns nil when:

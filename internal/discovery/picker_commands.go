@@ -140,6 +140,18 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 	if !ok || len(view.Targets) == 0 {
 		return "", "", noop, fmt.Errorf("content picker could not retain the current scope")
 	}
+	if view.WithBinaries {
+		var err error
+		view.Entries, err = TextEntries(view.Entries, view.WorkingDir)
+		if err != nil {
+			return "", "", noop, err
+		}
+	}
+	before := len(view.Entries)
+	view.Entries = ExcludeKnownBinaryEntries(view.Entries)
+	// Keep child root scanning disabled if exact binary files were removed,
+	// just as for an explicit -b mixed selection.
+	view.WithBinaries = view.WithBinaries || len(view.Entries) != before
 
 	self, err := os.Executable()
 	if err != nil {
@@ -159,7 +171,7 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 		}
 	}
 	if err := WriteCheckpoint(checkpointPath, view.WorkingDir, CheckpointData{
-		Scope:      &command.ExecutionScope{Targets: append([]string(nil), view.Targets...)},
+		Scope:      &command.ExecutionScope{Targets: append([]string(nil), view.Targets...), WithBinaries: view.WithBinaries},
 		GitContext: view.GitContext,
 		GitStatus:  statuses,
 		Entries:    view.Entries,

@@ -45,12 +45,12 @@ func TestInteractiveFilterProgressShowsNeverEmitPolicy(t *testing.T) {
 	}
 }
 
-func TestInteractiveFilterProgressShowsMetadataSelectedFromExtras(t *testing.T) {
+func TestInteractiveFilterProgressShowsMetadataInItsScope(t *testing.T) {
 	extras := interactiveProgressExtrasFromParsed(command.Parsed{
 		PayloadKind:    command.PayloadMetadata,
 		EmissionPolicy: command.EmissionAlways,
 	})
-	if got, want := formatInteractiveFilterProgress(extras, nil, 0), "catclip --yes --metadata ▶ output"; got != want {
+	if got, want := formatInteractiveFilterProgress(extras, []command.ExecutionScope{{Metadata: true, Stages: []command.Stage{{Kind: command.StageMetadata}}}}, 0), "catclip --yes --metadata ▶ output"; got != want {
 		t.Fatalf("progress = %q, want %q", got, want)
 	}
 }

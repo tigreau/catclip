@@ -8,7 +8,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/git"
@@ -23,16 +22,14 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 		return nil, ErrSelectionCancelled
 	}
 	stopSpinner := func() {}
-	if !r.interactiveTargetsOk {
-		// A scan that takes over five seconds may be rooted in a wider
-		// directory than the user intended. Name that directory on every platform.
-		stopSpinner = platform.StartLoadingSpinnerWithDelayedHint(
+	if !r.Cfg.Quiet && !r.Cfg.Headless {
+		stopSpinner = platform.StartFileScanProgress(
 			os.Stderr,
-			"Scanning files...",
-			platform.SlowFileScanHint(r.Cfg.WorkingDir),
-			5*time.Second,
+			r.Cfg.WorkingDir,
+			search.ObserveClassificationProgress,
 		)
 	}
+	defer stopSpinner()
 	var allTargets []TargetMatch
 	var err error
 	// A bare target picker already has to classify the complete visible file
@@ -45,7 +42,6 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 	} else {
 		allTargets, err = r.allVisibleTargets()
 	}
-	stopSpinner()
 	if err != nil {
 		return nil, err
 	}
@@ -681,7 +677,7 @@ type chooseManyResult struct {
 }
 
 func chooseManyWithFzfOptionsResult(bin, query, prompt, nth, withNth, header, revealedHeader string, previewCommandBuilder func(string) previewCommandSetup, candidates []string) (chooseManyResult, error) {
-	platform.StopActiveSpinner()
+	defer platform.StopActiveSpinner()
 	previewSession, err := os.MkdirTemp("", "catclip-target-preview-")
 	if err != nil {
 		return chooseManyResult{}, err
@@ -715,6 +711,9 @@ func chooseManyWithFzfOptionsResult(bin, query, prompt, nth, withNth, header, re
 	if revealedHeader != "" {
 		req.Bindings = append(req.Bindings, targetPickerRevealHeaderBinding(revealedHeader))
 	}
+	// Inventory serialization is still preparation work. Clear the progress
+	// display only when fzf is ready to take over the terminal.
+	platform.StopActiveSpinner()
 	result, err := picker.Run(bin, themedFzfRequest(req))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return chooseManyResult{}, ErrSelectionCancelled

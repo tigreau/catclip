@@ -8,6 +8,7 @@ package command
 // command:" header.
 var stageFlags = map[StageKind]string{
 	StageNoIgnore:     "--no-ignore",
+	StageWithBinaries: "--with-binaries",
 	StageOnly:         "--only",
 	StageExclude:      "--exclude",
 	StageRecent:       "--recent",
@@ -20,6 +21,7 @@ var stageFlags = map[StageKind]string{
 	StageUnstaged:     "--unstaged",
 	StageUntracked:    "--untracked",
 	StagePaths:        "--paths",
+	StageMetadata:     "--metadata",
 	StageDiff:         "--diff",
 	StageSnippet:      "--snippet",
 	StageChangedDiff:  "--changed-diff",

@@ -37,6 +37,11 @@ catclip src internal docs              # multiple targets
 catclip "*.go"                         # glob pattern — all Go files
 catclip src "*.go"                     # union: src/ + all Go files
 
+# Share the project structure
+# Let an AI suggest which files to read, without copying their contents.
+catclip . --paths                      # simple file path listing
+catclip . --metadata                   # detailed listing with sizes, Git status and dates
+
 # Filtering
 catclip src --only "*.tsx"             # keep only TSX components
 catclip src --exclude "*.css"          # skip the styles
@@ -61,6 +66,7 @@ catclip cmd/api/main.go -r             # raw file body, no wrappers
 
 # --then — like running two catclip commands and combining results
 catclip . --paths --then src           # project structure + full React files
+catclip . --metadata --then src        # project structure with sizes, Git status and dates + full React files
 catclip src --only "*.tsx" --then docs --recent 5  # TSX components, plus 5 newest docs
 ```
 
@@ -158,10 +164,22 @@ install -m 755 bin/rg bin/fzf "$PREFIX/share/catclip/bin/"
 
 #### Build from source (developer-only)
 
+macOS / Linux:
+
 ```bash
 git clone https://github.com/tigreau/catclip.git
 cd catclip && ./install.sh
 ```
+
+Windows PowerShell:
+
+```powershell
+git clone https://github.com/tigreau/catclip.git
+cd catclip
+powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The Windows command sets execution policy only for the installer process; it does not change your saved policy.
 
 Requires Go (version in `go.mod`), `rg`, and `fzf` at install time.
 

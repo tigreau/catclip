@@ -12,6 +12,7 @@ import (
 // cross package boundaries cleanly. Was root catclip.Entry before
 // the v0.6.0 discovery extraction.
 type Entry struct {
+	Binary              bool // positive existing classification evidence; false may mean unknown
 	AbsPath             string
 	RelPath             string
 	ModTime             time.Time

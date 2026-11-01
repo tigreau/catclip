@@ -387,7 +387,7 @@ func TestBuildStartupSinkPickerContextPreservesOverlappingScopeOutputShapes(t *t
 				{"src/shared.txt", "--snippet", "ALPHA", "0", "--then", "src"},
 			},
 			final:   []string{"src/shared.txt", "--snippet", "ALPHA", "0", "--then", "src", "--snippet", "BETA", "0"},
-			wantLen: 2,
+			wantLen: 3,
 		},
 	}
 
@@ -426,6 +426,13 @@ func TestBuildStartupSinkPickerContextPreservesOverlappingScopeOutputShapes(t *t
 
 			if retainedPayload != canonicalPayload {
 				t.Fatalf("overlapping retained scopes changed payload\nretained:\n%s\ncanonical:\n%s", retainedPayload, canonicalPayload)
+			}
+			if tc.name == "overlapping snippet scopes retain unique matches" {
+				for _, text := range []string{"ALPHA middle", "BETA last", "BETA only"} {
+					if !strings.Contains(retainedPayload, text) {
+						t.Fatalf("lost requested match %q: %s", text, retainedPayload)
+					}
+				}
 			}
 			if retained.Plan.Len() != tc.wantLen || canonical.Plan.Len() != tc.wantLen {
 				t.Fatalf("plan lengths: retained=%d canonical=%d want=%d", retained.Plan.Len(), canonical.Plan.Len(), tc.wantLen)

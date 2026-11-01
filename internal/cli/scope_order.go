@@ -34,7 +34,7 @@ type scopeStageTransitionState struct {
 	outputModeKind     command.StageKind
 	activeBoundaryKind command.StageKind
 	activeBoundary     scopeStageBoundaryPolicy
-	authorizationKind  command.StageKind
+	authorizations     map[command.StageKind]bool
 	hasRegularStage    bool
 }
 
@@ -60,6 +60,16 @@ func ValidateCurrentScopeFlagSequence(currentArgs []string, flags []string) erro
 }
 
 func validateCurrentScopeStageSequence(currentArgs []string, additions []command.StageKind) error {
+	for _, kind := range additions {
+		if kind == command.StageMetadata {
+			for i := 0; i < len(currentArgs); i++ {
+				if currentArgs[i] == "--raw" || currentArgs[i] == "-r" {
+					return MetadataOutputConflictError("--raw")
+				}
+				i += FixedValueCount(currentArgs[i])
+			}
+		}
+	}
 	stages := currentScopeStagesFromArgs(currentArgs)
 	state, err := buildScopeStageTransitionState(stages)
 	if err != nil {
@@ -99,7 +109,10 @@ func (s *scopeStageTransitionState) apply(kind command.StageKind) error {
 		s.activeBoundaryKind = kind
 	}
 	if isAuthorizationStage(kind) {
-		s.authorizationKind = kind
+		if s.authorizations == nil {
+			s.authorizations = make(map[command.StageKind]bool)
+		}
+		s.authorizations[kind] = true
 	} else {
 		s.hasRegularStage = true
 	}
@@ -107,11 +120,34 @@ func (s *scopeStageTransitionState) apply(kind command.StageKind) error {
 }
 
 func (s scopeStageTransitionState) validate(kind command.StageKind, semantics scopeStageSemantics) error {
+	if s.authorizations[command.StageWithBinaries] {
+		var scope command.ExecutionScope
+		switch kind {
+		case command.StageContains:
+			scope.Contains = "pattern"
+		case command.StageNotContains:
+			scope.NotContains = []string{"pattern"}
+		case command.StageSnippet:
+			scope.Snippet = true
+		case command.StageDiff, command.StageChangedDiff, command.StageStagedDiff, command.StageUnstagedDiff:
+			scope.Diff = true
+		}
+		if err := validateWithBinariesCompatibility(scope); err != nil {
+			return err
+		}
+	}
+	if (s.outputModeKind == command.StageMetadata && semantics.Category == scopeStageCategoryOutputMode) || kind == command.StageMetadata && s.outputModeKind != "" {
+		flag := semantics.Flag
+		if kind == command.StageMetadata {
+			flag = scopeStageFlagLabel(s.outputModeKind)
+		}
+		return MetadataOutputConflictError(flag)
+	}
 	if s.activeBoundary == scopeStageBoundaryTerminal {
 		return terminalBoundaryOrderError(scopeStageFlagLabel(s.activeBoundaryKind), semantics.Flag)
 	}
 	if isAuthorizationStage(kind) {
-		if s.authorizationKind == kind {
+		if s.authorizations[kind] {
 			return repeatedAuthorizationError(kind)
 		}
 		if s.hasRegularStage {
@@ -162,7 +198,7 @@ func isDiffOutputStage(kind command.StageKind) bool {
 }
 
 func isAuthorizationStage(kind command.StageKind) bool {
-	return kind == command.StageNoIgnore
+	return kind == command.StageNoIgnore || kind == command.StageWithBinaries
 }
 
 func outputModeConflictError(currentFlag, nextFlag string) error {
@@ -251,6 +287,9 @@ func scopeStageKindsForFlags(flags []string) ([]command.StageKind, error) {
 }
 
 func ScopeStageKindForFlag(flag string) (command.StageKind, bool) {
+	if flag == "-b" {
+		return command.StageWithBinaries, true
+	}
 	spec, ok := scopeModifierFlagSpecForFlag(flag)
 	if !ok {
 		return "", false
@@ -307,9 +346,15 @@ func terminalBoundaryOrderError(boundaryFlag, nextFlag string) error {
 }
 
 func authorizationAfterModifierError(kind command.StageKind) error {
+	if kind == command.StageWithBinaries {
+		return newUsageError("Error: --with-binaries must come before other modifiers in the same scope.\n  Put file inclusion immediately after the targets, before filters.")
+	}
 	return ValidationFailure{Reason: ReasonNoIgnoreAfterModifier}
 }
 
 func repeatedAuthorizationError(kind command.StageKind) error {
+	if kind == command.StageWithBinaries {
+		return newUsageError("Error: --with-binaries can only appear once per scope.\n  Remove the duplicate, or start a new scope with --then.")
+	}
 	return ValidationFailure{Reason: ReasonRepeatedNoIgnore}
 }

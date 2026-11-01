@@ -11,6 +11,7 @@ import (
 // matcher to the inventory before classifying content. A target defines the
 // scope; this does not move any of the user's ordered filter stages.
 func (r *Resolver) discoverGlobCandidateFiles(pattern string) ([]Entry, error) {
+	r.lastClassificationExcludedBinary = false
 	// Validate even when the inventory is empty. No filesystem work is needed
 	// to diagnose malformed target syntax.
 	if _, err := path.Match(pattern, ""); err != nil {

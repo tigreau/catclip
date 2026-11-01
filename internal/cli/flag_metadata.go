@@ -64,6 +64,13 @@ func buildScopeModifierFlagSpecs() []flagSpec {
 
 var scopeModifierFlagSpecTable = []flagSpec{
 	{
+		StageKind:      command.StageWithBinaries,
+		Arity:          flagArityNone,
+		Family:         flagFamilyFileSetRefinement,
+		BoundaryPolicy: scopeStageBoundaryNone,
+		Recoverability: flagRecoverabilityNoValue,
+	},
+	{
 		StageKind:      command.StageNoIgnore,
 		Arity:          flagArityNone,
 		Family:         flagFamilyFileSetRefinement,
@@ -118,6 +125,13 @@ var scopeModifierFlagSpecTable = []flagSpec{
 		Family:         flagFamilyContentFilter,
 		BoundaryPolicy: scopeStageBoundaryNone,
 		Recoverability: flagRecoverabilityRequiredValue,
+	},
+	{
+		StageKind:      command.StageMetadata,
+		Arity:          flagArityNone,
+		Family:         flagFamilyOutputMode,
+		BoundaryPolicy: scopeStageBoundaryNone,
+		Recoverability: flagRecoverabilityNoValue,
 	},
 	{
 		StageKind:      command.StagePaths,
@@ -218,6 +232,9 @@ func buildScopeModifierFlagSpecsByStageKind() map[command.StageKind]flagSpec {
 }
 
 func scopeModifierFlagSpecForFlag(flag string) (flagSpec, bool) {
+	if flag == "-b" {
+		flag = "--with-binaries"
+	}
 	spec, ok := scopeModifierFlagSpecsByFlag[flag]
 	return spec, ok
 }
@@ -274,7 +291,7 @@ var extraFixedValueCounts = map[string]int{
 // spec entries); spec flags join the boundary set automatically below.
 var globalBoundaryFlags = []string{
 	"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-	"--no-bundle", "--metadata", "--with-binaries",
+	"--no-bundle", "-b",
 	"-h", "--help", "--help-all", "--version", "-V", "--check-update", "--hiss", "--hiss-reset", "--all-ignore-rules",
 }
 

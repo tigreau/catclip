@@ -23,7 +23,21 @@ func BuildPlanForResolvedScopes(
 	scopes []command.ExecutionScope,
 	evaluatedScopes []EvaluatedScope,
 	allEntries []discovery.Entry,
+	raw ...bool,
 ) (plan Plan, err error) {
+	defer func() { plan.representedRequests = nil }()
+	if len(scopes) == len(evaluatedScopes) {
+		copied := false
+		for i, scope := range scopes {
+			if evaluatedScopes[i].Metadata != scope.Metadata {
+				if !copied {
+					evaluatedScopes = append([]EvaluatedScope(nil), evaluatedScopes...)
+					copied = true
+				}
+				evaluatedScopes[i].Metadata = scope.Metadata
+			}
+		}
+	}
 	filtered, refinements := beginRefinementMerge(scopes, evaluatedScopes)
 	if refinements != nil {
 		defer func() {
@@ -36,8 +50,28 @@ func BuildPlanForResolvedScopes(
 			allEntries = nil
 		}
 	}
-	if ExecutionScopesUsePathsStage(scopes) {
-		return prepareSectionedOutputPlan(gitCtx, evaluatedScopes, ExecutionScopesPreserveEvaluatedOrder(scopes))
+	if ExecutionScopesUsePathsStage(scopes) || executionScopesUseMetadata(scopes) {
+		return prepareSectionedOutputPlan(gitCtx, evaluatedScopes, ExecutionScopesPreserveEvaluatedOrder(scopes), raw...)
+	}
+	if needsRequestMerge(evaluatedScopes) {
+		var omissions lineOmissions
+		for _, scope := range evaluatedScopes {
+			omissions.noteScopeExplicit(scope)
+		}
+		prepared, represented, err := prepareMergedFileItems(gitCtx, evaluatedScopes, ExecutionScopesPreserveEvaluatedOrder(scopes), &omissions, raw...)
+		if err != nil {
+			return Plan{}, err
+		}
+		plan.items = make([]PlanItem, 0, len(prepared))
+		for _, item := range prepared {
+			plan.items = append(plan.items, newFileOutputPlanItem(item.unit))
+		}
+		if len(plan.items) > 0 {
+			plan.sections = []PlanSection{{kind: SectionKindFiles, items: plan.items[:len(plan.items):len(plan.items)]}}
+		}
+		omissions.explicit = nil
+		plan.lineOmissions, plan.representedRequests = omissions, represented
+		return plan, nil
 	}
 	if allEntries == nil && len(evaluatedScopes) > 0 {
 		count := 0
@@ -63,7 +97,7 @@ func BuildPlanForResolvedScopes(
 	} else {
 		entries = discovery.DedupeEntriesByPath(entries)
 	}
-	return preparePlan(gitCtx, entries, omissions)
+	return preparePlan(gitCtx, entries, omissions, raw...)
 }
 
 // BuildLinesPreviewPlanForResolvedScopes is the lighter-weight planner
@@ -72,6 +106,18 @@ func BuildPlanForResolvedScopes(
 // slice from each file body, not the full plan-state mode tags.
 func BuildLinesPreviewPlanForResolvedScopes(scopes []command.ExecutionScope, allEntries []discovery.Entry) Plan {
 	entries := allEntries
+	if len(scopes) > 1 {
+		candidates := make([]scopedFileCandidate, len(entries))
+		for i, entry := range entries {
+			candidates[i].entry = entry
+		}
+		candidates = dedupeOutputRequests(candidates, ExecutionScopesPreserveEvaluatedOrder(scopes))
+		entries = make([]discovery.Entry, len(candidates))
+		for i, c := range candidates {
+			entries[i] = c.entry
+		}
+		return buildLinesPreviewPlan(entries)
+	}
 	if ExecutionScopesPreserveEvaluatedOrder(scopes) {
 		entries = discovery.DedupeEntriesByPathPreserveOrder(entries)
 	} else {
@@ -84,7 +130,7 @@ func BuildLinesPreviewPlanForResolvedScopes(scopes []command.ExecutionScope, all
 // Walks the per-scope discovery output, builds the matching
 // EvaluatedScope list, and produces the merged plan. cli.go's run()
 // calls this once per invocation.
-func BuildPlanForDiscoveredInvocation(gitCtx git.Context, inv discovery.Discovered) (Plan, error) {
+func BuildPlanForDiscoveredInvocation(gitCtx git.Context, inv discovery.Discovered, raw ...bool) (Plan, error) {
 	evaluatedScopes := make([]EvaluatedScope, 0, len(inv.Scopes))
 	resolvedScopes := make([]command.ExecutionScope, 0, len(inv.Scopes))
 	for _, scope := range inv.Scopes {
@@ -99,12 +145,13 @@ func BuildPlanForDiscoveredInvocation(gitCtx git.Context, inv discovery.Discover
 			EmptyRefinement: scope.EmptyRefinement,
 			EmptyExplained:  explained,
 			Paths:           scope.Scope.Paths,
+			Metadata:        scope.Scope.Metadata,
 			Entries:         scope.Entries,
 			ResolvedTargets: scope.ResolvedTargets,
 		})
 	}
 	// Flatten once, after empty refinements have suppressed whole bodies.
-	return BuildPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, nil)
+	return BuildPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, nil, raw...)
 }
 
 // BuildMetadataPlanForDiscoveredInvocation constructs the same deduped,
@@ -158,6 +205,15 @@ func ExecutionScopesPreserveEvaluatedOrder(scopes []command.ExecutionScope) bool
 func ExecutionScopesUsePathsStage(scopes []command.ExecutionScope) bool {
 	for _, s := range scopes {
 		if s.Paths || s.HasStage(command.StagePaths) {
+			return true
+		}
+	}
+	return false
+}
+
+func executionScopesUseMetadata(scopes []command.ExecutionScope) bool {
+	for _, s := range scopes {
+		if s.Metadata {
 			return true
 		}
 	}

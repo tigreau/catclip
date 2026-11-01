@@ -108,14 +108,14 @@ func Lines(dir string, stdin []string, args ...string) ([]string, error) {
 // so a fresh repo (initial commit not made) still shows the change.
 func DiffAgainstHeadOrIndex(ctx Context, repoPath string) (string, error) {
 	if ctx.HasHead {
-		return Capture(ctx.Root, "diff", "HEAD", "--", repoPath)
+		return Capture(ctx.Root, "--literal-pathspecs", "diff", "HEAD", "--", repoPath)
 	}
 
-	stagedDiff, stagedErr := Capture(ctx.Root, "diff", "--cached", "--", repoPath)
+	stagedDiff, stagedErr := Capture(ctx.Root, "--literal-pathspecs", "diff", "--cached", "--", repoPath)
 	if stagedErr != nil {
 		return "", stagedErr
 	}
-	unstagedDiff, unstagedErr := Capture(ctx.Root, "diff", "--", repoPath)
+	unstagedDiff, unstagedErr := Capture(ctx.Root, "--literal-pathspecs", "diff", "--", repoPath)
 	if unstagedErr != nil {
 		return "", unstagedErr
 	}

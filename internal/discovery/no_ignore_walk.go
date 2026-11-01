@@ -27,7 +27,7 @@ func ExpandEntriesUnderNoIgnore(cfg command.Invocation, gitCtx git.Context, scop
 		Cfg:                   cfg,
 		GitCtx:                gitCtx,
 		AllowFileSymlinks:     false,
-		WithBinaries:          cfg.WithBinaries,
+		WithBinaries:          cfg.WithBinaries || scope.WithBinaries,
 		NoIgnore:              true,
 		WantedBasenames:       CollectWantedBasenames(scope.Targets),
 		ScopeTargets:          append([]string(nil), scope.Targets...),
@@ -366,7 +366,12 @@ func (r *Resolver) markNoIgnoreTargetWalk(target string) {
 // discoverFilesUnderNoIgnore performs one no-ignore walk below a target while
 // retaining ignore attribution for rendering and picker previews.
 func (r *Resolver) discoverFilesUnderNoIgnore(rootRel string) ([]Entry, error) {
-	rels, err := ripgrepListUnder(r.Cfg.WorkingDir, rootRel, true, r.membershipEnumeration(search.MembershipReasonNoIgnoreExpansion))
+	rootRel = normalizeRelPath(rootRel)
+	opts := search.RipgrepFileOptions{NoIgnore: true, Enumeration: r.membershipEnumeration(search.MembershipReasonNoIgnoreExpansion)}
+	if rootRel != "." && rootRel != "" {
+		opts.Paths = []string{rootRel}
+	}
+	rels, err := r.directoryPaths(rootRel, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -374,6 +379,14 @@ func (r *Resolver) discoverFilesUnderNoIgnore(rootRel string) ([]Entry, error) {
 	// that list directly and publish it to this resolver; asking
 	// classifyTextFile to lazily call ResolveTextFileSet would launch a second
 	// --no-ignore enumeration of the same roots before doing identical work.
+	hissRel := catclipControlHissRel(r.Cfg.WorkingDir)
+	if i := sort.SearchStrings(rels, hissRel); hissRel != "" && i < len(rels) && rels[i] == hissRel {
+		// Keep the cached raw inventory immutable while excluding Catclip's
+		// own control file before classification, as ripgrepListUnder did.
+		filtered := make([]string, 0, len(rels)-1)
+		filtered = append(filtered, rels[:i]...)
+		rels = append(filtered, rels[i+1:]...)
+	}
 	if !r.WithBinaries {
 		r.textFileSet, r.binaryFileSet, err = search.ClassifyTextPathsWithBinaryEvidence(r.Cfg.WorkingDir, rels)
 		r.lastClassificationExcludedBinary = len(r.binaryFileSet) > 0
@@ -385,7 +398,7 @@ func (r *Resolver) discoverFilesUnderNoIgnore(rootRel string) ([]Entry, error) {
 	files := make([]Entry, 0, len(rels))
 	for _, rel := range rels {
 		rel = normalizeRelPath(rel)
-		if rel == "" {
+		if rel == "" || rel == "." || rel == hissRel {
 			continue
 		}
 		absPath := filepath.Join(r.Cfg.WorkingDir, filepath.FromSlash(rel))

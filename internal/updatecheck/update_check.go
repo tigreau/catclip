@@ -44,6 +44,7 @@ type Result struct {
 	Status         Status
 	CurrentVersion string
 	LatestVersion  string
+	ReleaseNotes   string
 	InstallMethod  InstallMethod
 	Instruction    string
 }
@@ -67,7 +68,8 @@ func (e CurrentVersionError) Error() string {
 }
 
 type releaseResponse struct {
-	TagName string `json:"tag_name"`
+	TagName string          `json:"tag_name"`
+	Body    json.RawMessage `json:"body"`
 }
 
 // Check compares the embedded Catclip version with GitHub's latest stable
@@ -81,13 +83,13 @@ func Check(opts Options) (Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeoutFor(opts))
 	defer cancel()
 
-	latestRaw, err := fetchLatest(ctx, opts)
+	release, err := fetchLatest(ctx, opts)
 	if err != nil {
 		return Result{}, err
 	}
-	latest, ok := parseVersion(latestRaw)
+	latest, ok := parseVersion(release.TagName)
 	if !ok || latest.prerelease != "" {
-		return Result{}, fmt.Errorf("latest release returned invalid version %q", latestRaw)
+		return Result{}, fmt.Errorf("latest release returned invalid version %q", release.TagName)
 	}
 
 	result := Result{
@@ -101,12 +103,16 @@ func Check(opts Options) (Result, error) {
 		result.Status = StatusAhead
 	default:
 		result.Status = StatusAvailable
+		// GitHub includes the body with the version response. Only decode it
+		// for an actual update; optional notes must not break version checking.
+		_ = json.Unmarshal(release.Body, &result.ReleaseNotes)
+		result.ReleaseNotes = strings.TrimSpace(result.ReleaseNotes)
 		result.InstallMethod, result.Instruction = updateInstruction(ctx, opts)
 	}
 	return result, nil
 }
 
-func fetchLatest(ctx context.Context, opts Options) (string, error) {
+func fetchLatest(ctx context.Context, opts Options) (releaseResponse, error) {
 	client := opts.HTTPClient
 	if client == nil {
 		client = &http.Client{}
@@ -117,30 +123,30 @@ func fetchLatest(ctx context.Context, opts Options) (string, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return "", err
+		return releaseResponse{}, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "catclip/"+strings.TrimSpace(opts.CurrentVersion))
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return releaseResponse{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GitHub returned HTTP %d", resp.StatusCode)
+		return releaseResponse{}, fmt.Errorf("GitHub returned HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return "", err
+		return releaseResponse{}, err
 	}
 	if len(body) > maxResponseBytes {
-		return "", fmt.Errorf("GitHub response exceeds %d bytes", maxResponseBytes)
+		return releaseResponse{}, fmt.Errorf("GitHub response exceeds %d bytes", maxResponseBytes)
 	}
 	var release releaseResponse
 	if err := json.Unmarshal(body, &release); err != nil {
-		return "", err
+		return releaseResponse{}, err
 	}
-	return release.TagName, nil
+	return release, nil
 }
 
 func updateInstruction(ctx context.Context, opts Options) (InstallMethod, string) {
@@ -172,7 +178,7 @@ func updateInstruction(ctx context.Context, opts Options) (InstallMethod, string
 func sourceInstallCommand(platform, executable string) string {
 	root := installRoot(platform, executable)
 	if platform == "windows" {
-		command := ".\\install.ps1"
+		command := `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\install.ps1`
 		if root != "" && !sameWindowsPath(root, defaultWindowsInstallRoot()) {
 			return command + " -InstallRoot " + powershellQuote(root)
 		}

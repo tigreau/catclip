@@ -4,11 +4,47 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 
 	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/platform"
 	"github.com/tigreau/catclip/internal/updatecheck"
 )
+
+func TestUpdateReleaseNotesPrecedeVersionWithoutEmptySection(t *testing.T) {
+	for _, notes := range []string{"", " \r\n ", "Faster previews.\r\n\r\n- Fixed clipboard copying.\n"} {
+		var out bytes.Buffer
+		err := renderUpdateCheckResult(&out, updatecheck.Result{Status: updatecheck.StatusAvailable, CurrentVersion: "0.7.8", LatestVersion: "0.7.9", ReleaseNotes: notes, InstallMethod: updatecheck.InstallHomebrew, Instruction: "brew upgrade catclip"}, platform.Palette{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(notes) == "" {
+			if !strings.HasPrefix(out.String(), "Catclip v0.7.9 is available.") {
+				t.Fatalf("empty notes added output: %q", out.String())
+			}
+		} else if !strings.HasPrefix(out.String(), "Release notes for v0.7.9:\nFaster previews.\n\n- Fixed clipboard copying.\n\n"+strings.Repeat("-", len("Catclip v0.7.9 is available. You have v0.7.8."))+"\n\nCatclip v0.7.9 is available.") {
+			t.Fatalf("notes or separation missing: %q", out.String())
+		}
+	}
+	if got := printableReleaseNotes("text\x1b[31m\x07\r\nnext"); strings.ContainsAny(got, "\x1b\x07\r") || !strings.Contains(got, "\nnext") {
+		t.Fatalf("unsafe control bytes: %q", got)
+	}
+}
+
+func TestUpdateNotesHiddenUnlessNewerReleaseAvailable(t *testing.T) {
+	colors := platform.ANSIPalette()
+	for _, status := range []updatecheck.Status{updatecheck.StatusCurrent, updatecheck.StatusAhead} {
+		var out bytes.Buffer
+		err := renderUpdateCheckResult(&out, updatecheck.Result{Status: status, CurrentVersion: "0.7.10", LatestVersion: "0.7.9", ReleaseNotes: "Do not show these old notes"}, colors)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(out.String(), "notes") || !strings.Contains(out.String(), colors.Bold+colors.Prompt+"v0.7.10"+colors.Reset) {
+			t.Fatalf("unexpected display: %q", out.String())
+		}
+	}
+}
 
 func TestRunDispatchesCheckUpdateWithParsedIdentity(t *testing.T) {
 	restoreCheckUpdateHook(t)
@@ -80,8 +116,8 @@ func TestRunCheckUpdateRendersEveryResult(t *testing.T) {
 			if err := runCheckUpdate(checkUpdateConfig{Version: "0.7.1"}, &out); err != nil {
 				t.Fatal(err)
 			}
-			if got := out.String(); got != tc.want {
-				t.Fatalf("runCheckUpdate() output = %q, want %q", got, tc.want)
+			if got := out.String(); got != tc.want+"\n" {
+				t.Fatalf("runCheckUpdate() output = %q, want %q", got, tc.want+"\n")
 			}
 		})
 	}

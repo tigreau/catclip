@@ -13,11 +13,11 @@ import (
 var startupModifierMetaChoices = []StartupModifierChoice{
 	// Input order is bottom-to-top under fzf's default layout. These rows are
 	// appended after the filter choices so they appear above --then on screen:
-	// [finish early], [extras], then the existing filter list.
+	// [finish early], [extras], [file inclusion], then the existing filter list.
 	{
 		Key:         "extras",
 		Label:       "[extras]",
-		Description: "raw/quiet/binaries/etc.",
+		Description: "raw/quiet/etc.",
 		Mode:        startupModifierModeExtras,
 	},
 	{
@@ -65,6 +65,11 @@ var startupModifierChoices = []StartupModifierChoice{
 		Mode:        startupModifierModeDepth,
 	},
 	{
+		Key: "metadata", Label: "--metadata",
+		Description: "File details: sizes, Git status and dates",
+		Args:        []string{"--metadata"}, Mode: startupModifierModeFlags,
+	},
+	{
 		Key:         "paths",
 		Label:       "--paths",
 		Description: "Emit bare relative paths for this scope",
@@ -98,13 +103,6 @@ var startupModifierChoices = []StartupModifierChoice{
 		Description: "Slice files by line range",
 		Args:        []string{"--lines"},
 		Mode:        startupModifierModeLines,
-	},
-	{
-		Key:         "no-ignore",
-		Label:       "--no-ignore",
-		Description: "Include everything hidden by ignore rules",
-		Args:        []string{"--no-ignore"},
-		Mode:        startupModifierModeFlags,
 	},
 	{
 		Key:         "changed",
@@ -199,24 +197,10 @@ var startupExtrasChoices = []StartupModifierChoice{
 		Mode:        startupModifierModeFlags,
 	},
 	{
-		Key:         "with-binaries",
-		Label:       "--with-binaries",
-		Description: "include binary files",
-		Args:        []string{"--with-binaries"},
-		Mode:        startupModifierModeFlags,
-	},
-	{
 		Key:         "raw",
 		Label:       "--raw",
 		Description: "bare file bodies",
 		Args:        []string{"--raw"},
-		Mode:        startupModifierModeFlags,
-	},
-	{
-		Key:         "metadata",
-		Label:       "--metadata",
-		Description: "selected-file details instead of contents",
-		Args:        []string{"--metadata"},
 		Mode:        startupModifierModeFlags,
 	},
 }
@@ -265,17 +249,22 @@ func startupAvailableModifierChoices(currentArgs []string) []StartupModifierChoi
 	return startupAvailableModifierChoicesWithState(currentArgs, state)
 }
 
-func startupAvailableModifierChoicesWithState(currentArgs []string, state startupCurrentScopeState) []StartupModifierChoice {
-	if state.Known && state.Empty {
-		choice := StartupModifierChoice{
-			Key:         "no-ignore",
-			Label:       "--no-ignore",
-			Description: "Include everything hidden by ignore rules",
-			Args:        []string{"--no-ignore"},
-			Mode:        startupModifierModeFlags,
+func startupAvailableExtras(currentArgs []string) []StartupModifierChoice {
+	choices := make([]StartupModifierChoice, 0, len(startupExtrasChoices))
+	for _, choice := range startupExtrasChoices {
+		args := append(append([]string(nil), currentArgs...), choice.Args...)
+		if _, err := cli.StartupPreflightCommandSpec(args); err == nil {
+			choices = append(choices, choice)
 		}
-		if startupModifierChoiceAllowed(currentArgs, choice, state) {
-			return []StartupModifierChoice{choice}
+	}
+	return choices
+}
+
+func startupAvailableModifierChoicesWithState(currentArgs []string, state startupCurrentScopeState) []StartupModifierChoice {
+	inclusion := StartupModifierChoice{Key: "file-inclusion", Label: "[file inclusion]", Description: "include ignored files or binaries (images, PDFs, etc.)", Mode: startupModifierModeInclusion}
+	if state.Known && state.Empty {
+		if len(startupAvailableInclusionChoices(currentArgs)) > 0 {
+			return []StartupModifierChoice{inclusion}
 		}
 		return nil
 	}
@@ -286,12 +275,18 @@ func startupAvailableModifierChoicesWithState(currentArgs []string, state startu
 		}
 	}
 	if len(choices) > 0 {
+		if len(startupAvailableInclusionChoices(currentArgs)) > 0 {
+			choices = append(choices, inclusion)
+		}
 		choices = append(choices, startupModifierMetaChoices...)
 	}
 	return choices
 }
 
 func startupModifierChoiceAllowed(currentArgs []string, choice StartupModifierChoice, state startupCurrentScopeState) bool {
+	if state.AllBinary && (choice.Mode == startupModifierModeContains || choice.Mode == startupModifierModeNotContains || choice.Mode == startupModifierModeSnippet) {
+		return false
+	}
 	if cli.ValidateCurrentScopeFlagSequence(currentArgs, choice.Args) != nil {
 		return false
 	}
@@ -467,7 +462,8 @@ func startupExtrasPickerHeader() string {
 func startupExtrasPickerHeaderWithEscHint(escHint string) string {
 	return discovery.PickerHeader(
 		"Pick extra global options.",
-		"Tab marks multiple options; Enter confirms.",
+		"Tab marks multiple options.",
+		"Enter confirms your selection.",
 		fmt.Sprintf("[Enter] confirm  [Tab] mark  [%s] toggle  %s", platform.MultiSelectToggleAllKey(), startupEscLabel(escHint)),
 	)
 }

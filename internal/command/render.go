@@ -76,9 +76,6 @@ func CanonicalGlobalArgs(invocationCfg Invocation, flags RenderFlags) []string {
 	if flags.NoBundle {
 		out = append(out, "--no-bundle")
 	}
-	if flags.PayloadKind == PayloadMetadata {
-		out = append(out, "--metadata")
-	}
 	if invocationCfg.Headless {
 		out = append(out, "--headless")
 	}

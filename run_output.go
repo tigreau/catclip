@@ -101,7 +101,7 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 		ctx.Render = ctx.Render.WithPreparedPresentation(state.Presentation)
 	} else {
 		report, err = output.BuildReportForPlan(ctx.Git, state.Plan, output.ReportOptions{
-			IncludeTreeMetadata: ui.NeedsTreeRender(ctx.Render) || ctx.Invocation.PayloadKind == command.PayloadMetadata,
+			IncludeTreeMetadata: ui.NeedsTreeRender(ctx.Render) || ctx.Invocation.PayloadKind == command.PayloadMetadata || state.Plan.HasMetadata(),
 			Notices:             notices,
 		})
 	}
@@ -111,6 +111,14 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 	}
 	if ctx.Invocation.Verbose {
 		fmt.Fprintf(ctx.Stderr, "[verbose] report: %s\n", formatDuration(time.Since(reportStarted)))
+	}
+	if state.Plan.HasMetadata() && ctx.Invocation.EmissionPolicy != command.EmissionNever {
+		state.Plan, report, err = ui.PrepareScopeMetadata(ctx.Invocation.WorkingDir, ctx.Git, state.DiscoveredScopes, state.Plan, report)
+		if err != nil {
+			return err
+		}
+		state.Presentation = ui.PreparePresentation(ctx.Git, state.Plan, report)
+		ctx.Render = ctx.Render.WithPreparedPresentation(state.Presentation)
 	}
 	if ctx.Invocation.PayloadKind == command.PayloadMetadata {
 		return executeMetadata(ctx, state, report)
@@ -127,7 +135,7 @@ func executeEmptyOutput(ctx outputExecutionContext, state outputExecutionState) 
 			fmt.Fprintln(ctx.Stderr, notice)
 		}
 	}
-	if state.Plan.HasLineOmissions() {
+	if state.Plan.HasLineOmissions() || len(state.Plan.RefinementNoticeText()) > 0 {
 		if _, err := fmt.Fprintf(ctx.Stderr, "%sNo output was emitted.%s\n", ctx.Colors.Warn, ctx.Colors.Reset); err != nil {
 			return err
 		}

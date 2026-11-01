@@ -2,8 +2,11 @@ package discovery
 
 import (
 	"fmt"
+	"iter"
 	"path/filepath"
 
+	"github.com/tigreau/catclip/internal/command"
+	"github.com/tigreau/catclip/internal/platform"
 	"github.com/tigreau/catclip/internal/search"
 )
 
@@ -33,6 +36,7 @@ func FilterEntriesBySnippetContent(entries []Entry, pattern string) ([]Entry, er
 	if err := ValidateContainsPattern(pattern); err != nil {
 		return nil, err
 	}
+	entries = ExcludeKnownBinaryEntries(entries)
 	matched, err := search.RunRipgrepMatchLines(pattern, EntryAbsPaths(entries))
 	if err != nil {
 		return nil, err
@@ -57,6 +61,7 @@ func FilterEntriesByContent(entries []Entry, pattern string) ([]Entry, error) {
 		return nil, err
 	}
 
+	entries = ExcludeKnownBinaryEntries(entries)
 	matched, err := search.RunRipgrepMatches(pattern, EntryAbsPaths(entries))
 	if err != nil {
 		return nil, err
@@ -69,6 +74,54 @@ func FilterEntriesByContent(entries []Entry, pattern string) ([]Entry, error) {
 		}
 	}
 	return out, nil
+}
+
+// ExcludeKnownBinaryEntries removes directly admitted binaries using retained
+// evidence only. The usual all-text selection needs no allocation or new reads.
+func ExcludeKnownBinaryEntries(entries []Entry) []Entry {
+	for i, entry := range entries {
+		if !entry.Binary || (entry.SizeKnown && entry.SizeBytes == 0) {
+			continue
+		}
+		out := make([]Entry, 0, len(entries)-1)
+		out = append(out, entries[:i]...)
+		for _, rest := range entries[i+1:] {
+			if !rest.Binary || (rest.SizeKnown && rest.SizeBytes == 0) {
+				out = append(out, rest)
+			}
+		}
+		return out
+	}
+	return entries
+}
+
+// BinaryOnlyContentDiagnostic explains only an observed all-binary input to a
+// content stage. It cannot infer ignored files, read failures, or pattern misses.
+func BinaryOnlyContentDiagnostic(stage command.Stage, entries iter.Seq[Entry], scopeIndex int, colors platform.Palette) *Diagnostic {
+	if stage.Kind != command.StageContains && stage.Kind != command.StageSnippet && stage.Kind != command.StageNotContains {
+		return nil
+	}
+	count, firstPath := 0, ""
+	for entry := range entries {
+		if !entry.HasBinaryHint() {
+			return nil
+		}
+		if count == 0 {
+			firstPath = entry.RelPath
+		}
+		count++
+	}
+	if count == 0 {
+		return nil
+	}
+	flag := "--" + string(stage.Kind)
+	subject, object := fmt.Sprintf("All %d selected files are binary", count), "these files"
+	if count == 1 {
+		subject, object = SingleQuoted(firstPath)+" is binary", "this file"
+	}
+	return &Diagnostic{ScopeIndex: scopeIndex, ExplainsEmptyResult: true,
+		Message: fmt.Sprintf("%sNo text files available for %s (scope %d).%s\n  %s. %s searches text files only.\n  Remove %s and its pattern to include %s.",
+			colors.Warn, flag, scopeIndex+1, colors.Reset, subject, flag, flag, object)}
 }
 
 // FilterEntriesByNotContent is the inverse of FilterEntriesByContent:
@@ -84,6 +137,7 @@ func FilterEntriesByNotContent(entries []Entry, pattern string) ([]Entry, error)
 		return nil, err
 	}
 
+	entries = ExcludeKnownBinaryEntries(entries)
 	withoutMatch, err := search.RunRipgrepMatches(pattern, EntryAbsPaths(entries), true)
 	if err != nil {
 		return nil, err
@@ -107,6 +161,27 @@ func EntryAbsPaths(entries []Entry) []string {
 		paths = append(paths, filepath.Clean(entry.AbsPath))
 	}
 	return paths
+}
+
+// TextEntries classifies only an already selected set, at the content-filter
+// boundary. It cannot discover additional files. Completed observations are
+// reused across stages and scopes by the invocation classifier.
+func TextEntries(entries []Entry, workingDir string) ([]Entry, error) {
+	paths := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		paths = append(paths, entry.RelPath)
+	}
+	text, err := search.ClassifyTextPaths(workingDir, paths)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Entry, 0, len(entries))
+	for _, entry := range entries {
+		if _, ok := text[entry.RelPath]; ok {
+			out = append(out, entry)
+		}
+	}
+	return out, nil
 }
 
 func EnsureEntryAbsPaths(entries []Entry, workingDir string) []Entry {

@@ -25,15 +25,17 @@ type Spec struct {
 // Fields are unexported and reached through accessor methods so callers
 // can't accidentally mutate the frozen snapshot.
 type ScopeSpec struct {
-	targets  []string
-	noIgnore bool
-	only     []string
-	exclude  []string
-	stages   []Stage
+	targets      []string
+	noIgnore     bool
+	withBinaries bool
+	only         []string
+	exclude      []string
+	stages       []Stage
 
 	hasContainsFilter   bool
 	containsPattern     string
 	notContainsPatterns []string
+	hasMetadataOutput   bool
 	hasPathsOutput      bool
 	hasSnippetOutput    bool
 	snippetPattern      string
@@ -57,16 +59,18 @@ type ScopeSpec struct {
 // the same canonical scope shape.
 func ExecutionScopeFromScopeSpec(s ScopeSpec) ExecutionScope {
 	out := ExecutionScope{
-		Targets:   s.Targets(),
-		NoIgnore:  s.NoIgnore(),
-		Only:      s.OnlyPatterns(),
-		Exclude:   s.ExcludePatterns(),
-		Stages:    s.Stages(),
-		Paths:     s.HasPathsOutput(),
-		Changed:   s.Changed(),
-		Staged:    s.Staged(),
-		Unstaged:  s.Unstaged(),
-		Untracked: s.Untracked(),
+		Targets:      s.Targets(),
+		NoIgnore:     s.NoIgnore(),
+		WithBinaries: s.withBinaries,
+		Only:         s.OnlyPatterns(),
+		Exclude:      s.ExcludePatterns(),
+		Stages:       s.Stages(),
+		Paths:        s.HasPathsOutput(),
+		Metadata:     s.HasMetadataOutput(),
+		Changed:      s.Changed(),
+		Staged:       s.Staged(),
+		Unstaged:     s.Unstaged(),
+		Untracked:    s.Untracked(),
 	}
 	if s.HasContainsFilter() {
 		out.Contains = s.ContainsPattern()
@@ -128,6 +132,7 @@ func scopeSpecFromExecutionScope(s ExecutionScope) ScopeSpec {
 	return ScopeSpec{
 		targets:             cloneStringSlice(s.Targets),
 		noIgnore:            s.NoIgnore || s.HasStage(StageNoIgnore),
+		withBinaries:        s.WithBinaries || s.HasStage(StageWithBinaries),
 		only:                cloneStringSlice(s.Only),
 		exclude:             cloneStringSlice(s.Exclude),
 		stages:              cloneStages(s.Stages),
@@ -135,6 +140,7 @@ func scopeSpecFromExecutionScope(s ExecutionScope) ScopeSpec {
 		containsPattern:     s.Contains,
 		notContainsPatterns: cloneStringSlice(s.NotContains),
 		hasPathsOutput:      s.Paths || s.HasStage(StagePaths),
+		hasMetadataOutput:   s.Metadata || s.HasStage(StageMetadata),
 		hasSnippetOutput:    s.Snippet || s.HasStage(StageSnippet),
 		snippetPattern:      s.SnippetPattern,
 		snippetContextSet:   s.SnippetContextSet,
@@ -177,6 +183,7 @@ func (s ScopeSpec) HasContainsFilter() bool       { return s.hasContainsFilter }
 func (s ScopeSpec) ContainsPattern() string       { return s.containsPattern }
 func (s ScopeSpec) NotContainsPatterns() []string { return cloneStringSlice(s.notContainsPatterns) }
 func (s ScopeSpec) HasNotContainsFilter() bool    { return len(s.notContainsPatterns) > 0 }
+func (s ScopeSpec) HasMetadataOutput() bool       { return s.hasMetadataOutput }
 func (s ScopeSpec) HasPathsOutput() bool          { return s.hasPathsOutput }
 func (s ScopeSpec) HasSnippetOutput() bool        { return s.hasSnippetOutput }
 func (s ScopeSpec) SnippetPattern() string        { return s.snippetPattern }

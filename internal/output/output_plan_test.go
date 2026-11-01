@@ -165,8 +165,8 @@ func TestOutputPlanPreviewModeTagsLinesMultiEntry(t *testing.T) {
 	}
 }
 
-func TestOutputPlanPreviewModeTagsLinesDedup(t *testing.T) {
-	// Snippet wins over lines (higher priority).
+func TestOutputPlanPreviewModeTagsLinesAndSnippet(t *testing.T) {
+	// Both surviving presentations must be visible in the one file row.
 	plan := Plan{
 		items: []PlanItem{
 			newFileOutputPlanItem(PreparedFileUnit{Entry: discovery.Entry{RelPath: "snippet-wins.go", Mode: command.EntryModeLines, Lines: true, LinesStart: 1, LinesEnd: 5}, BodyBytes: 50}),
@@ -175,7 +175,7 @@ func TestOutputPlanPreviewModeTagsLinesDedup(t *testing.T) {
 	}
 	got := plan.PreviewModeTags(nil)
 	want := map[string]string{
-		"snippet-wins.go": "snippet",
+		"snippet-wins.go": "snippet + lines 1-5",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)

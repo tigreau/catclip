@@ -27,6 +27,7 @@ const (
 	targetPreviewGitHasHead
 	targetPreviewSizeKnown
 	targetPreviewSizesPending
+	targetPreviewBinary
 )
 
 // TargetPreviewInventory is the compact, immutable file universe shared by a
@@ -90,6 +91,9 @@ func WriteTargetPreviewEntryInventory(path string, gitCtx git.Context, entries [
 		}
 		for _, entry := range entries {
 			entryFlags := byte(0)
+			if entry.HasBinaryHint() {
+				entryFlags |= targetPreviewBinary
+			}
 			if entry.IgnoreBypassed {
 				entryFlags |= targetPreviewIgnored
 				if entry.BlockSource == ".hiss" {
@@ -148,8 +152,13 @@ func writeTargetPreviewInventory(w io.Writer, gitCtx git.Context, files []Target
 	if err := writeTargetPreviewInventoryHeader(w, gitCtx, len(files), opts); err != nil {
 		return err
 	}
+	workingDir, _ := os.Getwd()
 	for _, match := range files {
 		entryFlags := byte(0)
+		abs := filepath.Join(workingDir, filepath.FromSlash(match.Path))
+		if search.BinaryHint(abs, match.Path, match.SizeBytes, match.SizeKnown) {
+			entryFlags |= targetPreviewBinary
+		}
 		if match.Ignored {
 			entryFlags |= targetPreviewIgnored
 			if match.IgnoreSource == ".hiss" {
@@ -293,6 +302,7 @@ func ReadTargetPreviewInventory(path, workingDir string) (TargetPreviewInventory
 			}
 		}
 		entries = append(entries, Entry{
+			Binary:         entryFlags&targetPreviewBinary != 0,
 			AbsPath:        filepath.Join(workingDir, filepath.FromSlash(rel)),
 			RelPath:        rel,
 			GitVisible:     !ignored,

@@ -217,6 +217,9 @@ func renderEntriesWithLandmarks(w io.Writer, entries []DocumentEntry, opts Rende
 			nameColor = colors.Err
 			nameReset = colors.Reset
 		}
+		if entry.Binary {
+			nameColor, nameReset = colors.Prompt, colors.Reset
+		}
 
 		fileLine := filePrefix + nameColor + parts[fileIndex] + nameReset
 		if opts.ShowSizes && entry.Size != nil {
@@ -232,6 +235,9 @@ func renderEntriesWithLandmarks(w io.Writer, entries []DocumentEntry, opts Rende
 		}
 		if opts.ShowModeTags && entry.ModeTag != "" {
 			fileLine += " " + colors.Git + "[" + entry.ModeTag + "]" + colors.Reset
+		}
+		if entry.Binary {
+			fileLine += " " + colors.Prompt + "[binary]" + colors.Reset
 		}
 		if _, err := fmt.Fprintln(w, fileLine); err != nil {
 			return err

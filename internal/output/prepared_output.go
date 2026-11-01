@@ -23,13 +23,14 @@ type PreparedFileUnit struct {
 	Payload       []byte
 	SnippetRanges []SnippetRange
 	BodyBytes     int64
+	sourceType    string
 }
 
 func PrepareFileUnits(gitCtx git.Context, entries []discovery.Entry) ([]PreparedFileUnit, error) {
 	return prepareFileUnits(gitCtx, entries, nil)
 }
 
-func prepareFileUnits(gitCtx git.Context, entries []discovery.Entry, omissions *lineOmissions) ([]PreparedFileUnit, error) {
+func prepareFileUnits(gitCtx git.Context, entries []discovery.Entry, omissions *lineOmissions, raw ...bool) ([]PreparedFileUnit, error) {
 	if len(entries) == 0 {
 		return nil, nil
 	}
@@ -40,8 +41,12 @@ func prepareFileUnits(gitCtx git.Context, entries []discovery.Entry, omissions *
 	}
 
 	units := make([]PreparedFileUnit, 0, len(entries))
+	diffs, err := prepareDiffCache(gitCtx, entries)
+	if err != nil {
+		return nil, err
+	}
 	for _, entry := range entries {
-		unit, keep, err := prepareFileUnit(gitCtx, entry, snippetMatches, omissions)
+		unit, keep, err := prepareFileUnitForOutput(gitCtx, entry, snippetMatches, omissions, rawPreparation(raw), diffs)
 		if err != nil {
 			return nil, err
 		}
@@ -117,12 +122,23 @@ func PrepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches S
 	return prepareFileUnit(gitCtx, entry, snippetMatches, nil)
 }
 
-func prepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches SnippetMatchCache, omissions *lineOmissions) (PreparedFileUnit, bool, error) {
+func prepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches SnippetMatchCache, omissions *lineOmissions, diffCaches ...preparedDiffCache) (PreparedFileUnit, bool, error) {
+	return prepareFileUnitForOutput(gitCtx, entry, snippetMatches, omissions, false, diffCaches...)
+}
+
+func prepareFileUnitForOutput(gitCtx git.Context, entry discovery.Entry, snippetMatches SnippetMatchCache, omissions *lineOmissions, raw bool, diffCaches ...preparedDiffCache) (PreparedFileUnit, bool, error) {
+	if !raw && (entry.Mode == "" || entry.Mode == command.EntryModeFull || entry.Mode == command.EntryModeLines) {
+		checked, binary, err := prepareBinaryDescription(entry)
+		if binary || err != nil {
+			return checked, binary, err
+		}
+		entry = checked.Entry
+	}
 	unit := PreparedFileUnit{Entry: entry}
 
 	switch entry.Mode {
 	case command.EntryModeDiff:
-		payload, bodyBytes, keep, err := BuildPreparedDiffPayload(gitCtx, entry)
+		payload, bodyBytes, keep, err := buildPreparedDiffPayload(gitCtx, entry, diffCaches...)
 		if err != nil {
 			return PreparedFileUnit{}, false, err
 		}
@@ -221,6 +237,10 @@ func slicedLinesBodySize(absPath string, start, end int) (int64, int, error) {
 }
 
 func PrepareNumericSnippetRanges(entry discovery.Entry, matchedLines []int) ([]SnippetRange, int64, error) {
+	return prepareNumericSnippetRanges(entry, matchedLines, nil)
+}
+
+func prepareNumericSnippetRanges(entry discovery.Entry, matchedLines []int, blocks *[]snippetBlock) ([]SnippetRange, int64, error) {
 	ranges := buildUnclampedContextSnippetRanges(matchedLines, entry.SnippetContextLines)
 	if len(ranges) == 0 {
 		return nil, 0, nil
@@ -240,11 +260,16 @@ func PrepareNumericSnippetRanges(entry discovery.Entry, matchedLines []int) ([]S
 	lineNum := 0
 	currentHadLines := false
 	currentEnd := 0
+	var currentBytes int64
 
 	finishCurrent := func() {
 		if currentHadLines {
 			clamped = append(clamped, SnippetRange{Start: ranges[rangeIndex].Start, End: currentEnd})
+			if blocks != nil {
+				*blocks = append(*blocks, snippetBlock{bodyBytes: currentBytes})
+			}
 		}
+		currentBytes = 0
 		currentHadLines = false
 		currentEnd = 0
 		rangeIndex++
@@ -265,6 +290,7 @@ func PrepareNumericSnippetRanges(entry discovery.Entry, matchedLines []int) ([]S
 		currentHadLines = true
 		currentEnd = lineNum
 		bodyBytes += int64(len(scanner.Bytes())) + 1
+		currentBytes += int64(len(scanner.Bytes())) + 1
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, 0, err
@@ -340,6 +366,10 @@ func BuildPreparedSnippetPayloadFromSnapshot(relPath string, snapshot TextSnapsh
 // call) and feeds the same lines to all 8 widths via this entry point, avoiding
 // 8x re-splitting churn per file. Byte output is identical to the snapshot path.
 func BuildPreparedSnippetPayloadFromLines(relPath string, lines []string, matchedLines []int, opts SnippetOptions) ([]byte, int64, []SnippetRange, error) {
+	return buildSnippetPayloadFromLines(relPath, lines, matchedLines, opts, "", nil)
+}
+
+func buildSnippetPayloadFromLines(relPath string, lines []string, matchedLines []int, opts SnippetOptions, sourceType string, blocks *[]snippetBlock) ([]byte, int64, []SnippetRange, error) {
 	snippet, err := resolveSnippetFromLines(lines, matchedLines, opts, profileForPath(relPath))
 	if err != nil {
 		return nil, 0, nil, err
@@ -351,10 +381,13 @@ func BuildPreparedSnippetPayloadFromLines(relPath string, lines []string, matche
 	var payload bytes.Buffer
 	var bodyBytes int64
 	for _, r := range snippet.Ranges {
-		if _, err := fmt.Fprintf(&payload, "<file path=\"%s\" lines=\"%d-%d\">\n", relPath, r.Start, r.End); err != nil {
+		block := snippetBlock{start: payload.Len()}
+		before := bodyBytes
+		if _, err := payload.Write(buildFileOpenTagWithLines(relPath, sourceType, fmt.Sprintf("%d-%d", r.Start, r.End))); err != nil {
 			return nil, 0, nil, err
 		}
 		for i := r.Start - 1; i < r.End; i++ {
+			block.carriageReturn = block.carriageReturn || strings.HasSuffix(snippet.Lines[i], "\r")
 			if _, err := payload.WriteString(snippet.Lines[i]); err != nil {
 				return nil, 0, nil, err
 			}
@@ -366,16 +399,51 @@ func BuildPreparedSnippetPayloadFromLines(relPath string, lines []string, matche
 		if _, err := payload.Write(fileCloseTag); err != nil {
 			return nil, 0, nil, err
 		}
+		if blocks != nil {
+			block.end, block.bodyBytes = payload.Len(), bodyBytes-before
+			*blocks = append(*blocks, block)
+		}
 	}
 	return payload.Bytes(), bodyBytes, snippet.Ranges, nil
 }
 
 func BuildPreparedDiffPayload(gitCtx git.Context, entry discovery.Entry) ([]byte, int64, bool, error) {
-	diffOutput, diffType, tracked, err := DiffEntryOutput(gitCtx, entry)
+	return buildPreparedDiffPayload(gitCtx, entry)
+}
+
+func buildPreparedDiffPayload(gitCtx git.Context, entry discovery.Entry, caches ...preparedDiffCache) ([]byte, int64, bool, error) {
+	var observed diffObservation
+	var found bool
+	if len(caches) > 0 {
+		observed, found = caches[0][diffKey(entry)]
+		if found {
+			// Release batch backing strings as their last consumer prepares its
+			// wrapped payload, rather than retaining a second full patch set.
+			remaining := observed
+			remaining.uses--
+			if remaining.uses == 0 {
+				delete(caches[0], diffKey(entry))
+			} else {
+				caches[0][diffKey(entry)] = remaining
+			}
+		}
+	}
+	var err error
+	if !found {
+		observed.body, observed.kind, observed.tracked, err = DiffEntryOutput(gitCtx, entry)
+	}
+	diffOutput, diffType, tracked := observed.body, observed.kind, observed.tracked
 	if err != nil {
 		return nil, 0, false, err
 	}
 	if !tracked {
+		unit, binary, err := prepareBinaryDescription(entry)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		if binary {
+			return unit.Payload, unit.BodyBytes, true, nil
+		}
 		snapshot, err := loadBodySnapshot(entry.AbsPath, entry.RelPath)
 		if err != nil {
 			return nil, 0, false, err

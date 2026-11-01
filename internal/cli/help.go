@@ -60,6 +60,13 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: `catclip "src/*.tsx"`, Right: "React entry files directly inside src/"},
 	})
 
+	fmt.Fprintf(&b, "\n%s\n", bold("Share the project structure:"))
+	b.WriteString("  Share a file listing so an AI can suggest which files to read.\n\n")
+	writeAlignedHelpRows(&b, "  ", example, []helpRow{
+		{Left: "catclip . --paths", Right: "Copy a simple file name listing"},
+		{Left: "catclip . --metadata", Right: "Copy a detailed listing with sizes, Git status and dates"},
+	})
+
 	fmt.Fprintf(&b, "\n%s\n", bold("Interactive mode (build commands from menus):"))
 	writeAlignedHelpRows(&b, "  ", example, []helpRow{
 		{Left: "catclip --", Right: "Pick files or folders, then choose filters from menus"},
@@ -80,8 +87,6 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: "catclip src --size 0 100", Right: "Keep files up to 100 KiB, largest first"},
 		{Left: "catclip src --depth 1", Right: "Just the top level of src"},
 		{Left: "catclip . --depth 1", Right: "Copy only the files in the project root"},
-		{Left: "catclip src --paths", Right: "Emit bare relative paths, not file bodies"},
-		{Left: "catclip . --paths --then src", Right: "Show project structure, then copy React files"},
 		{Left: "catclip src --contains TODO", Right: "Find files containing specific text"},
 		{Left: "catclip src --not-contains TODO", Right: "Drop files containing TODO; keep the rest"},
 		{Left: "catclip src --snippet useAuth", Right: "Smart block around each match"},
@@ -122,8 +127,12 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 	fmt.Fprintf(&b, "    Keeps only TSX files from src, then adds the 5 most recent files from docs.\n")
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", example(`catclip . --paths --then src`))
-	fmt.Fprintf(&b, "    First emits the project structure as paths, then adds full files from src.\n")
-	fmt.Fprintf(&b, "    Useful when an AI should see the whole structure but only read the React app.\n")
+	fmt.Fprintf(&b, "    Give an AI the project structure and the code in src.\n")
+	fmt.Fprintf(&b, "    Use this for a compact overview of where files belong.\n")
+	fmt.Fprintf(&b, "\n")
+	fmt.Fprintf(&b, "  %s\n", example(`catclip . --metadata --then src`))
+	fmt.Fprintf(&b, "    Give an AI a detailed project overview and the code in src.\n")
+	fmt.Fprintf(&b, "    Also shows file sizes, estimated tokens, Git status and modification dates.\n")
 	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "  %s\n", badExample(`catclip src docs --only "*.tsx"`))
 	fmt.Fprintf(&b, "    Bad here because it would also throw away every non-TSX file in docs.\n")
@@ -158,7 +167,6 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 
 	fmt.Fprintf(&b, "\n%s\n", bold("Options:"))
 	writeAlignedHelpRows(&b, "  ", cmd, []helpRow{
-		{Left: "--metadata", Right: "Output selected-file details instead of contents"},
 		{Left: "-p, --print", Right: "Print to terminal instead of clipboard"},
 		{Left: "-r, --raw", Right: "Bare file body — no wrappers, no line numbers"},
 		{Left: "-q, --quiet", Right: "No prompts, decorations, or tree preview"},
@@ -181,9 +189,13 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — your .gitignore(s) + .hiss, merged"},
 	})
 
+	fmt.Fprintf(&b, "\n%s\n", bold("File inclusion (after targets, before filters):"))
+	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
+		{Left: "--no-ignore", Right: "Include ignored files"},
+		{Left: "-b, --with-binaries", Right: "Include binary files (images, PDFs, etc.)"},
+	})
 	fmt.Fprintf(&b, "\n%s\n", bold("Filters and modifiers:"))
 	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
-		{Left: "--no-ignore", Right: "Include ignored files below the targets (put this first)"},
 		{Left: "--only VALUE...", Right: "Keep matching files"},
 		{Left: "--exclude VALUE...", Right: "Remove matching files"},
 		{Left: "--recent [N]", Right: "Newest files first; optionally keep N"},
@@ -194,6 +206,7 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: "--snippet REGEX [N]", Right: "Copy a smart block, or N nearby lines, around each match"},
 		{Left: "--lines [START [END]]", Right: "Add line numbers; optionally keep a line range"},
 		{Left: "--paths", Right: "Copy file paths instead of file contents"},
+		{Left: "--metadata", Right: "Output selected-file details instead of contents"},
 		{Left: "--changed", Right: "Keep all changed Git files"},
 		{Left: "--staged", Right: "Keep staged Git files"},
 		{Left: "--unstaged", Right: "Keep unstaged Git files"},
@@ -269,7 +282,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 		{Left: "catclip FILE --lines 400 450", Right: "A numbered slice"},
 		{Left: "catclip FILE -r > dest", Right: "Copy a file byte-exact"},
 		{Left: "catclip TARGET --changed-diff", Right: "Git changes as patches"},
-		{Left: "catclip TARGET --metadata", Right: "Copy a selected-file report"},
+		{Left: "catclip TARGET --metadata", Right: "Copy file metadata without file contents"},
 		{Left: "catclip TARGET --metadata --print", Right: "Print that report to stdout"},
 	})
 	b.WriteString("\n")
@@ -284,10 +297,9 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("  config section; add N for fixed +/- N line windows. With neither, you get\n")
 	b.WriteString("  full file contents.\n\n")
 	fmt.Fprintf(&b, "  %s outputs a per-file report of path, size, estimated tokens,\n", flag("--metadata"))
-	b.WriteString("  git status, and modified date instead of file contents. Send that report\n")
-	b.WriteString("  to the clipboard by default, or add --print for stdout.\n")
-	b.WriteString("  Read small files whole, snippet the large ones, skip the rest, instead of\n")
-	b.WriteString("  reading blind.\n\n")
+	b.WriteString("  git status, and modified date for the selected files, without their contents.\n")
+	b.WriteString("  An AI can use this overview to suggest which files to share next.\n")
+	b.WriteString("  Copy it to the clipboard by default, or add --print for stdout.\n\n")
 	b.WriteString("  catclip replaces find + grep + cat pipelines with a single command.\n")
 	b.WriteString("  One process handles discovery, filtering, content matching, and output —\n")
 	b.WriteString("  no per-file fork overhead. Faster than per-file cat loops on large codebases.\n")
@@ -438,7 +450,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("  When the result is the same, narrow by file name, path, or depth before\n")
 	b.WriteString("  searching file contents, so fewer files need to be read.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("[all discovered files under TARGET]"))
-	fmt.Fprintf(&b, "    → %s          adds every ignored path below the targets (must be first)\n", flag("--no-ignore"))
+	fmt.Fprintf(&b, "    → %s          adds every ignored path below the targets (before filters)\n", flag("--no-ignore"))
 	fmt.Fprintf(&b, "    → %s      keeps files matching PATTERN; discards rest\n", flag("--only PATTERN"))
 	fmt.Fprintf(&b, "    → %s   removes files matching PATTERN; keeps rest\n", flag("--exclude PATTERN"))
 	fmt.Fprintf(&b, "    → %s          sorts by mtime, keeps top N\n", flag("--recent N"))
@@ -448,7 +460,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	fmt.Fprintf(&b, "    → %s removes files whose contents DO match\n", flag("--not-contains REGEX"))
 	fmt.Fprintf(&b, "    → %s           removes files not changed in git\n", flag("--changed"))
 	fmt.Fprintf(&b, "    → output shape        %s | %s | %s\n\n", flag("--paths"), flag("--snippet REGEX"), flag("--*-diff"))
-	fmt.Fprintf(&b, "  %s must be the first modifier in its scope.\n", flag("--no-ignore"))
+	fmt.Fprintf(&b, "  %s and --with-binaries go immediately after targets, before filters.\n", flag("--no-ignore"))
 	b.WriteString("  Other modifiers can appear multiple times. Each occurrence\n")
 	b.WriteString("  is a separate step.\n\n")
 	fmt.Fprintf(&b, "    %s\n", example(`catclip src --only "*.tsx" --exclude "*.test.tsx" --recent 3`))
@@ -482,8 +494,16 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("  # The same combined-set rule applies to --size within each scope.\n\n")
 	fmt.Fprintf(&b, "  %s\n", example("catclip . --paths --then src"))
 	b.WriteString("  # Scope 1: full repo listing as paths  |  Scope 2: full file bodies from src\n\n")
+	fmt.Fprintf(&b, "  %s\n", example("catclip . --metadata --then src"))
+	b.WriteString("  # Scope 1: project overview with file details  |  Scope 2: code from src\n\n")
 	fmt.Fprintf(&b, "  Without %s, all targets share the same modifiers.\n", flag("--then"))
-	b.WriteString("  Overlapping scopes are deduplicated by path in output.\n")
+	b.WriteString("  Repeated full files appear once. Focused snippets, line ranges and patches\n")
+	b.WriteString("  replace overlapping full bodies, regardless of scope order. Different\n")
+	b.WriteString("  excerpts survive together; identical excerpts with the same presentation\n")
+	b.WriteString("  appear once. Patches can accompany snippets/ranges, and staged/unstaged\n")
+	b.WriteString("  comparisons stay separate. Path lists and metadata remain independent of file content.\n")
+	b.WriteString("  Untracked diff fallback is source content: excerpts replace its full body\n")
+	b.WriteString("  and retain type=\"untracked\". One output mode per scope still applies.\n")
 	b.WriteString("  An empty snippet or diff omits an overlapping whole file, in either scope order.\n")
 	b.WriteString("  Other files still emit. An entirely empty refinement scope gets a notice\n")
 	b.WriteString("  below the tree (plain stderr in --headless); no output keeps exit status 1.\n\n")
@@ -507,7 +527,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("                    payload and thousands of files — far more than you want\n")
 	b.WriteString("                    on a clipboard or in a prompt.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("Rules:"))
-	fmt.Fprintf(&b, "    1. %s must be the first modifier in a scope\n", flag("--no-ignore"))
+	fmt.Fprintf(&b, "    1. %s and --with-binaries precede filters in their own scope\n", flag("--no-ignore"))
 	fmt.Fprintf(&b, "    2. It applies only below that scope's targets; use %s for another policy\n", flag("--then"))
 	b.WriteString("    3. Filters such as --only and --exclude do not bypass ignore rules\n")
 	b.WriteString("    4. A fuzzy query sees ignored candidates only with --no-ignore\n\n")
@@ -599,7 +619,12 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("    PATH                              SIZE      TOKENS   GIT   MODIFIED\n")
 	b.WriteString("    src/components/Button.tsx         2.14KB      ~547   M     Today\n")
 	b.WriteString("    src/components/Header.tsx         1.05KB      ~256   -     Jun 3, 2026\n")
-	b.WriteString("    (selected-file details replace contents; clipboard by default)\n\n")
+	b.WriteString("    (selected-file details replace contents in this scope; clipboard by default)\n")
+	b.WriteString("    Combine structure and code: catclip . --metadata --then src/auth.go\n")
+	b.WriteString("    --contains and --not-contains can filter files before --metadata.\n")
+	b.WriteString("    They search text files only; -b does not keep binaries in those results.\n")
+	b.WriteString("    Paths, lines, snippets and diffs are alternative output modes within a scope.\n")
+	b.WriteString("    Use --then to combine them with metadata. --raw remains incompatible.\n\n")
 	fmt.Fprintf(&b, "  %s (%s):\n", bold("No emission"), flag("--no"))
 	b.WriteString("    Render the normal selection tree and summary to stdout, then stop.\n")
 	b.WriteString("    No file contents are emitted and the clipboard is left unchanged.\n")
@@ -673,9 +698,19 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 
 	// ── Reference table ─────────────────────────────────────────────────
 	head("MODIFIER REFERENCE")
+	fmt.Fprintf(&b, "  %s\n", bold("File inclusion (after targets, before filters):"))
+	writeAlignedHelpRows(&b, "    ", flag, []helpRow{
+		{Left: "--no-ignore", Right: "Include ignored files"},
+		{Left: "-b, --with-binaries", Right: "Include binary files (images, PDFs, etc.)"},
+	})
+	b.WriteString("  Use either option or both, in either order. --then starts a fresh scope.\n")
+	b.WriteString("  An existing file's complete relative path includes it even if ignored or binary.\n")
+	b.WriteString("  Binary files contribute file details instead of contents to formatted output.\n")
+	b.WriteString("  This includes text bundles; separate binary attachments are not yet supported.\n")
+	b.WriteString("  --contains, --not-contains and --snippet search text files only, even with -b.\n")
+	b.WriteString("  Binaries are excluded from their results. Git patches cannot share a scope with -b.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("Scope modifiers (per-scope, left to right):"))
 	writeAlignedHelpRows(&b, "    ", flag, []helpRow{
-		{Left: "--no-ignore", Right: "Include every ignored path below targets (must be first)"},
 		{Left: "--only VALUE...", Right: "Keep matches by name, path, subtree, or glob"},
 		{Left: "--exclude VALUE...", Right: "Remove matches by name, path, subtree, or glob"},
 		{Left: "--recent [N]", Right: "Sort by mtime; optional top-N"},
@@ -686,6 +721,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 		{Left: "--snippet REGEX [N]", Right: "Smart block around matches, or +/- N line context"},
 		{Left: "--lines [START [END]]", Right: "Line numbers; optional range slice"},
 		{Left: "--paths", Right: "Emit bare paths instead of file bodies"},
+		{Left: "--metadata", Right: "Selected-file details instead of contents"},
 		{Left: "--changed", Right: "Git-modified files"},
 		{Left: "--staged", Right: "Git index files"},
 		{Left: "--unstaged", Right: "Tracked working-tree changes"},
@@ -707,8 +743,6 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 		{Left: "-t, --no-tree", Right: "Skip tree preview"},
 		{Left: "--no-bundle", Right: "Force text clipboard; skip bundle file for ≥4KB output"},
 		{Left: "-v, --verbose", Right: "Debug info and timings"},
-		{Left: "--metadata", Right: "Selected-file details instead of contents"},
-		{Left: "--with-binaries", Right: "Include binary files in discovery"},
 		{Left: "--hiss", Right: "Edit catclip's own ignore rules (on top of .gitignore)"},
 		{Left: "--hiss-reset", Right: "Reset catclip's ignore rules to defaults"},
 		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — .gitignore(s) + .hiss, merged"},

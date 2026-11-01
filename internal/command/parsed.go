@@ -26,9 +26,8 @@ const (
 	OutputModeStdout    OutputMode = "stdout"
 )
 
-// PayloadKind identifies the invocation-wide final payload representation.
-// Scope output modes describe file-content projections; metadata instead
-// replaces the complete invocation payload and therefore lives here.
+// PayloadKind selects the dedicated all-metadata transport when every scope
+// requests metadata. Mixed scope output uses the sectioned content transport.
 type PayloadKind uint8
 
 const (

@@ -340,7 +340,7 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 	if cfg.PayloadKind == command.PayloadMetadata {
 		plan, err = output.BuildMetadataPlanForDiscoveredInvocation(cfg.WorkingDir, discoveryResult.Invocation)
 	} else {
-		plan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+		plan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation, cfg.Raw)
 	}
 	finishPlanBench("err", platform.InternalBenchError(err))
 	if err != nil {
@@ -357,12 +357,18 @@ func buildStartupSinkPickerContext(args []string) (StartupSinkPickerContext, err
 		"paths", platform.InternalBenchInt(planPathCount),
 	)
 	report, err := output.BuildReportForPlan(gitCtx, plan, output.ReportOptions{
-		IncludeTreeMetadata: NeedsTreeRender(renderCfg) || cfg.PayloadKind == command.PayloadMetadata,
+		IncludeTreeMetadata: NeedsTreeRender(renderCfg) || cfg.PayloadKind == command.PayloadMetadata || plan.HasMetadata(),
 		Notices:             discovery.DedupePreserveOrder(discoveryResult.Notices),
 	})
 	finishReportBench("err", platform.InternalBenchError(err))
 	if err != nil {
 		return StartupSinkPickerContext{}, err
+	}
+	if plan.HasMetadata() && cfg.EmissionPolicy != command.EmissionNever {
+		plan, report, err = PrepareScopeMetadata(cfg.WorkingDir, gitCtx, discoveryResult.Invocation.Scopes, plan, report)
+		if err != nil {
+			return StartupSinkPickerContext{}, err
+		}
 	}
 	var metadata *MetadataReport
 	if cfg.PayloadKind == command.PayloadMetadata && cfg.EmissionPolicy != command.EmissionNever {
@@ -418,7 +424,7 @@ func measureOutputForSinkMenu(plan output.Plan, emitCfg output.EmitConfig) sinkP
 	// Syntax coloring is preview-only; ANSI bytes must not affect transport.
 	bytes := preview.FullBytes
 	m := sinkPayloadMeasurement{Bytes: bytes, WouldBundle: preview.Truncated || bytes >= output.BundleThreshold}
-	if !preview.Truncated {
+	if !preview.Truncated && !bytesContainBinaryPreviewData(preview.Body) && !plan.HasBinaryHint() && !plan.HasMetadata() {
 		m.RawPreview = &preview
 	}
 	return m
@@ -478,7 +484,7 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 		NoSort:         true,
 		Exact:          true,
 		Lines:          lines,
-	}, ctx.Config.PayloadKind == command.PayloadMetadata))
+	}, ctx.Config.PayloadKind == command.PayloadMetadata || ctx.Plan.HasMetadata()))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return nil, true, discovery.ErrSelectionCancelled
 	}
@@ -736,18 +742,10 @@ func (w sinkDecisionWriter) Write(body []byte) (int, error) {
 }
 
 func readSinkOutputTextPreview(ctx context.Context, plan output.Plan, emitCfg output.EmitConfig, limit int64, decisionOnly bool) (sinkPreview, error) {
-	// The output-text preview shows the exact bytes the chosen sink will
-	// emit (file wrappers, line numbers, paths, raw bodies, diffs — all
-	// shape choices the user made via flags). Syntax highlighting is
-	// applied to file bodies inside <file>...</file> wrappers for
-	// readability; the wrappers themselves stay verbatim. Modes without
-	// wrappers (--raw, --paths) pass through unhighlighted, matching the
-	// emit shape exactly.
-	//
-	// The byte limit is applied to the EMIT bytes (what the sink would
-	// actually paste). Highlighting adds ANSI escapes on top; the final
-	// preview pane bytes may exceed the limit, but the truncation
-	// decision still reflects the raw emit size.
+	// Preserve the emit shape for text. Binary display units use explicitly
+	// labelled metadata, without changing the plan or actual sink payload.
+	// The decision-only pass always measures real bytes; preview substitutions
+	// cannot influence bundle thresholds or claim an exact payload size.
 	var buf bytes.Buffer
 	w := output.NewPreviewCapWriter(&buf, ctx, limit)
 	if err := ctx.Err(); err != nil {
@@ -757,7 +755,15 @@ func readSinkOutputTextPreview(ctx context.Context, plan output.Plan, emitCfg ou
 	if decisionOnly {
 		dest = sinkDecisionWriter{PreviewCapWriter: w, limit: limit}
 	}
-	err := output.WriteOutputPlanPayloadWithoutPrefetch(dest, emitCfg, plan)
+	var err error
+	replaced := plan.HasMetadata() && !decisionOnly
+	if decisionOnly {
+		err = output.WriteOutputPlanPayloadWithoutPrefetch(dest, emitCfg, plan)
+	} else {
+		err = output.WriteOutputPlanPreview(dest, emitCfg, plan, func(w io.Writer, unit output.PreparedFileUnit) (bool, error) {
+			return presentSinkFileUnit(ctx, w, unit, emitCfg.Raw, limit, &replaced)
+		}, platform.ANSIPalette())
+	}
 	if err != nil && !errors.Is(err, output.ErrPreviewLimitReached) {
 		return sinkPreview{}, err
 	}
@@ -770,7 +776,7 @@ func readSinkOutputTextPreview(ctx context.Context, plan output.Plan, emitCfg ou
 		Mode:           sinkPreviewModeOutputText,
 		Body:           buf.Bytes(),
 		Truncated:      truncated,
-		FullBytesKnown: !truncated,
+		FullBytesKnown: !truncated && !replaced,
 		FullBytes:      rawSize,
 	}, nil
 }

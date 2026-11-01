@@ -8,6 +8,7 @@ type StageKind string
 
 const (
 	StageNoIgnore     StageKind = "no-ignore"
+	StageWithBinaries StageKind = "with-binaries"
 	StageOnly         StageKind = "only"
 	StageExclude      StageKind = "exclude"
 	StageRecent       StageKind = "recent"
@@ -20,6 +21,7 @@ const (
 	StageUnstaged     StageKind = "unstaged"
 	StageUntracked    StageKind = "untracked"
 	StagePaths        StageKind = "paths"
+	StageMetadata     StageKind = "metadata"
 	StageDiff         StageKind = "diff"
 	StageSnippet      StageKind = "snippet"
 	StageChangedDiff  StageKind = "changed-diff"

@@ -10,6 +10,7 @@ import "strings"
 type ExecutionScope struct {
 	Targets        []string
 	NoIgnore       bool
+	WithBinaries   bool
 	Only           []string
 	Exclude        []string
 	Contains       string
@@ -25,6 +26,7 @@ type ExecutionScope struct {
 	LinesStart          int
 	LinesEnd            int
 	Stages              []Stage
+	Metadata            bool
 	Paths               bool
 	Snippet             bool
 	Changed             bool
@@ -100,7 +102,7 @@ func IsDirectModeEligible(invocation Invocation, scope ExecutionScope) bool {
 	if !hasContains && !hasSnippet && !hasNotContains {
 		return false
 	}
-	if invocation.WithBinaries {
+	if invocation.WithBinaries || scope.WithBinaries {
 		return false
 	}
 	if scope.NoIgnore {
@@ -123,7 +125,7 @@ func IsDirectModeEligible(invocation Invocation, scope ExecutionScope) bool {
 	}
 	for _, stage := range scope.Stages {
 		switch stage.Kind {
-		case StageContains, StageSnippet, StageNotContains, StagePaths, StageLines:
+		case StageContains, StageSnippet, StageNotContains, StagePaths, StageMetadata, StageLines:
 			// Content predicates (contains / snippet / not-contains)
 			// each map cleanly to one rg call. Terminal/output stages
 			// (paths / lines) don't change the file set.

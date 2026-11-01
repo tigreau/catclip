@@ -695,7 +695,7 @@ func TestRunMetadataSizePreservesLargestFirstOrder(t *testing.T) {
 		"zzz-big.txt":    strings.Repeat("b", 2048),
 	})
 
-	cfg := parseInProject(t, project, []string{"--quiet", "--metadata", "--print", ".", "--only", "*.txt", "--size"})
+	cfg := parseInProject(t, project, []string{"--quiet", "--print", ".", "--only", "*.txt", "--size", "--metadata"})
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -1410,10 +1410,10 @@ func TestRunPathsThenFilesSeparatesKindsWithSingleBlankLine(t *testing.T) {
 	}
 }
 
-func TestMetadataRejectsPathsInAnyThenScope(t *testing.T) {
+func TestMetadataAllowsPathsInAnotherThenScope(t *testing.T) {
 	_, err := cli.ParseArgs([]string{"main.go", "--paths", "--then", "main.go", "--metadata"})
-	if err == nil || !strings.Contains(err.Error(), "--metadata and --paths cannot be combined") {
-		t.Fatalf("expected invocation-wide metadata/paths conflict, got %v", err)
+	if err != nil {
+		t.Fatalf("separate scope metadata/paths conflict: %v", err)
 	}
 }
 
@@ -1859,7 +1859,7 @@ func TestRunExcludesWindowsSystemFiles(t *testing.T) {
 	}
 }
 
-func TestRunWithBinariesErrorsWithContains(t *testing.T) {
+func TestRunWithBinariesAllowsContains(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('ok')\n",
 	})
@@ -1868,16 +1868,13 @@ func TestRunWithBinariesErrorsWithContains(t *testing.T) {
 	_ = os.Chdir(project)
 	defer os.Chdir(wd)
 
-	_, err := cli.ParseArgs([]string{"--quiet", "--print", "--with-binaries", ".", "--contains", "pattern"})
-	if err == nil {
-		t.Fatalf("expected error for --with-binaries + --contains, got nil")
-	}
-	if !strings.Contains(err.Error(), "--with-binaries cannot be combined with --contains") {
-		t.Fatalf("expected --with-binaries + --contains error, got: %v", err)
+	_, err := cli.ParseArgs([]string{"--quiet", "--print", ".", "--with-binaries", "--contains", "pattern"})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestRunWithBinariesErrorsWithSnippet(t *testing.T) {
+func TestRunWithBinariesAllowsSnippet(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"src/main.ts": "console.log('ok')\n",
 	})
@@ -1886,12 +1883,9 @@ func TestRunWithBinariesErrorsWithSnippet(t *testing.T) {
 	_ = os.Chdir(project)
 	defer os.Chdir(wd)
 
-	_, err := cli.ParseArgs([]string{"--quiet", "--print", "--with-binaries", ".", "--snippet", "pattern"})
-	if err == nil {
-		t.Fatalf("expected error for --with-binaries + --snippet, got nil")
-	}
-	if !strings.Contains(err.Error(), "--with-binaries cannot be combined with --snippet") {
-		t.Fatalf("expected --with-binaries + --snippet error, got: %v", err)
+	_, err := cli.ParseArgs([]string{"--quiet", "--print", ".", "--with-binaries", "--snippet", "pattern"})
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1904,7 +1898,7 @@ func TestRunWithBinariesErrorsWithDiff(t *testing.T) {
 	_ = os.Chdir(project)
 	defer os.Chdir(wd)
 
-	_, err := cli.ParseArgs([]string{"--quiet", "--print", "--with-binaries", ".", "--changed-diff"})
+	_, err := cli.ParseArgs([]string{"--quiet", "--print", ".", "--with-binaries", "--changed-diff"})
 	if err == nil {
 		t.Fatalf("expected error for --with-binaries + --changed-diff, got nil")
 	}
@@ -3243,7 +3237,7 @@ func TestRunDirectTargetOverridesDefaultHissForTextFile(t *testing.T) {
 		"docs/setup.inf": "[Version]\nSignature=\"$Windows NT$\"\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--metadata", "--print", "docs/setup.inf"})
+	cfg := parseInProject(t, project, []string{"docs/setup.inf", "--metadata", "--print"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3398,7 +3392,7 @@ func TestRunMetadataRendersReport(t *testing.T) {
 		"tests/ignored.test.ts": "ignored\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--metadata", "--print", "src"})
+	cfg := parseInProject(t, project, []string{"src", "--metadata", "--print"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3453,7 +3447,7 @@ func TestRunMetadataNoDoesNotRunMetadataIgnoreTrace(t *testing.T) {
 		"src/main.go": "package main\n",
 	})
 	initGitRepo(t, project)
-	cfg := parseInProject(t, project, []string{"--metadata", "--no", "src"})
+	cfg := parseInProject(t, project, []string{"src", "--metadata", "--no"})
 	var metadataScans int
 	restore := search.SetMembershipEnumerationObserver(func(event search.MembershipEnumerationEvent) {
 		if event.Context.Reason == search.MembershipReasonMetadataIgnoreTrace {
@@ -3479,7 +3473,7 @@ func TestRunMetadataNoIgnoreOmitsIgnoreSection(t *testing.T) {
 		"assets/logo.png": "\x00PNG\n",
 	})
 	initGitRepo(t, project)
-	cfg := parseInProject(t, project, []string{"--metadata", "--print", "--quiet", "--with-binaries", ".", "--no-ignore"})
+	cfg := parseInProject(t, project, []string{"--print", "--quiet", ".", "--with-binaries", "--no-ignore", "--metadata"})
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
@@ -3511,7 +3505,7 @@ func TestRunMetadataReportsOnlyCausalIgnoreSources(t *testing.T) {
 		t.Fatal(err)
 	}
 	initGitRepo(t, project)
-	cfg := parseInProject(t, project, []string{"--metadata", "--print", "--quiet", "src"})
+	cfg := parseInProject(t, project, []string{"--print", "--quiet", "src", "--metadata"})
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
@@ -3545,7 +3539,7 @@ func TestRunMetadataThenProducesOneScopeAwareReport(t *testing.T) {
 		"src/a.go":  "package a\n",
 		"docs/a.md": "# A\n",
 	})
-	cfg := parseInProject(t, project, []string{"src", "--then", "docs", "--metadata", "--print", "--quiet"})
+	cfg := parseInProject(t, project, []string{"src", "--metadata", "--then", "docs", "--metadata", "--print", "--quiet"})
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatalf("run returned error: %v", err)
@@ -3566,7 +3560,7 @@ func TestRunMetadataShowsResolvedNestedTargetPath(t *testing.T) {
 		".cache/babel-loader/abc.json": "ok\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--metadata", "--print", "babel-loader"})
+	cfg := parseInProject(t, project, []string{"babel-loader", "--metadata", "--print"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3616,7 +3610,7 @@ func TestRunMetadataTracesScopeEmptiedByFilter(t *testing.T) {
 		"selected.go":                    "package selected\n",
 	})
 	cfg := parseInProject(t, project, []string{
-		"unique-scope", "--only", "definitely-no-match-*",
+		"unique-scope", "--only", "definitely-no-match-*", "--metadata",
 		"--then", "selected.go", "--metadata", "--headless",
 	})
 
@@ -3642,7 +3636,7 @@ func TestRunMetadataDoesNotShowTreeTargetHint(t *testing.T) {
 		"src/a.ts": "const ok = true\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--metadata", "--print", "src"})
+	cfg := parseInProject(t, project, []string{"src", "--metadata", "--print"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -3659,7 +3653,7 @@ func TestRunMetadataNoTreeDoesNotSuppressPayload(t *testing.T) {
 		"src/a.ts": "const ok = true\n",
 	})
 
-	cfg := parseInProject(t, project, []string{"--metadata", "--print", "--no-tree", "src"})
+	cfg := parseInProject(t, project, []string{"--print", "--no-tree", "src", "--metadata"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -4087,7 +4081,7 @@ func TestRunMetadataShowsGitStatusMarkers(t *testing.T) {
 	writeProjectFile(t, project, "bothstate.txt", "three\n")
 	writeProjectFile(t, project, "new.txt", "brand new\n")
 
-	cfg := parseInProject(t, project, []string{"--metadata", "--print", "."})
+	cfg := parseInProject(t, project, []string{".", "--metadata", "--print"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
@@ -4172,7 +4166,7 @@ func TestRunMetadataSkipsTrackedFileSymlink(t *testing.T) {
 
 	initGitRepo(t, project)
 
-	cfg := parseInProject(t, project, []string{"--metadata", "--print", "."})
+	cfg := parseInProject(t, project, []string{".", "--metadata", "--print"})
 
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {

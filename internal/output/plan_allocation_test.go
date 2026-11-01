@@ -24,6 +24,11 @@ func TestPlanAllocationStrategyPreservesScopesAndPayload(t *testing.T) {
 	}
 	rng := rand.New(rand.NewSource(74))
 	for iteration := 0; iteration < 150; iteration++ {
+		// The frozen oracle covers allocation, not the deliberately replaced
+		// cross-scope mode-priority policy. Use one request per path here;
+		// then_merge_test.go checks distinct requests and their actual output.
+		modes := map[string]int{"a.txt": rng.Intn(5), "b.txt": rng.Intn(5), "c.txt": rng.Intn(5)}
+		numeric := rng.Intn(2) == 0
 		var inv discovery.Discovered
 		for s := 0; s < rng.Intn(7); s++ {
 			scope := discovery.Scope{Scope: command.ExecutionScope{Paths: rng.Intn(2) == 0}}
@@ -33,7 +38,7 @@ func TestPlanAllocationStrategyPreservesScopesAndPayload(t *testing.T) {
 			for e := 0; e < rng.Intn(20); e++ {
 				name := []string{"a.txt", "b.txt", "c.txt"}[rng.Intn(3)]
 				entry := discovery.Entry{RelPath: name, AbsPath: filepath.Join(root, name), SizeKnown: true, SizeBytes: int64(len(body)), Mode: command.EntryModeFull}
-				switch rng.Intn(5) {
+				switch modes[name] {
 				case 1:
 					entry.Mode, entry.LinesStart, entry.LinesEnd = command.EntryModeLines, 1, 1
 				case 2:
@@ -42,7 +47,7 @@ func TestPlanAllocationStrategyPreservesScopesAndPayload(t *testing.T) {
 					entry.Mode, entry.LinesStart, entry.LinesEnd = command.EntryModeLines, 99, 100
 				case 4:
 					entry.Mode, entry.SnippetPattern, entry.SnippetMatchLines = command.EntryModeSnippet, "KEEP", []int{2}
-					entry.SnippetContextSet = rng.Intn(2) == 0
+					entry.SnippetContextSet = numeric
 				}
 				if rng.Intn(2) == 0 {
 					entry.TargetRoot = "."

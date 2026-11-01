@@ -258,6 +258,13 @@ func contentMatchRowsForScope(cfg contentMatchListConfig) ([]contentMatchRow, er
 		return rows, nil
 	}
 
+	if currentScope.WithBinaries || cfg.Invocation.WithBinaries {
+		discovered.Entries, err = discovery.TextEntries(discovered.Entries, cfg.Invocation.WorkingDir)
+		if err != nil {
+			finishBench("err", platform.InternalBenchError(err))
+			return nil, err
+		}
+	}
 	finishRowsBench := platform.InternalBenchSpan("ui.content_match.first_match_rows",
 		"entries", platform.InternalBenchInt(len(discovered.Entries)),
 	)
@@ -363,6 +370,7 @@ func scopeWithoutTerminalLiveContentMatchStage(scope command.ExecutionScope) (co
 // keeps the metadata together so large-scope picker reloads do not scan content
 // twice for the live query.
 func contentMatchRowsWithFirstMatchLines(entries []discovery.Entry, pattern string) ([]contentMatchRow, error) {
+	entries = discovery.ExcludeKnownBinaryEntries(entries)
 	if len(entries) == 0 || strings.TrimSpace(pattern) == "" {
 		return nil, nil
 	}

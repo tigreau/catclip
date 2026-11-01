@@ -110,7 +110,7 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 		if err := ValidateScopeStageOrder(current.Stages); err != nil {
 			return err
 		}
-		if cfg.WithBinaries {
+		if s.WithBinaries {
 			if err := validateWithBinariesCompatibility(s); err != nil {
 				return err
 			}
@@ -177,14 +177,20 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			cfg.Headless = true
 		case "-r", "--raw":
 			cfg.Raw = true
-		case "--with-binaries":
-			cfg.WithBinaries = true
+		case "-b", "--with-binaries":
+			inModifierMode = true
+			lastNoValueModifier = arg
+			current.WithBinaries = true
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageWithBinaries})
 		case "-t", "--no-tree":
 			cfg.NoTree = true
 		case "--no-bundle":
 			cfg.NoBundle = true
 		case "--metadata":
-			cfg.PayloadKind = command.PayloadMetadata
+			inModifierMode = true
+			current.Metadata = true
+			current.Stages = append(current.Stages, command.Stage{Kind: command.StageMetadata})
+			lastNoValueModifier = arg
 		case "--internal-tree-preview":
 			cfg.TreePreview = true
 		case "--input-dir":
@@ -586,26 +592,15 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 	}
 
 	cfg.Command = command.FinalizedSpecFromExecutionScopes(executionScopes)
+	cfg.PayloadKind = command.ScopesPayloadKind(executionScopes)
 
 	return cfg, nil
 }
 
-func validatePayloadCompatibility(kind command.PayloadKind, raw bool, scopes []command.ExecutionScope) error {
-	if kind != command.PayloadMetadata {
-		return nil
-	}
-	if raw {
-		return MetadataOutputConflictError("--raw")
-	}
+func validatePayloadCompatibility(_ command.PayloadKind, raw bool, scopes []command.ExecutionScope) error {
 	for _, scope := range scopes {
-		for _, stage := range scope.Stages {
-			switch stage.Kind {
-			case command.StagePaths, command.StageLines, command.StageSnippet,
-				command.StageDiff, command.StageChangedDiff, command.StageStagedDiff,
-				command.StageUnstagedDiff:
-				flag, _ := command.StageFlag(stage.Kind)
-				return MetadataOutputConflictError(flag)
-			}
+		if scope.Metadata && raw {
+			return MetadataOutputConflictError("--raw")
 		}
 	}
 	return nil
@@ -698,15 +693,6 @@ func readStdinPathValues(stdin io.Reader) ([]string, []string, error) {
 }
 
 func validateWithBinariesCompatibility(s command.ExecutionScope) error {
-	if s.Contains != "" {
-		return newUsageError("Error: --with-binaries cannot be combined with --contains.\n  --contains searches file content, which is not meaningful for binary files.")
-	}
-	if len(s.NotContains) > 0 {
-		return newUsageError("Error: --with-binaries cannot be combined with --not-contains.\n  --not-contains searches file content, which is not meaningful for binary files.")
-	}
-	if s.Snippet {
-		return newUsageError("Error: --with-binaries cannot be combined with --snippet.\n  --snippet extracts content blocks, which is not meaningful for binary files.")
-	}
 	if s.Diff {
 		return newUsageError("Error: --with-binaries cannot be combined with diff output.\n  Diff output operates on file content, which is not meaningful for binary files.")
 	}

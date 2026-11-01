@@ -106,6 +106,9 @@ const (
 // discovery generation and output plan. Binary classification, when needed,
 // is restricted to those already-selected paths and cannot expand membership.
 func BuildMetadataReport(workingDir string, gitCtx git.Context, scopes []discovery.Scope, plan output.Plan, report output.Report, withBinaries bool, now time.Time) (*MetadataReport, error) {
+	for _, scope := range scopes {
+		withBinaries = withBinaries || scope.Scope.WithBinaries
+	}
 	finishBench := platform.InternalBenchSpan("ui.metadata.build", "items", platform.InternalBenchInt(plan.Len()))
 	defer finishBench()
 	finishStats := platform.InternalBenchSpan("ui.metadata.ensure_stats")
@@ -216,7 +219,7 @@ func metadataScopeSummary(scope command.ExecutionScope) string {
 	filtered.NoIgnore = false
 	filtered.Stages = make([]command.Stage, 0, len(scope.Stages))
 	for _, stage := range scope.Stages {
-		if stage.Kind != command.StageNoIgnore {
+		if stage.Kind != command.StageNoIgnore && stage.Kind != command.StageMetadata {
 			filtered.Stages = append(filtered.Stages, stage)
 		}
 	}
@@ -247,6 +250,7 @@ func populateMetadataIgnoreTrace(workingDir string, scopes []discovery.Scope, su
 	matchers := make([]metadataScopeMatcher, len(scopes))
 	wide := false
 	rootSet := make(map[string]struct{})
+	rootKinds := make(map[string]discovery.ResolvedTargetKind)
 	for i, scope := range scopes {
 		if metadataScopeNoIgnore(scope) {
 			continue
@@ -264,6 +268,9 @@ func populateMetadataIgnoreTrace(workingDir string, scopes []discovery.Scope, su
 		for _, root := range roots {
 			rootSet[metadataSlashPath(root)] = struct{}{}
 		}
+		for _, target := range scope.ResolvedTargets {
+			rootKinds[metadataSlashPath(target.Path)] = target.Kind
+		}
 	}
 	if len(active) == 0 {
 		return nil
@@ -274,7 +281,7 @@ func populateMetadataIgnoreTrace(workingDir string, scopes []discovery.Scope, su
 		for root := range rootSet {
 			roots = append(roots, root)
 		}
-		roots = compactMetadataRoots(workingDir, roots)
+		roots = compactMetadataRoots(workingDir, roots, rootKinds)
 	}
 	hissPath := discovery.GlobalHissPath()
 	if !metadataRegularFile(hissPath) {
@@ -447,7 +454,7 @@ func (matcher metadataScopeMatcher) matches(value string) bool {
 	return false
 }
 
-func compactMetadataRoots(workingDir string, roots []string) []string {
+func compactMetadataRoots(workingDir string, roots []string, knownKinds ...map[string]discovery.ResolvedTargetKind) []string {
 	sort.Slice(roots, func(i, j int) bool {
 		leftDepth, rightDepth := strings.Count(roots[i], "/"), strings.Count(roots[j], "/")
 		if leftDepth != rightDepth {
@@ -456,17 +463,30 @@ func compactMetadataRoots(workingDir string, roots []string) []string {
 		return roots[i] < roots[j]
 	})
 	kept := make([]string, 0, len(roots))
+	dirs := make(map[string]struct{}, len(roots))
+	seen := make(map[string]struct{}, len(roots))
 	for _, root := range roots {
-		covered := false
-		for _, parent := range kept {
-			info, err := os.Stat(filepath.Join(workingDir, filepath.FromSlash(parent)))
-			if err == nil && info.IsDir() && strings.HasPrefix(root, strings.TrimSuffix(parent, "/")+"/") {
-				covered = true
-				break
-			}
+		if _, duplicate := seen[root]; duplicate {
+			continue
 		}
-		if !covered {
-			kept = append(kept, root)
+		seen[root] = struct{}{}
+		if metadataAncestorInSet(root, dirs) {
+			continue
+		}
+		kept = append(kept, root)
+		var kind discovery.ResolvedTargetKind
+		if len(knownKinds) > 0 {
+			kind = knownKinds[0][root]
+		}
+		// Production scopes retain target kinds. Legacy/manual callers pay at
+		// most one stat per retained root, never one per pair of roots.
+		isDir := kind == discovery.ResolvedTargetDir
+		if kind == "" {
+			info, err := os.Stat(filepath.Join(workingDir, filepath.FromSlash(root)))
+			isDir = err == nil && info.IsDir()
+		}
+		if isDir {
+			dirs[root] = struct{}{}
 		}
 	}
 	return kept
@@ -474,19 +494,29 @@ func compactMetadataRoots(workingDir string, roots []string) []string {
 
 func compactMetadataStringRoots(roots []string) []string {
 	kept := roots[:0]
+	dirs := make(map[string]struct{}, len(roots))
 	for _, root := range roots {
-		covered := false
-		for _, parent := range kept {
-			if root == parent || strings.HasPrefix(root, strings.TrimSuffix(parent, "/")+"/") {
-				covered = true
-				break
-			}
+		if _, duplicate := dirs[root]; duplicate {
+			continue
 		}
-		if !covered {
+		if !metadataAncestorInSet(root, dirs) {
 			kept = append(kept, root)
+			dirs[root] = struct{}{}
 		}
 	}
 	return kept
+}
+
+func metadataAncestorInSet(root string, dirs map[string]struct{}) bool {
+	for parent := path.Dir(root); ; parent = path.Dir(parent) {
+		_, ok := dirs[parent]
+		if ok && strings.HasPrefix(root, strings.TrimSuffix(parent, "/")+"/") {
+			return true
+		}
+		if parent == "." || parent == "/" || parent == path.Dir(parent) {
+			return false
+		}
+	}
 }
 
 func metadataSlashPath(value string) string {

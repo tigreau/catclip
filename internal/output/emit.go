@@ -215,7 +215,7 @@ func EmitFullOutput(cfg EmitConfig, env RuntimeEnvironment, units []PreparedFile
 func EmitOutputPlan(cfg EmitConfig, env RuntimeEnvironment, plan Plan, stdout io.Writer, colors platform.Palette, presentation ...PrintPresentation) (EmitStats, error) {
 	var print *printPresentation
 	if len(presentation) > 0 && printPresentationEnabled(cfg, presentation[0], stdout) {
-		print = &printPresentation{highlight: presentation[0].Highlight, limit: printHighlightLimit}
+		print = &printPresentation{highlight: presentation[0].Highlight, limit: printHighlightLimit, colors: TerminalPrintPalette(cfg, presentation[0].Headless, presentation[0].Quiet, stdout)}
 	}
 	stats, err := WithPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
 		return writeOutputPlanPayloadPresented(w, cfg, plan, true, print)
@@ -252,7 +252,7 @@ func writeOutputPlanPayloadPresented(w io.Writer, cfg EmitConfig, plan Plan, pre
 		priorANSI = print.addedBytes
 	}
 	var err error
-	if plan.HasPaths() {
+	if plan.HasPaths() || plan.HasMetadata() {
 		err = writeSectionedOutputPlanPayload(bc, plan, prefetch, print)
 	} else {
 		err = writeFileOutputPlanPayload(bc, plan, prefetch, print)
@@ -342,7 +342,11 @@ func emitLinesSliceRaw(w io.Writer, absPath string, linesStart, linesEnd int) er
 // slicing, and every line-range tool surveyed: short files contribute
 // nothing rather than empty wrappers. The lines picker also omits empty slices;
 // the final report explains omissions separately from payload content.
-func emitLinesFile(w io.Writer, entry discovery.Entry) error {
+func emitLinesFile(w io.Writer, entry discovery.Entry, sourceTypes ...string) error {
+	sourceType := ""
+	if len(sourceTypes) > 0 {
+		sourceType = sourceTypes[0]
+	}
 	openFinish := platform.InternalBenchSpan("output.write_payload.lines.open_file")
 	f, err := os.Open(entry.AbsPath)
 	openFinish("err", platform.InternalBenchError(err))
@@ -361,7 +365,7 @@ func emitLinesFile(w io.Writer, entry discovery.Entry) error {
 		}
 	}
 
-	openTag := buildFileOpenTagWithLines(entry.RelPath, "", linesAttr)
+	openTag := buildFileOpenTagWithLines(entry.RelPath, sourceType, linesAttr)
 	startLine := 1
 	if sliced {
 		startLine = entry.LinesStart
@@ -491,6 +495,18 @@ func writeSectionedOutputPlanPayload(w io.Writer, plan Plan, prefetch bool, prin
 					return err
 				}
 			}
+		case SectionKindMetadata:
+			colors := platform.Palette{}
+			if print != nil {
+				colors = print.colors
+			}
+			added, err := section.writeMetadata(w, colors)
+			if print != nil {
+				print.addedBytes += added
+			}
+			if err != nil {
+				return err
+			}
 		case SectionKindFiles:
 			subplan := Plan{items: section.items}
 			if err := writeFileOutputPlanPayload(w, subplan, prefetch, print); err != nil {
@@ -551,7 +567,7 @@ func emitEntryInner(w io.Writer, unit PreparedFileUnit, index int, prefetcher *e
 		return err
 	}
 	if len(unit.SnippetRanges) > 0 {
-		return emitSnippetRangesFile(w, unit.Entry, unit.SnippetRanges)
+		return emitSnippetRangesFile(w, unit.Entry, unit.SnippetRanges, unit.sourceType)
 	}
 	return emitFile(w, unit, index, prefetcher)
 }
@@ -569,7 +585,11 @@ func emitEntryMode(unit PreparedFileUnit) string {
 	return "file"
 }
 
-func emitSnippetRangesFile(w io.Writer, entry discovery.Entry, ranges []SnippetRange) error {
+func emitSnippetRangesFile(w io.Writer, entry discovery.Entry, ranges []SnippetRange, sourceTypes ...string) error {
+	sourceType := ""
+	if len(sourceTypes) > 0 {
+		sourceType = sourceTypes[0]
+	}
 	f, err := os.Open(entry.AbsPath)
 	if err != nil {
 		return err
@@ -600,7 +620,7 @@ func emitSnippetRangesFile(w io.Writer, entry discovery.Entry, ranges []SnippetR
 			continue
 		}
 		if !inRange {
-			if _, err := w.Write(buildFileOpenTagWithLines(entry.RelPath, "", fmt.Sprintf("%d-%d", current.Start, current.End))); err != nil {
+			if _, err := w.Write(buildFileOpenTagWithLines(entry.RelPath, sourceType, fmt.Sprintf("%d-%d", current.Start, current.End))); err != nil {
 				return err
 			}
 			inRange = true
@@ -626,7 +646,7 @@ func emitSnippetRangesFile(w io.Writer, entry discovery.Entry, ranges []SnippetR
 func emitFile(w io.Writer, unit PreparedFileUnit, index int, prefetcher *emitPrefetcher) error {
 	entry := unit.Entry
 	if entry.Lines {
-		return emitLinesFile(w, entry)
+		return emitLinesFile(w, entry, unit.sourceType)
 	}
 	if prefetcher != nil {
 		result, err := prefetcher.Wait(index)
@@ -637,10 +657,10 @@ func emitFile(w io.Writer, unit PreparedFileUnit, index int, prefetcher *emitPre
 			return result.err
 		}
 		if result.prefetched {
-			return emitWrappedFile(w, entry.RelPath, "", result.data)
+			return emitWrappedFile(w, entry.RelPath, unit.sourceType, result.data)
 		}
 	}
-	return emitFileFromDisk(w, entry.RelPath, "", entry.AbsPath)
+	return emitFileFromDisk(w, entry.RelPath, unit.sourceType, entry.AbsPath)
 }
 
 func emitFileFromDisk(w io.Writer, relPath, typeAttr, absPath string) error {
@@ -875,7 +895,7 @@ func DiffEntryOutput(gitCtx git.Context, entry discovery.Entry) (string, string,
 	}
 
 	repoPath := gitCtx.ToRepoPath(entry.RelPath)
-	trackedOutput, err := git.Capture(gitCtx.Root, "ls-files", "--", repoPath)
+	trackedOutput, err := git.Capture(gitCtx.Root, "--literal-pathspecs", "ls-files", "--", repoPath)
 	if err != nil {
 		return "", "", false, err
 	}
@@ -883,23 +903,40 @@ func DiffEntryOutput(gitCtx git.Context, entry discovery.Entry) (string, string,
 		return "", "", false, nil
 	}
 
+	diffOutput, diffType, err := trackedDiffEntryOutput(gitCtx, entry)
+	return diffOutput, diffType, true, err
+}
+
+func diffOutputType(entry discovery.Entry) string {
+	if entry.DiffWantStaged && !entry.DiffWantUnstaged {
+		return "staged-diff"
+	}
+	if entry.DiffWantUnstaged && !entry.DiffWantStaged {
+		return "unstaged-diff"
+	}
+	return "diff"
+}
+
+func trackedDiffEntryOutput(gitCtx git.Context, entry discovery.Entry) (string, string, error) {
+	repoPath := gitCtx.ToRepoPath(entry.RelPath)
 	var diffOutput string
-	var diffType string
+	diffType := diffOutputType(entry)
+	var err error
 	switch {
 	case entry.DiffWantStaged && !entry.DiffWantUnstaged:
-		diffOutput, err = git.Capture(gitCtx.Root, "diff", "--cached", "--", repoPath)
+		diffOutput, err = git.Capture(gitCtx.Root, "--literal-pathspecs", "diff", "--cached", "--", repoPath)
 		diffType = "staged-diff"
 	case entry.DiffWantUnstaged && !entry.DiffWantStaged:
-		diffOutput, err = git.Capture(gitCtx.Root, "diff", "--", repoPath)
+		diffOutput, err = git.Capture(gitCtx.Root, "--literal-pathspecs", "diff", "--", repoPath)
 		diffType = "unstaged-diff"
 	default:
 		diffOutput, err = git.DiffAgainstHeadOrIndex(gitCtx, repoPath)
 		diffType = "diff"
 	}
 	if err != nil {
-		return "", "", true, err
+		return "", "", err
 	}
-	return diffOutput, diffType, true, nil
+	return diffOutput, diffType, nil
 }
 
 func WithPayloadWriter(cfg EmitConfig, env RuntimeEnvironment, stdout io.Writer, colors platform.Palette, fn func(io.Writer) error) (EmitStats, error) {

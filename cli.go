@@ -30,6 +30,10 @@ type verboseOutputMetrics struct {
 }
 
 func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.StartupPreparedOutputState) error {
+	return runFromParsedCommand(cfg, stdout, stderr, nil, preparedOpt...)
+}
+
+func runFromParsedCommand(cfg command.Parsed, stdout, stderr io.Writer, initialGit *ui.StartupGitContext, preparedOpt ...*ui.StartupPreparedOutputState) error {
 	var prepared *ui.StartupPreparedOutputState
 	if len(preparedOpt) > 0 {
 		prepared = preparedOpt[0]
@@ -238,6 +242,8 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 		var gitCtx git.Context
 		if prepared != nil {
 			gitCtx = prepared.Git
+		} else if initialGit != nil && initialGit.WorkingDir == invocationCfg.WorkingDir {
+			gitCtx = initialGit.Context
 		} else {
 			finishGitBench := platform.InternalBenchSpan("cli.run.git_detect")
 			gitCtx = git.Detect(invocationCfg.WorkingDir)
@@ -267,13 +273,11 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 			outputPlan = prepared.Plan
 		} else {
 			discoverySpinnerStop := func() {}
-			if !cfg.Quiet {
-				// Use the same five-second directory hint as the target picker.
-				discoverySpinnerStop = platform.StartLoadingSpinnerWithDelayedHint(
+			if !cfg.Quiet && !cfg.Headless {
+				discoverySpinnerStop = platform.StartFileScanProgress(
 					platform.SpinnerOutputFile(stderr),
-					"Scanning files...",
-					platform.SlowFileScanHint(invocationCfg.WorkingDir),
-					5*time.Second,
+					invocationCfg.WorkingDir,
+					search.ObserveClassificationProgress,
 				)
 			}
 			var err error
@@ -295,14 +299,19 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 			}
 			discoverySpinnerStop()
 			if !freshTargetTreePreview {
+				preparationSpinnerStop := func() {}
+				if !cfg.Quiet && !cfg.Headless {
+					preparationSpinnerStop = platform.StartOutputPreparationProgress(platform.SpinnerOutputFile(stderr), invocationCfg.WorkingDir)
+				}
 				finishPlanBench := platform.InternalBenchSpan("cli.run.build_plan",
 					"scopes", platform.InternalBenchInt(len(discoveryResult.Invocation.Scopes)),
 				)
 				if cfg.PayloadKind == command.PayloadMetadata {
 					outputPlan, err = output.BuildMetadataPlanForDiscoveredInvocation(cfg.WorkingDir, discoveryResult.Invocation)
 				} else {
-					outputPlan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation)
+					outputPlan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation, cfg.Raw)
 				}
+				preparationSpinnerStop()
 				finishPlanBench(
 					"err", platform.InternalBenchError(err),
 					"items", platform.InternalBenchInt(outputPlan.Len()),
@@ -384,8 +393,13 @@ func freshTargetTreePreviewScopesEligible(scopes []command.ExecutionScope) bool 
 		return false
 	}
 	scope := scopes[0]
-	if len(scope.Stages) != 0 || scope.Paths || scope.OutputMode() != command.EntryModeFull {
+	if scope.Paths || scope.OutputMode() != command.EntryModeFull {
 		return false
+	}
+	for _, stage := range scope.Stages {
+		if stage.Kind != command.StageNoIgnore && stage.Kind != command.StageWithBinaries {
+			return false
+		}
 	}
 	return true
 }

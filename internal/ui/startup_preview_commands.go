@@ -282,7 +282,7 @@ func startupModifierCurrentScopePreviewCommand(currentArgs []string, state start
 			picker.CommandExecutable(self), "--quiet", "--internal-tree-preview",
 			"--internal-target-inventory", picker.CommandArg(inventoryPath),
 		}
-		if view.Invocation.WithBinaries {
+		if view.Invocation.WithBinaries || view.Scope.WithBinaries {
 			parts = append(parts, "--with-binaries")
 		}
 		if rootsPath != "" {
@@ -296,7 +296,7 @@ func startupModifierCurrentScopePreviewCommand(currentArgs []string, state start
 	// checkpoint before picker.Run. Derived states and dynamic pickers continue
 	// through the general retained checkpoint path below.
 	currentScope := state.Scopes[len(state.Scopes)-1]
-	if currentArgs != nil && len(currentScope.Stages) == 0 &&
+	if currentArgs != nil && inclusionOnlyScope(currentScope) &&
 		!currentScope.Paths && currentScope.OutputMode() == command.EntryModeFull {
 		if inventoryPath, owned, inventoryErr := scopeViewMemoTargetPreviewInventory(currentArgs); owned && inventoryErr == nil {
 			if len(currentScope.Targets) == 1 && currentScope.Targets[0] == "." {

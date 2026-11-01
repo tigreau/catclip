@@ -15,6 +15,7 @@ const payloadVersion = 1
 var ErrEmptyPayload = errors.New("empty tree payload")
 
 type payloadRecord struct {
+	Binary         bool   `json:"binary,omitempty"`
 	Type           string `json:"type"`
 	Version        int    `json:"version,omitempty"`
 	Mode           string `json:"mode,omitempty"`
@@ -97,6 +98,7 @@ func EncodePayload(w io.Writer, doc Document) error {
 				TargetRoot:     entry.TargetRoot,
 				IgnoreBypassed: entry.IgnoreBypassed,
 				BlockSource:    entry.BlockSource,
+				Binary:         entry.Binary,
 			}
 			if entry.Size != nil {
 				sizeCopy := *entry.Size
@@ -197,6 +199,7 @@ func DecodePayload(r io.Reader) (Document, error) {
 				TargetRoot:     normalizeRelPath(record.TargetRoot),
 				IgnoreBypassed: record.IgnoreBypassed,
 				BlockSource:    record.BlockSource,
+				Binary:         record.Binary,
 			})
 		case "notice":
 			doc.FooterNotices = append(doc.FooterNotices, record.Content)

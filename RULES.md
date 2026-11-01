@@ -2,96 +2,89 @@
 
 catclip is a context gatherer for LLMs. This is the Go rewrite of the original Bash implementation.
 
+Reviewed against the v0.7.9 source on 2026-10-26, with the v0.7.10 repeated-work contracts below updated during integration. Historical benchmark figures describe their recorded workloads, not universal latency guarantees.
+
 ## Layout
 
 - `cmd/catclip/main.go` is the thin binary entrypoint.
-- The implementation lives in package `catclip` at the module root.
-- Files are split by responsibility, but most code still shares one package.
+- Package `catclip` at the module root coordinates startup, dispatch, package wiring, diagnostics, and final output.
+- Domain implementation lives in the `internal/*` packages. The broad single-package layout was replaced in v0.6.0; do not use its former rationale to bypass the existing boundaries.
 
-### File groups
+### Package ownership
 
-Listed roughly in pipeline order (rule 21).
+Listed roughly in pipeline order (rule 21). File names below are relative to their owning package, not necessarily the module root.
 
-Parsing and validation:
+| Package | Responsibility and reference files |
+| --- | --- |
+| Root `catclip` | `main.go` startup and wiring; `cli.go` dispatch and parsed-command adapters; `run_output.go` report/emit orchestration; positional glob/dotfile normalization; diagnostic policy and styles; explicit update-check action |
+| `internal/command` | Typed command, scope, stage, invocation and output-mode models; canonical command rendering; stage flag spellings |
+| `internal/cli` | Strict and startup parsing, flag metadata, validation/order rules, help/version text and resolved-command formatting |
+| `internal/discovery` | Target resolution, visible/ignored membership, ignore attribution, ordered scope stages, Git selectors, focused-refinement evidence and checkpoint transport (`resolver.go`, `target_glob.go`, `scope_stages.go`, `run_discovery.go`) |
+| `internal/search` | rg enumeration/content matching, Go text/binary classification, process-local inventory/classification caches and reload cancellation (`ripgrep.go`, `text_classifier.go`, `path_classification_cache.go`) |
+| `internal/git` | Git subprocess queries and repository context |
+| `internal/output` | Output plans and deduplication, prepared snippets/lines/diffs, text snapshots, reports, omission notices, plain serialization and sink transport (`output_plan.go`, `prepared_output.go`, `emit.go`) |
+| `internal/ui` | Startup/modifier/sink pickers, undo and retained state, preview helpers and frame cache, metadata report/presentation, date formatting and the tree bridge into render |
+| `internal/render` | Precomputed tree/file document rendering and syntax highlighting; no discovery, Git or rg work |
+| `internal/picker` | fzf invocation, shell/argument transport and picker process/session ownership |
+| `internal/platform` | OS, terminal/palette, editor, bundled-tool lookup and Windows process-lifetime helpers |
+| `internal/updatecheck` | Explicit release-check service; never automatic startup or preview work |
+| `fileclip` | File-reference clipboard support for bundled output; Linux Wayland uses live `text/uri-list`, unknown/displayless Linux is unsupported, and detected X11 is blocked at startup |
 
-- **cli / help**: arg parsing, entry flow, prompts, help/version output
-- **command_spec**: declarative scope/flag parsing and validation
-- **flag_metadata**: flag specs, stage kinds, modifier boundary detection
-- **positional_glob_normalization**: classify and pass through glob pattern targets
-- **startup_preflight**: pre-parse validation before full command spec
+### Why the root package still exists
 
-Interactive startup pipeline:
-
-- **startup_picker**: startup fzf recovery, modifier chaining, resolved-command echo
-- **startup_file_set_normalization**: dedup redundant interactive file-set selections and dynamic pattern inference (literal → wildcard collapse)
-- **startup_sink_picker**: interactive output-sink picker (clipboard / text-clipboard / stdout / headless)
-- **startup_undo**: Esc step-back through the picker chain
-- **prepared_output**: prepared-output handoff between the startup picker and the run pipeline
-
-Resolution and discovery:
-
-- **resolver**: target resolution (path, glob, fzf) and file discovery
-- **discovery**: walking, visibility indexes, file classification
-- **ripgrep**: rg invocations (visible-file enumeration and content matching)
-- **text_classifier**: Go-only decoded-NUL classification of already-enumerated unknown-format regular files
-- **ignore / git**: `.hiss` loading, git-aware filtering, changed-file logic
-- **bundled_tools**: app-private fzf/rg discovery and toolchain capability checks (PCRE2, `multi:refresh-preview`)
-
-Scope and stages:
-
-- **scope_stages**: stage execution (only, exclude, recent, depth, contains, etc.) via composable `stageApplierTable`
-- **scope_order_rules**: ordering constraints and boundary policies between stages
-- **content / snippet_resolution**: content filtering and snippet block extraction
-- **depth_stage / depth_picker**: `--depth` filtering and interactive depth selection
-- **recent_stage / recent_picker**: `--recent` sorting/limiting and interactive selection
-- **lines_picker**: two-stage `--lines` (start → end) picker
-- **contains_list / contains_usage**: `--contains` / `--snippet` picker support, regex hint surfaces, and ordering suggestions
-- **internal_prediscovered**: SCC checkpoint serialization so picker previews never re-run `evaluateScope`
-
-Pipeline coordination:
-
-- **run_discovery**: drives `resolvedInvocation → discoveredInvocation` (rule 21)
-- **output_plan**: plan what to emit (full files, paths, snippets, diffs, raw)
-- **run_output**: drives `outputPlan → render → emit` (rule 21)
-
-Rendering surfaces:
-
-- **preview**: confirmation-flow tree summary, badges, size/token disclaimer
-- **metadata_report**: the `--metadata` payload (selected paths + size/tokens/git/modified and conditional binary flags)
-- **date_format**: shared timestamp / duration / Finder-style date formatting (`--recent`, `--metadata`, `--verbose`, bundle names)
-- **file_preview**: per-file preview rendering for pickers
-- **resolved_scope_view**: human-readable resolved-scope summary
-- **text_snapshot**: load-once text snapshot used by snippet and lines rendering
-- **tree_bridge / tree_payload_emit**: tree/file preview document bridge, payload encoding, and in-process picker tree rendering
-- **command_render**: canonical "Resolved command:" rendering (rule 22)
-- **fzf_theme**: fzf color theme parsing
-
-Output and diagnostics:
-
-- **emit**: clipboard/stdout writers, bounded-concurrency read path
-- **fileclip/** (subpackage): file-reference clipboard module (bundles above 4 KB; Linux Wayland uses live `text/uri-list`; unknown/displayless Linux returns `ErrLinuxClipboardSessionUnsupported`; detected X11 is blocked at startup)
-- **diagnostic_policy**: classify which diagnostics print under `-q` vs default
-- **validation_error**: structured validation failures with actionable messages
-- **spinner**: short-lived TTY loading indicators
-
-Subpackages and platform shims:
-
-- **internal/picker, internal/render**: package extractions broken out from the root package
-- **cmd/catclip**: thin binary entrypoint
-- **editor_command / editor_command_nonwindows / editor_command_windows**: `--hiss` / `--hiss-reset` editor invocation
-- **terminal_unix / terminal_windows**: platform TTY/terminal capability shims
-
-### Why the root package is still broad
-
-- resolver, discovery, ignore, git, and rendering still share many internal types and evolve together.
-- tree/preview/rendering behavior is still changing, so freezing package APIs now would create churn without reducing complexity.
-- extracting packages too early would force a lot of exports or awkward shared "types" packages, which is usually a sign the boundary is not ready.
+- Root coordinates packages that cannot import one another: it adapts parsed commands, installs callbacks, chooses actions and owns process exit policy.
+- Discovery, output planning, interactive UI and rendering already have separate owners. Evolving tree/preview behavior belongs in those packages, with root supplying the orchestration.
+- `architecture_guard_test.go` enforces the import and call boundaries. In particular, render consumes precomputed documents, output cannot import UI/render, and discovery cannot import the CLI parser or root.
+- New extractions should establish a useful ownership boundary and a small API. That remains a design criterion, not a reason to move existing domain code back into root or introduce a generic shared-types package.
 
 ## Product rules
 
+### File inclusion (v0.7.10)
+
+`--no-ignore` and `-b`/`--with-binaries` apply to their own scope. Both follow
+targets and precede filters, in either relative order. The interactive
+`[file inclusion]` submenu appears below `[finish early]` and `[extras]`,
+above the regular filters, while inclusion is legal;
+users can mark either or both options. Confirmation reopens target selection
+with that eligibility and seals a new generation. Escape restores the prior
+generation and its inclusion policy. Ordinary filters must not rediscover it.
+
+An exact existing regular-file path is an explicit inclusion, including binary
+files. Preserve its classification evidence on the entry so text filters exclude
+it without restoring its full body. This exception does not widen directory,
+glob or fuzzy inventories; those still require `-b` for binaries. Exact directory
+roots retain their existing narrower ignore bypass, not a binary bypass.
+
+Binary-inclusive mixed selections may use `--contains`, `--not-contains` and `--snippet`.
+These stages operate on text files only; negative matching also excludes binaries.
+Classify selected unknown paths
+at content-filter entry, reuse invocation observations, and write text-only
+checkpoints before live picker reloads. Hide these choices only when all
+selected entries are known binary; unknown names are not proof of binary
+content. Do not classify to populate a menu or color a tree. Git patches remain
+incompatible with binary inclusion in that scope.
+
+When all entries actually reaching `--contains`, `--not-contains` or `--snippet` are known binary,
+explain that fact and how to remove the content filter, rather than listing
+unrelated ignore/typo causes. Reuse retained classification evidence; do not scan
+to diagnose. Mixed text pattern misses and an earlier filter's empty result must
+not be attributed to binaries. Valid sibling scopes keep their existing behavior.
+
+Binary tree hints use filename rules and retained evidence without extra I/O;
+known empty files stay text. Use cyan filenames and a `[binary]` marker.
+Formatted binary output uses a prepared `type="binary"` description with the
+original file size and filename-derived format information explicitly labeled.
+This applies to clipboard text, text bundles, print and headless output. Reports
+count the description body; metadata keeps the original size. Raw full-file
+output retains its original-byte stream and preparation accounting. Unknown
+selected names may require the existing Go classifier, reusing invocation
+observations; do not enumerate directories again. Focused previews remain
+bounded and lazy. Separate binary clipboard attachments and decodable hex text
+remain v0.8.0 work.
+
 1. **Selection and payload views must be truthful** — the tree, metadata report, and summary must describe the exact selected membership or final payload they label, never a looser approximation.
 
-2. **Current paths win** — the UI should show the current filesystem view and current working-tree paths, even when Git metadata is simplified.
+2. **Working-tree paths win** — use paths observed in the working tree rather than historical Git names, even when Git metadata is simplified. This is not a live-refresh promise: interactive membership and completed preview frames follow the stable-session contract in rule 20.
 
 3. **Selectors drive status UI** — tree badges should optimize for `--changed`, `--staged`, `--unstaged`, and `--untracked`, not raw porcelain fidelity. The badges that matter today are `[S]`, `[M]`, `[?]`, and `[SM]`; there is no dedicated rename badge.
 
@@ -99,9 +92,11 @@ Subpackages and platform shims:
 
 5. **Exact beats fuzzy** — exact existing paths and exact basename hits should execute directly; genuinely ambiguous fuzzy resolution belongs to fzf, not local heuristics.
 
-6. **One scope, one meaning** — targets come first, modifiers apply to that scope, and `--then` starts a new scope. Treat `--then` like starting a brand new catclip command on the same line and unioning the results. Scope grammar must stay deterministic, and coverage is path-subtree based rather than "conceptually related" (selecting `src/vs` does not imply that later selecting `src` is redundant).
+6. **One scope, one meaning** — targets come first, modifiers apply to that scope, and `--then` starts a new scope. Evaluate each scope independently, then merge its contribution under the output plan's deduplication/refinement rules; this is not literal concatenation of separate command outputs. Scope grammar must stay deterministic, and coverage is path-subtree based rather than "conceptually related" (selecting `src/vs` does not imply that later selecting `src` is redundant).
 
-   Empty snippet/diff refinements retain negative evidence from their actual ordered stage evaluation. At final `--then` merging, that evidence suppresses overlapping whole bodies in either scope order, without affecting path-list sections or files excluded before the focused stage. Do not rerun matching, discovery, or Git to reconstruct it. Valid sibling output succeeds; entirely empty output retains no-result handling. Only an entirely empty focused scope gets a bounded notice below the tree: show all omitted full-file paths up to five, otherwise only the count. The confirmation preview and final report share it; headless emits plain stderr and payloads contain no notice. Broader excerpt/comparison merging remains separate work.
+   Empty snippet/diff refinements retain negative evidence from their actual ordered stage evaluation. At final `--then` merging, that evidence suppresses overlapping whole bodies in either scope order, without affecting path-list sections or files excluded before the focused stage. Do not rerun matching, discovery, or Git to reconstruct it. Valid sibling output succeeds; entirely empty output retains no-result handling. Only an entirely empty focused scope gets a bounded notice below the tree: show all omitted full-file paths up to five, otherwise only the count. The confirmation preview and final report share it; headless emits plain stderr and payloads contain no notice.
+
+   **Cross-scope output identity is not path membership.** Repeated whole bodies collapse; bare numbered output replaces plain full output. Focused snippets, explicit ranges and real patches replace whole bodies in either order. Keep distinct snippets/ranges (including overlapping ranges), patches alongside focused source, and distinct staged/unstaged/combined comparisons. Never OR comparisons together. Deduplicate equivalent resulting excerpts only with identical presentation; numbered slices and unnumbered snippets differ. Record snippet boundaries during preparation, not by parsing source wrappers or rereading/hashing files. Untracked diff fallback is source: one full body or surviving focused excerpts retain `type="untracked"`. Paths remain independent. Tree rows/counts use unique paths, while mode tags and byte/token accounting describe every surviving output unit. One output mode per scope and ordered filters are unchanged.
 
 7. **Stage order is semantic** — within one scope, `--only` and `--exclude` are sequential stages, not a globally merged rule set. Values inside one occurrence OR together, and later occurrences run after earlier ones. `--only` is a first-class file-set stage, not removable target-glob sugar: targets establish the candidate scope, while `--only` recursively filters that scope and gives interactive multi-selection a deterministic command representation. Startup pickers resolve human queries into exact values/patterns and emit normal `--only` stages so the echoed command can run identically without fzf. Do not collapse `--only` into target syntax; that would conflate navigation with filtering, lose repeated-stage intersection, and break interactive-to-headless command parity. The same representation rule applies to subtractive `--exclude` selections.
 
@@ -113,30 +108,38 @@ Subpackages and platform shims:
 
 11. **Decoded NUL defines binary content; filename shortcuts remain deliberate approximations.** Unknown-format regular files use a bounded parallel Go scanner: reject on the first decoded NUL, otherwise read to EOF. UTF-16 LE/BE BOMs select aligned code-unit scanning; BOM-less input uses byte NULs. Invalid encoding alone is not binary. Classification always runs in Go and is independent of `RIPGREP_CONFIG_PATH`; that variable still affects rg discovery and content queries. Keep known-text/known-binary name shortcuts and empty-file admission. Do not open symlinks or special files in the Go scanner, infer binary content from read failures, or broaden already-enumerated membership. Reuse scanner metadata for empty admission and preview capture. Cancellation must join workers and discard partial results. The name lists remain asymmetric: binary names require formats that structurally guarantee NULs; known-text names accept rare NUL-bearing misnames as a pinned divergence. Keep independent bundled-rg parity tests and separate hybrid-selection tests.
 
+    **Classification evidence is invocation-local.** One CLI process assumes unchanged files, including across `--then` scopes. Reuse successful per-path content/metadata observations and coalesce concurrent scans, but never cache failed/cancelled file observations as completed. A cancelled batch publishes no selection; independently completed file evidence can remain reusable. The cache does not own membership or ignore policy and is not shared persistently across processes. Match explicit target globs against enumerated paths before classification; do not move ordered `--only`, `--exclude`, `--recent`, or `--depth` stages to obtain that optimization. Reuse an already complete no-ignore inventory rather than enumerating it again for classification.
+
 12. **No silent skips** — if catclip excludes something significant, that should remain a deliberate product decision, not an accidental side effect.
 
 13. **Diagnostics must be actionable** — when catclip does show a diagnostic, it should tell the user what to do next, not only what went wrong.
+
+    **Failed filename enumeration retains rg's cause.** Exit code 2 alone does not imply permissions. Show up to ten bounded stderr diagnostic lines, then count the remainder; identify permission failures only from platform-appropriate OS errors. Preserve the underlying process error and cancellation, and retain the original error when stderr supplies no explanation. Do not add scans or silently accept partial membership to improve diagnostics.
 
     **Diagnostic colors are presentation, not message semantics.** Shared error output styles plain errors red, warnings yellow, guidance dim, and Catclip recovery commands green; preserve already-styled discovery diagnostics. Keep error text and exit status independent of styling. Headless output, redirected diagnostics, and `NO_COLOR` must remain plain. Early error handling must distinguish a real `--headless` flag from a fixed-arity operand with that spelling. Coloring must not add filesystem work, subprocesses, or command reparsing.
 
     **Terminal print colors are sink presentation only.** Automatic syntax highlighting uses the original stdout terminal check and honors `NO_COLOR` and `TERM=dumb`. Headless/raw/quiet, pipes/redirects, clipboard and bundle files receive the existing plain serialization. Metadata uses the same terminal policy for structured field colors, without lexing or a report-size cutoff. Keep byte/token accounting plain. Highlight bounded source file units using their prepared boundaries; stream larger units unchanged without rereading, clipping, or parsing user-written wrapper lookalikes as structure. Lexer failure falls back before writing a colored block. The application supplies the renderer callback to output; output must not import render.
 
+    **Unavailable line ranges are output omissions, not read failures.** Emit available lines with their actual bounds when a range only partly exceeds EOF. Omit entirely unavailable excerpts without restoring overlapping full-file bodies. Hide empty entries in the lines preview; show warnings above the output tree/report and on final stderr, with a separating blank line. Broad selections list up to ten omissions, then summarize by requested range with average/longest file lengths; explicit file selections retain their details. Reuse line counts from preparation rather than rescanning for diagnostics. Valid siblings succeed unless another error applies; all-empty output exits 1 without opening a sink picker. Headless warnings are plain, and omission text never enters the payload.
+
 14. **Quiet means minimal UX, not different semantics** — `-q` may suppress presentation, prompts, and tree output, but it should not change what files are selected.
+
+    **Discovery progress is delayed and phase-aware.** Fast runs show no spinner. After one second of an unknown-name classification batch, show completed/total jobs from that batch; never enumerate or read files just to report progress. Slow non-classification discovery uses a generic label, and after five seconds the terminal can ask whether cwd is the intended project. Clear transient status before pickers/final output. Quiet/headless and nonterminal diagnostics do not enable the observer. Persistent-cache success notices require a real successful save; invocation-local reuse is not a disk cache.
 
 15. **Interactive recovery state must be reversible** — invalid interactive input must never poison the current scope state or silently mutate the command being built.
 
-16. **Same payload, different sink** — stdout and clipboard modes may differ in transport cost, but they should emit the same payload bytes for the same resolved selection.
+16. **Same plain payload, different sink** — stdout and clipboard modes share the same underlying serialization for a resolved selection. Terminal `--print` may add presentation-only ANSI colors under rule 13; pipes, headless output, clipboard and bundle files retain plain bytes. Size/token accounting and bundle decisions use the plain payload.
 
 17. **Bundled tooling is part of the product** — packaged installs must carry private fzf + ripgrep binaries; runtime should not silently fall back to arbitrary PATH copies. PATH fallback reintroduces version drift, machine-specific behavior, weaker install guarantees, and harder debugging/support.
 
-18. **Picker previews stay POSIX-free** — any command string handed to fzf (preview commands, `start:reload:` / `change:reload:` bindings, future bind actions) must be a straight pipeline of program invocations with placeholder substitution, never a POSIX shell script. fzf forwards these to `cmd /s /c` on Windows by default, so `set --`, `"$@"`, `if [ -n "$x" ]`, `for v in {+2}`, and shell variable assignments (`name={N}`) all silently break previews under cmd.exe. Push any conditional logic into Go-side `--internal-*` subcommands instead, and verify the placeholders (`{2}`, `{3}`, `{+2}`, `{q}`) can be inlined directly.
+18. **Picker previews stay POSIX-free** — any command string handed to fzf (preview commands, `start:reload:` / `change:reload:` bindings, future bind actions) must use program invocations with placeholder substitution, never a POSIX shell script. Windows fzf defaults to cmd when `SHELL` is unset, but its executor can also be PowerShell or a POSIX shell. `internal/picker/command_quote.go` follows that selection; the terminal application alone does not determine escaping. Push conditional logic into Go-side `--internal-*` subcommands rather than using `set --`, `"$@"`, `if [ -n "$x" ]`, shell loops or assignments that break under another executor.
 
     Reference shapes: `startupCheckpointFileSetPreviewCommand`, `fzfCheckpointContentMatchListCommand`, `buildDepthPickerPreview`, `recentPickerPreviewCommand`.
 
     A corollary that has regressed and been re-fixed four times (see `docs/versions/v0.5.0/reports/RESOLVED_BUG_windows_preview_posix_shell.md`). It has **two** parts, and both are load-bearing:
 
     1. **Standalone token.** Every fzf placeholder (`{2}`, `{+2}`, `{q}`, …) must be a whitespace-delimited token, never concatenated into a compound string (`dir/{2}.json`, `'{2}'.json`, `name={2}`).
-    2. **Trivial value.** The value fzf substitutes per refresh must itself be trivial — a bare number/key with no spaces, backslashes, or shell metacharacters. The hazardous part (an absolute temp path: `%TEMP%` on Windows can contain spaces) is passed as a *fixed* argument that catclip quotes via `shellQuoteArg` at build time; only the trivial value goes through fzf's `cmd /s /c` substitution. This is why root `catclip --internal-tree-preview` uses `--input-dir <fixed-quoted-dir> --input-stem {2}` and joins in Go — **not** `--input-file {N}` with a full-path column, which would push a spaced/backslashed path through fzf's cmd.exe quoting. Keep `--input-dir`/`--input-stem`; see `docs/versions/v0.6.0/reports/ACTIVE_PLAN_unify_preview_rendering.md` for why the `--input-file {N}` and combined-file alternatives were rejected.
+    2. **Trivial structural value.** Use a bare number/key for structural artifact references, without spaces, backslashes or shell metacharacters. Pass the hazardous part (an absolute temp path, possibly containing spaces) as a fixed argument through the picker command-quoting helpers. This is why `catclip --internal-tree-preview` uses `--input-dir <fixed-quoted-dir> --input-stem {2}` and joins in Go, rather than a full-path column in `--input-file {N}`. Keep `--input-dir`/`--input-stem`; see `docs/versions/v0.6.0/reports/ACTIVE_PLAN_unify_preview_rendering.md`. User query values and selection-file placeholders are not trivial structural keys; their separate literal-transport requirements follow below.
 
     **Internal launcher boundary:** keep executable invocation, fixed-argument escaping, and dynamic placeholder substitution distinct. Quote for the actual execution shell, not Go string-literal syntax, and protect literal fzf placeholder text in fixed operands. Public replay rendering and direct `exec.Command` argv retain their separate contracts. Changes to shell selection, cwd, or environment must receive explicit compatibility review for user-supplied fzf commands.
 
@@ -144,9 +147,9 @@ Subpackages and platform shims:
 
     **Exact dynamic values:** preserve query and focused-field values literally, including empty strings, quotes, backslashes, and option-shaped text. Transport changes must preserve query-refresh behavior and must not reinterpret data as flags. Internal argument normalization must not change public CLI semantics. Test query and focused-field transport independently across supported execution shells.
 
-    **Enforced (part 1 only):** `TestRunPipelineArchitectureGuards` (`requirePreviewPlaceholdersStayStandalone`) scans every command builder in `previewCommandBuilders` for embedded placeholders and POSIX shell fragments, and a meta-check fails the build if a new placeholder-using function in a builder file isn't classified as either a shell-command builder or an fzf-native exemption (`fzfPlaceholderExemptFuncs`, e.g. `--preview-window` offsets). An agent that reintroduces `dir/{2}.json` fails the test. **Part 2 (trivial value) is not statically enforceable** — whether a substituted value is trivial depends on runtime row data — so passing the guard means "not concatenated," *not* "safe to push any value through fzf." Keep substituted values trivial by design.
+    **Enforced (part 1 only):** `TestRunPipelineArchitectureGuards` (`requirePreviewPlaceholdersStayStandalone`) scans every command builder in `previewCommandBuilders` for embedded placeholders and POSIX shell fragments, and a meta-check fails the build if a new placeholder-using function in a builder file isn't classified as either a shell-command builder or an fzf-native exemption (`fzfPlaceholderExemptFuncs`, e.g. `--preview-window` offsets). An agent that reintroduces `dir/{2}.json` fails the test. **Part 2 (trivial value) is not statically enforceable** — whether a substituted value is trivial depends on runtime row data — so passing the guard means "not concatenated," *not* "safe to push any value through fzf." Keep structural references trivial and test arbitrary-value transport natively.
 
-19. **Discovery is the parent's job, once per authorized target generation** — the initial interactive target flow enumerates its visible universe once and adopts the confirmed membership as a sealed session generation. An explicit `--no-ignore` or genuinely new target/scope universe may create another generation. Ordinary modifier pickers (`--depth`, `--recent`, `--only`, …), output selection, and final execution consume retained state; they do not run `evaluateScope` to replace same-generation membership. The parent may apply a candidate stage or bounded content/Git work to retained paths and write the result to a temp file. The fzf preview command reads that prediscovered input and formats — nothing more. If a user-visible refresh feature is added later, it must be designed as another explicit generation boundary; v0.7.4 does not ship one.
+19. **Discovery is the parent's job, once per authorized target generation** — the initial interactive target flow enumerates its visible universe once and adopts the confirmed membership as a sealed session generation. An explicit `--no-ignore` or genuinely new target/scope universe may create another generation. Ordinary modifier pickers (`--depth`, `--recent`, `--only`, …), output selection, and final execution consume retained state; they do not run `evaluateScope` to replace same-generation membership. The parent may apply a candidate stage or bounded content/Git work to retained paths and write the result to a temp file. Preview helpers consume those checkpoints, with candidate-stage/content work only where their handler contract permits it; they do not rediscover membership. A future user-visible refresh feature must be an explicit generation boundary; there is no automatic filesystem refresh.
 
     **The metadata ignore trace is diagnostic, never target authority.** When an actual normal-ignore `--metadata` payload is materialized, the parent may run one streaming `rg --files --debug` operation over the compacted union of its applicable targets. It must use the ordinary visible-walk flags and `.hiss` overlay. NUL-delimited stdout supplies exact raw-visible coverage; stderr supplies only causal non-whitelist Gitignore boundary decisions with their deciding source/pattern. Neither stream may add, remove, reorder, or reclassify the retained selected entries. Instrument it as diagnostic authority with reason `metadata-ignore-trace`; retain only exact scalar totals plus bounded display rows in the materialized report. It never runs for ordinary payloads, `--metadata --no`, or all-`--no-ignore` metadata. Normally this is one process per report, not one per target/scope; oversized literal root lists use bounded batches with identical ordered policy flags and transient union deduplication. Count every actual subprocess, and never substitute a wider root to fit argv. Drain both pipes concurrently and keep version-pinned Unix, escaped-pattern, and Windows-path parser fixtures.
 
@@ -156,7 +159,7 @@ Subpackages and platform shims:
 
     **Shared checkpoint transport is generation-owned, not a body cache.** Large retained states may reference an immutable binary inventory using a versioned JSON descriptor with a generation token, ordered file IDs, and state-local output fields. The reader must preserve order, duplicate IDs, snippet lines, per-entry overrides, Git observations, and ignore policy exactly, rejecting mismatched artifacts rather than rediscovering. Inventory changes invalidate future reuse, never overwrite an old base still needed by undo. The session owns base cleanup independently of state directories. Small/narrow states keep standalone JSON; preview rendering stays asynchronous. See `docs/versions/v0.7.6/reports/ACTIVE_REPORT_shared_checkpoint_transport_2026_09_09.md`.
 
-    **Enforced today:** `TestRunPipelineArchitectureGuards` (`requireInternalRenderHandlersAvoidDerivation`) asserts the per-refresh render handlers — `runInternalPrediscoveredTreePreview`, `runInternalLinesPreview`, `runInternalPrediscoveredContentMatchList`, `runInternalFilePreview`, `runInternalContentCheckpointTreePreview`, `runInternalRecentPreview`, `runInternalSinkPreview`, `runInternalSinkToggle` — never call `evaluateScope` or `discoverInvocation`. Picker drivers and the content-match `change:reload:` path are structurally exempt from that older render-only guard; v0.7.4 must separately prove that, after a generation is sealed, those paths derive from retained candidates rather than enumerate. See `docs/versions/v0.7.4/reports/ACTIVE_PLAN_interactive_single_enumeration_snapshot.md`.
+    **Enforced today:** `TestRunPipelineArchitectureGuards` (`requireInternalRenderHandlersAvoidDerivation`) asserts the per-refresh render handlers — `runInternalPrediscoveredTreePreview`, `runInternalLinesPreview`, `runInternalPrediscoveredContentMatchList`, `runInternalFilePreview`, `runInternalContentCheckpointTreePreview`, `runInternalRecentPreview`, `runInternalSinkPreview`, `runInternalSinkToggle` — never call `evaluateScope` or `discoverInvocation`. Picker drivers and the content-match `change:reload:` path are structurally exempt from that render-only guard; retained-state integration tests must also prove that those paths derive from sealed candidates rather than enumerate. The design history is in `docs/versions/v0.7.4/reports/ACTIVE_PLAN_interactive_single_enumeration_snapshot.md`.
 
 20. **Args describe the command; the sealed generation owns interactive membership** — modifier chaining remains string concatenation, and canonical `currentArgs []string` records what the user chose. Script/direct execution evaluates those args normally. Once an interactive target selection is confirmed, however, the resolved command is paired with an immutable generation containing the exact ordered paths observed by that run. Undo (Esc) restores the argument frame and its associated retained state together; redo-by-selection may reuse a retained child. A cache miss, eviction, checkpoint failure, or sink/final mismatch must rebuild derived artifacts from the generation or return an invariant error, never silently evaluate the args against a newer filesystem view.
 
@@ -170,7 +173,7 @@ Subpackages and platform shims:
 
     **Multi-stage pickers compose by the same rule.** A modifier that needs more than one user input (the `--size` MIN→MAX pair is the canonical example) splits into a sequence of single-purpose pickers driven by a Go loop, not into one omnibus picker that internally tracks "what stage am I in." `resolveStartupSizeArgsWithEscHint` is the reference: each iteration opens MIN, then MAX; Esc in MIN exits the whole modifier, Esc in MAX `continue`s the loop and re-opens MIN from scratch. The previously-chosen MIN lives as a local Go variable that goes out of scope on the next iteration — no "forget the MIN value" cleanup, because there was no stored state to forget. `currentArgs` only gains a `--size` token after BOTH pickers commit; a half-committed run is a true no-op. Each picker's preview command is built fresh with the surviving inputs (MAX bakes the just-chosen MIN as literal text in its command parts), so no cross-stage plumbing leaks between them. Avoid the omnibus shape: one combined picker that holds `currentStage`, `committedMin`, `pendingMax` fields forces an internal state machine, makes Esc semantics ambiguous, and tempts you to leak the in-progress MIN into a cache or global. Two single-purpose pickers driven by a Go loop is strictly better — each is testable in isolation, and the args-as-state invariant holds by construction.
 
-21. **Pipeline linearity** — every catclip flow runs the same stages in the same order: `parsedCommand → resolvedInvocation → discoveredInvocation → outputPlan → render → emit`. No god-object carries mutable state across stages, no stage reads back into an earlier one, and no shortcut path fuses two stages by skipping the boundary. The boundary types are the contract; new features extend a stage's input/output shape rather than reaching across. Picker preview commands (`--internal-*`) re-enter at the discovery or render boundary with prediscovered inputs — they do not re-derive the chain from scratch.
+21. **Pipeline linearity** — normal selection/output flows follow `command.Parsed → command.Resolved → discovery.Result/Discovered → output.Plan → report/presentation → emit`. Immediate actions such as help/version do not run the selection pipeline. No god-object carries mutable state across stages, no stage reads back into an earlier one, and no shortcut path fuses two stages by skipping the boundary. The boundary types are the contract; new features extend a stage's input/output shape rather than reaching across. Picker preview commands (`--internal-*`) enter at their retained-state or render boundary instead of re-deriving the chain from scratch.
 
 22. **Resolved command parity** — every command Catclip prints as "Resolved command:" must describe the same targets, stages, ordering, and output choices the user committed. On a stable filesystem, copy-pasting it into a new non-interactive invocation must produce the same selection. Startup pickers, modifier pickers, sink picker, and argv normalizations (e.g., dynamic pattern inference collapsing repeated literals into wildcards, redundant-literal removal) all participate in building this canonical argv; none may rely on hidden picker-frame state, RNG, or in-process side effects to change command meaning. If a normalization rewrites argv, the rewritten form must be a true equivalent under the same filesystem observation — losing or gaining a file is a bug, not a normalization.
 
@@ -178,26 +181,26 @@ Subpackages and platform shims:
 
 23. **Modifier-stage previews are scope-local** — once a scope has a stage checkpoint (`entries[N]`), any modifier-stage picker that previews or tests a pending same-scope stage must start from that checkpoint: the surviving entries produced by the current scope's accepted stages, in order. It may apply exactly the candidate stage (`N+1`) to a copy for display/search. It must not rebuild a synthetic scope, re-evaluate from original targets, inspect sibling `--then` scopes, flatten the full command, or skip/backfill earlier stages. Target pickers before a settled scope, per-file previews, and final output/sink previews have their own contracts, but they must not be used to smuggle cross-scope knowledge into a modifier-stage preview. Cross-scope unioning and final dedupe happen only after scope evaluation, in output planning.
 
-24. **Per-row stage pickers stay lazy** — when a modifier picker exposes its candidate stage values as the picker rows themselves (every `--size` bucket, every `--depth` level), the parent must write **one** shared checkpoint of the entry list (rule 19), and the per-focus preview child must apply the row's candidate stage on the fly against that checkpoint. **Do not pre-render one tree payload per bucket** at picker open — on a 6,400-entry corpus, `--size` enumerates ~280 buckets across MIN + MAX, and Windows + Defender turns each per-bucket `os.Create` + JSON write into ~100 ms of filter time. The original eager shape cost ~30 s of upfront silent work on `vscode-main`; the lazy shape collapses it to ~225 ms total. The per-focus child cost (~100 ms) is unchanged from the warm-cache `os.Open` read path that the eager design used. See `docs/versions/v0.6.1/reports/RESOLVED_PLAN_windows_interactive_latency_fixes_part_one.md` Item 5 for the original benchmark.
+24. **Per-row stage pickers stay lazy** — when a modifier picker exposes its candidate stage values as the picker rows themselves (every `--size` bucket, every `--depth` level), the parent writes **one** shared checkpoint of the entry list (rule 19). A preview cache miss applies the row's candidate stage against that checkpoint; a completed frame can be reused under rule 20. **Do not pre-render one tree payload per bucket** at picker open. The original v0.6.1 Windows benchmark on a 6,400-entry corpus had ~280 size buckets across MIN + MAX: eager per-bucket writes cost ~30 s upfront, while lazy preparation took ~225 ms, with ~100 ms per-focus work. These are historical measurements, not current cached-revisit timings. See `docs/versions/v0.6.1/reports/RESOLVED_PLAN_windows_interactive_latency_fixes_part_one.md` Item 5.
 
     Per-picker checkpoints compose with rule 20's multi-stage backtrack: each picker in a MIN→MAX chain owns its own tmpdir, written at picker-open and `defer`-cleaned at picker-close, with no state shared across iterations of the outer loop. The checkpoint is render-only infrastructure, never the carrier of user choices.
 
     Reference shapes: `buildSizePickerPreview`, `buildDepthPickerPreview`. Both route through `RunInternalPrediscoveredTreePreview` (rule 19's render-only entry point), so rule 19's `requireInternalRenderHandlersAvoidDerivation` guard continues to enforce that the child never calls `evaluateScope`.
 
-    **fzf substitution corollary.** fzf single-quotes every `{N}` substitution as one shell argument before handing the command to `cmd /s /c` (Windows) or `sh -c` (POSIX). The two consequences a per-row picker preview must respect:
+    **fzf substitution corollary.** Ordinary `{N}` substitutions are escaped as individual arguments for fzf's selected executor; quoting differs between cmd, PowerShell and POSIX shells. A whitespace-containing field is not a way to inject multiple argv values. The two consequences a per-row picker preview must respect:
 
     1. **Flag names are literal command parts, not column data.** Put `--size` / `--depth` as literal tokens in the preview command's parts slice (the `parts := []string{…, "--size", "{4}"}` pattern). If you put `--size 5` in the substituted column, fzf passes the child a single arg whose text is literally `--size 5`, and `internal/cli/parse.go` rejects it as an unknown option.
     2. **Per-row substituted values stay single-token.** A column whose value contains a space (`--size 1 10`, two integers) reaches the child as one quoted arg. For variable-arity stages, bake the fixed prefix into the command parts and only substitute the varying tail — e.g. the MAX picker emits `["--size", strconv.Itoa(chosenMin), "{4}"]` where column 4 is the max KiB only; an out-of-range "no maximum" sentinel (`999999999`) keeps `ValidateSizeBounds` happy while remaining a no-op against any real corpus.
 
     This corollary refines rule 18's "standalone token" part — the test enforces that placeholders aren't concatenated into compound strings, but it cannot verify that the substituted value is itself a single shell token. Keep the value trivial by construction, the same way rule 18 part 2 keeps the value safe by construction.
 
-25. **Multi-file body previews are capped AND cancellation-aware; tree-text previews are neither** — any preview pane whose handler streams the *bodies* of more than one file (`output.WriteOutputPlanPayload*` looping over multiple plan items) must wrap its writer in `output.PreviewCapWriter` constructed with `output.PreviewByteLimit` (128 KiB) and `search.ReloadCancelContext()`. On the sentinel `output.ErrPreviewLimitReached`, the caller treats the result as success-with-truncation (when `cap.Truncated()`) or silent return (when `cap.Cancelled()`), never as failure.
+25. **Body previews are bounded; complete tree documents and final output remain complete** — multi-file body preview handlers must use `output.PreviewCapWriter` with `output.PreviewByteLimit` (128 KiB) and the handler's cancellation context (`search.ReloadCancelContext()` for internal reload helpers). On `output.ErrPreviewLimitReached`, treat the result as success-with-truncation when `cap.Truncated()`, or silent cancellation when `cap.Cancelled()`, never as failure. Sink preview rendering uses its own cancellable context.
 
-    The cap exists because fzf's preview pane renders a constant number of lines regardless of input size; emitting more bytes than fit is pure I/O waste, and on Windows + Defender it scales linearly with file count (every per-file `os.Open` is intercepted). The cancellation hook exists because fzf SIGTERMs the previous preview child when focus changes (on macOS/Linux): without a context check inside the per-entry write loop, the superseded emit runs to completion and delays the next focus's preview by however long the previous file scan takes. Folding cancellation into the cap writer turns that into a microsecond bail; nothing inside `WriteOutputPlanPayload*` needs to know about either condition.
+    The cap bounds file reads and output needed for a scrollable preview; the full result remains available through final emission. Content reads can be especially expensive on cold Windows files. Cooperative cancellation stops work between writes when its context is cancelled, but is not a substitute for subprocess ownership: normal fzf supersession uses Unix process-group termination or Windows picker/helper jobs. Do not assume hard kills run deferred cleanup, or generalize a measured cancellation time to all reads.
 
-    **The cap MUST NOT be applied to tree-text previews** (`RenderTreePreviewFromPlan`, `renderTreeDocument`, `EncodeTreePayloadFromPlan`, the `--internal-tree-preview` / `--internal-tree-payload` handlers). Tree previews render the *user-visible scope summary* — paths, size annotations, git badges, the document the user reads to decide whether to commit. Truncating mid-tree would silently misrepresent scope coverage, a rule 1 ("Preview must be truthful") violation. Tree documents are bounded by entry count (one row per file), not by per-file body size, so they don't have the multi-MiB cost surface that multi-file body previews do.
+    **Core tree documents remain uncapped** (`RenderTreePreviewFromPlan`, `renderTreeDocument`, `EncodeTreePayloadFromPlan`, the `--internal-tree-preview` / `--internal-tree-payload` handlers). They describe the complete selected scope. The output-sink picker's tree/report and metadata panes are explicit bounded display excerpts: they may use the preview cap, but must show the truncation footer and never truncate the underlying plan, final report or payload. A displayed prefix must not be presented as the complete selection.
 
-    **The cap MUST NOT be applied to the final emit** — the bytes the user actually pastes, bundles, or saves. The cap lives only inside the `--internal-*-preview` handler call sites (`cli.go:88/112/125`); final emit runs in the parent process via `output.EmitOutputPlan`, a structurally separate path the preview wrappers never reach.
+    **Final emit must not use the preview cap.** The bytes the user pastes, bundles or saves are complete. Preview-only and bounded sink-size-decision readers live in `internal/ui`; final content emission runs through root `run_output.go` and `output.EmitOutputPlan`. A threshold probe does not supply a shortened final payload. The separate 16 KiB terminal syntax-highlighting limit streams larger units completely, without color.
 
     Single-file previews (per-file picker focus, content-match-list rows, `--recent` table render) are bounded by file size or single-document length and do not require the cap.
 
@@ -222,7 +225,7 @@ Subpackages and platform shims:
 3. Resolve each target into either:
    - an exact file
    - an exact directory subtree
-   - a glob pattern matched against all visible files
+   - a glob pattern matched against the scope's visible or no-ignore file inventory
    - an fzf-backed fuzzy selection
    - an exact target, including a path hidden by an ignore rule
 
@@ -230,17 +233,18 @@ Subpackages and platform shims:
    - rg is the primary engine for visible file enumeration
    - exact visible directory targets also use rg-backed subtree discovery
    - rg is also used for exact basename lookup and `--contains` matching
-   - Go walks are still used where directory objects matter and for bounded exact ignored-directory traversal
+   - no-ignore and explicit ignored-root traversal also use rg-backed enumeration, with separate ignore attribution and nested-rule handling
    - symlinks are currently excluded everywhere by policy
    - visible directory targets are derived from the visible file set rather than a separate directory walk, so there is no standalone visible-dir walk in the hot path; they inherit both rg/.gitignore visibility and catclip's `.hiss` filtering
    - consequence: empty directories, or directories with no surviving text files, are intentionally excluded from the visible picker
 
-5. Apply cheap file eligibility checks first:
-   - ignore rules
-   - `--only` / `--exclude`
-   - known binary basename/extension denylist
+5. Establish target membership before content classification:
+   - apply the target's ignore policy during enumeration
+   - match explicit target globs against enumerated names/paths before classifying the matching subset
+   - retain the complete eligible inventory for editable fuzzy target pickers
+   - do not hoist `--only`, `--exclude`, `--depth`, or other ordered stages into this step
 
-6. Classify text/binary through the shared hybrid classifier (rule 11): filename shortcuts, Go-only decoded-NUL scanning, and empty-file admission. Classification never expands discovery membership.
+6. Classify text/binary through the shared hybrid classifier (rule 11): filename shortcuts, Go-only decoded-NUL scanning, empty-file admission and successful per-path reuse within the invocation. Classification never expands discovery membership. `--with-binaries` admits binary entries without requiring the default text-only filtering; payload-specific work may still need content classification.
 
 7. Keep ripgrep-backed candidate entries lightweight:
    - picker/index candidates are stored with `RelPath` first
@@ -254,7 +258,7 @@ Subpackages and platform shims:
    - exact paths beat basename and fuzzy lookup even with `--no-ignore`. A root `index.js` therefore remains the exact target; absent that path, `index.js` is visible-only basename navigation unless `--no-ignore` broadens the universe
    - `--only` / `--exclude` run as sequential file-set stages
    - `--recent N` sorts by mtime, keeps top N
-   - `--depth N` removes files more than N levels below each target (rg `--max-depth`)
+   - `--depth N` filters retained entries by target-relative path depth, with direct children at depth 1; it is not a new rg walk or an authorization to push this stage ahead of earlier filters
    - `--contains` filters by content match (regex, rg-backed)
    - `--snippet` extracts the smallest recognized enclosing unit (a declaration,
      an XML/HTML element, a JSON object, a config section) for each regex match,
@@ -267,9 +271,10 @@ Subpackages and platform shims:
    - live `--only` / `--exclude` previews must never expand every marked row into subprocess argv. Pass fzf's selected-row temporary file (`{+f}`) to the checkpoint-backed internal preview and parse its value column in-process. If checkpoint setup fails, omit the live preview instead of restoring an unbounded argv fallback. This keeps preview command size constant for large `--no-ignore` scopes; see `docs/versions/v0.7.0/reports/RESOLVED_BUG_large_file_set_selection_argmax.md`
 
 9. Build preview metadata and render the tree/summary when needed:
-   - `--metadata` is an invocation-wide final payload containing one row per selected path in emission order. It uses the ordinary clipboard/stdout/bundle transport, composes with membership filters and `--then`, and conflicts with `--paths`, `--lines`, `--snippet`, diff output, and `--raw` in every scope
+   - `--metadata` is a scope-local output mode containing one row per selected path in emission order. It uses ordinary clipboard/stdout/bundle transport and composes with source or paths in other `--then` scopes. Paths, lines, snippets and diffs conflict only within the same scope; global `--raw` remains incompatible. Metadata appears directly below paths in visual menu order, outside Extras, with symmetric compatibility hiding. Adjacent metadata scopes share one deduplicated report; a source/path section separates reports. Metadata rows never suppress or replace source, including empty refinements. Prepared metadata reports are reused for output measurement, preview and emission
    - metadata headers include an RFC3339 materialization time, best-effort Git branch/commit plus selected change counts, per-scope exact raw-visible/final-selected coverage, and causal ignored boundary paths. Extension composition is selected-byte-ranked and capped at five groups; selections of at least 20 files may also show five directory groups and five largest selected files. These summaries consume retained entries and cannot change membership
-   - ignored-boundary display is capped at 20 rows per scope while retaining the exact boundary total. `--no-ignore` scopes omit ignore-derived coverage/provenance entirely. Binary rows use a final `binary` flag and contribute bytes but not estimated tokens to row, aggregate, or footer token totals
+   - ignored-boundary display is capped at 20 rows per scope while retaining the exact boundary total. Prioritize directory-rule evidence, then shallower paths; bounded row stats can confirm additional directories. Suppress displayed descendants of confirmed fully ignored directories. Do not calculate recursive ignored-directory sizes or stat the entire ignored inventory to rank it. `--no-ignore` scopes omit ignore-derived coverage/provenance entirely. Binary rows use a final `binary` flag and contribute bytes but not estimated tokens to row, aggregate, or footer token totals
+   - metadata print and sink preview share field styling: emphasized basenames, dim parents, Git states, size thresholds shared with the tree, and Today/Yesterday labels. Keep token fields neutral, timestamps tied to report materialization, and plain payload accounting independent of color. Metadata preview uses terminal-default foreground/background rather than the source preview's dark theme
    - the tree is always a structural, path-sorted selection view. Ordering stages such as bare `--recent` and bare `--size` do not visually reorder its rows, even though they change payload order to newest-first or largest-first. Their bounded forms (`--recent N`, `--size MIN [MAX]`) may change which files remain, but the surviving tree rows are still path-sorted
    - `--no-tree` governs only the pre-emission selection tree; it never suppresses the `--metadata` payload
    - normal `-q` runs skip tree rendering and confirmation entirely
@@ -292,7 +297,12 @@ Subpackages and platform shims:
 ## Git / rg performance rules
 
 - rg owns ignore semantics. Both `.gitignore` and `.hiss` flow through ripgrep: `.gitignore` via rg's native engine (with `--no-require-git` so it activates outside repos), `.hiss` via `--ignore-file`. No Go-side gitignore matcher; no `git check-ignore` subprocess.
-- Source attribution (`.hiss` vs `.gitignore`) comes from a two-call diff: `visibleAll` (gitignore-only) vs `visibleWithHiss` (gitignore + `.hiss`). Both calls are cached process-wide.
+- Membership-based source attribution (`.hiss` vs `.gitignore`) compares `visibleAll` (gitignore-only) with `visibleWithHiss` (gitignore + `.hiss`). Results are cached process-wide; without a `.hiss` overlay, the second set reuses the first. Metadata's causal boundary trace has its separate rule 19 contract.
+- Reuse already-enumerated child paths as proof that their ancestor directories are nonempty when explaining ignored targets. Do not repeat a parent membership walk for each candidate; the same guidance must not require quadratic traversal work.
+- Reuse a direct startup probe's Git context only for the same working directory, including a known non-repository result. A retained Git context is not a prepared output plan and does not authorize skipping discovery.
+- Diff preparation batches literal tracking identities and compatible same-path patches, with bounded argv. Keep staged, unstaged and HEAD comparisons separate. Unborn-HEAD concatenation, renames, unusual patch formats and custom drivers retain per-path fallback; do not guess patch boundaries or disable user diff configuration to make batching fit. Drop consumed batch observations as prepared payloads take ownership.
+- Metadata diagnostic-root compaction uses retained resolved file/directory kinds and ancestor lookup. Legacy scopes may stat a retained root once; never stat it again for every sibling comparison. Preserve the same union of diagnostic roots.
+- Directory inventory reuse is resolver-local and policy-specific. Reuse a normal-ignore parent only when its raw inventory proves a visible descendant under the child; otherwise the explicit child still gets its own traversal. No-ignore inventories remain separate. Custom rg configuration can impose root-relative limits, so it disables this parent-inventory reuse. Preserve exact-target checks, order and TargetRoot attribution.
 - A previous `git cat-file --batch` fast-path experiment was benchmarked and was substantially slower than direct working-tree streaming for catclip's "wrap and emit many files" workload; do not assume Git blob batching is an optimization here without new measurements.
 - Preview/tree badge collection narrows `git status --porcelain` to selected roots/pathspecs when the path list is small enough, and only falls back to repo-wide porcelain for broad/unsafe path sets or Git command failure; this materially improved tree-enabled scoped runs.
 - Tradeoff of the narrowed porcelain path: boundary-crossing rename/copy cases can be less complete than repo-wide status. Because the tree only cares about staged / unstaged / untracked selector states today, and not a dedicated rename badge, that trade is acceptable; future rename-specific UI should revisit these fallback rules carefully.
@@ -308,10 +318,11 @@ Subpackages and platform shims:
 
 ## Known remaining costs
 
-- Exact basename lookup still has its own rg pass separate from the picker.
-- Ignored-target browsing still uses a full Go walk by design.
-- Preview tree runs still pay per-file size collection, and large or broad tree requests can still fall back to repo-wide git status collection; quiet/no-tree paths avoid that cost.
-- On large clean repos, output emission is currently the dominant cost, not visible-file discovery.
+- Exact basename lookup can require a separate rg enumeration before fuzzy fallback.
+- Broad directory/fuzzy/no-ignore inventories still classify unknown-format files. A first run can be dominated by content reads and Windows antivirus or filesystem cache state, even for `--metadata`; target-glob narrowing does not eliminate that broad-inventory cost.
+- No-ignore browsing enumerates with rg and may also need cached visible sets for ignore attribution. Those policy queries are distinct from the duplicate classification inventory walk removed in v0.7.9.
+- First previews and cache misses can still need scoped Git queries, content reads and rendering. Completed session frames are reused, and sealed interactive entries retain size/mtime/mode; do not assume every cursor move restats every file. Broad Git path sets can still fall back to repository-wide status. Quiet/no-tree avoids badge-only work, not Git needed by explicit selectors or metadata.
+- Dominant cost depends on the workload: cold classification, first-preview preparation, final emission or clipboard backend wait. Earlier large clean-repository measurements do not establish a universal bottleneck.
 
 ## Profiling
 
@@ -325,7 +336,7 @@ Pick the tool by the question you are asking:
 
 - **"What's the hot function?"** → CPU profile.
 - **"Why is it slow / where does wall-clock time go?"** → trace. catclip runs are mostly *off* CPU — waiting on the rg subprocess, file-read syscalls, fzf, and GC (one investigated interactive run was only ~37% on-CPU). The CPU profile is blind to that other ~63%; the trace shows it. Reach for the trace first on latency questions, the CPU profile second.
-- **"Memory or allocation pressure?"** → mem profile (`-inuse_space` for retention — e.g. the one-body-at-a-time streaming guarantees; `-alloc_space` for the GC churn the benchmarks track).
+- **"Memory or allocation pressure?"** → mem profile (`-inuse_space` for retention — e.g. bounded read-prefetch buffers and prepared snippets/diffs; `-alloc_space` for the GC churn the benchmarks track).
 
 Caveat: `catclip.Main()` returns normally on success but calls `os.Exit()` on error paths, and `os.Exit` bypasses deferred funcs — so a profile is flushed only when `Main()` returns (the success path, e.g. a completed interactive run, which is what we profile). Capturing error paths too would require `Main()` to return an exit code instead of calling `os.Exit()` internally; until then, profile a run that succeeds.
 
@@ -335,7 +346,8 @@ Profiling answers *where the time/memory goes within one process*. Pair it with 
 
 - In an interactive TTY, bare `catclip` opens the target selector with `[select all files]` first; non-interactive runs still default to `.`.
 - Exact existing targets like `.`, `src`, or `dir/file` should run directly instead of opening fzf.
-- Slashless shorthand like `common`, `btn`, or `node` is picker territory.
+- Slashless shorthand like `common`, `btn`, or `node` reaches fuzzy lookup only after existing paths and exact basename resolution miss; headless ambiguity is an error rather than a picker.
+- Existing dotfiles are exact targets too. A missing slashless `.something` that triggers bare-extension validation may add bounded, name-based ignored-path suggestions. This error-only lookup reads no candidate contents, is not a special case for `.env`, and does not run for successful root paths or directory selections. Multi-dot filenames that pass that syntax check use ordinary target resolution and ignored-ancestor guidance instead.
 - Positional target grammar has one metacharacter boundary: no glob metacharacter means exact/fuzzy file-and-directory navigation; any `*`, `?`, or `[` means deterministic file-glob selection. Wrapper stars are not fuzzy punctuation: `catclip "*util*"` must reach the glob resolver unchanged, while `catclip util` is the fuzzy navigation form. Glob targets never open fzf on zero, one, or many matches, and interactive/headless runs must select the same file set.
 - Shell quoting preserves one argv value; it does not override Catclip's target grammar. A literal filename containing `*`, `?`, or `[` is still classified as a target glob. A root filename that begins like a public option must retain an explicit path prefix such as `./--paths`; picker-generated commands must not emit a bare option-shaped target. The current picker replay defect is tracked in `docs/versions/v0.6.8/reports/ACTIVE_BUG_option_shaped_root_target_replay.md`.
 - Quoted slashless glob targets are recursive filename queries over the visible cwd tree: `catclip "*.tsx"` matches direct and nested TSX basenames. This is the recursive-search convention used by rg/gitignore-style filtering, not shell expansion; examples must stay quoted so the shell does not consume them first.
@@ -359,8 +371,8 @@ Profiling answers *where the time/memory goes within one process*. Pair it with 
 - `.` means every normally visible target. `catclip . --no-ignore` means every
   eligible target below cwd with ignore rules disabled.
 - Scope coverage is literal and subtree-based: selecting `src/vs` covers only `src/vs/...`, not all of `src/...`, so a later `--then src` is valid and should remain available.
-- Exact overlapping scopes are allowed in scripting mode even when a later scope is already covered by an earlier one; final payload is still deduped by path, but the command should keep the user's literal scope structure.
-- `--then` is a true fresh scope boundary: treat it like starting a brand new catclip command on the same line, then unioning the final file sets. Interactive recovery must not turn it into "remaining files only".
+- Exact overlapping scopes are allowed in scripting mode even when a later scope is already covered by an earlier one. Keep the user's literal scope structure, then apply output-plan deduplication within its section/mode boundaries. Path-list sections and content sections can both describe the same file; the payload is not one global unique-path set.
+- `--then` is a fresh evaluation boundary, followed by the final merge described in rule 6. Interactive target recovery must not turn it into "remaining files only"; focused-output suppression at final planning is a separate operation.
 - Current interactive continuation exclusion is target-based, not result-set-based, within the current scope: later pickers in the same scope exclude previously selected target paths/subtrees, but do not evaluate prior modifiers like `--only`, `--exclude`, `--contains`, `--changed`, `--snippet`, or `--diff` before deciding what counts as "already covered".
 - Consequence of that simplification within one scope: `src --only "*.ts"` still makes later same-scope picker logic treat all of `src` as covered, and prior `.` still means "all safe targets are covered" for same-scope continuation purposes, even if that scope would later be narrowed by modifiers.
 - The interactive modifier menu can apply no-value `--no-ignore` or collect
@@ -375,9 +387,10 @@ Profiling answers *where the time/memory goes within one process*. Pair it with 
 
 - Preserve user-facing semantics over "cleaner" abstractions. If a refactor changes target meaning, preview truthfulness, or startup recovery behavior, it is probably the wrong refactor.
 - Only extract an internal package when it can own a small API without exporting half the app's internals; if a split mainly moves files around, it is premature.
-- If tree/render UX is still in flux, keep it close to the rest of the app until the behavior settles.
+- Keep evolving tree/preview UX within the existing UI/output/render ownership boundaries. Supply derived documents and callbacks across those boundaries instead of moving discovery into render or letting output import UI.
 - Benchmark end-to-end CLI cost with `hyperfine`, not ad-hoc `time` loops: most of catclip's perf-relevant work is per-invocation (per-refresh preview commands, full runs), and the process-spawn + runtime-init floor (~26 ms on macOS) is part of what the user pays — hyperfine captures it and handles warmup, repeats, and mean ± σ. Conventions: explicit binary paths (not PATH); set `CATCLIP_RG`/`CATCLIP_FZF` so `ensureRequiredTools` takes its real (non-error) path; `-N` to skip the intermediate shell, `-w` warmup, `-M` run cap. Use `go test -bench` instead only to isolate a *pure hot function* below the spawn floor (e.g. `PreviewModeTags`, stage application) — hyperfine would drown a µs function in the spawn cost. Caveat: hyperfine measures **warm** steady-state; cold-cache / first-touch cost is not captured (macOS `purge` needs root), so reason about cold paths separately. hyperfine tells you *how long*; to see *where* that time goes inside one process, use the profiling env vars in the `## Profiling` section (trace especially, since most of the cost is off-CPU).
 - Benchmark explicit binaries, not just whatever `catclip` in PATH points to; old installed binaries can silently invalidate before/after results.
+- Where available, `docs/BENCHMARKING.md` records the local agent workflow and versioned diagnostic artifacts. It is gitignored and may be absent from a clean checkout. Keep historical corpora under their recorded versions; isolate production package roots when running Go checks so those corpora are not accidentally treated as application packages.
 - Benchmark the path you actually changed: tree/porcelain optimizations must be measured with tree-enabled commands, not `-q -t` runs that skip that work entirely.
 - For preview/content performance work, include a large-entry validation against a local directory that collects several large real-world project checkouts under one folder (e.g. clones of big repos like linux, vscode, or chromium), when you have one set up. Small fixtures catch correctness, but 100k+ file corpora expose O(N), repeated-rg, JSON decode, and file-body scan regressions that are invisible at toy sizes. The location of that directory is machine-specific and not stored in the repo — if you don't already have it in context, ask the user where it is rather than guessing a path.
 - When file counts or tree contents change, investigate selection and classification first; output-path changes should not change what files are selected.

@@ -40,12 +40,47 @@ func TestCheckStatuses(t *testing.T) {
 	}
 }
 
+func TestCheckReadsOptionalNotesInSingleRequest(t *testing.T) {
+	for _, body := range []string{``, `,"body":null`, `,"body":""`, `,"body":"  Faster previews.\n\nClipboard fixes.  "`} {
+		calls := 0
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"tag_name":"v0.7.9"` + body + `}`))}, nil
+		})}
+		result, err := Check(Options{CurrentVersion: "0.7.8", HTTPClient: client, HomebrewOwner: func(context.Context, string) bool { return false }})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := ""
+		if strings.Contains(body, "Faster") {
+			want = "Faster previews.\n\nClipboard fixes."
+		}
+		if calls != 1 || result.ReleaseNotes != want {
+			t.Fatalf("calls=%d, notes=%q, want %q", calls, result.ReleaseNotes, want)
+		}
+	}
+}
+
 func TestCheckRejectsUnusableCurrentVersion(t *testing.T) {
 	for _, version := range []string{"dev", "0.7", "0.7.2-beta.1"} {
 		_, err := Check(Options{CurrentVersion: version})
 		var versionErr CurrentVersionError
 		if !errors.As(err, &versionErr) || versionErr.Version != version {
 			t.Fatalf("Check(%q) error = %v", version, err)
+		}
+	}
+}
+
+func TestCheckDoesNotDecodeNotesForCurrentOrAhead(t *testing.T) {
+	for _, version := range []string{"0.7.9", "0.7.10"} {
+		calls := 0
+		client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{"tag_name":"v0.7.9","body":"old release notes"}`))}, nil
+		})}
+		result, err := Check(Options{CurrentVersion: version, HTTPClient: client, HomebrewOwner: func(context.Context, string) bool { t.Fatal("installation probe without an update"); return false }})
+		if err != nil || calls != 1 || result.ReleaseNotes != "" {
+			t.Fatalf("result=%+v err=%v requests=%d", result, err, calls)
 		}
 	}
 }
@@ -122,7 +157,7 @@ func TestAvailableReleaseUsesInstallationOwner(t *testing.T) {
 	}{
 		{name: "homebrew", opts: Options{ExecutablePath: directExe, HomebrewOwner: func(context.Context, string) bool { return true }}, wantMethod: InstallHomebrew, wantCommands: []string{"brew upgrade catclip"}},
 		{name: "source unix", opts: Options{ExecutablePath: sourceExe, HomebrewOwner: notBrew}, wantMethod: InstallSource, wantCommands: []string{"git pull --ff-only", "PREFIX=", "./install.sh"}},
-		{name: "source windows", opts: Options{ExecutablePath: sourceExe, Platform: "windows", HomebrewOwner: notBrew}, wantMethod: InstallSource, wantCommands: []string{"git pull --ff-only", ".\\install.ps1", "-InstallRoot"}},
+		{name: "source windows", opts: Options{ExecutablePath: sourceExe, Platform: "windows", HomebrewOwner: notBrew}, wantMethod: InstallSource, wantCommands: []string{"git pull --ff-only", `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\install.ps1`, "-InstallRoot"}},
 		{name: "direct unix", opts: Options{ExecutablePath: directExe, Platform: "linux", HomebrewOwner: notBrew}, wantMethod: InstallDirectRelease, wantCommands: []string{"curl "}},
 		{name: "direct windows", opts: Options{ExecutablePath: directExe, Platform: "windows", HomebrewOwner: notBrew}, wantMethod: InstallDirectRelease, wantCommands: []string{"irm "}},
 		{name: "unknown", opts: Options{ExecutablePath: filepath.Join(t.TempDir(), "bin", "catclip"), HomebrewOwner: notBrew}, wantMethod: InstallUnknown, wantCommands: []string{InstallDocsURL}},
@@ -167,7 +202,7 @@ func TestSourceInstallCommandPreservesCustomRoot(t *testing.T) {
 		t.Fatalf("Unix source command = %q", unix)
 	}
 	windows := sourceInstallCommand("windows", `C:\Tools\Catclip\bin\catclip.exe`)
-	if windows != `.\install.ps1 -InstallRoot 'C:\Tools\Catclip'` {
+	if windows != `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\install.ps1 -InstallRoot 'C:\Tools\Catclip'` {
 		t.Fatalf("Windows source command = %q", windows)
 	}
 	unc := sourceInstallCommand("windows", `\\server\tools\catclip\bin\catclip.exe`)
@@ -190,7 +225,7 @@ func TestDirectWindowsInstallCommandOmitsDefaultRootOverride(t *testing.T) {
 func TestSourceWindowsInstallCommandOmitsDefaultRootOverride(t *testing.T) {
 	t.Setenv("LOCALAPPDATA", `C:\Users\Chris\AppData\Local`)
 	command := sourceInstallCommand("windows", `C:\Users\Chris\AppData\Local\Programs\catclip\bin\catclip.exe`)
-	if command != `.\install.ps1` {
+	if command != `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\install.ps1` {
 		t.Fatalf("Windows source update command = %q", command)
 	}
 }

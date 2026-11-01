@@ -45,6 +45,7 @@ func printColorPolicy(cfg EmitConfig, headless, terminalColor bool, term string)
 }
 
 type printPresentation struct {
+	colors     platform.Palette
 	highlight  func(path, content string, diff bool) string
 	limit      int
 	addedBytes int64
@@ -105,7 +106,7 @@ func highlightPrintedUnit(raw []byte, unit PreparedFileUnit, highlight func(stri
 		var out strings.Builder
 		rest := raw
 		for _, r := range unit.SnippetRanges {
-			tag := buildFileOpenTagWithLines(entry.RelPath, "", fmt.Sprintf("%d-%d", r.Start, r.End))
+			tag := buildFileOpenTagWithLines(entry.RelPath, unit.sourceType, fmt.Sprintf("%d-%d", r.Start, r.End))
 			if !bytes.HasPrefix(rest, tag) {
 				return plain
 			}
@@ -149,9 +150,9 @@ func highlightPrintedUnit(raw []byte, unit PreparedFileUnit, highlight func(stri
 				attr += fmt.Sprint(entry.LinesEnd)
 			}
 		}
-		tag = buildFileOpenTagWithLines(entry.RelPath, "", attr)
+		tag = buildFileOpenTagWithLines(entry.RelPath, unit.sourceType, attr)
 	} else {
-		tag = buildFileOpenTag(entry.RelPath, "")
+		tag = buildFileOpenTag(entry.RelPath, unit.sourceType)
 	}
 	if len(tag) == 0 || !bytes.HasPrefix(raw, tag) || !bytes.HasSuffix(raw, fileCloseTag) || len(raw) < len(tag)+len(fileCloseTag) {
 		return plain

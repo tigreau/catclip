@@ -159,6 +159,7 @@ func TestResolvedCurrentScopeViewDerivesPathOnlyStagesFromRetainedParent(t *test
 		{name: "exclude", stage: []string{"--exclude", "*.md"}},
 		{name: "depth", stage: []string{"--depth", "1"}},
 		{name: "paths", stage: []string{"--paths"}},
+		{name: "metadata", stage: []string{"--metadata"}},
 		{name: "lines", stage: []string{"--lines", "1", "2"}},
 	}
 	for _, tc := range tests {
@@ -473,7 +474,7 @@ func TestRetainedNoIgnoreWithoutIgnoredFilesIsSilentNoOp(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !startupModifierChoiceKeysContain(startupAvailableModifierChoicesWithState(baseArgs, state), "no-ignore") {
+	if !startupModifierChoiceKeysContain(startupAvailableModifierChoicesWithState(baseArgs, state), "file-inclusion") {
 		t.Fatal("--no-ignore was hidden when no ignored files existed")
 	}
 	enumerationMu.Lock()
@@ -526,7 +527,7 @@ func TestEmptyIgnoredScopeOffersNoIgnoreAndRecoversFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !state.Known || !state.Empty || !startupModifierChoiceKeysContain(startupAvailableModifierChoicesWithState(baseArgs, state), "no-ignore") {
+	if !state.Known || !state.Empty || !startupModifierChoiceKeysContain(startupAvailableModifierChoicesWithState(baseArgs, state), "file-inclusion") {
 		t.Fatalf("empty ignored scope did not offer --no-ignore: state=%+v choices=%v", state, startupModifierChoiceKeys(startupAvailableModifierChoicesWithState(baseArgs, state)))
 	}
 

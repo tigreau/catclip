@@ -16,7 +16,6 @@ const (
 	progressExtraRaw
 	progressExtraNoTree
 	progressExtraWithBinaries
-	progressExtraMetadata
 )
 
 func interactiveProgressExtrasFromParsed(cfg command.Parsed) interactiveProgressExtras {
@@ -41,9 +40,6 @@ func interactiveProgressExtrasFromParsed(cfg command.Parsed) interactiveProgress
 	if cfg.WithBinaries {
 		extras |= progressExtraWithBinaries
 	}
-	if cfg.PayloadKind == command.PayloadMetadata {
-		extras |= progressExtraMetadata
-	}
 	return extras
 }
 
@@ -65,7 +61,6 @@ func formatInteractiveFilterProgress(extras interactiveProgressExtras, scopes []
 	writeInteractiveProgressExtra(&out, extras, progressExtraQuiet, "--quiet")
 	writeInteractiveProgressExtra(&out, extras, progressExtraYes, "--yes")
 	writeInteractiveProgressExtra(&out, extras, progressExtraNo, "--no")
-	writeInteractiveProgressExtra(&out, extras, progressExtraMetadata, "--metadata")
 	writeInteractiveProgressExtra(&out, extras, progressExtraRaw, "--raw")
 	writeInteractiveProgressExtra(&out, extras, progressExtraNoTree, "--no-tree")
 	writeInteractiveProgressExtra(&out, extras, progressExtraWithBinaries, "--with-binaries")

@@ -18,6 +18,13 @@ import (
 // uses an exact directory target, optionally followed by a cwd-relative
 // --only filter.
 func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors platform.Palette) string {
+	// The target-local classification already proved that matching binaries
+	// were excluded. Do not probe prefixes or ignore membership to explain it.
+	if !r.WithBinaries && r.lastClassificationExcludedBinary {
+		return fmt.Sprintf("%sWarning:%s No eligible files matched %s (scope %d).\n%s",
+			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+			binaryTargetInclusionHint(pattern, r.NoIgnore, colors))
+	}
 	prefix := longestLiteralPathPrefix(pattern)
 	if prefix == "" || prefix == "." {
 		return globWithoutLiteralPrefixWarning(pattern, scopeIndex, colors)
@@ -38,6 +45,17 @@ func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors pl
 		return ignoredGlobZeroMatchWarning(pattern, prefix, suffix, block.Source, scopeIndex, directoryShaped, colors)
 	}
 	return visibleGlobZeroMatchWarning(pattern, prefix, suffix, scopeIndex, directoryShaped, colors)
+}
+
+// binaryTargetInclusionHint only formats the target and known scope policy.
+// It must never discover files or classify content for a suggested command.
+func binaryTargetInclusionHint(target string, noIgnore bool, colors platform.Palette) string {
+	args := ShellQuoteArg(target)
+	if noIgnore {
+		args += " --no-ignore"
+	}
+	return fmt.Sprintf("  %sBinary files were excluded. Include them with -b (--with-binaries):%s\n    %scatclip %s -b%s\n\n  %sOr name a binary file by its complete relative path.%s",
+		colors.Dim, colors.Reset, colors.OK, args, colors.Reset, colors.Dim, colors.Reset)
 }
 
 func globWithoutLiteralPrefixWarning(pattern string, scopeIndex int, colors platform.Palette) string {
@@ -290,21 +308,14 @@ func WriteNoFilesMatchedMessage(scopes []command.ExecutionScope, stderr io.Write
 			flags = strings.Join(parts, "/")
 		}
 
-		if _, err := fmt.Fprintf(stderr, "%sNo %s files found.%s\n", colors.Warn, flags, colors.Reset); err != nil {
+		if _, err := fmt.Fprintf(stderr, "%sNo files matched the requested targets and filters.%s\n", colors.Warn, colors.Reset); err != nil {
 			return err
 		}
-		switch {
-		case hasStaged && !hasUnstaged && !hasUntracked:
-			_, _ = fmt.Fprintf(stderr, "  %sNo files are staged for commit. Use 'git add' to stage changes.%s\n", colors.Dim, colors.Reset)
-		case hasUnstaged && !hasStaged && !hasUntracked:
-			_, _ = fmt.Fprintf(stderr, "  %sNo tracked files have uncommitted modifications.%s\n", colors.Dim, colors.Reset)
-		case hasUntracked && !hasStaged && !hasUnstaged:
-			_, _ = fmt.Fprintf(stderr, "  %sNo new untracked files in the target directories.%s\n", colors.Dim, colors.Reset)
-		default:
-			_, _ = fmt.Fprintf(stderr, "  %sYour working tree may be clean, or the target has no modifications.%s\n", colors.Dim, colors.Reset)
+		if _, err := fmt.Fprintf(stderr, "  %sGit selection requested: %s.%s\n  %sTargets and other filters also limit the result.%s\n  %sCheck changes with: git status --short%s\n",
+			colors.Dim, flags, colors.Reset, colors.Dim, colors.Reset, colors.Dim, colors.Reset); err != nil {
+			return err
 		}
-		_, err := fmt.Fprintf(stderr, "  %sRun without %s to select all files.%s\n", colors.Dim, flags, colors.Reset)
-		return err
+		return writeEmptyResultIgnoreHints(stderr, colors)
 	}
 
 	if _, err := fmt.Fprintf(stderr, "\n%sNo text files found matching your criteria.%s\n", colors.Warn, colors.Reset); err != nil {
@@ -319,7 +330,7 @@ func WriteNoFilesMatchedMessage(scopes []command.ExecutionScope, stderr io.Write
 	if _, err := fmt.Fprintf(stderr, "  %s  2. All files were ignored by .gitignore or .hiss rules%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(stderr, "  %s  3. Typo in target name%s\n", colors.Dim, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(stderr, "  %s  3. Targets or filters exclude every file%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}
 	// Add a case-sensitivity bullet only when a regex filter was used —
@@ -336,10 +347,14 @@ func WriteNoFilesMatchedMessage(scopes []command.ExecutionScope, stderr io.Write
 		}
 	}
 	if usedRegexFilter {
-		if _, err := fmt.Fprintf(stderr, "  %s  4. Pattern contains uppercase letters (smart-case: uppercase = exact match)%s\n", colors.Dim, colors.Reset); err != nil {
+		if _, err := fmt.Fprintf(stderr, "  %s  4. Pattern contains uppercase letters (smart-case: uppercase = case-sensitive)%s\n", colors.Dim, colors.Reset); err != nil {
 			return err
 		}
 	}
+	return writeEmptyResultIgnoreHints(stderr, colors)
+}
+
+func writeEmptyResultIgnoreHints(stderr io.Writer, colors platform.Palette) error {
 	if _, err := fmt.Fprintf(stderr, "\n  %sTry: catclip --all-ignore-rules             # list every active ignore rule (.hiss + .gitignore)%s\n", colors.Dim, colors.Reset); err != nil {
 		return err
 	}

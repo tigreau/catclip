@@ -2,6 +2,7 @@ package discovery
 
 import (
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/tigreau/catclip/internal/command"
@@ -62,6 +63,7 @@ type stageApplier func(ctx stageContext, entries []Entry) ([]Entry, error)
 // register it here. Tests in scope_stages_test.go enforce coverage.
 var stageApplierTable = map[command.StageKind]stageApplier{
 	command.StageNoIgnore:     applyNoIgnoreStageCase,
+	command.StageWithBinaries: func(_ stageContext, entries []Entry) ([]Entry, error) { return entries, nil },
 	command.StageOnly:         applyOnlyStageCase,
 	command.StageExclude:      applyExcludeStageCase,
 	command.StageRecent:       ApplyRecentStageCase,
@@ -79,6 +81,7 @@ var stageApplierTable = map[command.StageKind]stageApplier{
 	command.StageUnstagedDiff: applyUnstagedStageCase,
 	command.StageDiff:         applyDiffStageCase,
 	command.StagePaths:        applyPathsStageCase,
+	command.StageMetadata:     func(_ stageContext, entries []Entry) ([]Entry, error) { return entries, nil },
 	command.StageLines:        applyLinesStageCase,
 }
 
@@ -167,7 +170,7 @@ func ApplyPathOnlyStageIDs(scope command.ExecutionScope, stage command.Stage, in
 			return nil, true, depthNoFilesAtLevelError(*stage.Limit, minDepth, maxDepth)
 		}
 		return out, true, nil
-	case command.StagePaths, command.StageLines:
+	case command.StagePaths, command.StageMetadata, command.StageLines:
 		// Output-shape stages preserve membership. Return a distinct ID slice
 		// so each retained state remains immutable even if a caller reorders
 		// its materialization later.
@@ -220,6 +223,11 @@ func applyScopeStagesWithDiagnostics(resolver *Resolver, gitCtx git.Context, s c
 		}
 		if len(refinements) > 0 && refinements[0] != nil && IsRefinementStage(s, stage) {
 			refinements[0].Record(entries, next)
+		}
+		if len(next) == 0 {
+			if diagnostic := BinaryOnlyContentDiagnostic(stage, slices.Values(entries), scopeIndex, colors); diagnostic != nil {
+				diagnostics = append(diagnostics, *diagnostic)
+			}
 		}
 		entries = next
 		diagnostics = append(diagnostics, PathOnlyStageDiagnostics(stage, scopeIndex, colors, len(entries) == 0)...)
@@ -287,6 +295,13 @@ func applyContentStageCase(ctx stageContext, entries []Entry) ([]Entry, error) {
 		return entries, nil
 	}
 	entries = EnsureEntryAbsPaths(entries, ctx.Resolver.Cfg.WorkingDir)
+	if ctx.Resolver.WithBinaries || ctx.Scope.WithBinaries {
+		var err error
+		entries, err = TextEntries(entries, ctx.Resolver.Cfg.WorkingDir)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if ctx.Stage.Kind == command.StageSnippet {
 		// One-pass membership + line-number pinning; the output build
 		// consumes Entry.SnippetMatchLines instead of re-running rg.
@@ -303,6 +318,13 @@ func applyNotContentStageCase(ctx stageContext, entries []Entry) ([]Entry, error
 		return entries, nil
 	}
 	entries = EnsureEntryAbsPaths(entries, ctx.Resolver.Cfg.WorkingDir)
+	if ctx.Resolver.WithBinaries || ctx.Scope.WithBinaries {
+		var err error
+		entries, err = TextEntries(entries, ctx.Resolver.Cfg.WorkingDir)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return FilterEntriesByNotContent(entries, ctx.Stage.Values[0])
 }
 

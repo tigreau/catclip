@@ -269,6 +269,12 @@ func snippetBoundaryScopeMatch(currentArgs []string, pattern string) (resolvedSc
 	if len(view.Entries) == 0 {
 		return view, nil, nil
 	}
+	if view.Scope.WithBinaries {
+		view.Entries, err = discovery.TextEntries(view.Entries, view.Invocation.WorkingDir)
+		if err != nil {
+			return view, nil, err
+		}
+	}
 	matched, err := discovery.FilterEntriesBySnippetContent(discovery.EnsureEntryAbsPaths(view.Entries, view.Invocation.WorkingDir), pattern)
 	if err != nil {
 		return view, nil, err
@@ -399,6 +405,13 @@ func buildSnippetBoundaryPreviewForScope(view resolvedScopeView, pattern string,
 func snippetBoundaryPreviewMatchedEntries(view resolvedScopeView, pattern string, onlyValues []string) ([]discovery.Entry, error) {
 	entries := append([]discovery.Entry(nil), view.Entries...)
 	entries = discovery.EnsureEntryAbsPaths(entries, view.Invocation.WorkingDir)
+	if view.Scope.WithBinaries {
+		var err error
+		entries, err = discovery.TextEntries(entries, view.Invocation.WorkingDir)
+		if err != nil {
+			return nil, err
+		}
+	}
 	entries, err := discovery.FilterEntriesBySnippetContent(entries, pattern)
 	if err != nil {
 		return nil, err
@@ -586,8 +599,8 @@ func resolveStartupModifierStageWithEscHint(resolver *discovery.Resolver, curren
 		}
 		finalArgs := append(append([]string(nil), currentArgs...), flag, strconv.Itoa(depth))
 		return finalArgs, append([]string(nil), currentScopeTargets...), false, 1, nil
-	case "--paths":
-		if err := cli.ValidateCurrentScopeFlagAddition(currentArgs, "--paths"); err != nil {
+	case "--paths", "--metadata":
+		if err := cli.ValidateCurrentScopeFlagAddition(currentArgs, flag); err != nil {
 			return nil, append([]string(nil), currentScopeTargets...), false, 0, err
 		}
 		finalArgs := append(append([]string(nil), currentArgs...), flag)

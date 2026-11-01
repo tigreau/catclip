@@ -46,6 +46,7 @@ type DocumentTarget struct {
 
 // DocumentEntry is a single file row in a tree payload.
 type DocumentEntry struct {
+	Binary         bool
 	Path           string
 	Size           *int64
 	GitStatus      string

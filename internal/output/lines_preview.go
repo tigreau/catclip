@@ -30,6 +30,15 @@ func WriteLinesPreview(w *PreviewCapWriter, cfg EmitConfig, plan Plan) error {
 }
 
 func writeLinesPreviewFile(w *PreviewCapWriter, cfg EmitConfig, entry discovery.Entry) error {
+	if !cfg.Raw && entry.HasBinaryHint() {
+		size, err := FileBodySize(entry)
+		if err != nil {
+			return err
+		}
+		payload, _ := BuildWrappedPayload(entry.RelPath, "binary", []byte(BinaryDescription(entry.RelPath, size)))
+		_, err = w.Write(payload)
+		return err
+	}
 	f, err := os.Open(entry.AbsPath)
 	if err != nil {
 		return err

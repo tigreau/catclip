@@ -50,7 +50,7 @@ func styleDiagnosticMessage(message string, colors platform.Palette, isError boo
 			lines[i] = indent + color + text + colors.Reset
 		default:
 			commandAt := -1
-			if strings.HasPrefix(text, "catclip ") {
+			if strings.HasPrefix(text, "catclip ") || strings.HasPrefix(text, "cd ") {
 				commandAt = 0
 			} else {
 				for _, label := range []string{"Try:", "Example:", "See every active rule:"} {

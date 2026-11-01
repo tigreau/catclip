@@ -122,6 +122,8 @@ func classifyResidue(ctx context.Context, root string, paths []string) (residueC
 // open without depending on filesystem speed. Each worker owns its buffer and
 // result slots. There is no goroutine or open handle per inventory entry.
 func classifyResidueGo(ctx context.Context, root string, paths []string, scan func(context.Context, string, []byte) fileClassification) (residueClassification, error) {
+	progress, finishProgress := beginClassificationProgress(len(paths))
+	defer finishProgress()
 	if benchEnabled() {
 		started := time.Now()
 		defer func() { benchGoTextTotal.Add(int64(time.Since(started))); benchGoTextCalls.Add(1) }()
@@ -137,6 +139,9 @@ func classifyResidueGo(ctx context.Context, root string, paths []string, scan fu
 	results := make([]fileClassification, len(paths))
 	run := func(i int, buf []byte) {
 		results[i] = scan(ctx, filepath.Join(root, filepath.FromSlash(paths[i])), buf)
+		if progress != nil {
+			progress.completed.Add(1)
+		}
 	}
 	if workers == 1 {
 		buf := make([]byte, textScanBufferSize)

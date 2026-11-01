@@ -59,7 +59,7 @@ func TestValidateStartupPreflightArgsExamples(t *testing.T) {
 		{name: "no and headless conflict", args: []string{"src", "--no", "--headless"}, wantText: "--no cannot be combined with --headless"},
 		{name: "headless and no conflict", args: []string{"src", "--headless", "--no"}, wantText: "--no cannot be combined with --headless"},
 		{name: "no and quiet conflict", args: []string{"--no", "--quiet"}, wantText: "--no cannot be combined with --quiet"},
-		{name: "with-binaries before target and modifier menu", args: []string{"--with-binaries", "dist", "--"}},
+		{name: "with-binaries after target and before modifier menu", args: []string{"dist", "--with-binaries", "--"}},
 		{name: "metadata paths conflict before modifier menu", args: []string{"src", "--metadata", "--paths", "--"}, wantText: "--metadata and --paths cannot be combined"},
 		{name: "metadata raw conflict before modifier menu", args: []string{"src", "--metadata", "--raw", "--"}, wantText: "--metadata and --raw cannot be combined"},
 		{name: "untracked diff is invalid prefix", args: []string{"--untracked", "--changed-diff"}, wantReason: ReasonUntrackedDiff},

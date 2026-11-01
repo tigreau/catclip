@@ -1590,12 +1590,12 @@ func TestStartupAvailableModifierChoicesEmptyKnownScopeOffersNoIgnoreOnce(t *tes
 		[]string{"src"},
 		startupCurrentScopeState{Known: true, Empty: true},
 	)
-	if got, want := startupModifierChoiceKeys(choices), []string{"no-ignore"}; !reflect.DeepEqual(got, want) {
+	if got, want := startupModifierChoiceKeys(choices), []string{"file-inclusion"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("empty scope choices = %v, want %v", got, want)
 	}
 
 	choices = startupAvailableModifierChoicesWithState(
-		[]string{"src", "--no-ignore"},
+		[]string{"src", "--no-ignore", "-b"},
 		startupCurrentScopeState{Known: true, Empty: true},
 	)
 	if len(choices) != 0 {
@@ -1616,12 +1616,12 @@ func TestStartupAvailableModifierChoicesAlwaysOffersNoIgnoreForNonEmptyScope(t *
 		[]string{"src"},
 		startupCurrentScopeState{Known: true},
 	)
-	if !startupModifierChoiceKeysContain(choices, "no-ignore") {
+	if !startupModifierChoiceKeysContain(choices, "file-inclusion") {
 		t.Fatalf("--no-ignore missing without an availability probe: %#v", startupModifierChoiceKeys(choices))
 	}
 }
 
-func TestEmptyScopeAfterNoIgnoreReturnsNoFilesWithoutReopeningPicker(t *testing.T) {
+func TestEmptyScopeAfterBothInclusionsReturnsNoFilesWithoutReopeningPicker(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
 		"outside.go": "package outside\n",
 	})
@@ -1633,7 +1633,7 @@ func TestEmptyScopeAfterNoIgnoreReturnsNoFilesWithoutReopeningPicker(t *testing.
 	defer scopeViewMemoReset()
 	t.Setenv("CATCLIP_FZF", filepath.Join(t.TempDir(), "must-not-run-fzf"))
 
-	_, err := chooseStartupModifierChoiceWithProgress([]string{"empty", "--no-ignore"}, "", 1)
+	_, err := chooseStartupModifierChoiceWithProgress([]string{"empty", "--no-ignore", "-b"}, "", 1)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "no text files found") {
 		t.Fatalf("empty no-ignore scope error = %v, want normal no-files result", err)
 	}
@@ -4173,20 +4173,22 @@ if [ "$prompt" = "filter> " ]; then
 		echo "missing extras label in second-last row: $second_last_label" >&2
 		exit 91
 	}
-	[ "$third_last_key" = "then" ] || {
+	[ "$third_last_key" = "file-inclusion" ] || {
 		echo "unexpected third-last modifier row: $third_last" >&2
 		exit 91
 	}
-	printf '%s\n' "$third_last_label" | grep -F -- "--then" >/dev/null || {
-		echo "missing --then label in third-last row: $third_last_label" >&2
+	then_row="$(printf '%s\n' "$input" | awk -F '\t' '$2 == "then"')"
+	then_label="$(printf '%s\n' "$then_row" | cut -f1)"
+	printf '%s\n' "$then_label" | grep -F -- "--then" >/dev/null || {
+		echo "missing --then label: $then_label" >&2
 		exit 91
 	}
-	printf '%s\n' "$third_last_label" | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null && {
+	printf '%s\n' "$then_label" | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null && {
 		echo "label column should not contain description text: $last_label" >&2
 		exit 91
 	}
-	printf '%s\n' "$third_last" | cut -f3 | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null || {
-		echo "missing --then description in description column: $third_last" >&2
+	printf '%s\n' "$then_row" | cut -f3 | grep -F -- "Chain a new scope with its own targets and filters" >/dev/null || {
+		echo "missing --then description in description column: $then_row" >&2
 		exit 91
 	}
 	printf '%s\n' "$input" | grep -F $'\tsnippet' >/dev/null || {

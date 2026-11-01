@@ -95,6 +95,8 @@ func runRipgrepFileBatches(ctx context.Context, bin, workingDir string, opts Rip
 		)
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Dir = workingDir
+		diagnostics := fileErrorDiagnostics{goos: runtime.GOOS}
+		cmd.Stderr = &diagnostics
 		start := time.Now()
 		out, err := cmd.Output()
 		if benchEnabled() {
@@ -116,7 +118,7 @@ func runRipgrepFileBatches(ctx context.Context, bin, workingDir string, opts Rip
 		finish("err", platform.InternalBenchError(err))
 		if err != nil {
 			// A failed later batch must not turn an incomplete union into success.
-			return nil, err
+			return nil, diagnostics.wrap(workingDir, err)
 		}
 		for i, rel := range batchPaths {
 			batchPaths[i] = normalizeRelPath(rel)

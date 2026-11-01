@@ -7,6 +7,7 @@ import (
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/output"
 	"github.com/tigreau/catclip/internal/platform"
 )
@@ -57,6 +58,66 @@ func TestWriteClipboardSuccessUsesDistinctSummarySubjects(t *testing.T) {
 			}
 			if got := strings.TrimSpace(out.String()); got != tt.wantText {
 				t.Fatalf("WriteClipboardSuccess output = %q, want %q", got, tt.wantText)
+			}
+		})
+	}
+}
+
+func TestBundleDescriptionsFollowSurvivingOutput(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		kinds     []string
+		want      string
+		dedicated bool
+	}{
+		{"metadata only", []string{"file"}, "file metadata (1 file)", true},
+		{"metadata and code", []string{"metadata", "file"}, "file metadata + code", false},
+		{"paths only", []string{"paths"}, "file list (1 path)", false},
+		{"paths and code", []string{"paths", "file"}, "file list + code", false},
+		{"code then paths", []string{"file", "paths"}, "file list + code", false},
+		{"metadata and paths", []string{"metadata", "paths"}, "file metadata (1 file)", false},
+		{"all three", []string{"metadata", "paths", "file"}, "file metadata + code", false},
+		{"empty source", []string{"metadata", "empty"}, "file metadata (1 file)", false},
+		{"ordinary files", []string{"file"}, "1 file", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var scopes []command.ExecutionScope
+			var evaluated []output.EvaluatedScope
+			for _, kind := range tc.kinds {
+				scopes = append(scopes, command.ExecutionScope{Metadata: kind == "metadata", Paths: kind == "paths"})
+				entries := []discovery.Entry{{RelPath: "a.go", Mode: command.EntryModeFull, SizeKnown: true, SizeBytes: 12}}
+				if kind == "empty" {
+					entries = nil
+				}
+				evaluated = append(evaluated, output.EvaluatedScope{Paths: kind == "paths", Entries: entries})
+			}
+			plan, err := output.BuildPlanForResolvedScopes(git.Context{}, scopes, evaluated, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			stats := output.EmitStats{SinkName: "bundle", BundlePath: "bundle.txt", PayloadBytes: 61440, Warnings: []string{"producer warning"}}
+			if tc.dedicated {
+				err = WriteMetadataClipboardSuccess(&out, plan, stats, platform.Palette{})
+			} else {
+				err = WriteClipboardSuccess(&out, plan, stats, platform.Palette{})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"Copied " + tc.want + " to clipboard as a bundle\nbundle.txt", "(60KB)\n\n", "Paste attaches a file — works in web UIs and file managers, not terminals.", "Use --no-bundle to copy text instead.", "Warning: producer warning"} {
+				if !strings.Contains(out.String(), want) {
+					t.Fatalf("missing %q: %s", want, out.String())
+				}
+			}
+			wantOverview := strings.Contains(tc.want, "file metadata") && !strings.Contains(tc.want, "code")
+			for _, hint := range []string{"File details only — no file contents.", "An AI can use this overview to suggest which files to share next."} {
+				if strings.Contains(out.String(), hint) != wantOverview {
+					t.Fatalf("overview hint %q presence should be %v: %s", hint, wantOverview, out.String())
+				}
+			}
+			if got, want := strings.Contains(out.String(), "File paths only — no file contents."), tc.name == "paths only"; got != want {
+				t.Fatalf("paths-only explanation present = %v, want %v: %s", got, want, out.String())
 			}
 		})
 	}

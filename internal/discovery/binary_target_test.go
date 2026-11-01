@@ -30,7 +30,7 @@ func TestExactBinaryTargetDiagnosticsDoNotRediscover(t *testing.T) {
 		entries int
 		walks   int
 	}{
-		{"bin/tool", true, 0, 1}, {"bin", true, 0, 1},
+		{"bin/tool", false, 1, 1}, {"bin", true, 0, 1},
 		{"./bin/", true, 0, 1}, {"images", true, 0, 1},
 		{"empty", false, 0, 1}, {"empty-image.png", false, 1, 1},
 		{"text", false, 1, 1},
@@ -79,12 +79,12 @@ func TestExactBinaryTargetsKeepBatchedCachedClassification(t *testing.T) {
 	for pass := 0; pass < 2; pass++ {
 		got, err := EvaluateScope(command.Invocation{WorkingDir: project, Headless: true}, git.Context{}, 0,
 			command.ExecutionScope{Targets: targets}, io.Discard, platform.Palette{})
-		if err != nil || len(got.Entries) != 1 || got.Entries[0].RelPath != "empty.png" || len(got.Diagnostics) != 40 {
-			t.Fatalf("pass %d: scope=%+v err=%v", pass, got, err)
+		if err != nil || len(got.Entries) != 41 || len(got.Diagnostics) != 0 {
+			t.Fatalf("pass %d: entries=%d diagnostics=%v err=%v", pass, len(got.Entries), got.Diagnostics, err)
 		}
-		for _, d := range got.Diagnostics {
-			if !strings.Contains(d.Message, "--with-binaries") || d.ExplainsEmptyResult || d.IsTargetNotFound {
-				t.Fatalf("incorrect per-file/cached evidence: %+v", d)
+		for _, entry := range got.Entries {
+			if entry.Binary != (entry.RelPath != "empty.png") {
+				t.Fatalf("incorrect retained binary evidence: %+v", entry)
 			}
 		}
 		if len(events) != 1 || events[0].Context.Reason != search.MembershipReasonTextSetFallback {

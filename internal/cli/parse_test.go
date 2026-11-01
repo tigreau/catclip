@@ -15,7 +15,7 @@ func TestParseArgsNoSetsNeverEmitPolicy(t *testing.T) {
 		{"src", "--no", "--no"},
 		{"--verbose", "--no-tree", "--no-bundle", "--raw", "--no", "src"},
 		{"--no", "src", "--paths", "--then", "docs", "--lines", "1", "2"},
-		{"--metadata", "--no", "src"},
+		{"src", "--metadata", "--no"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			cfg, err := ParseArgs(args)
@@ -123,7 +123,7 @@ func TestMetadataComposesWithMembershipFiltersAndThen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseArgs() error = %v", err)
 	}
-	if cfg.PayloadKind != command.PayloadMetadata || cfg.OutputMode != command.OutputModeStdout || len(cfg.Command.Scopes()) != 2 {
+	if cfg.PayloadKind != command.PayloadContent || cfg.OutputMode != command.OutputModeStdout || len(cfg.Command.Scopes()) != 2 || cfg.Command.Scopes()[0].HasMetadataOutput() || !cfg.Command.Scopes()[1].HasMetadataOutput() {
 		t.Fatalf("metadata membership config = %#v", cfg)
 	}
 	if got := FormatResolvedStartupCommand(args); strings.Count(got, "--metadata") != 1 || !strings.Contains(got, "--then") {

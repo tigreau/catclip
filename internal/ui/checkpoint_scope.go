@@ -21,7 +21,7 @@ func scopeFromCheckpoint(live command.ExecutionScope, checkpoint discovery.Check
 			return command.ExecutionScope{}, err
 		}
 	}
-	if len(live.Targets) != 1 || live.Targets[0] != "." || live.NoIgnore || live.Paths {
+	if len(live.Targets) != 1 || live.Targets[0] != "." || live.NoIgnore || live.Paths || live.Metadata {
 		return command.ExecutionScope{}, fmt.Errorf("checkpoint-scope preview does not accept positional targets or output overrides")
 	}
 	if !content {
@@ -41,5 +41,9 @@ func scopeFromCheckpoint(live command.ExecutionScope, checkpoint discovery.Check
 	// Keep the parent target restriction for direct rg, but not its already
 	// evaluated filters. Membership is enforced by checkpoint intersection.
 	live.Targets = append([]string(nil), checkpoint.Scope.Targets...)
+	// Binary-inclusive selections have already been reduced to text before
+	// this checkpoint was written. Keep direct root scans disabled: the child
+	// must search those retained text paths, not reopen the mixed universe.
+	live.WithBinaries = checkpoint.Scope.WithBinaries
 	return live, nil
 }

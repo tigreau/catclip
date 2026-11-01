@@ -82,16 +82,18 @@ func renderValidationFailure(e ValidationFailure) string {
 		return fmt.Sprintf("Error: %s and %s cannot be combined in the same scope.\n  Use --then to start a new scope for a different output mode.", e.BoundaryFlag, e.Flag)
 	case ReasonMetadataOutputConflict:
 		switch e.Flag {
+		case "--raw":
+			return "Error: --metadata and --raw cannot be combined.\n  --raw applies to the whole command; remove it to include metadata."
 		case "--snippet":
-			return "Error: --metadata and --snippet cannot be combined.\n  Metadata is the final output shape. Use --contains PATTERN --metadata to list matching files."
+			return "Error: --metadata and --snippet cannot be combined.\n  Use --then for a different output scope. Use --contains PATTERN --metadata to list matching files."
 		case "--changed-diff":
-			return "Error: --metadata and --changed-diff cannot be combined.\n  Metadata is the final output shape. Use --changed --metadata to list changed files."
+			return "Error: --metadata and --changed-diff cannot be combined.\n  Use --then for a different output scope. Use --changed --metadata to list changed files."
 		case "--staged-diff":
-			return "Error: --metadata and --staged-diff cannot be combined.\n  Metadata is the final output shape. Use --staged --metadata to list staged files."
+			return "Error: --metadata and --staged-diff cannot be combined.\n  Use --then for a different output scope. Use --staged --metadata to list staged files."
 		case "--unstaged-diff":
-			return "Error: --metadata and --unstaged-diff cannot be combined.\n  Metadata is the final output shape. Use --unstaged --metadata to list unstaged files."
+			return "Error: --metadata and --unstaged-diff cannot be combined.\n  Use --then for a different output scope. Use --unstaged --metadata to list unstaged files."
 		default:
-			return fmt.Sprintf("Error: --metadata and %s cannot be combined.\n  Metadata is the final output shape; remove one of these flags.", e.Flag)
+			return fmt.Sprintf("Error: --metadata and %s cannot be combined.\n  Remove one of these flags, or use --then for a separate output scope.", e.Flag)
 		}
 	case ReasonEmissionPolicyConflict:
 		switch e.BoundaryFlag {

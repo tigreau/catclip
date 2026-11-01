@@ -38,7 +38,7 @@ func beginRefinementMerge(commands []command.ExecutionScope, scopes []EvaluatedS
 	any := false
 	for i, s := range scopes {
 		mode := commands[i].OutputMode()
-		if !s.Paths && (mode == command.EntryModeSnippet || mode == command.EntryModeDiff) &&
+		if !s.Paths && !s.Metadata && (mode == command.EntryModeSnippet || mode == command.EntryModeDiff) &&
 			(s.EmptyRefinement.Evaluated || len(s.Entries) > 0) {
 			any = true
 			break
@@ -52,14 +52,14 @@ func beginRefinementMerge(commands []command.ExecutionScope, scopes []EvaluatedS
 	focusedCount := 0
 	for i, s := range scopes {
 		mode := commands[i].OutputMode()
-		if !s.Paths && (mode == command.EntryModeSnippet || mode == command.EntryModeDiff) {
+		if !s.Paths && !s.Metadata && (mode == command.EntryModeSnippet || mode == command.EntryModeDiff) {
 			focusedCount += len(s.EmptyRefinement.Paths) + len(s.Entries)
 		}
 	}
 	full := make(map[string]int, focusedCount)
 	for i, s := range scopes {
 		mode := commands[i].OutputMode()
-		if s.Paths || (mode != command.EntryModeSnippet && mode != command.EntryModeDiff) {
+		if s.Paths || s.Metadata || (mode != command.EntryModeSnippet && mode != command.EntryModeDiff) {
 			continue
 		}
 		for _, path := range s.EmptyRefinement.Paths {
@@ -70,7 +70,7 @@ func beginRefinementMerge(commands []command.ExecutionScope, scopes []EvaluatedS
 		}
 	}
 	for _, s := range scopes {
-		if !s.Paths {
+		if !s.Paths && !s.Metadata {
 			for _, e := range s.Entries {
 				if isWholeBody(e) {
 					if _, relevant := full[e.RelPath]; relevant {
@@ -83,7 +83,7 @@ func beginRefinementMerge(commands []command.ExecutionScope, scopes []EvaluatedS
 	var suppressed map[string]struct{}
 	for i, s := range scopes {
 		mode := commands[i].OutputMode()
-		if s.Paths || (mode != command.EntryModeSnippet && mode != command.EntryModeDiff) {
+		if s.Paths || s.Metadata || (mode != command.EntryModeSnippet && mode != command.EntryModeDiff) {
 			continue
 		}
 		m.active[i] = s.EmptyRefinement.Evaluated || len(s.Entries) > 0
@@ -116,7 +116,7 @@ func beginRefinementMerge(commands []command.ExecutionScope, scopes []EvaluatedS
 	}
 	out := append([]EvaluatedScope(nil), scopes...)
 	for i, s := range scopes {
-		if s.Paths {
+		if s.Paths || s.Metadata {
 			continue
 		}
 		// Allocate only when a whole-file contribution really needs removing.
@@ -175,7 +175,11 @@ func (m *refinementMerge) finish(plan *Plan) {
 		}
 		found := false
 		for _, e := range s.Entries {
-			if survived[e.RelPath] {
+			present := survived[e.RelPath]
+			if plan.representedRequests != nil {
+				present = plan.representedRequests[requestFor(e)]
+			}
+			if present {
 				found = true
 				break
 			}

@@ -17,9 +17,10 @@ import (
 // Carries just what the picker preview needs: WorkingDir for path
 // resolution, GitContext for status, and Entries for the checkpoint.
 type ScopeView struct {
-	WorkingDir string
-	GitContext git.Context
-	Entries    []Entry
+	WithBinaries bool
+	WorkingDir   string
+	GitContext   git.Context
+	Entries      []Entry
 	// Targets is the current scope's positional targets. The content-match
 	// checkpoint retains them so the child's scope matches the parent's — without them the
 	// child parses an implicit "." scope and direct-mode rg walks the
