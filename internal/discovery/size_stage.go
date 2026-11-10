@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"github.com/tigreau/catclip/internal/search"
 	"os"
 	"sort"
 )
@@ -40,9 +41,8 @@ func ApplySizeStage(entries []Entry, workingDir string, nums []int) ([]Entry, er
 // Discovery excludes symlink entries, so Lstat matches the target-picker and
 // checkpoint metadata contract without changing the valid file universe.
 //
-// Fail-fast contract: a single os.Stat error returns (nil, err). --size
-// was invoked as a filter, so a missing target file is a real user
-// error that should surface, not be silently skipped.
+// Omit already-selected entries whose required stat reports missing/access
+// denied, retaining diagnostics. Other failures still abort the operation.
 func EnsureEntrySizes(entries []Entry, workingDir string) ([]Entry, error) {
 	entries = EnsureEntryAbsPaths(entries, workingDir)
 	paths := make([]string, len(entries))
@@ -53,17 +53,24 @@ func EnsureEntrySizes(entries []Entry, workingDir string) ([]Entry, error) {
 		paths[i] = entries[i].AbsPath
 	}
 	infos, errs := parallelStat(paths, os.Lstat)
+	available := entries[:0]
 	for i := range entries {
 		if paths[i] == "" {
+			available = append(available, entries[i])
 			continue
 		}
 		if errs[i] != nil {
+			if search.RecordAccessFailure(errs[i], true) {
+				continue
+			}
 			return nil, errs[i]
 		}
 		entries[i].SizeBytes = infos[i].Size()
 		entries[i].SizeKnown = true
 		entries[i].ModTime = infos[i].ModTime()
+		available = append(available, entries[i])
 	}
+	entries = available
 	return entries, nil
 }
 

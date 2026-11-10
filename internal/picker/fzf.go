@@ -30,6 +30,7 @@ type Request struct {
 	NoSort         bool
 	Exact          bool
 	PrintQuery     bool
+	Sync           bool
 	ExpectKeys     []string
 	Bindings       []string
 	Lines          []string
@@ -44,7 +45,9 @@ type Result struct {
 }
 
 const (
-	defaultPreviewWindow = "right:55%:wrap:border-rounded"
+	// The position counter paints a fixed background over themed preview rows.
+	// Hide that badge while keeping the preview frame and scrollbar.
+	defaultPreviewWindow = "right:55%:wrap:border-rounded:noinfo"
 	defaultPreviewLabel  = "Scrollable Preview"
 )
 
@@ -221,6 +224,9 @@ func pickerBenchFields(req Request) []string {
 
 func buildArgs(req Request) []string {
 	args := []string{"--ansi", "--layout=default", "--info=inline-right", "--delimiter", "\t", "--with-nth", req.WithNth, "--query", req.Query, "--prompt", req.Prompt}
+	if req.Sync {
+		args = append(args, "--sync")
+	}
 	if req.Disabled {
 		args = append(args, "--disabled")
 	}

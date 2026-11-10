@@ -368,7 +368,7 @@ func (r *Resolver) targetInventoryUnderNoIgnore(scopeTargets []string, ignoredOn
 		if !isText {
 			_, isText = projectTextSet[rel]
 		}
-		if !isText {
+		if !isText && !r.metadataWithoutBody(rel) {
 			continue
 		}
 		filePaths = append(filePaths, rel)

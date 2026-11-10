@@ -3,8 +3,10 @@ package output
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -126,7 +128,15 @@ func prepareFileUnit(gitCtx git.Context, entry discovery.Entry, snippetMatches S
 	return prepareFileUnitForOutput(gitCtx, entry, snippetMatches, omissions, false, diffCaches...)
 }
 
-func prepareFileUnitForOutput(gitCtx git.Context, entry discovery.Entry, snippetMatches SnippetMatchCache, omissions *lineOmissions, raw bool, diffCaches ...preparedDiffCache) (PreparedFileUnit, bool, error) {
+func prepareFileUnitForOutput(gitCtx git.Context, entry discovery.Entry, snippetMatches SnippetMatchCache, omissions *lineOmissions, raw bool, diffCaches ...preparedDiffCache) (prepared PreparedFileUnit, keep bool, retErr error) {
+	// Preparation already needs stat/content for this selected file. An access
+	// failure here omits it without any speculative preflight I/O.
+	defer func() {
+		var pathErr *os.PathError
+		if retErr != nil && errors.As(retErr, &pathErr) && filepath.Clean(pathErr.Path) == filepath.Clean(entry.AbsPath) && search.RecordAccessFailure(retErr, pathErr.Op == "stat" || pathErr.Op == "lstat" || pathErr.Op == "readdir") {
+			prepared, keep, retErr = PreparedFileUnit{}, false, nil
+		}
+	}()
 	if !raw && (entry.Mode == "" || entry.Mode == command.EntryModeFull || entry.Mode == command.EntryModeLines) {
 		checked, binary, err := prepareBinaryDescription(entry)
 		if binary || err != nil {

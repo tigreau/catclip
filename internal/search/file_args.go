@@ -95,7 +95,11 @@ func runRipgrepFileBatches(ctx context.Context, bin, workingDir string, opts Rip
 		)
 		cmd := exec.CommandContext(ctx, bin, args...)
 		cmd.Dir = workingDir
-		diagnostics := fileErrorDiagnostics{goos: runtime.GOOS}
+		diagnostics := fileErrorDiagnostics{goos: runtime.GOOS, workingDir: workingDir,
+			diagnosticOnly: opts.Enumeration.Authority == MembershipAuthorityDiagnostic ||
+				opts.Enumeration.Reason == MembershipReasonIgnoreAttribution ||
+				opts.Enumeration.Reason == MembershipReasonIgnoredAncestor ||
+				opts.Enumeration.Reason == MembershipReasonIgnoreRuleListing}
 		cmd.Stderr = &diagnostics
 		start := time.Now()
 		out, err := cmd.Output()
@@ -111,6 +115,10 @@ func runRipgrepFileBatches(ctx context.Context, bin, workingDir string, opts Rip
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		} else if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			err = nil
+		}
+		diagnostics.finishLine()
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 2 && ctx.Err() == nil && diagnostics.total > 0 && diagnostics.parsedPermissions == diagnostics.total {
 			err = nil
 		}
 		batchPaths := splitNullSeparated(out)

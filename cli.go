@@ -56,6 +56,8 @@ func runFromParsedCommand(cfg command.Parsed, stdout, stderr io.Writer, initialG
 		return err
 	case command.ActionVersion:
 		return ui.RenderVersionOutput(cfg.Version, stdout)
+	case command.ActionTheme:
+		return runTheme(stderr)
 	case command.ActionCheckUpdate:
 		return runCheckUpdate(checkUpdateConfigFromParsedCommand(cfg), stdout)
 	case command.ActionEditHiss:

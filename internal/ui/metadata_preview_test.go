@@ -10,10 +10,12 @@ import (
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/output"
-	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 func TestMetadataOutputPreviewUsesPresentationColors(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
 	report := coloredMetadataFixture()
 	report.Rows[0].Bytes, report.Rows[0].Size = 40000, "40KB"
 	var plain, styled bytes.Buffer
@@ -26,7 +28,7 @@ func TestMetadataOutputPreviewUsesPresentationColors(t *testing.T) {
 	if err := WriteMetadataReport(&plain, report); err != nil {
 		t.Fatal(err)
 	}
-	colors := platform.ANSIPalette()
+	colors := theme.Current().Palette
 	if _, err := WriteMetadataReportWithPalette(&styled, report, colors); err != nil {
 		t.Fatal(err)
 	}
@@ -59,6 +61,8 @@ func TestMetadataOutputPreviewUsesPresentationColors(t *testing.T) {
 }
 
 func TestMetadataOutputPreviewCapAndCancellation(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
 	report := coloredMetadataFixture()
 	size, err := report.EncodedSize()
 	if err != nil {
@@ -73,13 +77,13 @@ func TestMetadataOutputPreviewCapAndCancellation(t *testing.T) {
 		if !preview.Truncated || !preview.FullBytesKnown || preview.FullBytes != size {
 			t.Fatalf("limit=%d incorrect accounting: %+v", limit, preview)
 		}
-		if int64(len(preview.Body)) > limit+int64(len(platform.ANSIPalette().Reset)) {
+		if int64(len(preview.Body)) > limit+int64(len(theme.Current().Palette.Reset)) {
 			t.Fatal("unbounded presentation")
 		}
 		if bytes.ContainsRune(strip.ReplaceAll(preview.Body, nil), '\x1b') {
 			t.Fatalf("incomplete ANSI sequence: %q", preview.Body)
 		}
-		if !bytes.HasSuffix(preview.Body, []byte(platform.ANSIPalette().Reset)) {
+		if !bytes.HasSuffix(preview.Body, []byte(theme.Current().Palette.Reset)) {
 			t.Fatal("truncation footer can inherit color")
 		}
 	}

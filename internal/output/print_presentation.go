@@ -9,6 +9,7 @@ import (
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 // PrintPresentation is supplied by the application: output owns serialization,
@@ -37,7 +38,10 @@ func TerminalPrintPalette(cfg EmitConfig, headless, quiet bool, stdout io.Writer
 	if !printColorPolicy(cfg, headless || quiet, true, os.Getenv("TERM")) {
 		return platform.Palette{}
 	}
-	return platform.ActivePaletteForWriter(stdout)
+	if platform.ActivePaletteForWriter(stdout).Reset == "" {
+		return platform.Palette{}
+	}
+	return theme.Current().Palette
 }
 
 func printColorPolicy(cfg EmitConfig, headless, terminalColor bool, term string) bool {

@@ -1,6 +1,7 @@
 package discovery
 
 import (
+	"github.com/tigreau/catclip/internal/search"
 	"os"
 	"sort"
 )
@@ -38,8 +39,8 @@ func ApplyRecentStage(entries []Entry, workingDir string, limit *int) ([]Entry, 
 // them, statting on disk via os.Lstat. Used by applyRecentStage and the
 // metadata report when a script-mode entry did not already carry primary stat data.
 //
-// Fail-fast contract: mirrors EnsureEntrySizes. --recent was invoked
-// as a filter, so a missing entry is a real error that surfaces here.
+// Like EnsureEntrySizes, omit missing/inaccessible entries on actual stat
+// failure and retain diagnostics; propagate other failures.
 func EnsureEntryModTimes(entries []Entry, workingDir string) ([]Entry, error) {
 	entries = EnsureEntryAbsPaths(entries, workingDir)
 	missing := false
@@ -60,17 +61,24 @@ func EnsureEntryModTimes(entries []Entry, workingDir string) ([]Entry, error) {
 		paths[i] = entries[i].AbsPath
 	}
 	infos, errs := parallelStat(paths, os.Lstat)
+	available := entries[:0]
 	for i := range entries {
 		if paths[i] == "" {
+			available = append(available, entries[i])
 			continue
 		}
 		if errs[i] != nil {
+			if search.RecordAccessFailure(errs[i], true) {
+				continue
+			}
 			return nil, errs[i]
 		}
 		entries[i].ModTime = infos[i].ModTime()
 		entries[i].SizeBytes = infos[i].Size()
 		entries[i].SizeKnown = true
+		available = append(available, entries[i])
 	}
+	entries = available
 	return entries, nil
 }
 

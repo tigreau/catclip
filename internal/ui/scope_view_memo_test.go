@@ -1348,8 +1348,8 @@ func TestSealedVanishedMetadataIsNotRepairedByLaterFilesystemState(t *testing.T)
 	if got := entryRelPaths(pathsView.Entries); !reflect.DeepEqual(got, []string{"gone.go"}) {
 		t.Fatalf("path projection lost vanished membership: %v", got)
 	}
-	if _, err := resolvedCurrentScopeViewForArgs(append(append([]string(nil), args...), "--size")); err == nil {
-		t.Fatal("metadata stage re-statted and repaired a sealed vanished observation")
+	if view, err := resolvedCurrentScopeViewForArgs(append(append([]string(nil), args...), "--size")); err != nil || len(view.Entries) != 0 {
+		t.Fatalf("metadata stage did not omit the sealed vanished observation: %v %v", view.Entries, err)
 	}
 }
 

@@ -70,6 +70,7 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	requireOutputPackageAllowedImports(t, parseOutputGoFiles(t))
 	requireUIPackageAllowedImports(t, uiFiles)
 	requirePlatformPackageAvoidDomainDeps(t, platformFiles)
+	requireThemePackageAvoidDomainDeps(t, parsePackageGoFiles(t, "internal/theme", "theme"))
 	requireSearchPackageAvoidDomainDeps(t, searchFiles)
 	requireGitPackageAvoidDomainDeps(t, gitFiles)
 	requireCommandPackageAvoidDomainDeps(t, commandFiles)
@@ -99,6 +100,8 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 // why `--input-file {N}` with a full-path column is unsafe even though it would
 // pass this guard.
 var previewCommandBuilders = map[string]struct{}{
+	"themeFocusCommand":                         {},
+	"themePreviewCommand":                       {},
 	"FzfDiffFilePreviewCommand":                 {},
 	"FzfPreviewCommand":                         {},
 	"FzfContentPreviewCommand":                  {},
@@ -126,6 +129,7 @@ var fzfPlaceholderExemptFuncs = map[string]struct{}{
 // Compared against filepath.Base(parsed.name) so the entries are bare
 // basenames regardless of which package the file lives in.
 var previewBuilderFiles = []string{
+	"theme_picker.go",
 	"resolver.go", "startup_picker.go", "depth_picker.go",
 	"recent_picker.go", "lines_picker.go", "startup_sink_picker.go",
 }
@@ -464,7 +468,7 @@ func requireRenderPackageAvoidDerivationDeps(t *testing.T, files []parsedGoFile)
 			if reason, bad := forbiddenImports[importPath]; bad {
 				t.Errorf("%s imports %s (%s); internal/render must stay renderer-only", parsed.name, importPath, reason)
 			}
-			if strings.HasPrefix(importPath, "github.com/tigreau/catclip/") {
+			if strings.HasPrefix(importPath, "github.com/tigreau/catclip/") && importPath != "github.com/tigreau/catclip/internal/theme" {
 				t.Errorf("%s imports %s; internal/render must not depend on catclip discovery/root packages", parsed.name, importPath)
 			}
 		}
@@ -515,6 +519,25 @@ func parseProductionGoFiles(t *testing.T) []parsedGoFile {
 // package — discovery, output, render, picker, search, etc. Domain types
 // crossing into platform is the real trip wire for the bottom-of-stack
 // extraction; export count is not.
+// The shared presentation leaf may use platform helpers, never the selection pipeline.
+func requireThemePackageAvoidDomainDeps(t *testing.T, files []parsedGoFile) {
+	t.Helper()
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			path, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if path == "github.com/alecthomas/chroma/v2/styles" {
+				t.Errorf("%s imports the eager Chroma style registry; load supported palettes on demand", parsed.name)
+			}
+			if strings.HasPrefix(path, "github.com/tigreau/catclip/") && path != "github.com/tigreau/catclip/internal/platform" {
+				t.Errorf("%s imports %s; theme must stay independent of the selection pipeline", parsed.name, path)
+			}
+		}
+	}
+}
+
 func requirePlatformPackageAvoidDomainDeps(t *testing.T, files []parsedGoFile) {
 	t.Helper()
 	for _, parsed := range files {
@@ -586,6 +609,7 @@ func requireCLIPackageAllowedImports(t *testing.T, files []parsedGoFile) {
 func requireDiscoveryPackageAllowedImports(t *testing.T, files []parsedGoFile) {
 	t.Helper()
 	allowed := map[string]struct{}{
+		"github.com/tigreau/catclip/internal/theme":    {},
 		"github.com/tigreau/catclip/internal/command":  {},
 		"github.com/tigreau/catclip/internal/git":      {},
 		"github.com/tigreau/catclip/internal/picker":   {},
@@ -621,6 +645,7 @@ func requireDiscoveryPackageAllowedImports(t *testing.T, files []parsedGoFile) {
 func requireOutputPackageAllowedImports(t *testing.T, files []parsedGoFile) {
 	t.Helper()
 	allowed := map[string]struct{}{
+		"github.com/tigreau/catclip/internal/theme":     {},
 		"github.com/tigreau/catclip/internal/command":   {},
 		"github.com/tigreau/catclip/internal/discovery": {},
 		"github.com/tigreau/catclip/internal/git":       {},
@@ -655,6 +680,7 @@ func requireOutputPackageAllowedImports(t *testing.T, files []parsedGoFile) {
 func requireUIPackageAllowedImports(t *testing.T, files []parsedGoFile) {
 	t.Helper()
 	allowed := map[string]struct{}{
+		"github.com/tigreau/catclip/internal/theme":     {},
 		"github.com/tigreau/catclip/internal/cli":       {},
 		"github.com/tigreau/catclip/internal/command":   {},
 		"github.com/tigreau/catclip/internal/discovery": {},

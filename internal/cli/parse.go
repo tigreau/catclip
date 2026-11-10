@@ -152,6 +152,9 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 		case "--version", "-V":
 			cfg.Action = command.ActionVersion
 			return cfg, nil
+		case "--theme":
+			cfg.Action = command.ActionTheme
+			return cfg, nil
 		case "--check-update":
 			cfg.Action = command.ActionCheckUpdate
 			return cfg, nil

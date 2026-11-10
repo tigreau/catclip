@@ -7,6 +7,7 @@ import (
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 // ScopeView is the minimal view of a parsed, resolved, and discovered
@@ -114,29 +115,5 @@ func themedFzfRequest(req picker.Request) picker.Request {
 }
 
 func fzfColorSpecs(hasPreview bool) []string {
-	specs := []string{
-		"prompt:6",
-		"pointer:6",
-		"marker:5",
-		"spinner:6",
-		"hl:4",
-		"hl+:4",
-		"info:3",
-		"header:8",
-		"border:8",
-		"label:8",
-		"header-border:8",
-		"header-label:8",
-		"fg+:7",
-		"bg+:8",
-	}
-	if hasPreview {
-		specs = append(specs,
-			"preview-bg:0",
-			"preview-fg:7",
-			"preview-border:8",
-			"preview-label:6",
-		)
-	}
-	return specs
+	return theme.Current().InteractiveColorSpecs(hasPreview)
 }

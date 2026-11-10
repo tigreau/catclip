@@ -29,6 +29,7 @@ var (
 )
 
 type EmitStats struct {
+	SkippedPaths          []string
 	PayloadBytes          int64
 	GenerateDuration      time.Duration
 	SinkFinalizeDuration  time.Duration
@@ -217,9 +218,23 @@ func EmitOutputPlan(cfg EmitConfig, env RuntimeEnvironment, plan Plan, stdout io
 	if len(presentation) > 0 && printPresentationEnabled(cfg, presentation[0], stdout) {
 		print = &printPresentation{highlight: presentation[0].Highlight, limit: printHighlightLimit, colors: TerminalPrintPalette(cfg, presentation[0].Headless, presentation[0].Quiet, stdout)}
 	}
-	stats, err := WithPayloadWriter(cfg, env, stdout, colors, func(w io.Writer) error {
-		return writeOutputPlanPayloadPresented(w, cfg, plan, true, print)
+	var skipped []string
+	var surfaceColors platform.Palette
+	if print != nil {
+		surfaceColors = print.colors
+	}
+	stats, err := WithTerminalPrintSurface(stdout, surfaceColors, func(sink io.Writer) (EmitStats, error) {
+		return WithPayloadWriter(cfg, env, sink, colors, func(w io.Writer) error {
+			observed := &payloadWriter{w: w}
+			err := writeOutputPlanPayloadPresented(observed, cfg, plan, true, print)
+			skipped = observed.skipped
+			if err == nil && observed.n == 0 && len(skipped) > 0 {
+				return ErrNoAccessibleOutput
+			}
+			return err
+		})
 	})
+	stats.SkippedPaths = skipped
 	if print != nil && err == nil {
 		stats.PayloadBytes -= print.addedBytes
 	}
@@ -280,6 +295,11 @@ func (bc *emitByteCounter) Write(p []byte) (int, error) {
 }
 
 func WriteRawOutputPlanPayload(w io.Writer, plan Plan) error {
+	observed, ok := w.(*payloadWriter)
+	if !ok {
+		observed = &payloadWriter{w: w}
+	}
+	w = observed
 	for _, item := range plan.items {
 		if item.kind != SectionKindFiles || (item.mode != command.EntryModeFull && item.mode != command.EntryModeLines) {
 			// Defense-in-depth: ValidateRawPlan rejects these combinations
@@ -288,13 +308,20 @@ func WriteRawOutputPlanPayload(w io.Writer, plan Plan) error {
 			return newUsageError("Error: --raw requires full-file or line-slice items.")
 		}
 		entry := item.unit.Entry
+		before := observed.n
 		if entry.Lines {
 			if err := emitLinesSliceRaw(w, entry.AbsPath, entry.LinesStart, entry.LinesEnd); err != nil {
+				if observed.skip(err, entry.AbsPath, entry.RelPath, before) {
+					continue
+				}
 				return err
 			}
 			continue
 		}
 		if err := emitFileBodyFromDisk(w, entry.AbsPath); err != nil {
+			if observed.skip(err, entry.AbsPath, entry.RelPath, before) {
+				continue
+			}
 			return err
 		}
 	}
@@ -518,6 +545,14 @@ func writeSectionedOutputPlanPayload(w io.Writer, plan Plan, prefetch bool, prin
 }
 
 func writeFileOutputPlanPayload(w io.Writer, plan Plan, prefetch bool, print *printPresentation) error {
+	var observed *payloadWriter
+	if counter, ok := w.(*emitByteCounter); ok {
+		observed, _ = counter.w.(*payloadWriter)
+	}
+	if observed == nil {
+		observed = &payloadWriter{w: w}
+		w = observed
+	}
 	var prefetcher *emitPrefetcher
 	if prefetch {
 		prefetcher = startEmitPrefetch(plan)
@@ -526,6 +561,7 @@ func writeFileOutputPlanPayload(w io.Writer, plan Plan, prefetch bool, print *pr
 		defer prefetcher.Close()
 	}
 	for i, item := range plan.items {
+		before := observed.n
 		var err error
 		if print == nil {
 			err = emitEntry(w, item.unit, i, prefetcher)
@@ -533,6 +569,9 @@ func writeFileOutputPlanPayload(w io.Writer, plan Plan, prefetch bool, print *pr
 			err = print.emitEntry(w, item.unit, i, prefetcher)
 		}
 		if err != nil {
+			if observed.skip(err, item.unit.Entry.AbsPath, item.relPath, before) {
+				continue
+			}
 			return err
 		}
 	}
@@ -992,28 +1031,47 @@ func WithPayloadWriter(cfg EmitConfig, env RuntimeEnvironment, stdout io.Writer,
 }
 
 func streamToTextClipboard(env RuntimeEnvironment, fn func(io.Writer) error, colors platform.Palette, bufferSize int) (EmitStats, error) {
-	cmd, err := ClipboardCommand(env.Platform, colors)
-	if err != nil {
-		return EmitStats{}, err
-	}
-
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return EmitStats{}, err
-	}
+	var cmd *exec.Cmd
+	var stdin io.WriteCloser
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Start(); err != nil {
-		return EmitStats{}, err
+	start := func() (io.Writer, error) {
+		var err error
+		cmd, err = ClipboardCommand(env.Platform, colors)
+		if err != nil {
+			return nil, err
+		}
+		stdin, err = cmd.StdinPipe()
+		if err != nil {
+			return nil, err
+		}
+		cmd.Stderr = &stderr
+		if err = cmd.Start(); err != nil {
+			return nil, err
+		}
+		return stdin, nil
 	}
-
-	counted := &countingWriter{w: stdin}
+	sink := &lazyWriter{start: start}
+	counted := &countingWriter{w: sink}
 	buffered := bufio.NewWriterSize(counted, bufferSize)
 	generateStarted := time.Now()
 	writeErr := fn(buffered)
 	generateDuration := time.Since(generateStarted)
+	if writeErr != nil && sink.w == nil {
+		return EmitStats{}, writeErr
+	}
 	finalizeStarted := time.Now()
-	flushErr := buffered.Flush()
+	var flushErr error
+	if writeErr == nil {
+		flushErr = buffered.Flush()
+	}
+	if sink.w == nil && flushErr == nil {
+		// A deliberate empty payload can still clear the clipboard. An entirely
+		// unavailable selection returned above before starting the sink.
+		sink.w, flushErr = start()
+	}
+	if sink.w == nil {
+		return EmitStats{}, flushErr
+	}
 	closeErr := stdin.Close()
 	finalizeDuration := time.Since(finalizeStarted)
 	waitStarted := time.Now()

@@ -68,6 +68,27 @@ func IsTerminalFile(f *os.File) bool {
 	return err == nil
 }
 
+// BeginPickerInputSession holds raw input across child picker relaunches. Each
+// child restores this inherited state when it exits; the owner restores the
+// original state after its last child. No input is read, translated or flushed.
+func BeginPickerInputSession(input *os.File) (func() error, error) {
+	state, err := getTerminalState(input)
+	if err != nil {
+		return nil, err
+	}
+	quiet := *state
+	quiet.Iflag &^= syscall.IGNBRK | syscall.BRKINT | syscall.PARMRK | syscall.ISTRIP | syscall.INLCR | syscall.IGNCR | syscall.ICRNL | syscall.IXON
+	quiet.Oflag &^= syscall.OPOST
+	quiet.Lflag &^= syscall.ECHO | syscall.ECHONL | syscall.ICANON | syscall.ISIG | syscall.IEXTEN
+	quiet.Cflag &^= syscall.CSIZE | syscall.PARENB
+	quiet.Cflag |= syscall.CS8
+	quiet.Cc[syscall.VMIN], quiet.Cc[syscall.VTIME] = 1, 0
+	if err := setTerminalState(input, &quiet); err != nil {
+		return nil, err
+	}
+	return func() error { return setTerminalState(input, state) }, nil
+}
+
 func getTerminalState(f *os.File) (*syscall.Termios, error) {
 	reqGet, _, ok := terminalIOCTLRequests()
 	if !ok {

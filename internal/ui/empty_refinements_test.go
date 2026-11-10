@@ -3,16 +3,19 @@ package ui
 import (
 	"bytes"
 	"context"
+	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/theme"
 	"strings"
 	"testing"
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/output"
-	"github.com/tigreau/catclip/internal/platform"
 	renderpkg "github.com/tigreau/catclip/internal/render"
 )
 
 func TestEmptyRefinementRetainedPreviewAndFinalParity(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
 	project := setupTestProject(t, map[string]string{"src/a.txt": "DO_NOT_COPY\n", "src/b.txt": "KEEP\n"})
 	t.Chdir(project)
 	scopeViewMemoReset()
@@ -53,7 +56,7 @@ func TestEmptyRefinementRetainedPreviewAndFinalParity(t *testing.T) {
 	}
 	colors := platform.ANSIPalette()
 	notice := "Scope 2 produced no output.\nFull files omitted:\n  src/a.txt"
-	if strings.Count(string(preview.Body), notice) != 1 || !bytes.Contains(preview.Body, []byte(colors.Warn+notice+colors.Reset)) {
+	if strings.Count(string(preview.Body), notice) != 1 || !bytes.Contains(preview.Body, []byte(theme.PreviewPalette().Warn+notice+theme.PreviewPalette().Reset)) {
 		t.Fatalf("missing/duplicate/colorless notice: %q", preview.Body)
 	}
 	if bytes.Index(preview.Body, []byte("b.txt")) > bytes.Index(preview.Body, []byte(notice)) || bytes.Index(preview.Body, []byte(notice)) > bytes.Index(preview.Body, []byte("Count:")) {
@@ -63,7 +66,8 @@ func TestEmptyRefinementRetainedPreviewAndFinalParity(t *testing.T) {
 	if _, err := WriteNormalDiagnostics(ctx.Render.WithPreparedPresentation(ctx.Presentation), ctx.Git, ctx.Plan, ctx.Report, command.EmissionNever, &final, &final, colors, colors); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(final.Bytes(), preview.Body) {
+	// Preview and CLI palettes differ; their report text must remain identical.
+	if stripANSIForTest(final.String()) != stripANSIForTest(string(preview.Body)) {
 		t.Fatalf("preview=%q final=%q", preview.Body, final.Bytes())
 	}
 	content, err := renderSinkPreviewWithModeContext(context.Background(), ctx, sinkPreviewModeOutputText, output.PreviewByteLimit)

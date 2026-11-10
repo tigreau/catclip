@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -161,22 +160,19 @@ func TestFreshTargetTreePreviewWritesCompletedTreeOnce(t *testing.T) {
 	}
 }
 
-func TestFreshTargetTreePreviewSizeErrorUsesCanonicalPathOrder(t *testing.T) {
+func TestFreshTargetTreePreviewAccessNoticesUseCanonicalPathOrder(t *testing.T) {
 	root := t.TempDir()
 	entries := []discovery.Entry{
 		{AbsPath: filepath.Join(root, "z-missing.ts"), RelPath: "z-missing.ts", Mode: command.EntryModeFull},
 		{AbsPath: filepath.Join(root, "a-missing.ts"), RelPath: "a-missing.ts", Mode: command.EntryModeFull},
 	}
-	err := RenderFreshTargetTreePreview(context.Background(), io.Discard, RenderConfig{}, git.Context{}, entries)
-	if err == nil {
-		t.Fatal("expected size error")
+	var out bytes.Buffer
+	if err := RenderFreshTargetTreePreview(context.Background(), &out, RenderConfig{}, git.Context{}, entries); err != nil {
+		t.Fatal(err)
 	}
-	var pathErr *os.PathError
-	if !errors.As(err, &pathErr) {
-		t.Fatalf("error = %T %v, want *os.PathError", err, err)
-	}
-	if filepath.Base(pathErr.Path) != "a-missing.ts" {
-		t.Fatalf("first error path = %q, want canonical a-missing.ts", pathErr.Path)
+	got := out.String()
+	if strings.Count(got, "[no longer exists]") != 2 || strings.Index(got, "a-missing.ts") > strings.Index(got, "z-missing.ts") {
+		t.Fatalf("incorrect notices: %s", got)
 	}
 }
 

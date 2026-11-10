@@ -91,6 +91,7 @@ func scanDecodedNUL(ctx context.Context, r io.Reader, buf []byte) (contentClass,
 
 func classifyRegularFile(ctx context.Context, abs string, buf []byte) fileClassification {
 	info, err := os.Lstat(abs)
+	RecordAccessFailure(err, true)
 	result := fileClassification{info: info}
 	if err != nil || !info.Mode().IsRegular() || ctx.Err() != nil {
 		return result
@@ -98,11 +99,13 @@ func classifyRegularFile(ctx context.Context, abs string, buf []byte) fileClassi
 	// Never open symlinks, directories or special files. Filesystem mutation
 	// between Lstat/open is outside the invocation's stable-filesystem contract.
 	f, err := os.Open(abs)
+	RecordAccessFailure(err, false)
 	if err != nil {
 		return result
 	}
 	defer f.Close()
-	result.class, _ = scanDecodedNUL(ctx, f, buf)
+	result.class, err = scanDecodedNUL(ctx, f, buf)
+	RecordAccessFailure(err, false)
 	// A failed read stays unconfirmed. Only an observed NUL is binary evidence;
 	// cancellation is checked by the pool before any results are published.
 	return result

@@ -10,16 +10,35 @@ catclip src                # copy src/ to your clipboard
 
 ## You don't need to remember the flags
 
-catclip has an interactive mode that builds commands for you. Just add `--` and pick from menus:
+Interactive mode builds commands through menus. Each `--` opens one filter menu.
+
+No target? A menu opens with a list of project's files:
 
 ```bash
-catclip                     # pick files or folders from a menu
-catclip --                  # pick targets, then pick filters from menus
-catclip src --              # pick filters for src from a menu
-catclip src -- --           # chain menus to build a full command
+catclip                    # choose any files or folders as targets
 ```
 
-Every flag, filter, and output mode is reachable through the menus. The resolved command is echoed back so you can reuse it later.
+Add a filter menu:
+
+```bash
+catclip --                  # pick targets, then open one filter menu
+catclip src --              # one filter menu for src
+```
+
+Choose two filters for `src`:
+
+```bash
+catclip src -- --
+```
+
+Choose the 10 most recently modified files in the first menu, then only `*.tsx` files in the second.
+
+```bash
+# Generated command:
+catclip src --recent 10 --only "*.tsx"
+```
+
+No need to type it yourself. The generated command can be reused later.
 
 ---
 
@@ -70,7 +89,8 @@ catclip . --metadata --then src        # project structure with sizes, Git statu
 catclip src --only "*.tsx" --then docs --recent 5  # TSX components, plus 5 newest docs
 ```
 
-Filters run left to right. Order matters:
+## Order matters:
+Filters run left to right.
 
 ```bash
 catclip src --recent 10 --only "*.tsx"  # 10 newest, then keep TSX

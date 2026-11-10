@@ -286,3 +286,12 @@ func containsArgPair(args []string, key, value string) bool {
 func containsArg(args []string, want string) bool {
 	return slices.Contains(args, want)
 }
+
+func TestPickerSyncIsOptIn(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		args := buildArgs(Request{Sync: enabled})
+		if containsArg(args, "--sync") != enabled {
+			t.Fatal("ordinary pickers unexpectedly use synchronous startup")
+		}
+	}
+}

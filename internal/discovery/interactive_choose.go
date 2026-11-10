@@ -14,6 +14,7 @@ import (
 	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 	"github.com/tigreau/catclip/internal/search"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll bool, selectedPaths []string) ([]TargetMatch, error) {
@@ -83,7 +84,11 @@ func (r *Resolver) ChooseRootTargetMatches(query, prompt string, includeCopyAll 
 
 	labels, index := TargetMatchLabels(options)
 	header := TargetPickerHeaderWithEscHint(prompt, r.StartupEscHint)
-	revealedHeader := styledTargetPickerHeaderWithSymbols(prompt, r.StartupEscHint, platform.ActivePalette())
+	colors := platform.ActivePalette()
+	if colors != (platform.Palette{}) {
+		colors = theme.PreviewPalette()
+	}
+	revealedHeader := styledTargetPickerHeaderWithSymbols(prompt, r.StartupEscHint, colors)
 	selectedLabels, inventoryLease, err := chooseManyTargetMatchesWithFzfChrome(path, query, prompt, header, revealedHeader, labels, previewInventory, r.GitCtx, sizeCapture, false, r.WithBinaries)
 	if err != nil {
 		return nil, err

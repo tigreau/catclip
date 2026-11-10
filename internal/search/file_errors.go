@@ -5,9 +5,37 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 )
+
+// Content commands already tolerate inaccessible input files. Retain their
+// actual diagnostics for the final summary without adding any file probes.
+func recordContentAccessFailures(workingDir string, stderr []byte) {
+	for _, raw := range bytes.Split(stderr, []byte{'\n'}) {
+		line := strings.TrimSpace(strings.TrimPrefix(string(raw), "rg: "))
+		var cause error
+		if fileDiagnosticIsPermission(line, runtime.GOOS) {
+			cause = os.ErrPermission
+		} else if strings.HasSuffix(line, "(os error 2)") || (runtime.GOOS == "windows" && strings.HasSuffix(line, "(os error 3)")) {
+			cause = os.ErrNotExist
+		} else {
+			continue
+		}
+		separator := strings.LastIndex(line, ": ")
+		if separator <= 0 {
+			continue
+		}
+		name := line[:separator]
+		if !filepath.IsAbs(name) {
+			name = filepath.Join(workingDir, name)
+		}
+		RecordAccessFailure(&os.PathError{Op: "open", Path: name, Err: cause}, false)
+	}
+}
 
 const (
 	fileErrorLimit     = 10
@@ -19,12 +47,15 @@ const (
 // unbounded memory or be silently truncated by exec.Cmd.Output's stderr saver.
 // exec owns the single writer; inspect this collector only after Output returns.
 type fileErrorDiagnostics struct {
-	goos        string
-	pending     []byte
-	truncated   bool
-	lines       []string
-	total       int
-	permissions int
+	workingDir        string
+	diagnosticOnly    bool
+	parsedPermissions int
+	goos              string
+	pending           []byte
+	truncated         bool
+	lines             []string
+	total             int
+	permissions       int
 }
 
 func (d *fileErrorDiagnostics) Write(p []byte) (int, error) {
@@ -54,6 +85,18 @@ func (d *fileErrorDiagnostics) finishLine() {
 		// A clipped diagnostic is not enough evidence to classify its cause.
 		if !d.truncated && fileDiagnosticIsPermission(line, d.goos) {
 			d.permissions++
+			if d.workingDir != "" {
+				message := strings.TrimPrefix(line, "rg: ")
+				if separator := strings.LastIndex(message, ": "); separator > 0 {
+					name := message[:separator]
+					if !filepath.IsAbs(name) {
+						name = filepath.Join(d.workingDir, name)
+					}
+					if d.diagnosticOnly || RecordAccessFailure(&os.PathError{Op: "readdir", Path: name, Err: os.ErrPermission}, true) {
+						d.parsedPermissions++
+					}
+				}
+			}
 		}
 		if len(d.lines) < fileErrorLimit {
 			if d.truncated {

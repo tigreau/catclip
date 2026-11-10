@@ -12,6 +12,7 @@ const (
 	ActionHelpAll         Action = "help-all"
 	ActionVersion         Action = "version"
 	ActionCheckUpdate     Action = "check-update"
+	ActionTheme           Action = "theme"
 	ActionEditHiss        Action = "hiss"
 	ActionResetHiss       Action = "hiss-reset"
 	ActionListIgnoreRules Action = "list-ignore-rules"

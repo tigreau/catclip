@@ -103,11 +103,25 @@ func Main() {
 	}
 	finishGateBench("err", "false")
 
+	// Theme helpers use only compiled-in choices/examples; no tools or discovery.
+	if len(args) > 0 && args[0] == "--internal-theme-focus" {
+		if err := ui.RunInternalThemeFocus(args[1:], os.Stdout); err != nil {
+			exitWithError(err, os.Stderr, args)
+		}
+		return
+	}
+	if len(args) > 0 && args[0] == "--internal-theme-preview" {
+		if err := runThemePreview(args, os.Stdout); err != nil {
+			exitWithError(err, os.Stderr, args)
+		}
+		return
+	}
+
 	finishToolsBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "ensure_required_tools")
 	// --version and --check-update do not need the bundled search or picker
 	// tools. Keeping these actions available also helps diagnose incomplete
 	// installations. --help stays gated because it documents the runnable tool.
-	if commandKind != "version" && commandKind != "check-update" {
+	if commandKind != "version" && commandKind != "check-update" && commandKind != "theme" {
 		if err := ensureRequiredTools(os.Stderr); err != nil {
 			finishToolsBench("err", platform.InternalBenchError(err))
 			os.Exit(1)
@@ -222,6 +236,12 @@ func internalBenchCommandKind(args []string) string {
 			return "version"
 		case "--check-update":
 			return "check-update"
+		case "--theme":
+			return "theme"
+		case "--internal-theme-preview":
+			return "internal-theme-preview"
+		case "--internal-theme-focus":
+			return "internal-theme-focus"
 		}
 	}
 	return "run"

@@ -130,6 +130,9 @@ func (r *Resolver) SetFileInclusion(noIgnore, binaries bool) {
 
 func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s command.ExecutionScope, stderr io.Writer, colors platform.Palette, retainRefinements ...bool) (result Scope, err error) {
 	cfg.WithBinaries = cfg.WithBinaries || s.WithBinaries
+	if s.Metadata || s.Paths {
+		cfg.PayloadKind = command.PayloadMetadata
+	}
 	mode := s.OutputMode()
 	result = Scope{Scope: s, GitContext: gitCtx}
 	defer func() {
@@ -981,7 +984,7 @@ func (r *Resolver) classifyTextFile(relPath, absPath string) (bool, error) {
 		return false, err
 	}
 	_, ok := r.textFileSet[rel]
-	return ok, nil
+	return ok || r.metadataWithoutBody(rel), nil
 }
 
 func (r *Resolver) BlockInfoForDir(relPath string) (*BlockInfo, error) {
@@ -1338,7 +1341,7 @@ func (r *Resolver) entriesFromClassifiedPaths(relPaths []string, textSet map[str
 		if rel == "" || rel == "." || CoveredBySelection(rel, r.VisibleDirs.SymlinkDirs) {
 			continue
 		}
-		if _, ok := textSet[rel]; !ok {
+		if _, ok := textSet[rel]; !ok && !r.metadataWithoutBody(rel) {
 			continue
 		}
 		entries = append(entries, Entry{RelPath: rel})
@@ -1364,7 +1367,7 @@ func (r *Resolver) textEntriesFromRipgrepPaths(relPaths []string) ([]Entry, erro
 			continue
 		}
 		if !r.WithBinaries {
-			if _, ok := textSet[rel]; !ok {
+			if _, ok := textSet[rel]; !ok && !r.metadataWithoutBody(rel) {
 				continue
 			}
 		}

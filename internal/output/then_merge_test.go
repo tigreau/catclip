@@ -67,7 +67,7 @@ func thenPayload(t *testing.T, p Plan) string {
 		t.Fatal("prefetch changed payload")
 	}
 	var preview bytes.Buffer
-	if err := WriteOutputPlanPreview(&preview, EmitConfig{}, p, nil); err != nil {
+	if _, err := WriteOutputPlanPreview(&preview, EmitConfig{}, p, nil); err != nil {
 		t.Fatal(err)
 	}
 	if preview.String() != b.String() {

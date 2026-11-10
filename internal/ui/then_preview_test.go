@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bytes"
+	"github.com/tigreau/catclip/internal/platform"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,10 +12,11 @@ import (
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/output"
-	"github.com/tigreau/catclip/internal/platform"
 )
 
 func TestThenPreviewKeepsMultipleViewsOfOneExactFile(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
 	root := t.TempDir()
 	p := filepath.Join(root, "sample.go")
 	if err := os.WriteFile(p, []byte("alpha\nbravo\ncharlie\n"), 0600); err != nil {
@@ -50,7 +52,8 @@ func TestThenPreviewKeepsMultipleViewsOfOneExactFile(t *testing.T) {
 	if err := RenderPreview(cfg, git.Context{}, plan, report, &final, &final, platform.ANSIPalette()); err != nil {
 		t.Fatal(err)
 	}
-	if string(preview.Body) != final.String() {
+	// The interactive palette may differ from the final terminal palette.
+	if stripANSIForTest(string(preview.Body)) != stripANSIForTest(final.String()) {
 		t.Fatalf("sink tree/final report differ\n%s\n%s", preview.Body, final.String())
 	}
 }

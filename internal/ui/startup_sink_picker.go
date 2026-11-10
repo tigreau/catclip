@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tigreau/catclip/internal/cli"
 	"github.com/tigreau/catclip/internal/command"
@@ -19,6 +21,8 @@ import (
 	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
 	renderpkg "github.com/tigreau/catclip/internal/render"
+	"github.com/tigreau/catclip/internal/search"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 func RunInternalSinkToggle(modePath string, stdout io.Writer) error {
@@ -63,7 +67,14 @@ func RunInternalSinkPreview(modePath, outputPath, treePath string, stdout io.Wri
 		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
-	_, err = stdout.Write(content)
+	if modeName == "output" && theme.PreviewPalette().Reset != "" {
+		width, _ := strconv.Atoi(os.Getenv("FZF_PREVIEW_COLUMNS"))
+		height, _ := strconv.Atoi(os.Getenv("FZF_PREVIEW_LINES"))
+		err = renderpkg.WriteThemedPreview(stdout, content, theme.Current(), width, height)
+	} else {
+		_, err = stdout.Write(content)
+	}
+
 	finishBench(
 		"err", platform.InternalBenchError(err),
 		"mode", modeName,
@@ -128,6 +139,7 @@ type sinkPreview struct {
 	Truncated      bool
 	FullBytesKnown bool
 	FullBytes      int64
+	SkippedPaths   []search.AccessFailure
 }
 
 type StartupSinkPickerContext struct {
@@ -471,7 +483,7 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 	if err != nil {
 		return nil, false, err
 	}
-	result, err := picker.Run(bin, themedSinkFzfRequest(picker.Request{
+	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
 		Prompt:         "output> ",
 		WithNth:        "1,3",
 		Nth:            "1,3",
@@ -484,7 +496,7 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 		NoSort:         true,
 		Exact:          true,
 		Lines:          lines,
-	}, ctx.Config.PayloadKind == command.PayloadMetadata || ctx.Plan.HasMetadata()))
+	}))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return nil, true, discovery.ErrSelectionCancelled
 	}
@@ -695,7 +707,7 @@ func renderSinkMetadataPreviewContext(ctx context.Context, report *MetadataRepor
 	}
 	var buf bytes.Buffer
 	w := output.NewPreviewCapWriter(&buf, ctx, limit)
-	colors := platform.ANSIPalette()
+	colors := theme.PreviewPalette()
 	addedBytes, err := WriteMetadataReportWithPalette(w, report, colors)
 	if err != nil && !errors.Is(err, output.ErrPreviewLimitReached) {
 		return sinkPreview{}, err
@@ -755,15 +767,18 @@ func readSinkOutputTextPreview(ctx context.Context, plan output.Plan, emitCfg ou
 	if decisionOnly {
 		dest = sinkDecisionWriter{PreviewCapWriter: w, limit: limit}
 	}
-	var err error
 	replaced := plan.HasMetadata() && !decisionOnly
-	if decisionOnly {
-		err = output.WriteOutputPlanPayloadWithoutPrefetch(dest, emitCfg, plan)
-	} else {
-		err = output.WriteOutputPlanPreview(dest, emitCfg, plan, func(w io.Writer, unit output.PreparedFileUnit) (bool, error) {
+	var present func(io.Writer, output.PreparedFileUnit) (bool, error)
+	if !decisionOnly {
+		present = func(w io.Writer, unit output.PreparedFileUnit) (bool, error) {
 			return presentSinkFileUnit(ctx, w, unit, emitCfg.Raw, limit, &replaced)
-		}, platform.ANSIPalette())
+		}
 	}
+	colors := platform.Palette{}
+	if !decisionOnly {
+		colors = theme.PreviewPalette()
+	}
+	skipped, err := output.WriteOutputPlanPreview(dest, emitCfg, plan, present, colors)
 	if err != nil && !errors.Is(err, output.ErrPreviewLimitReached) {
 		return sinkPreview{}, err
 	}
@@ -778,6 +793,7 @@ func readSinkOutputTextPreview(ctx context.Context, plan output.Plan, emitCfg ou
 		Truncated:      truncated,
 		FullBytesKnown: !truncated && !replaced,
 		FullBytes:      rawSize,
+		SkippedPaths:   skipped,
 	}, nil
 }
 
@@ -901,7 +917,7 @@ func renderSinkTreeReportPreviewContext(renderCtx context.Context, ctx StartupSi
 }
 
 func renderSinkTreeReportPreviewToWriter(ctx StartupSinkPickerContext, buf *bytes.Buffer, w *output.PreviewCapWriter) (sinkPreview, error) {
-	colors := platform.ANSIPalette()
+	colors := theme.PreviewPalette()
 	err := ctx.Plan.WriteLineOmissions(w, colors)
 	if err == nil {
 		err = RenderPreview(ctx.Render, ctx.Git, ctx.Plan, ctx.Report, w, w, colors)
@@ -934,6 +950,22 @@ func formatSinkPreview(preview sinkPreview) []byte {
 			out = append(out, fmt.Sprintf("[full output: %s]\n", formatByteCount(preview.FullBytes))...)
 		} else {
 			out = append(out, "[full output: >=128 KiB]\n"...)
+		}
+	}
+	if len(preview.SkippedPaths) > 0 {
+		out = append(out, fmt.Sprintf("\nSkipped %d unavailable path(s) in preview:\n", len(preview.SkippedPaths))...)
+		for _, issue := range preview.SkippedPaths[:min(len(preview.SkippedPaths), 10)] {
+			path, tag := issue.Path, "permission error"
+			if issue.Vanished {
+				tag = "no longer exists"
+			}
+			if strings.ContainsFunc(path, unicode.IsControl) {
+				path = fmt.Sprintf("%q", path)
+			}
+			out = append(out, fmt.Sprintf("  %s  [%s]\n", path, tag)...)
+		}
+		if len(preview.SkippedPaths) > 10 {
+			out = append(out, fmt.Sprintf("  …and %d more unavailable paths\n", len(preview.SkippedPaths)-10)...)
 		}
 	}
 	return out

@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/alecthomas/chroma/v2"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 func TestHighlightFilePreviewAddsANSIForRecognizedSource(t *testing.T) {
@@ -49,10 +50,10 @@ func TestHighlightFilePreviewAddsANSIForDiffHint(t *testing.T) {
 	}
 }
 
-func TestPreviewChromaStyleUsesDarkThemeWithoutBackgroundForFzfPreview(t *testing.T) {
+func TestPreviewChromaStyleUsesSelectedThemeWithoutBackgroundForFzfPreview(t *testing.T) {
 	style := previewChromaStyle(RenderOptions{PreviewTheme: previewThemeFzfDark})
-	if got := chromaStyleForPreview(RenderOptions{PreviewTheme: previewThemeFzfDark}); got != fzfDarkPreviewStyle {
-		t.Fatalf("preview style = %q, want %q", got, fzfDarkPreviewStyle)
+	if got := style.Name; got != theme.Current().ID {
+		t.Fatalf("preview style = %q, want %q", got, theme.Current().ID)
 	}
 	if style.Get(chroma.Background).Background.IsSet() {
 		t.Fatalf("expected fzf preview style background to be cleared, got %#v", style.Get(chroma.Background))
@@ -61,18 +62,18 @@ func TestPreviewChromaStyleUsesDarkThemeWithoutBackgroundForFzfPreview(t *testin
 
 func TestPreviewChromaStyleKeepsDefaultBackgroundOutsideFzfPreview(t *testing.T) {
 	style := previewChromaStyle(RenderOptions{})
-	if got := chromaStyleForPreview(RenderOptions{}); got != defaultChromaStyle {
-		t.Fatalf("default preview style = %q, want %q", got, defaultChromaStyle)
+	if got := style.Name; got != theme.Current().ID {
+		t.Fatalf("default preview style = %q, want %q", got, theme.Current().ID)
 	}
-	if !style.Get(chroma.Background).Background.IsSet() {
-		t.Fatalf("expected default preview style to retain its background, got %#v", style.Get(chroma.Background))
+	if theme.Current().ID != theme.TerminalID && !style.Get(chroma.Background).Background.IsSet() {
+		t.Fatalf("expected selected preview style to retain its background, got %#v", style.Get(chroma.Background))
 	}
 }
 
-func TestPreviewLineNumberColorUsesBrightANSIForFzfPreviewTheme(t *testing.T) {
+func TestPreviewLineNumberColorUsesSelectedTheme(t *testing.T) {
 	colors := Palette{Label: "\033[90m"}
-	if got := previewLineNumberColor(RenderOptions{PreviewTheme: previewThemeFzfDark}, colors); got != "\033[37m" {
-		t.Fatalf("fzf preview line number color = %q, want %q", got, "\033[37m")
+	if got := previewLineNumberColor(RenderOptions{PreviewTheme: previewThemeFzfDark}, colors); got != theme.Current().Palette.Label {
+		t.Fatalf("fzf preview line number color = %q, want %q", got, theme.Current().Palette.Label)
 	}
 	if got := previewLineNumberColor(RenderOptions{}, colors); got != colors.Label {
 		t.Fatalf("default preview line number color = %q, want %q", got, colors.Label)

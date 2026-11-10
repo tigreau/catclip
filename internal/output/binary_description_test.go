@@ -59,7 +59,7 @@ func TestBinaryDescriptionsAndRawOutput(t *testing.T) {
 						t.Fatalf("lost source metadata: %+v", got)
 					}
 					var preview bytes.Buffer
-					if err := WriteOutputPlanPreview(&preview, EmitConfig{}, p, nil); err != nil {
+					if _, err := WriteOutputPlanPreview(&preview, EmitConfig{}, p, nil); err != nil {
 						t.Fatal(err)
 					}
 					if !bytes.Equal(preview.Bytes(), out.Bytes()) {

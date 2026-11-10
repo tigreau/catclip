@@ -395,6 +395,9 @@ func TargetPreviewEntries(workingDir string, matches []TargetMatch, metadata map
 		if rel == "" || rel == "." {
 			continue
 		}
+		if record, ok := metadata[rel]; ok && (record.State == search.FileMetadataVanished || record.State == search.FileMetadataPermissionDenied) {
+			continue
+		}
 		ignored := match.Ignored
 		blockSource := ""
 		if ignored {

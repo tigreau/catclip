@@ -1,11 +1,15 @@
 package ui
 
 import (
+	"bytes"
 	"io"
+	"os"
+	"strconv"
 
 	"github.com/tigreau/catclip/internal/output"
 	"github.com/tigreau/catclip/internal/platform"
 	renderpkg "github.com/tigreau/catclip/internal/render"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 type treeDocumentMode = renderpkg.DocumentMode
@@ -141,6 +145,20 @@ func decodeTreePayload(r io.Reader) (treeDocument, error) {
 }
 
 func renderTreeDocument(w io.Writer, doc treeDocument, opts treeRenderOptions, colors platform.Palette) error {
+	if opts.PreviewTheme == fzfTreePreviewTheme && colors.Reset != "" {
+		colors = theme.PreviewPalette()
+	}
+	if doc.Mode == renderpkg.DocumentModeFile && opts.PreviewTheme == fzfTreePreviewTheme {
+		if os.Getenv("FZF_PREVIEW_COLUMNS") != "" && colors.Reset != "" && theme.Current().ID != theme.TerminalID {
+			var body bytes.Buffer
+			if err := renderpkg.RenderDocument(&body, doc, opts, treePalette(colors)); err != nil {
+				return err
+			}
+			width, _ := strconv.Atoi(os.Getenv("FZF_PREVIEW_COLUMNS"))
+			height, _ := strconv.Atoi(os.Getenv("FZF_PREVIEW_LINES"))
+			return renderpkg.WriteThemedPreview(w, body.Bytes(), theme.Current(), width, height)
+		}
+	}
 	return renderpkg.RenderDocument(w, doc, opts, treePalette(colors))
 }
 

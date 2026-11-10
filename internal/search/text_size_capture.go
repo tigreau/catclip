@@ -32,6 +32,7 @@ const (
 	FileMetadataReady FileMetadataState = iota
 	FileMetadataVanished
 	FileMetadataUnreadable
+	FileMetadataPermissionDenied
 )
 
 // FileMetadata is the reusable part of one successful Lstat. Keeping the full
@@ -243,6 +244,7 @@ func (c *TextSizeCapture) recordResult(rel string, info os.FileInfo, err error) 
 	if c == nil {
 		return
 	}
+	RecordAccessFailure(err, true)
 	if err == nil && info != nil && info.Mode().IsRegular() {
 		c.record(rel, info)
 		return
@@ -252,6 +254,8 @@ func (c *TextSizeCapture) recordResult(rel string, info os.FileInfo, err error) 
 		record.Error = err.Error()
 		if os.IsNotExist(err) {
 			record.State = FileMetadataVanished
+		} else if os.IsPermission(err) {
+			record.State = FileMetadataPermissionDenied
 		}
 	} else {
 		record.Error = "path is not a regular file"

@@ -292,7 +292,7 @@ var extraFixedValueCounts = map[string]int{
 var globalBoundaryFlags = []string{
 	"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
 	"--no-bundle", "-b",
-	"-h", "--help", "--help-all", "--version", "-V", "--check-update", "--hiss", "--hiss-reset", "--all-ignore-rules",
+	"-h", "--help", "--help-all", "--version", "-V", "--check-update", "--theme", "--hiss", "--hiss-reset", "--all-ignore-rules",
 }
 
 // valueTakingFlags derives from spec arity (one/many) plus the explicit

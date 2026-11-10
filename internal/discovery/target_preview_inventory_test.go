@@ -261,14 +261,11 @@ func TestTargetPreviewEntriesCarriesMembershipAndSuccessfulMetadata(t *testing.T
 		"vendor/b.go": {State: search.FileMetadataVanished, Error: "gone"},
 	}
 	entries := TargetPreviewEntries(root, matches, metadata)
-	if got, want := entryPaths(entries), []string{"src/a.go", "vendor/b.go"}; !reflect.DeepEqual(got, want) {
+	if got, want := entryPaths(entries), []string{"src/a.go"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("entry paths = %v, want %v", got, want)
 	}
 	if !entries[0].SizeKnown || entries[0].SizeBytes != 12 || !entries[0].ModTime.Equal(wantTime) {
 		t.Fatalf("ready entry metadata = %+v", entries[0])
-	}
-	if entries[1].SizeKnown || !entries[1].IgnoreBypassed || entries[1].BlockSource != ".hiss" {
-		t.Fatalf("vanished ignored entry = %+v", entries[1])
 	}
 }
 

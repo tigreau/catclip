@@ -11,6 +11,7 @@ import (
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 // Reads the exact bounded payload captured by TestSinkHighlightCorpusProfile.
@@ -121,6 +122,26 @@ func TestHighlightCostDiagnostic(t *testing.T) {
 				}
 				for tok := it(); tok != chroma.EOF; tok = it() {
 				}
+			}
+		}},
+		{"selected_formatter_cached_tokens", func() {
+			for _, b := range blocks {
+				if err := theme.Formatter().Format(io.Discard, style, chroma.Literator(b.tokens...)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}},
+		{"selected_formatter_buffered_tokens", func() {
+			for _, b := range blocks {
+				var out bytes.Buffer
+				if err := theme.Formatter().Format(&out, style, chroma.Literator(b.tokens...)); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}},
+		{"print_highlight_with_preservation_check", func() {
+			for _, b := range blocks {
+				_ = HighlightPrintSource(b.path, b.body, false)
 			}
 		}},
 		{"tty256_empty_per_block", func() {

@@ -13,6 +13,7 @@ import (
 	"github.com/tigreau/catclip/internal/git"
 	"github.com/tigreau/catclip/internal/output"
 	"github.com/tigreau/catclip/internal/platform"
+	renderpkg "github.com/tigreau/catclip/internal/render"
 	"github.com/tigreau/catclip/internal/search"
 )
 
@@ -65,14 +66,14 @@ const internalContainsPreviewEmptyHint = `Content search — PCRE2 regex (smart-
   Focus a file on the left to preview it; matches are highlighted.`
 
 // internalSnippetPreviewEmptyHint is the snippet-mode equivalent. Because
-// --snippet returns the blank-line-separated block around each match, the
+// --snippet returns the smallest recognized block around each match, the
 // examples here target signature lines (func/def/class/type) so the whole
 // block comes back as one focused snippet. Smart-case matches ripgrep.go.
 const internalSnippetPreviewEmptyHint = `Snippet search — PCRE2 regex (smart-case)
 
-  Returns the blank-line-separated block around each match — focused
-  code blocks, not whole files. Match a line inside the block you want
-  (usually its signature) and the whole block comes back.
+  Returns the smallest recognized code block around each match.
+  Match a line inside the block you want (usually its signature).
+  Falls back to a blank-line-separated paragraph when no block is recognized.
 
   Smart-case:
     todo          → case-insensitive (matches TODO, Todo, todo)
@@ -417,11 +418,7 @@ func buildInternalSearchingHintDocument(goos string) treeDocument {
 }
 
 func buildInternalSnippetHintDocument() treeDocument {
-	// HighlightPath "hint.go" forces a deterministic Go lexer (it is used only
-	// for highlighting, never displayed), so the cheat-sheet colors consistently
-	// instead of depending on chroma's content sniffing — which colored the
-	// contains hint (detected as Go) but left this one plain.
-	return buildTreeFilePreviewDocument("", "hint.go", internalSnippetPreviewEmptyHint, "", false, nil)
+	return buildTreeFilePreviewDocument("", renderpkg.SearchHelpHighlight, internalSnippetPreviewEmptyHint, "", false, nil)
 }
 
 // internalPreviewPatternIsEmpty reports whether the content-picker preview
@@ -451,13 +448,18 @@ func internalPreviewPatternIsEmpty(s command.ExecutionScope) bool {
 }
 
 // buildInternalContentHintDocument returns the appropriate hint document
-// for the current content picker mode. Snippet mode gets the snippet hint
-// (which already shipped); --contains gets the new richer hint.
+// for the current content picker mode, with an explicit authored-help role.
 func buildInternalContentHintDocument(s command.ExecutionScope) treeDocument {
 	if s.Snippet || s.HasStage(command.StageSnippet) {
 		return buildInternalSnippetHintDocument()
 	}
-	return buildTreeFilePreviewDocument("", "hint.go", internalContainsPreviewEmptyHint, "", false, nil)
+	text := internalContainsPreviewEmptyHint
+	if s.HasStage(command.StageNotContains) {
+		text = strings.Replace(text, "Content search", "Exclude by content", 1)
+		text = strings.Replace(text, "Lists every matching line across the file set. Type a pattern to begin.", "Excludes files with a match anywhere. Type a pattern to begin.", 1)
+		text = strings.Replace(text, "Focus a file on the left to preview it; matches are highlighted.", "Files without a match stay selected.", 1)
+	}
+	return buildTreeFilePreviewDocument("", renderpkg.SearchHelpHighlight, text, "", false, nil)
 }
 
 func buildInternalDiffPreviewDocument(relPath, absPath string, gitCtx git.Context, s command.ExecutionScope) (treeDocument, bool) {

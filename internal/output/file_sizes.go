@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/tigreau/catclip/internal/discovery"
+	"github.com/tigreau/catclip/internal/search"
 )
 
 // CollectFileBodySizes resolves ordinary full-file sizes with the same
@@ -79,6 +80,9 @@ sendLoop:
 	}
 	for _, index := range missing {
 		if errs[index] != nil {
+			if search.RecordAccessFailure(errs[index], true) {
+				continue
+			}
 			return nil, errs[index]
 		}
 		result[entries[index].RelPath] = sizes[index]

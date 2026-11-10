@@ -735,7 +735,6 @@ func RunRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 	chunks := 0
 	fixed := []string{
 		"--color=never",
-		"--no-messages",
 		"--no-heading",
 		"--line-number",
 		"--null",
@@ -778,6 +777,7 @@ func RunRipgrepMatchLines(pattern string, absPaths []string) (map[string][]int, 
 			case 1:
 				continue
 			case 2:
+				recordContentAccessFailures(cmd.Dir, stderr.Bytes())
 				if isRipgrepBadPatternStderr(stderr.Bytes()) {
 					finishBench(
 						"err", "true",
@@ -862,7 +862,6 @@ func FirstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 	chunks := 0
 	fixed := []string{
 		"--color=never",
-		"--no-messages",
 		"--no-heading",
 		"--line-number",
 		"--null",
@@ -903,6 +902,7 @@ func FirstMatchLinePerFile(pattern string, absPaths []string) (map[string]int, e
 			case 1:
 				continue
 			case 2:
+				recordContentAccessFailures(cmd.Dir, stderr.Bytes())
 				if isRipgrepBadPatternStderr(stderr.Bytes()) {
 					finishBench(
 						"err", "true",
@@ -981,7 +981,6 @@ func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[s
 	chunks := 0
 	fixed := []string{
 		"--color=never",
-		"--no-messages",
 	}
 	if inv {
 		fixed = append(fixed, "--files-without-match")
@@ -1035,6 +1034,7 @@ func RunRipgrepMatches(pattern string, absPaths []string, invert ...bool) (map[s
 				// Both cases: continue to next chunk.
 				continue
 			case 2:
+				recordContentAccessFailures(cmd.Dir, stderr.Bytes())
 				if isRipgrepBadPatternStderr(stderr.Bytes()) {
 					finishBench(
 						"err", "true",
@@ -1178,7 +1178,6 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...Dire
 		"--hidden",
 		"--no-ignore-dot",
 		"--no-require-git",
-		"--no-messages",
 		"-0",
 	)
 	if !cfg.invert {
@@ -1222,6 +1221,7 @@ func RunRipgrepDirect(workingDir, target, pattern, hissPath string, opts ...Dire
 			finishBench("err", "false", "matches", "0")
 			return map[string]struct{}{}, nil
 		case 2:
+			recordContentAccessFailures(cmd.Dir, stderr.Bytes())
 			if isRipgrepBadPatternStderr(stderr.Bytes()) {
 				finishBench("err", "true", "bad_pattern", "true")
 				return nil, ErrRipgrepBadPattern
@@ -1275,7 +1275,6 @@ func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string, op
 
 	args := []string{
 		"--color=never",
-		"--no-messages",
 		"--no-heading",
 		"--line-number",
 		"--null",
@@ -1324,6 +1323,7 @@ func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string, op
 			finishBench("err", "false", "matches", "0")
 			return map[string]int{}, nil
 		case 2:
+			recordContentAccessFailures(cmd.Dir, stderr.Bytes())
 			if isRipgrepBadPatternStderr(stderr.Bytes()) {
 				finishBench("err", "true", "bad_pattern", "true")
 				return nil, ErrRipgrepBadPattern
@@ -1374,21 +1374,19 @@ func RunRipgrepDirectMatchLines(workingDir, target, pattern, hissPath string, op
 // isRipgrepBadPatternStderr returns true when rg's stderr indicates the
 // pattern (not file enumeration / IO) was the failure. rg emits messages
 // like "regex parse error" or "PCRE2: pattern could not be compiled".
-// Checking by substring is good enough: the only other exit-2 cause we
-// hit in practice is missing files, which rg suppresses under
-// --no-messages anyway.
+// Input access diagnostics are captured separately for the omission summary.
 func isRipgrepBadPatternStderr(stderr []byte) bool {
 	if len(stderr) == 0 {
 		return false
 	}
-	lower := bytes.ToLower(stderr)
-	for _, marker := range [][]byte{
-		[]byte("regex parse error"),
-		[]byte("pcre2"),
-		[]byte("error parsing regex"),
-	} {
-		if bytes.Contains(lower, marker) {
-			return true
+	for _, line := range bytes.Split(bytes.ToLower(stderr), []byte{'\n'}) {
+		line = bytes.TrimSpace(bytes.TrimPrefix(line, []byte("rg: ")))
+		// Input diagnostics can contain these words in a filename. Only
+		// compiler diagnostic prefixes identify a bad pattern.
+		for _, marker := range []string{"regex parse error", "pcre2:", "pcre2 is not available", "error parsing regex"} {
+			if bytes.HasPrefix(line, []byte(marker)) {
+				return true
+			}
 		}
 	}
 	return false

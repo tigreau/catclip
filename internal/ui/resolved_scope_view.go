@@ -1057,9 +1057,8 @@ func retainedScopeViewEntriesWithMetadata(view resolvedScopeView) ([]discovery.E
 }
 
 // retainedScopeViewEntriesWithReadyMetadata is the metadata-filter boundary:
-// it never retries a terminal failed Lstat. A vanished or unreadable record is
-// returned as the original observation error instead of being passed to a
-// helper that would call Lstat again.
+// it never retries a terminal failed Lstat. Missing/inaccessible records are
+// omitted using their saved failure; other failures still abort.
 func retainedScopeViewEntriesWithReadyMetadata(view resolvedScopeView) ([]discovery.Entry, bool, error) {
 	entries, ok := retainedScopeViewEntriesWithMetadata(view)
 	if !ok || view.inventory == nil {
@@ -1067,12 +1066,17 @@ func retainedScopeViewEntriesWithReadyMetadata(view resolvedScopeView) ([]discov
 	}
 	view.inventory.mu.RLock()
 	defer view.inventory.mu.RUnlock()
-	for _, id := range view.fileIDs {
+	available := entries[:0]
+	for i, id := range view.fileIDs {
 		if uint64(id) >= uint64(len(view.inventory.entries)) || !view.inventory.metadataKnown[id] {
 			return nil, false, nil
 		}
 		record := view.inventory.metadata[id]
 		if record.State == search.FileMetadataReady {
+			available = append(available, entries[i])
+			continue
+		}
+		if skipUnavailableMetadata(view.inventory.entries[id], record, view.Invocation.WorkingDir) {
 			continue
 		}
 		path := view.inventory.entries[id].AbsPath
@@ -1085,7 +1089,24 @@ func retainedScopeViewEntriesWithReadyMetadata(view resolvedScopeView) ([]discov
 		}
 		return nil, true, &os.PathError{Op: "lstat", Path: path, Err: cause}
 	}
-	return entries, true, nil
+	return available, true, nil
+}
+
+func skipUnavailableMetadata(entry discovery.Entry, record search.FileMetadata, workingDir string) bool {
+	var cause error
+	switch record.State {
+	case search.FileMetadataVanished:
+		cause = os.ErrNotExist
+	case search.FileMetadataPermissionDenied:
+		cause = os.ErrPermission
+	default:
+		return false
+	}
+	abs := entry.AbsPath
+	if abs == "" {
+		abs = filepath.Join(workingDir, filepath.FromSlash(entry.RelPath))
+	}
+	return search.RecordAccessFailure(&os.PathError{Op: "lstat", Path: abs, Err: cause}, true)
 }
 
 func allMetadataKnown(known []bool) bool {
@@ -1635,6 +1656,9 @@ func applyMetadataScopeStageIDs(inventory *scopeViewInventory, ids []uint32, sta
 			}
 			record := inventory.metadata[id]
 			if record.State != search.FileMetadataReady {
+				if skipUnavailableMetadata(entry, record, workingDir) {
+					continue
+				}
 				inventory.mu.RUnlock()
 				if record.Error != "" {
 					return nil, true, &os.PathError{Op: "lstat", Path: entry.AbsPath, Err: errors.New(record.Error)}

@@ -7,7 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
-	"github.com/alecthomas/chroma/v2/formatters"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 // HighlightPrintSource shares preview lexer selection and colors, but never
@@ -46,7 +46,7 @@ func formatPrintSource(content string, iterator chroma.Iterator) (result string)
 	}()
 	// Stop pathological ANSI expansion without allocating a whole colored bundle.
 	buf := printColorBuffer{limit: len(content)*16 + 4096}
-	if err := formatters.TTY256.Format(&buf, previewChromaStyle(RenderOptions{PreviewTheme: previewThemeFzfDark}), iterator); err != nil || buf.err != nil {
+	if err := theme.Formatter().Format(&buf, previewChromaStyle(RenderOptions{PreviewTheme: previewThemeFzfDark}), iterator); err != nil || buf.err != nil {
 		return content
 	}
 	colored := buf.String()

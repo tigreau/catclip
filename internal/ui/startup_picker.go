@@ -210,6 +210,9 @@ func newStartupPickerResolverForArgs(args []string) (*discovery.Resolver, error)
 	if err != nil {
 		return nil, err
 	}
+	if cfg, parseErr := cli.ParseArgsAllowImplicitDot(args); parseErr == nil {
+		resolver.Cfg.PayloadKind = cfg.PayloadKind
+	}
 	return resolver, nil
 }
 
@@ -423,7 +426,7 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 			return false, nil
 		}
 		switch arg {
-		case "-h", "--help", "--help-all", "--version", "-V", "--check-update", "--hiss", "--hiss-reset", "--all-ignore-rules",
+		case "-h", "--help", "--help-all", "--version", "-V", "--check-update", "--theme", "--hiss", "--hiss-reset", "--all-ignore-rules",
 			"--input-dir", "--input-stem":
 			return false, nil
 		case "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--depth":
@@ -1533,7 +1536,7 @@ func chooseManyStartupFileSetRowsWithFzf(query, prompt, header, previewCommand s
 	if err != nil {
 		return nil, err
 	}
-	bindings := startupFileSetPickerBindings(prompt, header, platform.ActivePalette())
+	bindings := startupFileSetPickerBindings(prompt, header, interactivePalette())
 	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
 		Query:          query,
 		Prompt:         prompt,

@@ -23,7 +23,7 @@ func renderSinkOutputTextPreview(plan output.Plan, emitCfg output.EmitConfig, li
 }
 
 func TestSinkBundleDecisionCountsRawBytes(t *testing.T) {
-	project := setupTestProject(t, map[string]string{"small.go": "package main\n" + strings.Repeat("var value = 123 // a comment\n", 65)})
+	project := setupTestProject(t, map[string]string{"small.go": "package main\n" + strings.Repeat("var value = 123 // a comment\n", 100)})
 	plan := testSinkOutputPlan(t, project, "small.go")
 	m := measureOutputForSinkMenu(plan, output.EmitConfig{})
 	if m.Err != nil {
@@ -252,7 +252,7 @@ func TestOrdinarySinkOutputIsAsyncAndCancellationJoins(t *testing.T) {
 	}
 }
 
-func TestSinkMeasurementStopsAtThresholdAndDefersLaterErrors(t *testing.T) {
+func TestSinkMeasurementStopsAtThresholdAndDefersLaterReads(t *testing.T) {
 	project := setupTestProject(t, map[string]string{"a.txt": strings.Repeat("x", output.BundleThreshold), "b.txt": "later"})
 	plan := output.BuildPlan([]output.PreparedFileUnit{
 		{Entry: discovery.Entry{RelPath: "a.txt", AbsPath: filepath.Join(project, "a.txt"), Mode: command.EntryModeFull}, BodyBytes: output.BundleThreshold},
@@ -267,9 +267,9 @@ func TestSinkMeasurementStopsAtThresholdAndDefersLaterErrors(t *testing.T) {
 			t.Fatalf("measurement read beyond decision or retained incomplete prefix: raw=%t %+v", emit.Raw, m)
 		}
 	}
-	_, err := renderSinkPreviewWithModeContext(context.Background(), StartupSinkPickerContext{Plan: plan}, sinkPreviewModeOutputText, output.PreviewByteLimit)
-	if err == nil {
-		t.Fatal("later preview read error was lost")
+	preview, err := renderSinkPreviewWithModeContext(context.Background(), StartupSinkPickerContext{Plan: plan}, sinkPreviewModeOutputText, output.PreviewByteLimit)
+	if err != nil || len(preview.SkippedPaths) != 1 || preview.SkippedPaths[0].Path != "b.txt" || !preview.SkippedPaths[0].Vanished || !bytes.Contains(preview.Body, []byte("xxxx")) {
+		t.Fatalf("later unavailable file replaced readable preview or lost its diagnostic: %v %+v", err, preview.SkippedPaths)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

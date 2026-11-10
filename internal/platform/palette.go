@@ -34,7 +34,7 @@ func ActivePalette() Palette {
 // or the writer is not an *os.File.
 func ActivePaletteForWriter(w io.Writer) Palette {
 	file, ok := w.(*os.File)
-	if !ok || os.Getenv("NO_COLOR") != "" || !IsTerminalFile(file) {
+	if !ok || os.Getenv("NO_COLOR") != "" || !IsTerminalFile(file) || !enableANSIOutput(file) {
 		return Palette{}
 	}
 	return ANSIPalette()

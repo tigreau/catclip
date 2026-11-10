@@ -159,6 +159,8 @@ func runRipgrepIgnoreTraceBatch(ctx context.Context, bin, workingDir string, arg
 		close(events)
 	}()
 
+	// This pass explains ignore rules; it must not invent export omissions.
+	diagnostics := fileErrorDiagnostics{goos: runtime.GOOS, workingDir: workingDir, diagnosticOnly: true}
 	var streamErr error
 	for event := range events {
 		if event.err != nil {
@@ -168,6 +170,8 @@ func runRipgrepIgnoreTraceBatch(ctx context.Context, bin, workingDir string, arg
 			continue
 		}
 		switch event.kind {
+		case ignoreTraceDiagnosticEvent:
+			_, _ = diagnostics.Write([]byte(event.path))
 		case ignoreTraceVisibleEvent:
 			counts.Visible++
 			if onVisible != nil {
@@ -191,6 +195,10 @@ func runRipgrepIgnoreTraceBatch(ctx context.Context, bin, workingDir string, arg
 		if exitErr, ok := waitErr.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return counts, nil
 		}
+		diagnostics.finishLine()
+		if exitErr, ok := waitErr.(*exec.ExitError); ok && exitErr.ExitCode() == 2 && diagnostics.total > 0 && diagnostics.parsedPermissions == diagnostics.total {
+			return counts, nil
+		}
 		return counts, waitErr
 	}
 	return counts, nil
@@ -201,6 +209,7 @@ type ignoreTraceStreamEventKind uint8
 const (
 	ignoreTraceVisibleEvent ignoreTraceStreamEventKind = iota
 	ignoreTraceIgnoredEvent
+	ignoreTraceDiagnosticEvent
 )
 
 type ignoreTraceStreamEvent struct {
@@ -239,6 +248,8 @@ func streamRipgrepIgnoreRecords(r io.Reader, events chan<- ignoreTraceStreamEven
 			events <- ignoreTraceStreamEvent{kind: ignoreTraceIgnoredEvent, record: record}
 		} else if isUnsupportedRipgrepIgnoreTraceLine(line) {
 			events <- ignoreTraceStreamEvent{err: fmt.Errorf("unsupported ripgrep ignore debug record from bundled version")}
+		} else if strings.TrimSpace(line) != "" && !strings.HasPrefix(strings.TrimPrefix(line, "rg: "), "DEBUG|") && !strings.HasPrefix(strings.TrimPrefix(line, "rg: "), "TRACE|") {
+			events <- ignoreTraceStreamEvent{kind: ignoreTraceDiagnosticEvent, path: line}
 		}
 		if err != nil {
 			if !errors.Is(err, io.EOF) {

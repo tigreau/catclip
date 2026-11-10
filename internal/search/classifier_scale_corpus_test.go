@@ -23,6 +23,8 @@ import (
 // This prototype deliberately does not implement configured rg encodings.
 func scaleClassifyFile(ctx context.Context, filename string, buf []byte, observation ...*os.FileInfo) (bool, error) {
 	info, err := os.Lstat(filename)
+	// The home-corpus control reuses this stat for empty-file admission, including
+	// when opening the file fails. Scan-only callers can omit the metadata output.
 	if len(observation) > 0 {
 		*observation[0] = info
 	}

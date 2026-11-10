@@ -23,6 +23,9 @@ func ExpandEntriesUnderNoIgnore(cfg command.Invocation, gitCtx git.Context, scop
 		"targets", platform.InternalBenchInt(len(scope.Targets)),
 		"retained", platform.InternalBenchInt(len(entries)),
 	)
+	if scope.Metadata || scope.Paths {
+		cfg.PayloadKind = command.PayloadMetadata
+	}
 	resolver := Resolver{
 		Cfg:                   cfg,
 		GitCtx:                gitCtx,
@@ -182,7 +185,7 @@ func (r *Resolver) expandRetainedEntriesUnderNoIgnore(scope command.ExecutionSco
 	additions := make([]Entry, 0, len(candidates))
 	for _, candidate := range candidates {
 		if !r.WithBinaries {
-			if _, ok := textSet[candidate.relPath]; !ok {
+			if _, ok := textSet[candidate.relPath]; !ok && !r.metadataWithoutBody(candidate.relPath) {
 				continue
 			}
 		}

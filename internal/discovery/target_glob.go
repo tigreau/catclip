@@ -54,7 +54,7 @@ func (r *Resolver) discoverGlobCandidateFiles(pattern string) ([]Entry, error) {
 	entries := make([]Entry, 0, len(candidates))
 	for _, rel := range candidates {
 		if !r.WithBinaries {
-			if _, ok := textSet[rel]; !ok {
+			if _, ok := textSet[rel]; !ok && !r.metadataWithoutBody(rel) {
 				continue
 			}
 		}

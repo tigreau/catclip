@@ -38,7 +38,7 @@ func BenchmarkBinarySafeSinkPreview(b *testing.B) {
 						var err error
 						if safe {
 							replaced := false
-							err = output.WriteOutputPlanPreview(w, output.EmitConfig{}, plan, func(w io.Writer, unit output.PreparedFileUnit) (bool, error) {
+							_, err = output.WriteOutputPlanPreview(w, output.EmitConfig{}, plan, func(w io.Writer, unit output.PreparedFileUnit) (bool, error) {
 								return presentSinkFileUnit(context.Background(), w, unit, false, output.PreviewByteLimit, &replaced)
 							})
 						} else {

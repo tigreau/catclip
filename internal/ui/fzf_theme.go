@@ -3,19 +3,10 @@ package ui
 import (
 	"github.com/tigreau/catclip/internal/picker"
 	"github.com/tigreau/catclip/internal/platform"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
-const (
-	fzfANSIColorDim       = "8"
-	fzfANSIColorWarn      = "3"
-	fzfANSIColorDir       = "4"
-	fzfANSIColorPrompt    = "6"
-	fzfANSIColorGit       = "5"
-	fzfANSIColorValue     = "7"
-	fzfANSIColorPreviewBg = "0"
-
-	fzfTreePreviewTheme = "fzf-dark"
-)
+const fzfTreePreviewTheme = "fzf-dark"
 
 func themedFzfRequest(req picker.Request) picker.Request {
 	hasPreview := req.PreviewCommand != "" || req.PreviewWindow != ""
@@ -23,59 +14,17 @@ func themedFzfRequest(req picker.Request) picker.Request {
 	return req
 }
 
-func themedSinkFzfRequest(req picker.Request, metadata bool) picker.Request {
-	req = themedFzfRequest(req)
-	if metadata {
-		req.ColorSpecs = metadataPreviewColorSpecs(req.ColorSpecs)
-	}
-	return req
-}
-
-func metadataPreviewColorSpecs(specs []string) []string {
-	// Metadata uses terminal-style text, not the source preview's dark syntax
-	// theme. ANSI reset should land on the terminal's default foreground and
-	// background, just as it does for --metadata --print.
-	for i, spec := range specs {
-		switch spec {
-		case "preview-bg:" + fzfANSIColorPreviewBg:
-			specs[i] = "preview-bg:-1"
-		case "preview-fg:" + fzfANSIColorValue:
-			specs[i] = "preview-fg:-1"
-		}
-	}
-	return specs
-}
-
 func fzfColorSpecs(palette platform.Palette, hasPreview bool) []string {
 	if palette == (platform.Palette{}) {
 		return nil
 	}
 
-	// Keep the list pane on the terminal's normal background while mapping fzf's
-	// UI accents onto catclip's prompt / git / dim palette semantics.
-	specs := []string{
-		"prompt:" + fzfANSIColorPrompt,
-		"pointer:" + fzfANSIColorPrompt,
-		"marker:" + fzfANSIColorGit,
-		"spinner:" + fzfANSIColorPrompt,
-		"hl:" + fzfANSIColorDir,
-		"hl+:" + fzfANSIColorDir,
-		"info:" + fzfANSIColorWarn,
-		"header:" + fzfANSIColorDim,
-		"border:" + fzfANSIColorDim,
-		"label:" + fzfANSIColorDim,
-		"header-border:" + fzfANSIColorDim,
-		"header-label:" + fzfANSIColorDim,
-		"fg+:" + fzfANSIColorValue,
-		"bg+:" + fzfANSIColorDim,
+	return theme.Current().InteractiveColorSpecs(hasPreview)
+}
+
+func interactivePalette() platform.Palette {
+	if platform.ActivePalette() == (platform.Palette{}) {
+		return platform.Palette{}
 	}
-	if hasPreview {
-		specs = append(specs,
-			"preview-bg:"+fzfANSIColorPreviewBg,
-			"preview-fg:"+fzfANSIColorValue,
-			"preview-border:"+fzfANSIColorDim,
-			"preview-label:"+fzfANSIColorPrompt,
-		)
-	}
-	return specs
+	return theme.PreviewPalette()
 }

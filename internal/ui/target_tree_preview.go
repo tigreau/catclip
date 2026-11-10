@@ -14,6 +14,7 @@ import (
 	"github.com/tigreau/catclip/internal/output"
 	"github.com/tigreau/catclip/internal/platform"
 	renderpkg "github.com/tigreau/catclip/internal/render"
+	"github.com/tigreau/catclip/internal/search"
 )
 
 // RenderFreshTargetTreePreview renders the target picker's ordinary full-file
@@ -75,10 +76,21 @@ func RenderFreshTargetTreePreview(
 		finishBench("err", "true", "cancelled", platform.InternalBenchBool(ctx.Err() != nil))
 		return err
 	}
-	for index := range canonical {
-		canonical[index].SizeBytes = sizes[canonical[index].RelPath]
-		canonical[index].SizeKnown = true
+	var unavailable []string
+	unavailableCount := 0
+	available := canonical[:0]
+	for _, entry := range canonical {
+		if size, ok := sizes[entry.RelPath]; ok {
+			entry.SizeBytes, entry.SizeKnown = size, true
+			available = append(available, entry)
+		} else if tag := search.AccessFailureTag(entry.AbsPath); tag != "" {
+			unavailableCount++
+			if len(unavailable) < 10 {
+				unavailable = append(unavailable, fmt.Sprintf("%q [%s]", entry.RelPath, tag))
+			}
+		}
 	}
+	canonical = available
 
 	statuses := map[string]string(nil)
 	if gitCtx.Enabled {
@@ -100,6 +112,10 @@ func RenderFreshTargetTreePreview(
 	}
 
 	doc := buildFreshTargetTreeDocument(cfg, canonical, sizes, statuses)
+	if unavailableCount > len(unavailable) {
+		unavailable = append(unavailable, fmt.Sprintf("…and %d more unavailable paths", unavailableCount-len(unavailable)))
+	}
+	doc.FooterNotices = append(doc.FooterNotices, unavailable...)
 	err = writeFreshTargetTreeDocument(ctx, w, doc)
 	finishBench(
 		"err", platform.InternalBenchError(err),

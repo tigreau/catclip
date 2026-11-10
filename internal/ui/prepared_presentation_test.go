@@ -113,6 +113,8 @@ func TestPreparedPresentationCappedAndFinalParity(t *testing.T) {
 }
 
 func TestSinkOmissionReportReusesPreparedTreeForFinalOutput(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
 	project := setupTestProject(t, map[string]string{"src/short.txt": "a\n", "src/long.txt": "a\nb\nc\nd\n"})
 	t.Chdir(project)
 	defer scopeViewMemoReset()
@@ -149,7 +151,8 @@ func TestSinkOmissionReportReusesPreparedTreeForFinalOutput(t *testing.T) {
 	if p.tree != tree {
 		t.Fatal("final output rebuilt prepared tree")
 	}
-	if !bytes.Equal(final.Bytes(), preview.Body) {
+	// Preview and CLI palettes differ; their report text must remain identical.
+	if stripANSIForTest(final.String()) != stripANSIForTest(string(preview.Body)) {
 		t.Fatalf("preview/final report mismatch:\npreview=%q\nfinal=%q", preview.Body, final.Bytes())
 	}
 	content, err := renderSinkPreviewWithModeContext(context.Background(), ctx, sinkPreviewModeOutputText, output.PreviewByteLimit)

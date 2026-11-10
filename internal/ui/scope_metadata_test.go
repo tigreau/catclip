@@ -113,6 +113,8 @@ func BenchmarkScopeMetadataPreparationAndReuse(b *testing.B) {
 }
 
 func TestScopeMetadataPreparedReuseAndPreview(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
 	wd := t.TempDir()
 	// This path intentionally does not exist: retained facts suffice for metadata,
 	// and no body preparation/open is allowed for its contribution.

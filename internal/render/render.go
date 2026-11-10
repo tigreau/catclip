@@ -13,16 +13,12 @@ import (
 	"unicode/utf8"
 
 	"github.com/alecthomas/chroma/v2"
-	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
-	"github.com/alecthomas/chroma/v2/styles"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
-const (
-	defaultChromaStyle  = "xcode"
-	fzfDarkPreviewStyle = "xcode-dark"
-	previewThemeFzfDark = "fzf-dark"
-)
+// The legacy transport marker means a preview surface, regardless of palette.
+const previewThemeFzfDark = "fzf-dark"
 
 const (
 	previewMatchStart = "\033[7m"
@@ -261,11 +257,15 @@ func renderFilePreview(w io.Writer, file *FilePreview, opts RenderOptions, color
 	content := file.Content
 	rawLines := splitPreviewLines(file.Content)
 	if shouldHighlightFilePreview(colors) {
-		highlightPath := file.HighlightPath
-		if strings.TrimSpace(highlightPath) == "" {
-			highlightPath = file.Path
+		if file.HighlightPath == SearchHelpHighlight {
+			content = highlightSearchHelp(file.Content, colors)
+		} else {
+			highlightPath := file.HighlightPath
+			if strings.TrimSpace(highlightPath) == "" {
+				highlightPath = file.Path
+			}
+			content = highlightFilePreview(highlightPath, file.Content, opts)
 		}
-		content = highlightFilePreview(highlightPath, file.Content, opts)
 	}
 
 	lines := splitPreviewLines(content)
@@ -300,12 +300,15 @@ func shouldHighlightFilePreview(colors Palette) bool {
 
 func previewLineNumberColor(opts RenderOptions, colors Palette) string {
 	if normalizePreviewTheme(opts.PreviewTheme) == previewThemeFzfDark {
-		return "\033[37m"
+		return theme.Current().Palette.Label
 	}
 	return colors.Label
 }
 
 func stylePreviewLineNumber(text string, lineNo int, highlighted map[int]struct{}, opts RenderOptions, colors Palette) string {
+	if !shouldHighlightFilePreview(colors) {
+		return text
+	}
 	styled := previewLineNumberColor(opts, colors) + text + colors.Reset
 	if _, ok := highlighted[lineNo]; ok {
 		return highlightWholeLineANSI(styled)
@@ -350,7 +353,7 @@ func highlightFilePreview(relPath, content string, opts RenderOptions) string {
 	style := previewChromaStyle(opts)
 
 	var buf bytes.Buffer
-	if err := formatters.TTY256.Format(&buf, style, iterator); err != nil {
+	if err := theme.Formatter().Format(&buf, style, iterator); err != nil {
 		return content
 	}
 	return buf.String()
@@ -420,42 +423,15 @@ func lexerCacheKey(relPath string) string {
 	return "name:" + base
 }
 
-func chromaStyleForPreview(opts RenderOptions) string {
-	if normalizePreviewTheme(opts.PreviewTheme) == previewThemeFzfDark {
-		return fzfDarkPreviewStyle
-	}
-	return defaultChromaStyle
-}
-
 func previewChromaStyle(opts RenderOptions) *chroma.Style {
-	style := styles.Get(chromaStyleForPreview(opts))
-	if style == nil {
-		style = styles.Fallback
-	}
 	if normalizePreviewTheme(opts.PreviewTheme) == previewThemeFzfDark {
-		return clearChromaBackground(style)
+		return theme.Current().Syntax
 	}
-	return style
+	return theme.Current().Style
 }
 
 func normalizePreviewTheme(theme string) string {
 	return strings.ToLower(strings.TrimSpace(theme))
-}
-
-func clearChromaBackground(style *chroma.Style) *chroma.Style {
-	if style == nil {
-		return nil
-	}
-	builder := style.Builder()
-	bg := builder.Get(chroma.Background)
-	bg.Background = 0
-	bg.NoInherit = true
-	builder.AddEntry(chroma.Background, bg)
-	cleared, err := builder.Build()
-	if err != nil {
-		return style
-	}
-	return cleared
 }
 
 func highlightUnifiedDiffPreview(content string) string {
@@ -469,13 +445,13 @@ func highlightUnifiedDiffPreview(content string) string {
 		style := ""
 		switch {
 		case strings.HasPrefix(line, "diff --git "), strings.HasPrefix(line, "index "), strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
-			style = "\x1b[1;36m"
+			style = theme.Current().Palette.Prompt
 		case strings.HasPrefix(line, "@@"):
-			style = "\x1b[35m"
+			style = theme.Current().Palette.Git
 		case strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++ "):
-			style = "\x1b[32m"
+			style = theme.Current().Palette.OK
 		case strings.HasPrefix(line, "-") && !strings.HasPrefix(line, "--- "):
-			style = "\x1b[31m"
+			style = theme.Current().Palette.Err
 		}
 		if style == "" {
 			b.WriteString(line)

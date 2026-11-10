@@ -1119,6 +1119,8 @@ func assertPreparedOutputReplays(t *testing.T, result StartupPickerResult) {
 // relocated test can construct the preview-files context.
 
 func TestSinkTreeReportPreviewRendersAnsiColors(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "xterm-256color")
 	project := setupTestProject(t, map[string]string{
 		"src/main.go": "package main\n",
 	})

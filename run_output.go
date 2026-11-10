@@ -127,6 +127,12 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 }
 
 func executeEmptyOutput(ctx outputExecutionContext, state outputExecutionState) error {
+	if len(discovery.AccessFailuresForScopes(ctx.Invocation.WorkingDir, state.DiscoveredScopes, ctx.Invocation.PayloadKind == command.PayloadMetadata)) > 0 {
+		if err := writeAccessSummary(ctx, state); err != nil {
+			return err
+		}
+		return newExitError(1, "No accessible files remain; no output was exported.")
+	}
 	if err := state.Plan.WriteRefinementNotices(ctx.Stderr, ctx.Colors); err != nil {
 		return err
 	}
@@ -167,6 +173,9 @@ func executeMetadata(ctx outputExecutionContext, state outputExecutionState, rep
 		if proceed {
 			return fmt.Errorf("internal error: never-emit metadata diagnostics reached payload emission")
 		}
+		if err := writeAccessSummary(ctx, state); err != nil {
+			return err
+		}
 		if ctx.Invocation.Verbose {
 			fmt.Fprintf(ctx.Stderr, "[verbose] diagnostics: %s\n", formatDuration(time.Since(diagStarted)))
 			fmt.Fprintf(ctx.Stderr, "[verbose] total: %s\n", formatDuration(time.Since(ctx.Started)))
@@ -194,6 +203,9 @@ func executeMetadata(ctx outputExecutionContext, state outputExecutionState, rep
 		fmt.Fprintf(ctx.Stderr, "[verbose] diagnostics: %s\n", formatDuration(time.Since(diagStarted)))
 	}
 	if !proceed {
+		if err := writeAccessSummary(ctx, state); err != nil {
+			return err
+		}
 		if ctx.Invocation.Verbose {
 			fmt.Fprintf(ctx.Stderr, "[verbose] total: %s\n", formatDuration(time.Since(ctx.Started)))
 		}
@@ -206,10 +218,12 @@ func executeMetadata(ctx outputExecutionContext, state outputExecutionState, rep
 	finishEmitBench := platform.InternalBenchSpan("output.metadata.emit")
 	metadataColors := output.TerminalPrintPalette(ctx.Emit, ctx.Invocation.Headless, ctx.Invocation.Quiet, ctx.Stdout)
 	var metadataANSIBytes int64
-	emitStats, err := output.WithPayloadWriter(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), ctx.Stdout, ctx.Colors, func(w io.Writer) error {
-		var writeErr error
-		metadataANSIBytes, writeErr = ui.WriteMetadataReportWithPalette(w, metadata, metadataColors)
-		return writeErr
+	emitStats, err := output.WithTerminalPrintSurface(ctx.Stdout, metadataColors, func(sink io.Writer) (output.EmitStats, error) {
+		return output.WithPayloadWriter(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), sink, ctx.Colors, func(w io.Writer) error {
+			var writeErr error
+			metadataANSIBytes, writeErr = ui.WriteMetadataReportWithPalette(w, metadata, metadataColors)
+			return writeErr
+		})
 	})
 	if err == nil {
 		emitStats.PayloadBytes -= metadataANSIBytes
@@ -220,6 +234,9 @@ func executeMetadata(ctx outputExecutionContext, state outputExecutionState, rep
 	}
 	if ctx.Invocation.Verbose {
 		fmt.Fprintf(ctx.Stderr, "[verbose] metadata output: %s\n", formatDuration(time.Since(outputStarted)))
+	}
+	if err := writeAccessSummary(ctx, state); err != nil {
+		return err
 	}
 	if ctx.Emit.OutputMode == command.OutputModeClipboard && !ctx.Invocation.Quiet {
 		if err := ui.WriteMetadataClipboardSuccess(ctx.Stderr, state.Plan, emitStats, ctx.Colors); err != nil {
@@ -267,6 +284,9 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 		if ctx.Invocation.Verbose {
 			fmt.Fprintf(ctx.Stderr, "[verbose] total: %s\n", formatDuration(time.Since(ctx.Started)))
 		}
+		if err := writeAccessSummary(ctx, state); err != nil {
+			return err
+		}
 		if ctx.Invocation.EmissionPolicy == command.EmissionNever &&
 			(state.Summary.HasScopeUnsatisfiable || state.Summary.HasTargetNotFound) {
 			return newExitError(1, "")
@@ -289,14 +309,24 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 		output.PrintPresentation{Headless: ctx.Invocation.Headless, Quiet: ctx.Invocation.Quiet, Highlight: render.HighlightPrintSource})
 	if err != nil {
 		outputSpinnerStop()
+		if errors.Is(err, output.ErrNoAccessibleOutput) {
+			if summaryErr := writeAccessSummary(ctx, state); summaryErr != nil {
+				return summaryErr
+			}
+			return newExitError(1, err.Error())
+		}
 		return err
 	}
 	outputSpinnerStop()
+	state.Plan = state.Plan.WithoutFiles(emitStats.SkippedPaths)
 	outputMetrics.PayloadBytes = emitStats.PayloadBytes
 	if ctx.Invocation.Verbose {
 		outputDuration := time.Since(outputStarted)
 		fmt.Fprintf(ctx.Stderr, "[verbose] output: %s\n", formatDuration(outputDuration))
 		writeVerboseOutputMetrics(ctx.Stderr, outputMetrics, emitStats, state.Plan.Len(), outputDuration)
+	}
+	if err := writeAccessSummary(ctx, state); err != nil {
+		return err
 	}
 	if ctx.Emit.OutputMode == command.OutputModeClipboard && !ctx.Invocation.Quiet {
 		if err := ui.WriteClipboardSuccess(ctx.Stderr, state.Plan, emitStats, ctx.Colors); err != nil {
