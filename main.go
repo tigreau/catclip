@@ -118,6 +118,40 @@ func Main() {
 		return
 	}
 
+	// --unpack is a standalone action: no targets, discovery or startup picker.
+	// It checks for fzf only when it opens its picker, so --headless --yes
+	// works even on an incomplete install.
+	if len(args) > 0 && args[0] == "--internal-unpack-preview" {
+		if len(args) != 3 && len(args) != 4 {
+			exitWithError(usageError{message: "Error: --internal-unpack-preview requires a state folder, an index and an optional selection file."}, os.Stderr, args)
+			return
+		}
+		selection := ""
+		if len(args) == 4 {
+			selection = args[3]
+		}
+		if err := ui.RunInternalUnpackPreview(args[1], args[2], selection, os.Stdout); err != nil {
+			exitWithError(err, os.Stderr, args)
+		}
+		return
+	}
+	if len(args) == 2 && args[0] == "--internal-unpack-toggle" {
+		if err := ui.RunInternalUnpackToggle(args[1]); err != nil {
+			exitWithError(err, os.Stderr, args)
+		}
+		return
+	}
+	if cli.IsUnpackRequest(args) {
+		opts, err := cli.ParseUnpackArgs(args)
+		if err == nil {
+			err = runUnpack(opts, os.Stdout, os.Stderr)
+		}
+		if err != nil {
+			exitWithError(err, os.Stderr, args)
+		}
+		return
+	}
+
 	finishToolsBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "ensure_required_tools")
 	// --version and --check-update do not need the bundled search or picker
 	// tools. Keeping these actions available also helps diagnose incomplete

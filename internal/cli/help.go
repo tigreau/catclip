@@ -186,6 +186,7 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: "--version", Right: "Show version"},
 		{Left: "--theme", Right: "Choose and save a theme for interactive mode and terminal --print"},
 		{Left: "--check-update", Right: "Check for a newer release and show how to update"},
+		{Left: "--unpack FILE", Right: "Write the files from a catclip bundle into this project (asks first)"},
 		{Left: "--hiss", Right: "Edit catclip's own ignore rules (applied on top of .gitignore)"},
 		{Left: "--hiss-reset", Right: "Reset catclip's ignore rules to defaults"},
 		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — your .gitignore(s) + .hiss, merged"},
@@ -587,7 +588,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
 	b.WriteString("    With N set, lines=\"...\" is the fixed context window around the match.\n\n")
 	fmt.Fprintf(&b, "  %s (%s):\n", bold("Lines"), flag("--lines"))
-	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"cmd/api/main.go\">"))
+	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"cmd/api/main.go\" numbered=\"true\">"))
 	b.WriteString("         1\tpackage main\n")
 	b.WriteString("         2\t...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
@@ -647,12 +648,53 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("                   an attachment in web UIs (Claude, ChatGPT, etc.) and\n")
 	b.WriteString("                   as a file in file managers (Finder, Explorer). Does NOT\n")
 	b.WriteString("                   paste as text in terminals or editors.\n\n")
-	fmt.Fprintf(&b, "  %s      Force text clipboard regardless of size. Use when you\n", flag("--no-bundle"))
-	b.WriteString("                   want to paste raw text into a terminal or editor and\n")
-	b.WriteString("                   the output would otherwise exceed 4KB.\n\n")
+	b.WriteString("  Selected binary files (-wb, or an exact binary path) are copied as references\n")
+	b.WriteString("  to the original files, like copying them in a file manager:\n\n")
+	b.WriteString("    text + binaries  one text bundle (any size) plus each binary, in one copy\n")
+	b.WriteString("    binaries only    the original files; no text bundle is created\n\n")
+	b.WriteString("  The bundle lists each binary's project path. --paths and --metadata describe\n")
+	b.WriteString("  files and never attach them. A binary omitted by --token-limit is not\n")
+	b.WriteString("  attached. Whether a pasted file is accepted depends on the receiving app.\n\n")
+	fmt.Fprintf(&b, "  %s      Force text clipboard regardless of size or file type. Use\n", flag("--no-bundle"))
+	b.WriteString("                   when you want to paste raw text into a terminal or editor.\n")
+	b.WriteString("                   Binaries then contribute file details, not attachments.\n\n")
 	fmt.Fprintf(&b, "  Bundle file contents are byte-identical to %s (stdout) output.\n", flag("-p"))
 	fmt.Fprintf(&b, "  %s overrides the bundle directory.\n", flag("CATCLIP_BUNDLE_DIR"))
 	fmt.Fprintf(&b, "  %s implies stdout, so bundling never applies in headless mode.\n\n", flag("--headless"))
+
+	// ── Unpack ──────────────────────────────────────────────────────────
+	head("UNPACKING A BUNDLE (--unpack)")
+	b.WriteString("  Writes the files of a catclip bundle into your project. A bundle is the\n")
+	b.WriteString("  text catclip copies or saves: <file path=\"...\"> entries, each holding one\n")
+	b.WriteString("  file. Save one to a file, or a reply in the same format from an AI agent or\n")
+	b.WriteString("  a teammate, then:\n\n")
+	fmt.Fprintf(&b, "    %s\n\n", cmd("catclip --unpack bundle.txt"))
+	b.WriteString("  Run it from your project root. Each file in the bundle replaces the file\n")
+	b.WriteString("  with the same relative path, or is added if you don't have it. Your other\n")
+	b.WriteString("  files are never deleted. Steps:\n\n")
+	b.WriteString("    1. Is <current folder> the project root? [Y/n]  (Enter = yes)\n")
+	b.WriteString("    2. A list of new and changed files, all selected, with a diff preview.\n")
+	b.WriteString("       Tab unselects or selects a file, Alt-A (Ctrl-A on macOS) all of them,\n")
+	b.WriteString("       Ctrl-T switches the preview between diff and tree, Enter writes the\n")
+	b.WriteString("       selected files, Esc cancels.\n\n")
+	b.WriteString("  Nothing is written until you confirm, and every chosen file is checked\n")
+	b.WriteString("  first, so a read-only or locked file stops the unpack with nothing changed.\n")
+	b.WriteString("  Identical files are skipped. There is no undo yet: commit or back up first.\n\n")
+	b.WriteString("  Only full files are written. Excerpts (--snippet, --lines ranges), numbered\n")
+	b.WriteString("  --lines output, Git patches, binary descriptions and files cut by\n")
+	b.WriteString("  --token-limit are skipped and listed. Send binaries separately. A file\n")
+	b.WriteString("  that had no final newline gets one. A bundle with an absolute path, '..',\n")
+	b.WriteString("  a path into .git or through a symlink is refused before anything happens.\n\n")
+	fmt.Fprintf(&b, "    %s        %s\n", cmd("catclip --unpack bundle.txt --yes"), "no questions; write all new and changed files")
+	fmt.Fprintf(&b, "    %s   %s\n", cmd("catclip --unpack bundle.txt --headless"), "same, for scripts and agents; report on stdout")
+	fmt.Fprintf(&b, "    %s      %s\n\n", cmd("catclip --unpack bundle.txt --print"), "show the diffs only; write nothing")
+	b.WriteString("  The report names each file written as changed or new, and each skipped\n")
+	b.WriteString("  entry with the reason. --print sends a plain unified diff to stdout when\n")
+	b.WriteString("  piped, e.g. catclip --unpack bundle.txt --print > changes.patch, and the\n")
+	b.WriteString("  summary to stderr. With --headless the diffs are plain and stderr stays\n")
+	b.WriteString("  silent; --print never writes, even with --headless. --unpack\n")
+	b.WriteString("  takes no targets or filters; it combines only with --print, --yes,\n")
+	b.WriteString("  --headless, --quiet and --verbose.\n\n")
 
 	// ── Exit codes ──────────────────────────────────────────────────────
 	head("EXIT CODES")
@@ -709,8 +751,10 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	})
 	b.WriteString("  Use either option or both, in either order. --then starts a fresh scope.\n")
 	b.WriteString("  An existing file's complete relative path includes it even if ignored or binary.\n")
-	b.WriteString("  Binary files contribute file details instead of contents to formatted output.\n")
-	b.WriteString("  This includes text bundles; separate binary attachments are not yet supported.\n")
+	b.WriteString("  Clipboard delivery copies selected binaries as references to the original\n")
+	b.WriteString("  files, beside one text bundle for everything else (see CLIPBOARD DELIVERY).\n")
+	b.WriteString("  In text output (--print, --headless, --no-bundle and the bundle itself) a\n")
+	b.WriteString("  binary contributes file details instead of contents.\n")
 	b.WriteString("  --contains, --not-contains and --snippet search text files only, even with -wb.\n")
 	b.WriteString("  Binaries are excluded from their results. Git patches cannot share a scope with -wb.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("Scope modifiers (per-scope, left to right):"))
@@ -753,6 +797,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — .gitignore(s) + .hiss, merged"},
 		{Left: "--theme", Right: "Choose and save a theme for interactive mode and terminal --print"},
 		{Left: "--check-update", Right: "Check for a newer release and show the update command"},
+		{Left: "--unpack FILE", Right: "Write a catclip bundle's full files into this project"},
 	})
 
 	return b.String()

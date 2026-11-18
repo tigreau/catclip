@@ -94,7 +94,7 @@ func writeLinesPreviewFile(w *PreviewCapWriter, cfg EmitConfig, entry discovery.
 		if entry.LinesStart > 0 {
 			attr = fmt.Sprintf("%d-%d", start, lastSelected)
 		}
-		if _, err := w.Write(buildFileOpenTagWithLines(entry.RelPath, "", attr)); err != nil {
+		if _, err := w.Write(buildNumberedOpenTag(entry.RelPath, "", attr)); err != nil {
 			return err
 		}
 	}

@@ -15,6 +15,10 @@ func WriteOutputPlanPreview(w io.Writer, cfg EmitConfig, plan Plan, present func
 	observed := &payloadWriter{w: w}
 	w = observed
 	plan = plan.WithTokenLimit(cfg.TokenLimit)
+	// Stay truthful to the copy: a clipboard preview shows attached binaries
+	// the way the bundle will describe them; text outputs keep "omitted".
+	cfg = cfg.WithBinaryReferences(plan)
+	plan = plan.withAttachedBinaryDescriptions(cfg.references)
 	if plan.tokenLimit != nil {
 		var print *printPresentation
 		if len(palettes) > 0 {

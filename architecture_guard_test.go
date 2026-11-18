@@ -69,6 +69,9 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	requireDiscoveryPackageAllowedImports(t, discoveryFiles)
 	requireOutputPackageAllowedImports(t, parseOutputGoFiles(t))
 	requireUIPackageAllowedImports(t, uiFiles)
+	// --unpack writes into the project, so its core stays a stdlib-only leaf:
+	// no discovery, Git, clipboard or output plumbing can reach the writes.
+	requireNoInternalImports(t, parsePackageGoFiles(t, "internal/unpack", "unpack"), "internal/unpack")
 	requirePlatformPackageAvoidDomainDeps(t, platformFiles)
 	requireThemePackageAvoidDomainDeps(t, parsePackageGoFiles(t, "internal/theme", "theme"))
 	requireSearchPackageAvoidDomainDeps(t, searchFiles)
@@ -114,6 +117,7 @@ var previewCommandBuilders = map[string]struct{}{
 	"buildSnippetBoundaryPreviewForScope":       {},
 	"buildDepthPickerPreview":                   {},
 	"recentPickerPreviewCommand":                {},
+	"unpackPreviewCommand":                      {},
 	"buildLinesPickerStartPreviewCommand":       {},
 	"buildLinesPickerEndPreviewCommand":         {},
 }
@@ -133,7 +137,7 @@ var fzfPlaceholderExemptFuncs = map[string]struct{}{
 var previewBuilderFiles = []string{
 	"theme_picker.go", "token_limit_picker.go",
 	"resolver.go", "startup_picker.go", "depth_picker.go",
-	"recent_picker.go", "lines_picker.go", "startup_sink_picker.go",
+	"recent_picker.go", "lines_picker.go", "startup_sink_picker.go", "unpack_picker.go",
 }
 
 // previewBuilderDiscoveryFunctions are the fzf preview builders that
@@ -694,6 +698,7 @@ func requireUIPackageAllowedImports(t *testing.T, files []parsedGoFile) {
 		"github.com/tigreau/catclip/internal/platform":  {},
 		"github.com/tigreau/catclip/internal/render":    {},
 		"github.com/tigreau/catclip/internal/search":    {},
+		"github.com/tigreau/catclip/internal/unpack":    {},
 	}
 	for _, parsed := range files {
 		for _, spec := range parsed.file.Imports {
@@ -705,7 +710,7 @@ func requireUIPackageAllowedImports(t *testing.T, files []parsedGoFile) {
 				continue
 			}
 			if _, ok := allowed[importPath]; !ok {
-				t.Errorf("%s imports %s; internal/ui may import only stdlib + internal/{cli,command,discovery,git,output,picker,platform,render,search} (no fileclip, no root catclip)", parsed.name, importPath)
+				t.Errorf("%s imports %s; internal/ui may import only stdlib + internal/{cli,command,discovery,git,output,picker,platform,render,search,unpack} (no fileclip, no root catclip)", parsed.name, importPath)
 			}
 		}
 	}
@@ -1182,4 +1187,20 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+// requireNoInternalImports keeps a package a stdlib-only leaf.
+func requireNoInternalImports(t *testing.T, files []parsedGoFile, label string) {
+	t.Helper()
+	for _, parsed := range files {
+		for _, spec := range parsed.file.Imports {
+			importPath, err := strconv.Unquote(spec.Path.Value)
+			if err != nil {
+				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
+			}
+			if strings.HasPrefix(importPath, "github.com/tigreau/catclip") {
+				t.Errorf("%s imports %s; %s must import only the standard library", parsed.name, importPath, label)
+			}
+		}
+	}
 }

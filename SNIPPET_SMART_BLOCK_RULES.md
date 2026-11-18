@@ -125,6 +125,21 @@ multi-line parent.
 - Includes complete one-line bodies.
 - Multi-line code bodies currently end by indentation and a conventional closing
   line, not by full language parsing.
+- Inside a `{ }` body, a statement label (`sendLoop:` in gofmt'ed Go, `out:` in
+  C) or a preprocessor line (`#ifdef`, `#endif`) written left of the body does
+  not end it when the code after it is indented again or the body closes right
+  after it (`#endif` then `}`). A body may also start with such a line (`{`
+  then `#ifdef`). Comment-only lines at column 0 are treated the same way.
+  Consecutive labels and directives are looked past. `case`/`default` and C++ access specifiers
+  (`public:`) are not treated as body labels. Indentation-delimited bodies
+  (Python) still end at the dedent. (v0.7.13)
+- Type parameters between a method name and `(` do not hide the method:
+  `public add<T extends IDisposable>(o: T)` is recognized, so a match inside it
+  returns the method rather than the whole class. (v0.7.13)
+- C# properties and events are their own blocks: `Name { get; set; }`,
+  `Count => _items.Count;` (also when the expression continues on the next
+  lines), a property with a `{ get ... }` block, and `event` declarations,
+  with their attributes. Plain fields still belong to their class. (v0.7.13)
 - A body match normally returns the function or method instead of its enclosing
   class.
 
@@ -315,8 +330,9 @@ Catclip recognizes these named assignments:
 
 ## Current limitations
 
-- Code body extent is indentation-based. Unindented bodies and column-zero
-  preprocessor lines can defeat recognition.
+- Code body extent is indentation-based. Unindented bodies can defeat
+  recognition. Column-zero labels and preprocessor lines inside `{ }` bodies
+  are handled since v0.7.13; other column-zero body lines still end a block.
 - YAML mappings and sequences do not have indentation-aware blocks.
 - Vue and Svelte do not switch to a code engine inside script regions.
 - JSX elements are not independent blocks; their enclosing component normally

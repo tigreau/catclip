@@ -150,7 +150,7 @@ func copyWSL(paths []string) error {
 		winPaths = append(winPaths, fmt.Sprintf("'%s'", winPath))
 	}
 
-	script := fmt.Sprintf("Set-Clipboard -Path %s", strings.Join(winPaths, ","))
+	script := fmt.Sprintf("Set-Clipboard -LiteralPath %s", strings.Join(winPaths, ","))
 	cmd := powershellClipboardCommand("powershell.exe", "-")
 	cmd.Stdin = strings.NewReader(script)
 	var stderr bytes.Buffer

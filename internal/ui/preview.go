@@ -262,6 +262,9 @@ func WriteClipboardSuccess(w io.Writer, plan output.Plan, stats output.EmitStats
 	first := relPaths[0]
 	last := relPaths[len(relPaths)-1]
 
+	if n := len(stats.References); n > 0 {
+		return writeReferenceSuccess(w, n, stats, colors)
+	}
 	if stats.SinkName == "bundle" {
 		return writeBundleSuccess(w, bundleDescription(plan, count, word, false), bundleOverviewHint(plan, false), stats, colors)
 	}
@@ -340,6 +343,55 @@ func bundleOverviewHint(plan output.Plan, metadataOnly bool) string {
 		return "File paths only — no file contents.\nAn AI can use this list to suggest which files to share next."
 	}
 	return ""
+}
+
+// writeReferenceSuccess reports clipboard publication of original binary
+// files, with or without a generated text bundle. It states what was offered
+// to the clipboard; it cannot know whether a receiving app accepts each file.
+// referenceListLimit caps how many attached binaries the success message names.
+const referenceListLimit = 5
+
+func writeReferenceSuccess(w io.Writer, binaries int, stats output.EmitStats, colors platform.Palette) error {
+	binaryWord := "binary files"
+	referenceWord := "references"
+	if binaries == 1 {
+		binaryWord, referenceWord = "binary file", "reference"
+	}
+	if stats.BundlePath == "" {
+		if _, err := fmt.Fprintf(w, "\n%sCopied%s %s%d binary file %s%s %sto clipboard%s\n",
+			colors.OK, colors.Reset, colors.Bold, binaries, referenceWord, colors.Reset, colors.OK, colors.Reset); err != nil {
+			return err
+		}
+	} else {
+		if _, err := fmt.Fprintf(w, "\n%sCopied%s %s%d file references%s %sto clipboard:%s 1 text bundle and %d %s\n%s%s%s %s(%s)%s\n",
+			colors.OK, colors.Reset, colors.Bold, binaries+1, colors.Reset, colors.OK, colors.Reset, binaries, binaryWord,
+			colors.Bold, platform.DisplayPath(stats.BundlePath), colors.Reset, colors.Dim, humanByteSize(stats.PayloadBytes), colors.Reset); err != nil {
+			return err
+		}
+	}
+	// The attached binaries, by project path, so the user sees exactly which
+	// originals went on the clipboard. Capped to keep large selections short.
+	for i, ref := range stats.References {
+		if i == referenceListLimit {
+			if _, err := fmt.Fprintf(w, "%s...and %d more%s\n", colors.Dim, len(stats.References)-i, colors.Reset); err != nil {
+				return err
+			}
+			break
+		}
+		if _, err := fmt.Fprintf(w, "%s%s%s %s(%s)%s\n", colors.Bold, ref.RelPath, colors.Reset, colors.Dim, humanByteSize(ref.Size), colors.Reset); err != nil {
+			return err
+		}
+	}
+	if _, err := fmt.Fprintf(w, "\n%sPaste attaches the files%s%s — works in web UIs and file managers, not terminals.%s\n%sUse --no-bundle to copy text instead; binaries then appear as descriptions.%s\n",
+		colors.OK, colors.Reset, colors.Dim, colors.Reset, colors.Dim, colors.Reset); err != nil {
+		return err
+	}
+	for _, warning := range stats.Warnings {
+		if _, err := fmt.Fprintf(w, "%sWarning: %s%s\n", colors.Warn, warning, colors.Reset); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeBundleSuccess(w io.Writer, description, overviewHint string, stats output.EmitStats, colors platform.Palette) error {

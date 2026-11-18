@@ -509,6 +509,14 @@ const (
 	declarationCallable declarationKind = iota
 	declarationArrow
 	declarationType
+	// declarationMember is a C# property or event: one line ending in `;`
+	// or `}`, or a header followed by a `{ get ... }` block.
+	declarationMember
+)
+
+var (
+	declCSharpProperty = regexp.MustCompile(`^(\[[^\]]*\]\s*)*((public|private|protected|internal|static|new|virtual|override|abstract|sealed|readonly|required|extern|unsafe|partial)\s+)+[A-Za-z_][\w.]*(<[^()=]*>)?(\[\])?\??\s+[A-Za-z_]\w*\s*(\{|=>|$)`)
+	declCSharpEvent    = regexp.MustCompile(`^(\[[^\]]*\]\s*)*((public|private|protected|internal|static|new|virtual|override|abstract|sealed)\s+)*event\s+`)
 )
 
 type declarationCandidate struct {
@@ -579,6 +587,12 @@ func declarationStartKind(line string, comments []string, unitStart *regexp.Rege
 	if unitStart != nil && unitStart.MatchString(trimmed) {
 		return declarationType, true
 	}
+	// C# properties and events have no `(` after their name, so the callable
+	// logic below never sees them; without this a match on one returns the
+	// whole class. Plain fields stay with their class.
+	if unitStart == declCSharp && (declCSharpProperty.MatchString(trimmed) || declCSharpEvent.MatchString(trimmed)) {
+		return declarationMember, true
+	}
 	first := firstIdentifier(lower)
 	if declarationControlWords[first] {
 		return 0, false
@@ -641,6 +655,10 @@ func declarationStartKind(line string, comments []string, unitStart *regexp.Rege
 		}
 		return 0, false
 	}
+	// Type parameters between the name and `(`: `public add<T extends X>(`
+	// (TypeScript, C#, Java constructors are unaffected). Without this the
+	// method is not recognised and a match inside it selects the whole class.
+	before = trimTrailingTypeParameters(before)
 	nameStart := trailingIdentifierStart(before)
 	if nameStart < 0 {
 		return 0, false
@@ -766,6 +784,29 @@ func firstIdentifier(s string) string {
 	return ""
 }
 
+// trimTrailingTypeParameters removes one balanced `<...>` that ends s, such as
+// the `<T extends IDisposable>` of `add<T extends IDisposable>`. An unbalanced
+// `>` (C++ `operator>`) leaves s unchanged.
+func trimTrailingTypeParameters(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasSuffix(s, ">") {
+		return s
+	}
+	depth := 0
+	for i := len(s) - 1; i >= 0; i-- {
+		switch s[i] {
+		case '>':
+			depth++
+		case '<':
+			depth--
+			if depth == 0 {
+				return strings.TrimSpace(s[:i])
+			}
+		}
+	}
+	return s
+}
+
 func trailingIdentifierStart(s string) int {
 	runes := []rune(s)
 	i := len(runes) - 1
@@ -867,7 +908,9 @@ func declarationRange(lines []string, start int, kind declarationKind, comments 
 			break
 		}
 		if parenDepth == 0 && bracketDepth == 0 {
-			if isInlineDeclaration(cleaned, kind, seenArrow) {
+			// `public int Count => _items.Count;` and `event X Changed;` end at
+			// their semicolon, possibly lines later.
+			if isInlineDeclaration(cleaned, kind, seenArrow) || (kind == declarationMember && strings.HasSuffix(cleaned, ";")) {
 				return declarationCandidate{
 					SnippetRange: SnippetRange{Start: attachedDeclarationStart(lines, start, comments) + 1, End: i + 1},
 					kind:         kind,
@@ -889,13 +932,26 @@ func declarationRange(lines []string, start int, kind declarationKind, comments 
 	}
 
 	// Heuristic: the body extent is measured by indentation to the dedent, not by
-	// brace balance. A column-zero body line (an unindented body, or a column-zero
-	// C preprocessor directive right after the opener) can truncate here or widen
-	// to the fallback paragraph. Idiomatic formatted code is consistently
+	// brace balance. Column-zero labels and preprocessor lines inside a { } body
+	// are handled below; other column-zero body lines (an unindented body, or a
+	// directive right after the opener) can still truncate here or widen to the
+	// fallback paragraph. Idiomatic formatted code is consistently
 	// indented, so this is rare and fail-safe; see the plan's "Documented
 	// heuristic boundaries".
 	end := opener
+	braced := strings.HasSuffix(strings.TrimSpace(stripLineComment(lines[opener], comments)), "{")
 	firstBody := nextNonBlankLine(lines, opener+1)
+	// A body may open with a column-zero directive (`{` then `#ifdef`); start
+	// from the first ordinary line after such lines.
+	if braced {
+		next := firstBody
+		for next >= 0 && indentationWidth(lines[next]) <= baseIndent && isDedentedBodyLine(lines[next], comments) {
+			next = nextNonBlankLine(lines, next+1)
+		}
+		if next >= 0 && next != firstBody && indentationWidth(lines[next]) > baseIndent {
+			firstBody = next
+		}
+	}
 	if firstBody < 0 {
 		end = len(lines) - 1
 	} else if indentationWidth(lines[firstBody]) <= baseIndent {
@@ -911,6 +967,27 @@ func declarationRange(lines []string, start int, kind declarationKind, comments 
 			}
 			if isDeclarationCloser(lines[i], comments) {
 				end = i
+				break
+			}
+			// gofmt writes labels one level left of their statements, so a
+			// label in a top-level Go function sits at column 0; C keeps
+			// labels (`out:`) and preprocessor lines (`#ifdef`) there too.
+			// Inside a { } body, such a line is still part of the body when
+			// the code after it is indented again. Indentation-delimited
+			// bodies (Python) are excluded: there a dedent ends the block.
+			if braced && isDedentedBodyLine(lines[i], comments) {
+				// Labels and directives can follow each other (`err:` then
+				// `out:`, or `#endif` then a label); look past them to the
+				// next ordinary line.
+				next := nextNonBlankLine(lines, i+1)
+				for next >= 0 && indentationWidth(lines[next]) <= baseIndent && isDedentedBodyLine(lines[next], comments) {
+					next = nextNonBlankLine(lines, next+1)
+				}
+				// The body continues, or closes right after (`#endif` then `}`).
+				if next >= 0 && (indentationWidth(lines[next]) > baseIndent || isDeclarationCloser(lines[next], comments)) {
+					end = i
+					continue
+				}
 			}
 			break
 		}
@@ -1206,7 +1283,7 @@ func isInlineDeclaration(line string, kind declarationKind, seenArrow bool) bool
 	}
 	openBrace := strings.Index(line, "{")
 	if openBrace >= 0 && strings.LastIndex(line, "}") > openBrace {
-		if kind == declarationType {
+		if kind == declarationType || kind == declarationMember {
 			return true
 		}
 		return strings.LastIndex(line[:openBrace], ")") >= 0
@@ -1334,6 +1411,34 @@ func nextNonBlankLine(lines []string, start int) int {
 		}
 	}
 	return -1
+}
+
+// dedentedLabelPattern is a statement label (`sendLoop:`, `out:`), optionally
+// followed by a statement on the same line. `default:` and `case x:` are not
+// included: they are written at the switch's own indentation, never left of it.
+var dedentedLabelPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*:([^:=]|$)`)
+
+// isDedentedBodyLine reports a label or preprocessor line, the two kinds of
+// line formatters place left of the surrounding body in brace languages.
+func isDedentedBodyLine(line string, comments []string) bool {
+	trimmed := strings.TrimSpace(stripLineComment(line, comments))
+	if strings.HasPrefix(trimmed, "#") {
+		return true
+	}
+	// A comment-only line at column 0 (commented-out code) is not a dedent.
+	if trimmed == "" && strings.TrimSpace(line) != "" {
+		return true
+	}
+	if !dedentedLabelPattern.MatchString(trimmed) {
+		return false
+	}
+	switch label, _, _ := strings.Cut(trimmed, ":"); label {
+	case "default", "case", "public", "private", "protected", "internal":
+		// Switch arms and C++ access specifiers are not body labels for a
+		// function; leave their handling unchanged.
+		return false
+	}
+	return true
 }
 
 func isDeclarationCloser(line string, comments []string) bool {

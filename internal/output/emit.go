@@ -37,7 +37,10 @@ type EmitStats struct {
 	ClipboardWaitDuration time.Duration
 	SinkName              string
 	BundlePath            string
-	Warnings              []string
+	// References are original binary files offered beside (or instead of)
+	// the text bundle, in emission order.
+	References []BinaryReference
+	Warnings   []string
 }
 
 type EmitConfig struct {
@@ -45,6 +48,9 @@ type EmitConfig struct {
 	OutputMode command.OutputMode
 	Raw        bool
 	NoBundle   bool
+	// Set by WithBinaryReferences for one plan's clipboard delivery.
+	references     []BinaryReference
+	referencesOnly bool
 }
 
 // RuntimeEnvironment is the narrow process context needed by output sinks.
@@ -221,6 +227,10 @@ func EmitOutputPlan(cfg EmitConfig, env RuntimeEnvironment, plan Plan, stdout io
 		print = &printPresentation{highlight: presentation[0].Highlight, limit: printHighlightLimit, colors: TerminalPrintPalette(cfg, presentation[0].Headless, presentation[0].Quiet, stdout)}
 	}
 	plan = plan.WithTokenLimit(cfg.TokenLimit)
+	// After the budget: only binaries whose entry survived are attached, and
+	// their bundle entries say so instead of "contents omitted".
+	cfg = cfg.WithBinaryReferences(plan)
+	plan = plan.withAttachedBinaryDescriptions(cfg.references)
 	var rawNotice string
 	var skipped []string
 	var surfaceColors platform.Palette
@@ -407,7 +417,7 @@ func emitLinesFile(w io.Writer, entry discovery.Entry, sourceTypes ...string) er
 		}
 	}
 
-	openTag := buildFileOpenTagWithLines(entry.RelPath, sourceType, linesAttr)
+	openTag := buildNumberedOpenTag(entry.RelPath, sourceType, linesAttr)
 	startLine := 1
 	if sliced {
 		startLine = entry.LinesStart
@@ -912,6 +922,17 @@ func buildFileOpenTag(relPath, typeAttr string) []byte {
 	return buildFileOpenTagWithLines(relPath, typeAttr, "")
 }
 
+// buildNumberedOpenTag opens --lines output. A body with generated line
+// numbers and no range says so with numbered="true", so readers (and
+// --unpack) never mistake it for the file's own content.
+func buildNumberedOpenTag(relPath, typeAttr, linesAttr string) []byte {
+	tag := buildFileOpenTagWithLines(relPath, typeAttr, linesAttr)
+	if linesAttr != "" {
+		return tag
+	}
+	return append(tag[:len(tag)-2], []byte(" numbered=\"true\">\n")...)
+}
+
 func buildFileOpenTagWithLines(relPath, typeAttr, linesAttr string) []byte {
 	size := len(relPath) + 16
 	if typeAttr != "" {
@@ -1038,6 +1059,15 @@ func WithPayloadWriter(cfg EmitConfig, env RuntimeEnvironment, stdout io.Writer,
 	generateDuration := time.Since(generateStarted)
 	payload := payloadBuf.Bytes()
 
+	// Selected binaries travel as references to the original files. Any text
+	// joins them as one bundle regardless of size, so a single clipboard
+	// write offers everything; binary-only output creates no bundle.
+	if len(cfg.references) > 0 {
+		if cfg.referencesOnly {
+			payload = nil
+		}
+		return emitFileReferences(env, payload, cfg.references, generateDuration, colors)
+	}
 	if len(payload) >= BundleThreshold {
 		return EmitBundle(env, payload, generateDuration, colors)
 	}
@@ -1187,19 +1217,45 @@ func clipboardWaitFailureError(cmd *exec.Cmd, rawStderr string, waitErr error) e
 }
 
 func EmitBundle(env RuntimeEnvironment, payload []byte, generateDuration time.Duration, colors platform.Palette) (EmitStats, error) {
-	dir := BundleDirForEnv(env)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return EmitStats{}, fmt.Errorf("Error: bundle directory: %w", err)
-	}
-	clearPriorBundles(dir)
+	return emitFileReferences(env, payload, nil, generateDuration, colors)
+}
 
+// emitFileReferences publishes one clipboard offer: the generated text bundle
+// (when payload is non-nil) followed by references to original files. All
+// paths go to the clipboard in a single call; nothing is offered piecemeal.
+func emitFileReferences(env RuntimeEnvironment, payload []byte, references []BinaryReference, generateDuration time.Duration, colors platform.Palette) (EmitStats, error) {
 	finalizeStarted := time.Now()
-	tmpPath := BundleTempPath(dir, BundleProjectName(env.WorkingDir), time.Now())
-	if err := os.WriteFile(tmpPath, payload, 0600); err != nil {
-		return EmitStats{}, fmt.Errorf("Error: bundle write: %w", err)
+	tmpPath := ""
+	paths := make([]string, 0, len(references)+1)
+	if payload != nil {
+		dir := BundleDirForEnv(env)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return EmitStats{}, fmt.Errorf("Error: bundle directory: %w", err)
+		}
+		clearPriorBundles(dir)
+		tmpPath = BundleTempPath(dir, BundleProjectName(env.WorkingDir), time.Now())
+		if err := os.WriteFile(tmpPath, payload, 0600); err != nil {
+			return EmitStats{}, fmt.Errorf("Error: bundle write: %w", err)
+		}
+		paths = append(paths, tmpPath)
 	}
-	if err := FileclipCopy(tmpPath); err != nil {
-		_ = os.Remove(tmpPath)
+	// A binary can vanish between selection and copy; the clipboard tools
+	// reject missing paths, which would lose the whole offer.
+	kept := make([]BinaryReference, 0, len(references))
+	for _, ref := range references {
+		if _, err := os.Stat(ref.Path); err == nil {
+			kept = append(kept, ref)
+			paths = append(paths, ref.Path)
+		}
+	}
+	references = kept
+	if len(paths) == 0 {
+		return EmitStats{}, ErrNoAccessibleOutput
+	}
+	if err := FileclipCopy(paths...); err != nil {
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
 		// Unknown/displayless Linux requested clipboard delivery. Detected X11
 		// is blocked at startup, so this is the SSH/Docker/TTY/CI path. Surface
 		// the Wayland-required message instead of "clipboard command failed".
@@ -1239,14 +1295,94 @@ func EmitBundle(env RuntimeEnvironment, payload []byte, generateDuration time.Du
 	}
 	finalizeDuration := time.Since(finalizeStarted)
 
+	sink := "bundle"
+	if tmpPath == "" {
+		sink = "references"
+	}
 	return EmitStats{
 		PayloadBytes:         int64(len(payload)),
 		GenerateDuration:     generateDuration,
 		SinkFinalizeDuration: finalizeDuration,
-		SinkName:             "bundle",
+		SinkName:             sink,
 		BundlePath:           tmpPath,
+		References:           references,
 		Warnings:             BundleWarnings(env),
 	}, nil
+}
+
+// BinaryReference is one original file offered on the clipboard.
+type BinaryReference struct {
+	Path    string // absolute path given to the clipboard
+	RelPath string // project-relative path for messages
+	Size    int64
+}
+
+// ReferencePaths returns the absolute paths offered on the clipboard.
+func (s EmitStats) ReferencePaths() []string {
+	paths := make([]string, len(s.References))
+	for i, ref := range s.References {
+		paths[i] = ref.Path
+	}
+	return paths
+}
+
+// BinaryReferences lists the original files that clipboard delivery offers
+// separately: selected binary contents, once each, in emission order. textual
+// reports whether anything else needs a text bundle. Path lists and metadata
+// describe files; they never turn into attachments. It reads no files: it
+// uses the classification recorded when the plan was prepared. A binary whose
+// description was cut by --token-limit is not attached.
+func (p Plan) BinaryReferences() (references []BinaryReference, textual bool) {
+	cutPath := ""
+	if p.tokenLimit != nil && p.tokenLimit.partial && !p.tokenLimit.metadata {
+		cutPath = p.tokenLimit.path
+	}
+	seen := map[string]bool{}
+	for _, item := range p.items {
+		if item.kind != SectionKindFiles || item.unit.sourceType != "binary" {
+			textual = true
+			continue
+		}
+		if item.relPath == cutPath {
+			textual = true
+			continue
+		}
+		path := item.entry.AbsPath
+		if path == "" {
+			path = item.entry.RelPath
+		}
+		if !seen[path] {
+			seen[path] = true
+			references = append(references, BinaryReference{Path: path, RelPath: item.relPath, Size: item.entry.SizeBytes})
+		}
+	}
+	if p.tokenLimit != nil {
+		// The token-limit footer is text that belongs in a bundle.
+		textual = true
+	}
+	return references, textual
+}
+
+// ClipboardAttachments reports how a clipboard copy with cfg would deliver
+// this plan's binaries: how many are attached as original files, and whether
+// a text bundle goes with them. It uses the same budget and routing as the
+// copy and reads no files.
+func ClipboardAttachments(cfg EmitConfig, plan Plan) (binaries int, withBundle bool) {
+	cfg = cfg.WithBinaryReferences(plan.WithTokenLimit(cfg.TokenLimit))
+	return len(cfg.references), len(cfg.references) > 0 && !cfg.referencesOnly
+}
+
+// WithBinaryReferences routes this plan's selected binaries to file
+// references for default clipboard delivery. --no-bundle, --raw and stdout
+// keep their textual output unchanged.
+func (cfg EmitConfig) WithBinaryReferences(plan Plan) EmitConfig {
+	cfg.references, cfg.referencesOnly = nil, false
+	if cfg.OutputMode != command.OutputModeClipboard || cfg.NoBundle || cfg.Raw {
+		return cfg
+	}
+	references, textual := plan.BinaryReferences()
+	cfg.references, cfg.referencesOnly = references, len(references) > 0 && !textual
+	return cfg
 }
 
 func BundleWarnings(env RuntimeEnvironment) []string {

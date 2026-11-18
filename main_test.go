@@ -1196,8 +1196,10 @@ func TestRunLinesAddsLineNumbers(t *testing.T) {
 	}
 
 	got := stdout.String()
-	if !strings.Contains(got, "<file path=\"hello.txt\">") {
-		t.Fatalf("expected file open tag without lines attribute, got:\n%s", got)
+	// numbered="true" marks generated line numbers, so the body is never
+	// mistaken for the file's own content (for example by --unpack).
+	if !strings.Contains(got, "<file path=\"hello.txt\" numbered=\"true\">") {
+		t.Fatalf("expected numbered open tag without lines attribute, got:\n%s", got)
 	}
 	if !strings.Contains(got, "     1\talpha\n") {
 		t.Fatalf("expected numbered line 1, got:\n%s", got)

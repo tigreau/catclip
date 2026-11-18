@@ -351,7 +351,13 @@ func TestAsyncSinkArtifactsPreserveOutputShapes(t *testing.T) {
 			canonical.Render = ctx.Render.WithPreparedPresentation(nil)
 			canonical.rawOutputPreview = nil
 			for _, mode := range []sinkPreviewMode{sinkPreviewModeOutputText, sinkPreviewModeTreeReport} {
-				want, err := renderSinkPreviewWithModeContext(context.Background(), canonical, mode, output.PreviewByteLimit)
+				// The clipboard choice is focused first: when it attaches
+				// binaries, its own output text is what the preview shows.
+				expected := mode
+				if mode == sinkPreviewModeOutputText && sinkPreviewNeedsClipboardVariant(canonical) {
+					expected = sinkPreviewModeClipboardText
+				}
+				want, err := renderSinkPreviewWithModeContext(context.Background(), canonical, expected, output.PreviewByteLimit)
 				if err != nil {
 					t.Fatal(err)
 				}

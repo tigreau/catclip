@@ -49,8 +49,47 @@ func RunInternalSinkFocus(modePath, escHint, choice string, stdout io.Writer) er
 	if err := os.WriteFile(modePath, []byte(mode), 0o600); err != nil {
 		return err
 	}
+	// The clipboard choices attach binaries; the others print descriptions.
+	// The preview helper picks the matching output text from this marker.
+	if err := writeSinkClipboardFocus(modePath, choice == "clipboard" || choice == "bundle"); err != nil {
+		return err
+	}
 	_, err := fmt.Fprintf(stdout, "change-header(%s)+%s+refresh-preview", header, controls)
 	return err
+}
+
+// sinkClipboardFocusPath marks whether the focused output choice is a
+// clipboard copy. It exists only when that changes the preview text.
+func sinkClipboardFocusPath(modePath string) string { return modePath + ".clipboard" }
+
+// sinkClipboardOutputPath holds the output preview as a clipboard copy writes
+// it (attached binaries described as attached).
+func sinkClipboardOutputPath(outputPath string) string {
+	return strings.TrimSuffix(outputPath, ".txt") + "-clipboard.txt"
+}
+
+func writeSinkClipboardFocus(modePath string, clipboard bool) error {
+	value := "0\n"
+	if clipboard {
+		value = "1\n"
+	}
+	return os.WriteFile(sinkClipboardFocusPath(modePath), []byte(value), 0o600)
+}
+
+// sinkOutputPreviewPath returns the clipboard variant of the output preview
+// when the clipboard choice is focused and that variant exists.
+func sinkOutputPreviewPath(modePath, outputPath string) string {
+	focus, err := os.ReadFile(sinkClipboardFocusPath(modePath))
+	if err != nil || strings.TrimSpace(string(focus)) != "1" {
+		return outputPath
+	}
+	clipboard := sinkClipboardOutputPath(outputPath)
+	for _, candidate := range []string{clipboard, clipboard + ".pending"} {
+		if _, err := os.Stat(candidate); err == nil {
+			return clipboard
+		}
+	}
+	return outputPath
 }
 
 func RunInternalSinkPreview(modePath, outputPath, treePath string, stdout io.Writer) error {
@@ -62,7 +101,7 @@ func RunInternalSinkPreview(modePath, outputPath, treePath string, stdout io.Wri
 		finishBench("err", platform.InternalBenchError(err))
 		return err
 	}
-	targetPath := outputPath
+	targetPath := sinkOutputPreviewPath(modePath, outputPath)
 	modeName := "output"
 	onlyTree := strings.TrimSpace(string(mode)) == "only-tree"
 	if strings.TrimSpace(string(mode)) == "tree" || onlyTree {
@@ -160,6 +199,9 @@ type sinkPreviewMode int
 const (
 	sinkPreviewModeOutputText sinkPreviewMode = iota
 	sinkPreviewModeTreeReport
+	// sinkPreviewModeClipboardText is the output text as the clipboard copy
+	// writes it; built only when binaries would be attached.
+	sinkPreviewModeClipboardText
 )
 
 type sinkPreview struct {
@@ -523,6 +565,11 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 		return nil, false, measurement.Err
 	}
 	choices := startupAvailableSinkChoices(ctx.Config, measurement.WouldBundle)
+	attachments := sinkPreviewNeedsClipboardVariant(ctx)
+	if attachments {
+		binaries, withBundle := output.ClipboardAttachments(ctx.Emit, ctx.Plan)
+		choices = startupSinkChoicesWithAttachments(ctx.Config, binaries, withBundle)
+	}
 	lines, index := startupSinkChoiceLines(choices)
 	ctx.rawOutputPreview = measurement.RawPreview
 	files, err := prepareStartupSinkPreviewFiles(ctx, nil)
@@ -531,7 +578,7 @@ func pickOutputSinkWithEscHint(ctx StartupSinkPickerContext, measurement sinkPay
 	}
 	defer files.Cleanup()
 	bindings := []string{files.ToggleBinding}
-	if _, available := index["only-tree"]; available {
+	if _, available := index["only-tree"]; available || attachments {
 		focus, err := startupSinkFocusBinding(files.ModePath, escHint)
 		if err != nil {
 			return nil, false, err
@@ -584,6 +631,39 @@ func startupAvailableSinkChoices(cfg command.Parsed, bundle bool) []startupSinkC
 		choices = append(append([]startupSinkChoice(nil), choices...), startupSinkChoice{
 			Key: "only-tree", Label: "Only tree - no copy", Description: "Show the tree and summary, then stop.", Args: []string{"--only-tree"},
 		})
+	}
+	return choices
+}
+
+// startupSinkChoicesWithAttachments describes the clipboard choices truthfully
+// when selected binaries would be attached as their original files. The
+// clipboard copy then always uses file references, whatever the text size,
+// so the text-only choice is always offered as the alternative.
+func startupSinkChoicesWithAttachments(cfg command.Parsed, binaries int, withBundle bool) []startupSinkChoice {
+	files := fmt.Sprintf("%d binary files", binaries)
+	if binaries == 1 {
+		files = "1 binary file"
+	}
+	clipboard := startupSinkChoice{
+		Key:         "bundle",
+		Label:       "Clipboard - bundle + " + files,
+		Description: "Copy the text as a bundle file and each selected binary as its original file.",
+	}
+	if !withBundle {
+		clipboard.Label = "Clipboard - " + files
+		clipboard.Description = "Copy each selected binary as its original file."
+	}
+	choices := []startupSinkChoice{clipboard}
+	for _, choice := range startupAvailableSinkChoices(cfg, true) {
+		switch choice.Key {
+		case "bundle":
+			continue
+		case "text":
+			choice.Description = "Force text clipboard; binaries appear as descriptions, not files."
+		case "stdout", "headless":
+			choice.Description += " Binaries appear as descriptions."
+		}
+		choices = append(choices, choice)
 	}
 	return choices
 }
@@ -669,6 +749,18 @@ func prepareStartupSinkPreviewFilesWithRenderer(ctx StartupSinkPickerContext, pr
 	if err := os.WriteFile(treePath+".pending", nil, 0o600); err != nil {
 		return fail(err)
 	}
+	// When a clipboard copy would attach binaries, its bundle text differs
+	// from the printed text; prepare that variant too. The clipboard choice
+	// is focused first.
+	clipboardVariant := sinkPreviewNeedsClipboardVariant(ctx)
+	if clipboardVariant {
+		if err := os.WriteFile(sinkClipboardOutputPath(outputPath)+".pending", nil, 0o600); err != nil {
+			return fail(err)
+		}
+		if err := writeSinkClipboardFocus(modePath, true); err != nil {
+			return fail(err)
+		}
+	}
 
 	self, err := os.Executable()
 	if err != nil || strings.TrimSpace(self) == "" {
@@ -696,6 +788,9 @@ func prepareStartupSinkPreviewFilesWithRenderer(ctx StartupSinkPickerContext, pr
 	renderDone = done
 	go func() {
 		defer close(done)
+		if clipboardVariant {
+			writeAsyncSinkPreview(renderCtx, ctx, sinkPreviewModeClipboardText, sinkClipboardOutputPath(outputPath), render)
+		}
 		if asyncOutput {
 			writeAsyncSinkPreview(renderCtx, ctx, sinkPreviewModeOutputText, outputPath, render)
 		}
@@ -758,11 +853,33 @@ func startupSinkPreviewToggleBinding(toggleCommand string) string {
 	return "ctrl-t:" + action
 }
 
+// sinkPreviewNeedsClipboardVariant reports whether a clipboard copy would
+// attach binaries, so its bundle text differs from printed output.
+func sinkPreviewNeedsClipboardVariant(ctx StartupSinkPickerContext) bool {
+	if ctx.Emit.OutputMode != command.OutputModeClipboard || ctx.Config.PayloadKind == command.PayloadMetadata {
+		return false
+	}
+	binaries, _ := output.ClipboardAttachments(ctx.Emit, ctx.Plan)
+	return binaries > 0
+}
+
 func renderSinkPreviewWithModeContext(renderCtx context.Context, ctx StartupSinkPickerContext, mode sinkPreviewMode, limit int64) (sinkPreview, error) {
 	switch mode {
 	case sinkPreviewModeTreeReport:
 		return renderSinkTreeReportPreviewContext(renderCtx, ctx, limit)
+	case sinkPreviewModeClipboardText:
+		preview, err := readSinkOutputTextPreview(renderCtx, ctx.Plan, ctx.Emit, limit, false)
+		if err != nil {
+			return sinkPreview{}, err
+		}
+		preview.Body = highlightFileBlocksForSinkPreview(preview.Body)
+		return preview, renderCtx.Err()
 	default:
+		if sinkPreviewNeedsClipboardVariant(ctx) {
+			// The plain preview stands for printed and text-only output, where
+			// binaries are described, not attached.
+			ctx.Emit.OutputMode = command.OutputModeStdout
+		}
 		if ctx.Config.PayloadKind == command.PayloadMetadata && ctx.Config.TokenLimit == 0 {
 			return renderSinkMetadataPreviewContext(renderCtx, ctx.Metadata, limit)
 		}

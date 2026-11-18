@@ -154,7 +154,7 @@ func highlightPrintedUnit(raw []byte, unit PreparedFileUnit, highlight func(stri
 				attr += fmt.Sprint(entry.LinesEnd)
 			}
 		}
-		tag = buildFileOpenTagWithLines(entry.RelPath, unit.sourceType, attr)
+		tag = buildNumberedOpenTag(entry.RelPath, unit.sourceType, attr)
 	} else {
 		tag = buildFileOpenTag(entry.RelPath, unit.sourceType)
 	}

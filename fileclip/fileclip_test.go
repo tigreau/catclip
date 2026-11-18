@@ -349,3 +349,25 @@ func plainTextClipboardCommand(t *testing.T) *exec.Cmd {
 		return nil
 	}
 }
+
+// Brackets, '*' and '?' must be copied literally, not treated as wildcards:
+// with Set-Clipboard -Path, icon[2x].png silently left the clipboard empty.
+func TestCopyPathWithWildcardCharacters(t *testing.T) {
+	if os.Getenv("FILECLIP_INTEGRATION") == "" {
+		t.Skip("set FILECLIP_INTEGRATION=1 to run clipboard integration tests")
+	}
+	path := filepath.Join(t.TempDir(), "icon[2x].png")
+	if err := os.WriteFile(path, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Copy(path); err != nil {
+		t.Fatalf("Copy() failed: %v", err)
+	}
+	got, err := Paste()
+	if err != nil {
+		t.Fatalf("Paste() failed: %v", err)
+	}
+	if len(got) != 1 || filepath.Base(got[0]) != "icon[2x].png" {
+		t.Fatalf("clipboard holds %v, want icon[2x].png", got)
+	}
+}

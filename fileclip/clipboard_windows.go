@@ -14,12 +14,14 @@ import (
 // Copy
 // ---------------------------------------------------------------------------
 
-// copyPlatform uses PowerShell's Set-Clipboard -Path to place file references
+// copyPlatform uses PowerShell's Set-Clipboard -LiteralPath to place file references
 // on the Windows clipboard as CF_HDROP format — the same format Windows
 // Explorer uses for Ctrl+C on files.
 //
 // Note: clip.exe is text-only and cannot set file references.
-// Set-Clipboard -Path requires PowerShell 5.1+ (built into Windows 10/11).
+// Set-Clipboard -LiteralPath requires PowerShell 5.1+ (built into Windows 10/11).
+// -LiteralPath, not -Path: -Path treats [ ] * ? as wildcards, so a file named
+// icon[2x].png would silently leave the clipboard empty.
 func copyPlatform(paths []string) error {
 	var psPaths []string
 	for _, p := range paths {
@@ -29,7 +31,7 @@ func copyPlatform(paths []string) error {
 		psPaths = append(psPaths, fmt.Sprintf("'%s'", escaped))
 	}
 
-	script := fmt.Sprintf("Set-Clipboard -Path %s", strings.Join(psPaths, ","))
+	script := fmt.Sprintf("Set-Clipboard -LiteralPath %s", strings.Join(psPaths, ","))
 	cmd := powershellClipboardCommand("powershell", "-")
 	cmd.Stdin = strings.NewReader(script)
 	var stderr bytes.Buffer
