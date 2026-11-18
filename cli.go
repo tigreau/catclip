@@ -494,7 +494,9 @@ func writeVerboseOutputMetrics(w io.Writer, metrics verboseOutputMetrics, emitSt
 	// to 0 and we still want the row in the verbose log for parity with
 	// macOS/Linux output.
 	fmt.Fprintf(w, "[verbose] emit generate: %s\n", formatDuration(emitStats.GenerateDuration))
-	if emitStats.ClipboardWaitDuration > 0 {
+	if emitStats.SinkName == output.NativeClipboardSinkName {
+		fmt.Fprintf(w, "[verbose] clipboard write (%s): %s\n", emitStats.SinkName, formatDuration(emitStats.SinkFinalizeDuration))
+	} else if emitStats.ClipboardWaitDuration > 0 {
 		fmt.Fprintf(w, "[verbose] clipboard flush/close (%s): %s\n", emitStats.SinkName, formatDuration(emitStats.SinkFinalizeDuration))
 	} else {
 		fmt.Fprintf(w, "[verbose] emit flush (%s): %s\n", emitStats.SinkName, formatDuration(emitStats.SinkFinalizeDuration))

@@ -1076,6 +1076,19 @@ func WithPayloadWriter(cfg EmitConfig, env RuntimeEnvironment, stdout io.Writer,
 }
 
 func streamToTextClipboard(env RuntimeEnvironment, fn func(io.Writer) error, colors platform.Palette, bufferSize int) (EmitStats, error) {
+	if useNativeTextClipboard(env.Platform) {
+		// The clipboard API takes the whole text at once, so collect it first.
+		var payload bytes.Buffer
+		buffered := bufio.NewWriterSize(&payload, bufferSize)
+		generateStarted := time.Now()
+		if err := fn(buffered); err != nil {
+			return EmitStats{}, err
+		}
+		if err := buffered.Flush(); err != nil {
+			return EmitStats{}, err
+		}
+		return emitNativeTextClipboard(payload.Bytes(), time.Since(generateStarted))
+	}
 	var cmd *exec.Cmd
 	var stdin io.WriteCloser
 	var stderr bytes.Buffer
@@ -1145,6 +1158,9 @@ func streamToTextClipboard(env RuntimeEnvironment, fn func(io.Writer) error, col
 }
 
 func emitBufferedToTextClipboard(env RuntimeEnvironment, payload []byte, generateDuration time.Duration, colors platform.Palette) (EmitStats, error) {
+	if useNativeTextClipboard(env.Platform) {
+		return emitNativeTextClipboard(payload, generateDuration)
+	}
 	cmd, err := ClipboardCommand(env.Platform, colors)
 	if err != nil {
 		return EmitStats{}, err
@@ -1609,7 +1625,22 @@ func ClipboardCommand(plat string, colors platform.Palette) (*exec.Cmd, error) {
 			return nil, fmt.Errorf("Error: No clipboard tool found.\n%s", ClipboardInstallHint(plat, colors))
 		}
 		return exec.Command("pbcopy"), nil
-	case "windows", "wsl":
+	case "wsl":
+		// clip.exe decodes piped bytes by the console code page, so UTF-8
+		// text such as "—" arrived as "ΓÇö". Switching the code page to
+		// UTF-8 inside a child cmd.exe fixes it without touching the user's
+		// terminal. cmd.exe starts in its own Windows folder: started from a
+		// Linux folder it prints "UNC paths are not supported".
+		path, err := exec.LookPath("cmd.exe")
+		if err != nil {
+			return nil, fmt.Errorf("Error: No clipboard tool found.\n%s", ClipboardInstallHint(plat, colors))
+		}
+		cmd := exec.Command(path, "/d", "/c", "chcp 65001 >nul & clip.exe")
+		cmd.Dir = filepath.Dir(path)
+		return cmd, nil
+	case "windows":
+		// Native Windows copies use the clipboard API (text_clipboard_windows.go);
+		// clip.exe remains only for a "windows" platform without that build.
 		if path, err := exec.LookPath("clip.exe"); err == nil {
 			return exec.Command(path), nil
 		}
@@ -1646,7 +1677,7 @@ func ClipboardInstallHint(plat string, colors platform.Palette) string {
 	case "windows":
 		return fmt.Sprintf("  %sEnsure clip.exe is available (ships with Windows).%s", colors.Dim, colors.Reset)
 	case "wsl":
-		return fmt.Sprintf("  %sEnsure clip.exe is reachable through WSL interop from the Windows host.%s", colors.Dim, colors.Reset)
+		return fmt.Sprintf("  %sEnsure cmd.exe and clip.exe are reachable through WSL interop from the Windows host.%s", colors.Dim, colors.Reset)
 	default:
 		// Linux text + bundle clipboard delivery is Wayland-only. wl-clipboard
 		// provides both wl-copy (writer) and wl-paste (reader); installing one

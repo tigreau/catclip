@@ -128,7 +128,7 @@ curl -fsSL https://raw.githubusercontent.com/tigreau/catclip/main/install.sh | b
 irm https://raw.githubusercontent.com/tigreau/catclip/main/install.ps1 | iex
 ```
 
-Clipboard tool required: `pbcopy` (macOS, built-in), `clip.exe` (Windows, built-in), `wl-clipboard` (Linux — Wayland-only, install needed).
+Clipboard tool required: `pbcopy` (macOS, built-in), none on Windows (catclip uses the Windows clipboard directly), `cmd.exe` and `clip.exe` under WSL (built-in), `wl-clipboard` (Linux — Wayland-only, install needed).
 
 <details><summary>X11 is unsupported</summary>
 

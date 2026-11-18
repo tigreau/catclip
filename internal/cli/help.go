@@ -641,7 +641,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	// ── Clipboard delivery ──────────────────────────────────────────────
 	head("CLIPBOARD DELIVERY")
 	b.WriteString("  catclip auto-selects the clipboard delivery mode based on payload size:\n\n")
-	fmt.Fprintf(&b, "    %s   text clipboard (pbcopy / wl-copy / clip.exe)\n", bold("< 4096 bytes"))
+	fmt.Fprintf(&b, "    %s   text clipboard (pbcopy / wl-copy / Windows clipboard)\n", bold("< 4096 bytes"))
 	b.WriteString("                   pastes anywhere — terminals, editors, web UIs, etc.\n")
 	fmt.Fprintf(&b, "    %s   bundle file at {Documents}/catclip/{project}-{HHMMSS}.txt\n", bold("≥ 4096 bytes"))
 	b.WriteString("                   placed on the clipboard as a file reference; pastes as\n")
