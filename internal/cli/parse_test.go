@@ -10,12 +10,12 @@ import (
 
 func TestParseArgsNoSetsNeverEmitPolicy(t *testing.T) {
 	for _, args := range [][]string{
-		{"src", "--no"},
-		{"--no", "src"},
-		{"src", "--no", "--no"},
-		{"--verbose", "--no-tree", "--no-bundle", "--raw", "--no", "src"},
-		{"--no", "src", "--paths", "--then", "docs", "--lines", "1", "2"},
-		{"src", "--metadata", "--no"},
+		{"src", "--only-tree"},
+		{"--only-tree", "src"},
+		{"src", "--only-tree", "--only-tree"},
+		{"--verbose", "--no-bundle", "--raw", "--only-tree", "src"},
+		{"--only-tree", "src", "--paths", "--then", "docs", "--lines", "1", "2"},
+		{"src", "--metadata", "--only-tree"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			cfg, err := ParseArgs(args)
@@ -34,14 +34,12 @@ func TestParseArgsNoRejectsContradictoryEmissionFlagsInEitherOrder(t *testing.T)
 		args     []string
 		wantText string
 	}{
-		{args: []string{"src", "--no", "--yes"}, wantText: "--yes cannot be combined with --no"},
-		{args: []string{"src", "--yes", "--no"}, wantText: "--yes cannot be combined with --no"},
-		{args: []string{"src", "--no", "--print"}, wantText: "--no cannot be combined with --print"},
-		{args: []string{"src", "--print", "--no"}, wantText: "--no cannot be combined with --print"},
-		{args: []string{"src", "--no", "--headless"}, wantText: "--no cannot be combined with --headless"},
-		{args: []string{"src", "--headless", "--no"}, wantText: "--no cannot be combined with --headless"},
-		{args: []string{"src", "--no", "--quiet"}, wantText: "--no cannot be combined with --quiet"},
-		{args: []string{"src", "--quiet", "--no"}, wantText: "--no cannot be combined with --quiet"},
+		{args: []string{"src", "--only-tree", "--yes"}, wantText: "--yes cannot be combined with --only-tree"},
+		{args: []string{"src", "--yes", "--only-tree"}, wantText: "--yes cannot be combined with --only-tree"},
+		{args: []string{"src", "--only-tree", "--print"}, wantText: "--only-tree cannot be combined with --print"},
+		{args: []string{"src", "--print", "--only-tree"}, wantText: "--only-tree cannot be combined with --print"},
+		{args: []string{"src", "--only-tree", "--quiet"}, wantText: "--only-tree cannot be combined with --quiet"},
+		{args: []string{"src", "--quiet", "--only-tree"}, wantText: "--only-tree cannot be combined with --quiet"},
 	}
 	for _, tt := range tests {
 		t.Run(strings.Join(tt.args, " "), func(t *testing.T) {
@@ -132,17 +130,17 @@ func TestMetadataComposesWithMembershipFiltersAndThen(t *testing.T) {
 }
 
 func TestRepeatedNoRendersOnceAsGlobalPolicy(t *testing.T) {
-	got := FormatResolvedStartupCommand([]string{"src", "--no", "--then", "docs", "--no"})
-	if count := strings.Count(got, "--no"); count != 1 {
-		t.Fatalf("resolved command contains --no %d times, want once: %q", count, got)
+	got := FormatResolvedStartupCommand([]string{"src", "--only-tree", "--then", "docs", "--only-tree"})
+	if count := strings.Count(got, "--only-tree"); count != 1 {
+		t.Fatalf("resolved command contains --only-tree %d times, want once: %q", count, got)
 	}
-	if !strings.HasPrefix(got, "catclip --no ") {
-		t.Fatalf("resolved command did not hoist --no globally: %q", got)
+	if !strings.HasPrefix(got, "catclip --only-tree ") {
+		t.Fatalf("resolved command did not hoist --only-tree globally: %q", got)
 	}
 }
 
 func TestParseArgsNoCanRemainARegexValue(t *testing.T) {
-	cfg, err := ParseArgs([]string{"src", "--contains", "--no"})
+	cfg, err := ParseArgs([]string{"src", "--contains", "--only-tree"})
 	if err != nil {
 		t.Fatalf("ParseArgs() error = %v", err)
 	}
@@ -150,8 +148,8 @@ func TestParseArgsNoCanRemainARegexValue(t *testing.T) {
 		t.Fatalf("EmissionPolicy = %v, want default", cfg.EmissionPolicy)
 	}
 	scope := cfg.Command.Scopes()[0]
-	if got := scope.ContainsPattern(); got != "--no" {
-		t.Fatalf("contains pattern = %q, want --no", got)
+	if got := scope.ContainsPattern(); got != "--only-tree" {
+		t.Fatalf("contains pattern = %q, want --only-tree", got)
 	}
 }
 
@@ -194,7 +192,7 @@ func TestStrictAndPreflightAgreeOnValueConsumption(t *testing.T) {
 		{"src", "--include=x"},
 		{"src", "--wat"},
 		{"src", "--snippet", "TODO", "201"},
-		{"src", "--contains", "--no"},
+		{"src", "--contains", "--only-tree"},
 		{"src", "--lines", "0"},
 		{"src", "--lines", "5", "4"},
 		{"src", "--lines", "last"},

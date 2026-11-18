@@ -172,6 +172,7 @@ func (p StartupTargetProbe) RequiresPicker() bool {
 // ScopeIndex >= 0 names the owning --then scope. ScopeIndex == -1 is reserved
 // for invocation-wide parser warnings, which never explain a scope's emptiness.
 type Diagnostic struct {
+	GroupedMessage       string // Same diagnostic without a redundant scope suffix.
 	Message              string
 	IsError              bool
 	IsTargetNotFound     bool

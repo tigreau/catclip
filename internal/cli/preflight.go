@@ -13,6 +13,7 @@ func ValidateStartupPreflightArgs(args []string) error {
 }
 
 func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
+	args = NormalizeHiddenAliases(args)
 	executionScopes := make([]command.ExecutionScope, 0, 2)
 	var stageState scopeStageTransitionState
 	var current executionScopeBuilder
@@ -82,9 +83,16 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		switch arg {
 		case "-h", "--help", "--help-all", "--version", "-V", "--check-update", "--theme", "--hiss", "--hiss-reset", "--all-ignore-rules":
 			continue
-		case "-v", "--verbose", "-t", "--no-tree", "--no-bundle":
+		case "--token-limit", "-tl":
+			_, next, err := ConsumeTokenLimit(args, i+1)
+			if err != nil {
+				return command.Spec{}, err
+			}
+			i = next - 1
 			continue
-		case "-b", "--with-binaries":
+		case "-v", "--verbose", "--no-bundle":
+			continue
+		case "-wb", "--with-binaries":
 			inModifierMode = true
 			if err := stageState.apply(command.StageWithBinaries); err != nil {
 				return command.Spec{}, err
@@ -112,11 +120,14 @@ func StartupPreflightCommandSpec(args []string) (command.Spec, error) {
 		case "-q", "--quiet":
 			emissionCfg.Quiet = true
 			continue
+		case "-nt", "--no-tree":
+			emissionCfg.NoTree = true
+			continue
 		case "-y", "--yes":
 			sawYes = true
 			emissionCfg.EmissionPolicy = command.EmissionAlways
 			continue
-		case "--no":
+		case "--only-tree":
 			sawNo = true
 			emissionCfg.EmissionPolicy = command.EmissionNever
 			continue

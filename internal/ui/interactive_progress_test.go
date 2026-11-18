@@ -40,7 +40,7 @@ func TestFormatInteractiveFilterProgress(t *testing.T) {
 
 func TestInteractiveFilterProgressShowsNeverEmitPolicy(t *testing.T) {
 	extras := interactiveProgressExtrasFromParsed(command.Parsed{EmissionPolicy: command.EmissionNever})
-	if got, want := formatInteractiveFilterProgress(extras, nil, 0), "catclip --no ▶ report"; got != want {
+	if got, want := formatInteractiveFilterProgress(extras, nil, 0), "catclip --only-tree ▶ report"; got != want {
 		t.Fatalf("progress = %q, want %q", got, want)
 	}
 }

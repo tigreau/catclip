@@ -18,33 +18,45 @@ import (
 // uses an exact directory target, optionally followed by a cwd-relative
 // --only filter.
 func globZeroMatchWarning(r *Resolver, pattern string, scopeIndex int, colors platform.Palette) string {
+	return globZeroMatchFormatter(r, pattern, colors)(scopeIndex)
+}
+
+func globZeroMatchFormatter(r *Resolver, pattern string, colors platform.Palette) func(int) string {
 	// The target-local classification already proved that matching binaries
 	// were excluded. Do not probe prefixes or ignore membership to explain it.
 	if !r.WithBinaries && r.lastClassificationExcludedBinary {
-		return fmt.Sprintf("%sWarning:%s No eligible files matched %s (scope %d).\n%s",
-			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
-			binaryTargetInclusionHint(pattern, r.NoIgnore, colors))
+		return func(scopeIndex int) string {
+			return fmt.Sprintf("%sWarning:%s No eligible files matched %s%s.\n%s",
+				colors.Warn, colors.Reset, SingleQuoted(pattern), diagnosticScopeSuffix(scopeIndex),
+				binaryTargetInclusionHint(pattern, r.NoIgnore, colors))
+		}
 	}
 	prefix := longestLiteralPathPrefix(pattern)
 	if prefix == "" || prefix == "." {
-		return globWithoutLiteralPrefixWarning(pattern, scopeIndex, colors)
+		return func(scopeIndex int) string { return globWithoutLiteralPrefixWarning(pattern, scopeIndex, colors) }
 	}
 	suffix := strings.TrimPrefix(pattern, prefix+"/")
 	if suffix == pattern {
 		// prefix did not consume any portion of pattern; treat as missing
-		return targetNotFoundWarning(pattern, scopeIndex, colors)
+		return func(scopeIndex int) string { return targetNotFoundWarning(pattern, scopeIndex, colors) }
 	}
 	isDir, err := r.targetPathIsDirectory(prefix)
 	if err != nil || !isDir {
-		return unresolvedGlobPrefixWarning(pattern, prefix, suffix, scopeIndex, colors)
+		return func(scopeIndex int) string {
+			return unresolvedGlobPrefixWarning(pattern, prefix, suffix, scopeIndex, colors)
+		}
 	}
 
 	directoryShaped := strings.HasSuffix(strings.ReplaceAll(pattern, "\\", "/"), "/")
 	block, _ := r.dirBlockedBy(prefix)
 	if block != nil && block.Source != "" {
-		return ignoredGlobZeroMatchWarning(pattern, prefix, suffix, block.Source, scopeIndex, directoryShaped, colors)
+		return func(scopeIndex int) string {
+			return ignoredGlobZeroMatchWarning(pattern, prefix, suffix, block.Source, scopeIndex, directoryShaped, colors)
+		}
 	}
-	return visibleGlobZeroMatchWarning(pattern, prefix, suffix, scopeIndex, directoryShaped, colors)
+	return func(scopeIndex int) string {
+		return visibleGlobZeroMatchWarning(pattern, prefix, suffix, scopeIndex, directoryShaped, colors)
+	}
 }
 
 // binaryTargetInclusionHint only formats the target and known scope policy.
@@ -54,21 +66,21 @@ func binaryTargetInclusionHint(target string, noIgnore bool, colors platform.Pal
 	if noIgnore {
 		args += " --no-ignore"
 	}
-	return fmt.Sprintf("  %sBinary files were excluded. Include them with -b (--with-binaries):%s\n    %scatclip %s -b%s\n\n  %sOr name a binary file by its complete relative path.%s",
+	return fmt.Sprintf("  %sBinary files were excluded. Include them with -wb (--with-binaries):%s\n    %scatclip %s -wb%s\n\n  %sOr name a binary file by its complete relative path.%s",
 		colors.Dim, colors.Reset, colors.OK, args, colors.Reset, colors.Dim, colors.Reset)
 }
 
 func globWithoutLiteralPrefixWarning(pattern string, scopeIndex int, colors platform.Palette) string {
 	if core, ok := outerStarFuzzyCore(pattern); ok {
-		return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sTarget globs select files and '*' does not cross folders.%s\n  %sFor fuzzy file and folder navigation:%s\n    %scatclip %s%s",
-			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+		return fmt.Sprintf("%sWarning:%s No files matched %s%s.\n\n  %sTarget globs select files and '*' does not cross folders.%s\n  %sFor fuzzy file and folder navigation:%s\n    %scatclip %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(pattern), diagnosticScopeSuffix(scopeIndex),
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.OK, ShellQuoteArg(core), colors.Reset)
 	}
 
-	return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sTarget globs match complete filenames and cwd-relative file paths; they do not fall back to fuzzy navigation.%s",
-		colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+	return fmt.Sprintf("%sWarning:%s No files matched %s%s.\n\n  %sTarget globs match complete filenames and cwd-relative file paths; they do not fall back to fuzzy navigation.%s",
+		colors.Warn, colors.Reset, SingleQuoted(pattern), diagnosticScopeSuffix(scopeIndex),
 		colors.Dim, colors.Reset)
 }
 
@@ -78,8 +90,8 @@ func unresolvedGlobPrefixWarning(pattern, prefix, suffix string, scopeIndex int,
 	allStars := normalizedSuffix != "" && strings.Trim(normalizedSuffix, "*") == ""
 	if !allStars && !strings.Contains(normalizedSuffix, "/") {
 		filter := ShellQuoteArg(normalizedSuffix)
-		return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sNo cwd-relative directory %s exists; target globs do not fuzzy-match directory segments.%s\n  %sTo choose a directory matching %s and search recursively:%s\n    %scatclip %s --only %s%s\n  %sTo keep only direct matches:%s\n    %scatclip %s --depth 1 --only %s%s",
-			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+		return fmt.Sprintf("%sWarning:%s No files matched %s%s.\n\n  %sNo cwd-relative directory %s exists; target globs do not fuzzy-match directory segments.%s\n  %sTo choose a directory matching %s and search recursively:%s\n    %scatclip %s --only %s%s\n  %sTo keep only direct matches:%s\n    %scatclip %s --depth 1 --only %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(pattern), diagnosticScopeSuffix(scopeIndex),
 			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
 			colors.Dim, SingleQuoted(prefix), colors.Reset,
 			colors.OK, commandPrefix, filter, colors.Reset,
@@ -87,8 +99,8 @@ func unresolvedGlobPrefixWarning(pattern, prefix, suffix string, scopeIndex int,
 			colors.OK, commandPrefix, filter, colors.Reset)
 	}
 
-	return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sNo cwd-relative directory %s exists; target globs do not fuzzy-match directory segments.%s\n  %sTo choose a directory matching %s and include everything below it:%s\n    %scatclip %s%s\n  %sTo keep only its direct files:%s\n    %scatclip %s --depth 1%s",
-		colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+	return fmt.Sprintf("%sWarning:%s No files matched %s%s.\n\n  %sNo cwd-relative directory %s exists; target globs do not fuzzy-match directory segments.%s\n  %sTo choose a directory matching %s and include everything below it:%s\n    %scatclip %s%s\n  %sTo keep only its direct files:%s\n    %scatclip %s --depth 1%s",
+		colors.Warn, colors.Reset, SingleQuoted(pattern), diagnosticScopeSuffix(scopeIndex),
 		colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
 		colors.Dim, SingleQuoted(prefix), colors.Reset,
 		colors.OK, commandPrefix, colors.Reset,
@@ -98,23 +110,23 @@ func unresolvedGlobPrefixWarning(pattern, prefix, suffix string, scopeIndex int,
 
 func visibleGlobZeroMatchWarning(pattern, prefix, suffix string, scopeIndex int, directoryShaped bool, colors platform.Palette) string {
 	if directoryShaped {
-		return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %sTarget globs match files, not directory names; file paths do not end in '/'.%s\n  %sTo include everything below %s:%s\n    %scatclip %s%s",
-			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+		return fmt.Sprintf("%sWarning:%s No files matched %s%s.\n\n  %sTarget globs match files, not directory names; file paths do not end in '/'.%s\n  %sTo include everything below %s:%s\n    %scatclip %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(pattern), diagnosticScopeSuffix(scopeIndex),
 			colors.Dim, colors.Reset,
 			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
 			colors.OK, ShellQuoteArg(prefix), colors.Reset)
 	}
 	if globSuffixIsOnlyStars(suffix) {
-		return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %s%s checks direct files in %s; target '*' does not cross folders.%s\n  %sTo include everything below %s:%s\n    %scatclip %s%s",
-			colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+		return fmt.Sprintf("%sWarning:%s No files matched %s%s.\n\n  %s%s checks direct files in %s; target '*' does not cross folders.%s\n  %sTo include everything below %s:%s\n    %scatclip %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(pattern), diagnosticScopeSuffix(scopeIndex),
 			colors.Dim, SingleQuoted(pattern), SingleQuoted(prefix+"/"), colors.Reset,
 			colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
 			colors.OK, ShellQuoteArg(prefix), colors.Reset)
 	}
 	filterPattern := recursiveGlobFilterPattern(pattern, suffix)
 
-	return fmt.Sprintf("%sWarning:%s No files matched %s (scope %d).\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sTo search recursively below %s:%s\n    %scatclip %s --only %s%s",
-		colors.Warn, colors.Reset, SingleQuoted(pattern), scopeIndex+1,
+	return fmt.Sprintf("%sWarning:%s No files matched %s%s.\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sTo search recursively below %s:%s\n    %scatclip %s --only %s%s",
+		colors.Warn, colors.Reset, SingleQuoted(pattern), diagnosticScopeSuffix(scopeIndex),
 		colors.Dim, SingleQuoted(pattern), SingleQuoted(suffix), SingleQuoted(prefix+"/"), colors.Reset,
 		colors.Dim, SingleQuoted(prefix+"/"), colors.Reset,
 		colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(filterPattern), colors.Reset)
@@ -122,23 +134,23 @@ func visibleGlobZeroMatchWarning(pattern, prefix, suffix string, scopeIndex int,
 
 func ignoredGlobZeroMatchWarning(pattern, prefix, suffix, source string, scopeIndex int, directoryShaped bool, colors platform.Palette) string {
 	if directoryShaped {
-		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %sTarget globs match files, not directory names; file paths do not end in '/'.%s\n  %sName the ignored directory directly:%s\n    %scatclip %s%s",
-			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, scopeIndex+1,
+		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s%s.\n\n  %sTarget globs match files, not directory names; file paths do not end in '/'.%s\n  %sName the ignored directory directly:%s\n    %scatclip %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, diagnosticScopeSuffix(scopeIndex),
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.OK, ShellQuoteArg(prefix), colors.Reset)
 	}
 	if globSuffixIsOnlyStars(suffix) {
-		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %s%s checks direct files in %s; target '*' does not cross folders.%s\n  %sName the ignored directory directly:%s\n    %scatclip %s%s",
-			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, scopeIndex+1,
+		return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s%s.\n\n  %s%s checks direct files in %s; target '*' does not cross folders.%s\n  %sName the ignored directory directly:%s\n    %scatclip %s%s",
+			colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, diagnosticScopeSuffix(scopeIndex),
 			colors.Dim, SingleQuoted(pattern), SingleQuoted(prefix+"/"), colors.Reset,
 			colors.Dim, colors.Reset,
 			colors.OK, ShellQuoteArg(prefix), colors.Reset)
 	}
 	filterPattern := recursiveGlobFilterPattern(pattern, suffix)
 
-	return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s (scope %d).\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sName the ignored directory, then filter it:%s\n    %scatclip %s --only %s%s",
-		colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, scopeIndex+1,
+	return fmt.Sprintf("%sWarning:%s %s is ignored by %s%s%s.\n\n  %s%s checks %s directly in %s; target '*' does not cross folders.%s\n  %sName the ignored directory, then filter it:%s\n    %scatclip %s --only %s%s",
+		colors.Warn, colors.Reset, SingleQuoted(prefix+"/"), source, colors.Reset, diagnosticScopeSuffix(scopeIndex),
 		colors.Dim, SingleQuoted(pattern), SingleQuoted(suffix), SingleQuoted(prefix+"/"), colors.Reset,
 		colors.Dim, colors.Reset,
 		colors.OK, ShellQuoteArg(prefix), ShellQuoteArg(filterPattern), colors.Reset)
@@ -201,8 +213,8 @@ func collapseRepeatedStars(pattern string) string {
 
 func trailingSlashGlobStageWarning(kind command.StageKind, value string, scopeIndex int, colors platform.Palette) string {
 	flag := "--" + string(kind)
-	return fmt.Sprintf("%sWarning:%s %s pattern %s cannot match file paths (scope %d).\n\n  %sGlob patterns ending in '/' look for a file path ending in '/', but file paths do not have that ending.%s\n  %sTo select a directory subtree, use a literal directory name such as %s %s.%s",
-		colors.Warn, colors.Reset, flag, SingleQuoted(value), scopeIndex+1,
+	return fmt.Sprintf("%sWarning:%s %s pattern %s cannot match file paths%s.\n\n  %sGlob patterns ending in '/' look for a file path ending in '/', but file paths do not have that ending.%s\n  %sTo select a directory subtree, use a literal directory name such as %s %s.%s",
+		colors.Warn, colors.Reset, flag, SingleQuoted(value), diagnosticScopeSuffix(scopeIndex),
 		colors.Dim, colors.Reset,
 		colors.Dim, flag, SingleQuoted("output/"), colors.Reset)
 }
@@ -216,19 +228,19 @@ func recursiveGlobFilterPattern(pattern, suffix string) string {
 
 func targetNotFoundWarning(target string, scopeIndex int, colors platform.Palette) string {
 	if strings.Contains(target, "/") {
-		return fmt.Sprintf("%sWarning:%s Target %s not found (scope %d).\n\n  %sIgnored paths must be named by their complete relative path, or discovered with --no-ignore.%s\n  %sExample:%s %scatclip . --no-ignore%s",
-			colors.Warn, colors.Reset, SingleQuoted(target), scopeIndex+1,
+		return fmt.Sprintf("%sWarning:%s Target %s not found%s.\n\n  %sIgnored paths must be named by their complete relative path, or discovered with --no-ignore.%s\n  %sTry the same target with ignore rules disabled:%s\n    %scatclip %s --no-ignore%s",
+			colors.Warn, colors.Reset, SingleQuoted(target), diagnosticScopeSuffix(scopeIndex),
 			colors.Dim, colors.Reset,
-			colors.Dim, colors.Reset, colors.OK, colors.Reset)
+			colors.Dim, colors.Reset, colors.OK, ShellQuoteArg(target), colors.Reset)
 	}
 	if prefersDirectFileLookup(target) {
-		return fmt.Sprintf("%sWarning:%s No file named %s found (scope %d).\n\n  %sDirect file targets use exact basenames first. Non-exact file shorthand is resolved by fzf across visible directories.%s\n\n  %sFor ignored files, name the complete relative path or add --no-ignore.%s",
-			colors.Warn, colors.Reset, SingleQuoted(target), scopeIndex+1,
+		return fmt.Sprintf("%sWarning:%s No file named %s found%s.\n\n  %sDirect file targets use exact basenames first. Non-exact file shorthand is resolved by fzf across visible directories.%s\n\n  %sFor ignored files, name the complete relative path or add --no-ignore.%s",
+			colors.Warn, colors.Reset, SingleQuoted(target), diagnosticScopeSuffix(scopeIndex),
 			colors.Dim, colors.Reset,
 			colors.Dim, colors.Reset)
 	}
-	return fmt.Sprintf("%sWarning:%s No file or directory %s found (scope %d).\n\n  %sDirectory shorthand is resolved by fzf. File targets use exact basenames first, then fzf across visible directories.%s\n\n  %sFor ignored paths, name the complete relative path or add --no-ignore.%s",
-		colors.Warn, colors.Reset, SingleQuoted(target), scopeIndex+1,
+	return fmt.Sprintf("%sWarning:%s No file or directory %s found%s.\n\n  %sDirectory shorthand is resolved by fzf. File targets use exact basenames first, then fzf across visible directories.%s\n\n  %sFor ignored paths, name the complete relative path or add --no-ignore.%s",
+		colors.Warn, colors.Reset, SingleQuoted(target), diagnosticScopeSuffix(scopeIndex),
 		colors.Dim, colors.Reset,
 		colors.Dim, colors.Reset)
 }
@@ -363,4 +375,17 @@ func writeEmptyResultIgnoreHints(stderr io.Writer, colors platform.Palette) erro
 	}
 	_, err := fmt.Fprintf(stderr, "  %s     catclip --hiss                         # edit catclip's own ignore rules%s\n", colors.Dim, colors.Reset)
 	return err
+}
+
+func diagnosticScopeSuffix(index int) string {
+	if index < 0 {
+		return ""
+	}
+	return fmt.Sprintf(" (scope %d)", index+1)
+}
+
+// Build both presentations from already captured facts, never by replaying a
+// resolver. Paths and regexes may themselves contain literal "(scope N)" text.
+func scopedDiagnostic(scope int, format func(int) string) Diagnostic {
+	return Diagnostic{ScopeIndex: scope, Message: format(scope), GroupedMessage: format(-1)}
 }

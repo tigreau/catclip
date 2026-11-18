@@ -45,7 +45,7 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	// pickers, or clipboard completion.
 	requireCallOnlyInAllowedFiles(t, files, "updatecheck.Check",
 		[]string{"run_update_check.go"})
-	// Final payload emission has one root orchestration boundary. `--no` is
+	// Final payload emission has one root orchestration boundary. `--only-tree` is
 	// enforced immediately before this call in executeNormalOutput; keeping new
 	// callers out of other root files prevents a future sink path from bypassing
 	// the typed emission-policy gate.
@@ -100,6 +100,8 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 // why `--input-file {N}` with a full-path column is unsafe even though it would
 // pass this guard.
 var previewCommandBuilders = map[string]struct{}{
+	"tokenLimitPreviewCommand":                  {},
+	"startupSinkFocusBinding":                   {},
 	"themeFocusCommand":                         {},
 	"themePreviewCommand":                       {},
 	"FzfDiffFilePreviewCommand":                 {},
@@ -129,7 +131,7 @@ var fzfPlaceholderExemptFuncs = map[string]struct{}{
 // Compared against filepath.Base(parsed.name) so the entries are bare
 // basenames regardless of which package the file lives in.
 var previewBuilderFiles = []string{
-	"theme_picker.go",
+	"theme_picker.go", "token_limit_picker.go",
 	"resolver.go", "startup_picker.go", "depth_picker.go",
 	"recent_picker.go", "lines_picker.go", "startup_sink_picker.go",
 }
@@ -274,6 +276,8 @@ func requireInternalRenderHandlersAvoidDerivation(t *testing.T, files []parsedGo
 			"RunInternalRecentPreview",
 			"RunInternalSinkPreview",
 			"RunInternalSinkToggle",
+			"RunInternalSinkFocus",
+			"RunInternalTokenLimitPreview",
 			"RunInternalSnippetBoundaryPreview",
 			"runInternalSnippetBoundaryPreview",
 			"RunInternalTreePayloadFilePreview",

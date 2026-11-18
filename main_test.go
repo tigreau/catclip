@@ -1301,7 +1301,7 @@ func TestRunLinesSliceDropsFilesShorterThanStart(t *testing.T) {
 // the tree and the file count, not just from the emit body. v0.5.2's
 // short-file work suppressed the <file> wrapper at emit time but left
 // the unit in the plan, so the preview tree still listed the file as
-// "(0B) [lines N-M]" and counted it. See
+// "(0B) [N-M]" and counted it. See
 // docs/versions/v0.5.3/reports/ACTIVE_BUG_lines_filter_leak.md.
 func TestRunLinesSliceDropsShortFilesFromTreeAndCount(t *testing.T) {
 	project := setupTestProject(t, map[string]string{
@@ -3447,7 +3447,7 @@ func TestRunMetadataNoDoesNotRunMetadataIgnoreTrace(t *testing.T) {
 		"src/main.go": "package main\n",
 	})
 	initGitRepo(t, project)
-	cfg := parseInProject(t, project, []string{"src", "--metadata", "--no"})
+	cfg := parseInProject(t, project, []string{"src", "--metadata", "--only-tree"})
 	var metadataScans int
 	restore := search.SetMembershipEnumerationObserver(func(event search.MembershipEnumerationEvent) {
 		if event.Context.Reason == search.MembershipReasonMetadataIgnoreTrace {
@@ -3461,7 +3461,7 @@ func TestRunMetadataNoDoesNotRunMetadataIgnoreTrace(t *testing.T) {
 		t.Fatalf("run returned error: %v", err)
 	}
 	if metadataScans != 0 {
-		t.Fatalf("--metadata --no performed %d metadata ignore-source scans, want 0", metadataScans)
+		t.Fatalf("--metadata --only-tree performed %d metadata ignore-source scans, want 0", metadataScans)
 	}
 }
 
@@ -5073,7 +5073,7 @@ func TestWriteResolvedStartupCommandPrintsCanonicalCommand(t *testing.T) {
 		t.Fatalf("writeResolvedStartupCommand returned error: %v", err)
 	}
 
-	want := "Resolved command:\n  catclip src --contains 'TODO' --only src/a.ts\n\n"
+	want := "\nResolved command:\n  catclip src --contains 'TODO' --only src/a.ts\n\n"
 	if stderr.String() != want {
 		t.Fatalf("expected stderr %q, got %q", want, stderr.String())
 	}
@@ -5085,7 +5085,7 @@ func TestWriteResolvedStartupCommandShowsImplicitDotScope(t *testing.T) {
 		t.Fatalf("writeResolvedStartupCommand returned error: %v", err)
 	}
 
-	want := "Resolved command:\n  catclip . --only src/a.ts\n\n"
+	want := "\nResolved command:\n  catclip . --only src/a.ts\n\n"
 	if stderr.String() != want {
 		t.Fatalf("expected stderr %q, got %q", want, stderr.String())
 	}

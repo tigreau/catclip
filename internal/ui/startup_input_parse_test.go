@@ -25,6 +25,23 @@ func TestParseStartupInputTokensAllowsModifierLikeRegexValues(t *testing.T) {
 	}
 }
 
+func TestStartupInputHiddenNoIgnoreAlias(t *testing.T) {
+	parsed, err := parseStartupInputTokens([]string{"src", "--contains", "-ni"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(parsed.modifiers, " "); got != "--contains -ni" {
+		t.Fatal(got)
+	}
+	// This modifier-input box deliberately rejects inclusion changes. The
+	// private alias must retain the canonical flag's existing behavior/message.
+	_, shortErr := parseStartupInputTokens([]string{"src", "-ni"})
+	_, longErr := parseStartupInputTokens([]string{"src", "--no-ignore"})
+	if shortErr == nil || longErr == nil || shortErr.Error() != longErr.Error() {
+		t.Fatalf("%v / %v", shortErr, longErr)
+	}
+}
+
 func TestStartupValidationUsesCanonicalCLIMessages(t *testing.T) {
 	_, err := parseStartupInputTokens([]string{"src", "--snippet", "TODO", "201"})
 	if err == nil {

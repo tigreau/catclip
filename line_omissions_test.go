@@ -60,12 +60,12 @@ func TestRunLineOmissionContract(t *testing.T) {
 		{"paths then focus", []string{"cmd", "--paths", "--then", "cmd/short.txt", "--lines", "4", "10"}, 0, "cmd/short.txt\n", "Omitted cmd/short.txt:"},
 		{"raw", []string{"cmd", "--lines", "4", "10", "--raw"}, 0, "d\ne\nf\n", "Omitted cmd/short.txt:"},
 		{"open ended", []string{"cmd/long.txt", "--lines", "4"}, 0, `lines="4-6"`, ""},
-		{"report only", []string{"cmd", "--lines", "4", "10", "--no"}, 0, "", "Omitted cmd/short.txt:"},
+		{"report only", []string{"cmd", "--lines", "4", "10", "--only-tree"}, 0, "", "Omitted cmd/short.txt:"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := []string{"--no-tree"}
+			var args []string
 			if tc.name != "report only" {
-				args = append(args, "--headless", "--print")
+				args = append(args, "--no-tree", "--headless", "--print")
 			}
 			args = append(args, tc.args...)
 			cfg := parseInProject(t, project, args)

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	tokenWarnThreshold = 100000
+	tokenWarnThreshold = command.DefaultTokenLimit
 )
 
 // normalizeRelPath is a dup of root catclip's normalizeRelPath and
@@ -35,6 +35,7 @@ func normalizeRelPath(value string) string {
 // root's copy.
 func emitConfigFromParsedCommand(cfg command.Parsed) output.EmitConfig {
 	return output.EmitConfig{
+		TokenLimit: cfg.TokenLimit,
 		OutputMode: cfg.OutputMode,
 		Raw:        cfg.Raw,
 		NoBundle:   cfg.NoBundle,

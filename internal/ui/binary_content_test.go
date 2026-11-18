@@ -22,7 +22,7 @@ func TestBinaryContentMenuAndRetainedSelection(t *testing.T) {
 		{".", false}, {"archive.jar", true}, {"unknown.ccmixed", false}, {"empty.jar", false},
 	} {
 		scopeViewMemoReset()
-		args := []string{tc.target, "-b"}
+		args := []string{tc.target, "-wb"}
 		if err := scopeViewMemoSealEvaluatedTarget(args); err != nil {
 			t.Fatal(err)
 		}
@@ -45,7 +45,7 @@ func TestBinaryContentMenuAndRetainedSelection(t *testing.T) {
 	}
 	scopeViewMemoReset()
 	defer scopeViewMemoReset()
-	if err := scopeViewMemoSealEvaluatedTarget([]string{".", "-b"}); err != nil {
+	if err := scopeViewMemoSealEvaluatedTarget([]string{".", "-wb"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, flag := range []string{"--contains", "--snippet", "--not-contains"} {
@@ -53,7 +53,7 @@ func TestBinaryContentMenuAndRetainedSelection(t *testing.T) {
 		if flag == "--not-contains" {
 			want = []string{"config/catclip/.hiss", "empty.jar"}
 		}
-		args := []string{".", "-b", flag, "needle"}
+		args := []string{".", "-wb", flag, "needle"}
 		ctx, err := buildStartupSinkPickerContext(args)
 		if err != nil {
 			t.Fatal(err)

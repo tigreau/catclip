@@ -185,7 +185,7 @@ func TestModifierBoundaryTokensDerivedFromSpecs(t *testing.T) {
 			t.Fatalf("spec flag %s missing from derived boundary set", spec.Flag)
 		}
 	}
-	for _, known := range []string{"--diff", "--paths", "--then", "--", "-v", "--no", "--hiss"} {
+	for _, known := range []string{"--diff", "--paths", "--then", "--", "-v", "--only-tree", "--hiss"} {
 		if _, ok := modifierBoundaryTokens[known]; !ok {
 			t.Fatalf("expected %s in the derived known-boundary set", known)
 		}

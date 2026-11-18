@@ -26,6 +26,7 @@ const (
 
 // Document is the tree/file preview model rendered by catclip.
 type Document struct {
+	Groups        []DocumentGroup
 	FooterNotices []string
 	Mode          DocumentMode
 	Root          string
@@ -82,6 +83,7 @@ type DocumentSummary struct {
 // one metadata column, so callers compose exactly the columns they can afford
 // (see docs/versions/v0.5.5 interactive-tree-shape-preview).
 type RenderOptions struct {
+	Width         int // Zero preserves unwrapped ranges for redirected output.
 	Bare          bool
 	ShowModeTags  bool
 	ShowSizes     bool
@@ -265,4 +267,13 @@ func fileWordForCount(count int) string {
 
 func formatFloat(value float64, unit string) string {
 	return fmt.Sprintf("%.2f%s", value, unit)
+}
+
+// DocumentGroup keeps a scope heading, its own rows and owned diagnostics.
+type DocumentGroup struct {
+	Label    string
+	Entries  []DocumentEntry
+	Notices  []string
+	Empty    string
+	Prepared *PreparedTree `json:"-"`
 }

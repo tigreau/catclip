@@ -171,9 +171,10 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: "-r, --raw", Right: "Bare file body — no wrappers, no line numbers"},
 		{Left: "-q, --quiet", Right: "No prompts, decorations, or tree preview"},
 		{Left: "--headless", Right: "Script mode: stdout, quiet, no prompts (see --help-all)"},
+		{Left: "-tl, --token-limit [N]", Right: "Limit source to ~N tokens (default 100000; global)"},
 		{Left: "-y, --yes", Right: "Skip confirmation for large copies"},
-		{Left: "--no", Right: "Show what would be selected, but never emit the final output"},
-		{Left: "-t, --no-tree", Right: "Skip the file tree preview"},
+		{Left: "-ot, --only-tree", Right: "Show the selection tree and summary without copying"},
+		{Left: "-nt, --no-tree", Right: "Skip the file tree preview"},
 		{Left: "--no-bundle", Right: "Force text clipboard; skip bundle for large output"},
 		{Left: "-v, --verbose", Right: "Debug info and timings"},
 	})
@@ -192,8 +193,8 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 
 	fmt.Fprintf(&b, "\n%s\n", bold("File inclusion (after targets, before filters):"))
 	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
-		{Left: "--no-ignore", Right: "Include ignored files"},
-		{Left: "-b, --with-binaries", Right: "Include binary files (images, PDFs, etc.)"},
+		{Left: "-ni, --no-ignore", Right: "Include ignored files"},
+		{Left: "-wb, --with-binaries", Right: "Include binary files (images, PDFs, etc.)"},
 	})
 	fmt.Fprintf(&b, "\n%s\n", bold("Filters and modifiers:"))
 	writeAlignedHelpRows(&b, "  ", flag, []helpRow{
@@ -485,7 +486,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("  the scope's modifiers to that combined set. --depth is still multi-target,\n")
 	b.WriteString("  but measures its limit independently below each target before combining.\n\n")
 	fmt.Fprintf(&b, "  %s starts a fresh scope with independent targets and modifiers.\n", flag("--then"))
-	b.WriteString("  Like running two catclip commands and unioning the results.\n\n")
+	b.WriteString("  Each scope has its own contribution tree; one summary covers the output.\n\n")
 	fmt.Fprintf(&b, "  %s\n", example(`catclip src --only "*.tsx" --then docs --recent 5`))
 	b.WriteString("  # Scope 1: .tsx files under src  |  Scope 2: 5 newest under docs\n\n")
 	fmt.Fprintf(&b, "  %s\n", example("catclip src docs --recent 5"))
@@ -571,6 +572,8 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("  Anywhere a human would get a menu or a confirmation, --headless fails\n")
 	b.WriteString("  loudly instead — a script can't answer a prompt. Use it on every\n")
 	b.WriteString("  non-interactive invocation.\n\n")
+	b.WriteString("  Add --only-tree (-ot) for a plain selection tree and size/token summary\n")
+	b.WriteString("  on stdout instead of source content. Warnings remain on stderr.\n\n")
 
 	// ── Output format ───────────────────────────────────────────────────
 	head("OUTPUT FORMAT")
@@ -623,14 +626,14 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("    (selected-file details replace contents in this scope; clipboard by default)\n")
 	b.WriteString("    Combine structure and code: catclip . --metadata --then src/auth.go\n")
 	b.WriteString("    --contains and --not-contains can filter files before --metadata.\n")
-	b.WriteString("    They search text files only; -b does not keep binaries in those results.\n")
+	b.WriteString("    They search text files only; -wb does not keep binaries in those results.\n")
 	b.WriteString("    Paths, lines, snippets and diffs are alternative output modes within a scope.\n")
 	b.WriteString("    Use --then to combine them with metadata. --raw remains incompatible.\n\n")
-	fmt.Fprintf(&b, "  %s (%s):\n", bold("No emission"), flag("--no"))
+	fmt.Fprintf(&b, "  %s (%s):\n", bold("Only tree"), flag("--only-tree / -ot"))
 	b.WriteString("    Render the normal selection tree and summary to stdout, then stop.\n")
 	b.WriteString("    No file contents are emitted and the clipboard is left unchanged.\n")
 	fmt.Fprintf(&b, "    Cannot be combined with %s, %s, %s, or %s.\n\n",
-		flag("--yes"), flag("--print"), flag("--headless"), flag("--quiet"))
+		flag("--yes"), flag("--print"), flag("--no-tree"), flag("--quiet"))
 	fmt.Fprintf(&b, "  Diff type attributes: %s, %s, %s, %s\n\n",
 		flag("type=\"diff\""), flag("type=\"staged-diff\""), flag("type=\"unstaged-diff\""), flag("type=\"untracked\""))
 
@@ -653,7 +656,7 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 
 	// ── Exit codes ──────────────────────────────────────────────────────
 	head("EXIT CODES")
-	fmt.Fprintf(&b, "  %s    Success — all targets resolved; output was emitted or intentionally withheld by --no\n", bold("0"))
+	fmt.Fprintf(&b, "  %s    Success — all targets resolved; output was emitted or intentionally withheld by --only-tree\n", bold("0"))
 	fmt.Fprintf(&b, "  %s    Partial or no results — one or more targets not found, or runtime error\n", bold("1"))
 	fmt.Fprintf(&b, "  %s    Usage error — invalid flags, arguments, or validation failure\n\n", bold("2"))
 	b.WriteString("  When some targets resolve and others don't, catclip emits output for the\n")
@@ -701,15 +704,15 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	head("MODIFIER REFERENCE")
 	fmt.Fprintf(&b, "  %s\n", bold("File inclusion (after targets, before filters):"))
 	writeAlignedHelpRows(&b, "    ", flag, []helpRow{
-		{Left: "--no-ignore", Right: "Include ignored files"},
-		{Left: "-b, --with-binaries", Right: "Include binary files (images, PDFs, etc.)"},
+		{Left: "-ni, --no-ignore", Right: "Include ignored files"},
+		{Left: "-wb, --with-binaries", Right: "Include binary files (images, PDFs, etc.)"},
 	})
 	b.WriteString("  Use either option or both, in either order. --then starts a fresh scope.\n")
 	b.WriteString("  An existing file's complete relative path includes it even if ignored or binary.\n")
 	b.WriteString("  Binary files contribute file details instead of contents to formatted output.\n")
 	b.WriteString("  This includes text bundles; separate binary attachments are not yet supported.\n")
-	b.WriteString("  --contains, --not-contains and --snippet search text files only, even with -b.\n")
-	b.WriteString("  Binaries are excluded from their results. Git patches cannot share a scope with -b.\n\n")
+	b.WriteString("  --contains, --not-contains and --snippet search text files only, even with -wb.\n")
+	b.WriteString("  Binaries are excluded from their results. Git patches cannot share a scope with -wb.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bold("Scope modifiers (per-scope, left to right):"))
 	writeAlignedHelpRows(&b, "    ", flag, []helpRow{
 		{Left: "--only VALUE...", Right: "Keep matches by name, path, subtree, or glob"},
@@ -739,9 +742,10 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 		{Left: "-q, --quiet", Right: "No prompts, decorations, or tree preview"},
 		{Left: "-p, --print", Right: "Stdout instead of clipboard"},
 		{Left: "-r, --raw", Right: "Bare file body, no wrappers or numbers"},
+		{Left: "-tl, --token-limit [N]", Right: "Limit source to ~N tokens (default 100000; global)"},
 		{Left: "-y, --yes", Right: "Skip confirmation"},
-		{Left: "--no", Right: "Show what would be selected, but never emit the final output"},
-		{Left: "-t, --no-tree", Right: "Skip tree preview"},
+		{Left: "-ot, --only-tree", Right: "Show the selection tree and summary without copying"},
+		{Left: "-nt, --no-tree", Right: "Skip tree preview"},
 		{Left: "--no-bundle", Right: "Force text clipboard; skip bundle file for ≥4KB output"},
 		{Left: "-v, --verbose", Right: "Debug info and timings"},
 		{Left: "--hiss", Right: "Edit catclip's own ignore rules (on top of .gitignore)"},

@@ -232,7 +232,10 @@ func buildScopeModifierFlagSpecsByStageKind() map[command.StageKind]flagSpec {
 }
 
 func scopeModifierFlagSpecForFlag(flag string) (flagSpec, bool) {
-	if flag == "-b" {
+	if flag == "-ni" {
+		flag = "--no-ignore"
+	}
+	if flag == "-wb" {
 		flag = "--with-binaries"
 	}
 	spec, ok := scopeModifierFlagSpecsByFlag[flag]
@@ -264,34 +267,38 @@ func (f flagSemanticFamily) scopeStageCategory() (scopeStageCategory, bool) {
 // inputs. Scope-modifier membership derives from spec arity below; only
 // non-spec flags belong here.
 var extraFixedValueCounts = map[string]int{
-	"--input-dir":                   1,
-	"--input-stem":                  1,
-	"--internal-prediscovered":      1,
-	"--internal-checkpoint-scope":   0,
-	"--internal-target-inventory":   1,
-	"--internal-target-selection":   1,
-	"--internal-target-roots":       1,
-	"--internal-diff-preview-state": 1,
-	"--internal-tree-target":        1,
-	"--internal-tree-kind":          1,
-	"--internal-tree-state":         1,
-	"--internal-file-set-selection": 1,
-	"--internal-file-set-stage":     1,
-	"--internal-file-path":          1,
-	"--internal-boundary-source":    1,
-	"--internal-boundary-key":       1,
-	"--internal-recent-data":        1,
-	"--internal-sink-toggle":        1,
-	"--internal-sink-preview":       3,
-	"--internal-recent-selection":   1,
+	"--input-dir":                    1,
+	"--input-stem":                   1,
+	"--internal-prediscovered":       1,
+	"--internal-checkpoint-scope":    0,
+	"--internal-target-inventory":    1,
+	"--internal-target-selection":    1,
+	"--internal-target-roots":        1,
+	"--internal-diff-preview-state":  1,
+	"--internal-tree-target":         1,
+	"--internal-tree-kind":           1,
+	"--internal-tree-state":          1,
+	"--internal-file-set-selection":  1,
+	"--internal-file-set-stage":      1,
+	"--internal-file-path":           1,
+	"--internal-boundary-source":     1,
+	"--internal-boundary-key":        1,
+	"--internal-recent-data":         1,
+	"--internal-token-limit-preview": 1,
+	"--internal-sink-focus":          3,
+	"--internal-sink-toggle":         1,
+	"--internal-sink-preview":        3,
+	"--internal-recent-selection":    1,
 }
 
 // globalBoundaryFlags lists the non-stage flags that terminate
 // optional-value consumption. Kept as an explicit table (they have no
 // spec entries); spec flags join the boundary set automatically below.
 var globalBoundaryFlags = []string{
-	"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-	"--no-bundle", "-b",
+	"-ni",
+	"--token-limit", "-tl",
+	"-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-ot", "-p", "--print", "-r", "--raw", "-nt", "--no-tree",
+	"--no-bundle", "-wb",
 	"-h", "--help", "--help-all", "--version", "-V", "--check-update", "--theme", "--hiss", "--hiss-reset", "--all-ignore-rules",
 }
 

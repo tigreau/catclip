@@ -19,6 +19,10 @@ const (
 )
 
 type Plan struct {
+	scopeStats          []scopeContributionStats
+	tokenBudget         int64 // Retain a completed budget check across preview and emission.
+	metadataOnly        bool
+	tokenLimit          *planTokenLimit
 	representedRequests map[outputRequest]bool
 	refinementNotices   []refinementNotice
 	sections            []PlanSection
@@ -39,11 +43,13 @@ type PlanSection struct {
 	scopeIndices  []int
 	metadata      MetadataPayload
 	metadataBytes int64
+	tokenCutBytes int64
 	kind          SectionKind
 	items         []PlanItem
 }
 
 type PlanItem struct {
+	scope         int // Presentation ownership; preserved by slicing and token limiting.
 	kind          SectionKind
 	unit          PreparedFileUnit
 	entry         discovery.Entry
@@ -166,7 +172,7 @@ func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, pre
 		prepared, represented, err = prepareMergedFileItems(gitCtx, scopes, preserveFileOrder, &omissions, raw...)
 		fileItemsByScope = make(map[int][]PlanItem, len(scopes))
 		for _, item := range prepared {
-			fileItemsByScope[item.scopeIndex] = append(fileItemsByScope[item.scopeIndex], newFileOutputPlanItem(item.unit))
+			fileItemsByScope[item.scopeIndex] = append(fileItemsByScope[item.scopeIndex], scopedFileItem(item.unit, item.scopeIndex))
 		}
 	} else {
 		fileItemsByScope, err = prepareSectionedFileItems(gitCtx, scopes, preserveFileOrder, &omissions, raw...)
@@ -200,7 +206,7 @@ func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, pre
 					continue
 				}
 				metadataSeen[entry.RelPath] = true
-				section.items = append(section.items, PlanItem{kind: SectionKindMetadata, entry: entry, relPath: entry.RelPath})
+				section.items = append(section.items, PlanItem{scope: scopeIndex, kind: SectionKindMetadata, entry: entry, relPath: entry.RelPath})
 			}
 			continue
 		}
@@ -222,6 +228,7 @@ func prepareSectionedOutputPlan(gitCtx git.Context, scopes []EvaluatedScope, pre
 				}
 				currentPathSeen[entry.RelPath] = struct{}{}
 				item := newPathOutputPlanItem(entry)
+				item.scope = scopeIndex
 				section.items = append(section.items, item)
 			}
 			continue
@@ -309,7 +316,7 @@ func prepareSectionedFileItems(gitCtx git.Context, scopes []EvaluatedScope, pres
 		if !keep {
 			continue
 		}
-		itemsByScope[candidate.scopeIndex] = append(itemsByScope[candidate.scopeIndex], newFileOutputPlanItem(unit))
+		itemsByScope[candidate.scopeIndex] = append(itemsByScope[candidate.scopeIndex], scopedFileItem(unit, candidate.scopeIndex))
 	}
 	return itemsByScope, nil
 }
@@ -623,15 +630,11 @@ func snippetTagFromRanges(ranges []SnippetRange) string {
 	if len(ranges) == 0 {
 		return "snippet"
 	}
-	first := formatSnippetRange(ranges[0])
-	if len(ranges) == 1 {
-		return "snippet " + first
+	parts := make([]string, len(ranges))
+	for i, r := range ranges {
+		parts[i] = formatSnippetRange(r)
 	}
-	second := formatSnippetRange(ranges[1])
-	if len(ranges) == 2 {
-		return fmt.Sprintf("2 snippets %s,%s", first, second)
-	}
-	return fmt.Sprintf("%d snippets %s,%s,...", len(ranges), first, second)
+	return strings.Join(parts, ", ")
 }
 
 func formatSnippetRange(r SnippetRange) string {
@@ -660,9 +663,9 @@ func linesTagFromRanges(ranges []previewLinesRange) string {
 
 func formatLinesRange(start, end int) string {
 	if end > 0 {
-		return fmt.Sprintf("lines %d-%d", start, end)
+		return fmt.Sprintf("%d-%d", start, end)
 	}
-	return fmt.Sprintf("lines %d-", start)
+	return fmt.Sprintf("%d-", start)
 }
 
 // PayloadSizes returns emitted payload bytes keyed by relPath.
@@ -672,7 +675,7 @@ func (p Plan) PayloadSizes() (map[string]int64, int64) {
 	sizes := make(map[string]int64, len(p.items))
 	var total int64
 	for _, item := range p.items {
-		if item.kind == SectionKindMetadata {
+		if item.kind == SectionKindMetadata || p.metadataOnly {
 			continue
 		}
 		sizes[item.relPath] += item.bodyBytes
@@ -682,7 +685,7 @@ func (p Plan) PayloadSizes() (map[string]int64, int64) {
 		if section.kind == SectionKindMetadata {
 			total += section.metadataBytes
 			for _, item := range section.items {
-				// --no reports selected files without materializing a metadata
+				// --only-tree reports selected files without materializing a metadata
 				// payload or its diagnostic ignore walk. Real emission prepares
 				// the report first and counts its encoded bytes above instead.
 				if section.metadata == nil {

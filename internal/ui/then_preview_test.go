@@ -45,8 +45,8 @@ func TestThenPreviewKeepsMultipleViewsOfOneExactFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(preview.Body), "snippet 1-1 + lines 3-3") {
-		t.Fatalf("lost mode tag: %s", preview.Body)
+	if !strings.Contains(string(preview.Body), "[1-1]") || !strings.Contains(string(preview.Body), "[3-3]") || strings.Contains(string(preview.Body), " + ") {
+		t.Fatalf("lost scope ranges: %s", preview.Body)
 	}
 	var final bytes.Buffer
 	if err := RenderPreview(cfg, git.Context{}, plan, report, &final, &final, platform.ANSIPalette()); err != nil {

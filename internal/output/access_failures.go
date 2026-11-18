@@ -30,9 +30,10 @@ func (w *lazyWriter) Write(p []byte) (int, error) {
 // payloadWriter observes actual writes, never probes source files. An input
 // access error is skippable only before this entry has written any bytes.
 type payloadWriter struct {
-	w       io.Writer
-	n       int64
-	skipped []string
+	w        io.Writer
+	n        int64
+	skipped  []string
+	failures []search.AccessFailure
 }
 
 func (w *payloadWriter) Write(p []byte) (int, error) {
@@ -58,6 +59,7 @@ func (w *payloadWriter) skip(err error, abs, rel string, before int64) bool {
 		return false
 	}
 	w.skipped = append(w.skipped, rel)
+	w.failures = append(w.failures, search.AccessFailure{Path: rel, Vanished: errors.Is(err, os.ErrNotExist)})
 	return true
 }
 

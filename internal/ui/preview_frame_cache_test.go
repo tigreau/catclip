@@ -461,3 +461,20 @@ func TestPreviewDiffReplaySkipsStateDecode(t *testing.T) {
 		t.Fatal("diff replay changed output")
 	}
 }
+
+func TestPreviewFrameWidthAndReportCallback(t *testing.T) {
+	artifact := filepath.Join(t.TempDir(), "scope.json")
+	cfg := RenderConfig{}
+	t.Setenv("FZF_PREVIEW_COLUMNS", "80")
+	first := newPreviewFrameCache(artifact, "tree", cfg)
+	cfg.BeforeOutcome = func() error { return nil }
+	same := newPreviewFrameCache(artifact, "tree", cfg)
+	if first.path == "" || first.path != same.path {
+		t.Fatal("report callback invalidated preview identity")
+	}
+	t.Setenv("FZF_PREVIEW_COLUMNS", "40")
+	narrow := newPreviewFrameCache(artifact, "tree", cfg)
+	if narrow.path == same.path {
+		t.Fatal("wrapped preview reused wrong width")
+	}
+}

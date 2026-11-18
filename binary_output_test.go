@@ -15,7 +15,7 @@ func TestRunBinaryDescriptionsAndRawBytes(t *testing.T) {
 		raw  bool
 	}{
 		{"direct", []string{"blob.fixture"}, false},
-		{"mixed", []string{".", "-b"}, false},
+		{"mixed", []string{".", "-wb"}, false},
 		{"then", []string{"note.txt", "--then", "blob.fixture"}, false},
 		{"raw", []string{"blob.fixture", "--raw"}, true},
 	} {

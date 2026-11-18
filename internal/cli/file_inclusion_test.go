@@ -7,7 +7,7 @@ import (
 )
 
 func TestFileInclusionScopeAndOrder(t *testing.T) {
-	for _, flags := range [][]string{{"-b", "--no-ignore"}, {"--no-ignore", "--with-binaries"}} {
+	for _, flags := range [][]string{{"-wb", "--no-ignore"}, {"--no-ignore", "--with-binaries"}} {
 		args := append([]string{"src", "--then", "assets"}, flags...)
 		args = append(args, "--paths", "--headless")
 		cfg, err := ParseArgs(args)
@@ -27,10 +27,10 @@ func TestFileInclusionScopeAndOrder(t *testing.T) {
 		}
 	}
 	for _, args := range [][]string{
-		{"src", "--only", "*.go", "-b"},
+		{"src", "--only", "*.go", "-wb"},
 		{"src", "--paths", "--with-binaries"},
-		{"src", "-b", "--no-ignore", "--with-binaries"},
-		{"src", "--no-ignore", "-b", "--no-ignore"},
+		{"src", "-wb", "--no-ignore", "--with-binaries"},
+		{"src", "--no-ignore", "-wb", "--no-ignore"},
 	} {
 		if _, err := ParseArgs(args); err == nil {
 			t.Fatalf("strict accepted %v", args)
@@ -39,10 +39,10 @@ func TestFileInclusionScopeAndOrder(t *testing.T) {
 			t.Fatalf("preflight accepted %v", args)
 		}
 	}
-	if _, err := ParseArgs([]string{"src", "--snippet", "func", "--then", "assets", "-b"}); err != nil {
+	if _, err := ParseArgs([]string{"src", "--snippet", "func", "--then", "assets", "-wb"}); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"src", "-b", "--not-contains", "TODO", "--metadata"}
+	args := []string{"src", "-wb", "--not-contains", "TODO", "--metadata"}
 	if _, err := ParseArgs(args); err != nil {
 		t.Fatal(err)
 	}

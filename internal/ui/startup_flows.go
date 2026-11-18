@@ -89,7 +89,7 @@ func resolveStartupModifierChoice(resolver *discovery.Resolver, finalArgs, curre
 		}
 		return args, true || gitUsedFzf, nil
 	case startupModifierModeFlags:
-		return append(finalArgs, choice.Args...), true, nil
+		return appendStartupGlobalOptions(finalArgs, choice.Args), true, nil
 	default:
 		return nil, false, discovery.ErrSelectionCancelled
 	}
@@ -883,6 +883,14 @@ func resolveStartupModifierStageValuesWithEscHint(currentArgs []string, flag, pr
 			return finish(nil, false, err)
 		}
 		if len(relPaths) == 0 {
+			switch flag {
+			case "--changed", "--staged", "--unstaged", "--untracked",
+				"--changed-diff", "--staged-diff", "--unstaged-diff":
+				// The Git filter already ran. Keep its empty result so normal
+				// output handling can explain it or emit valid sibling scopes.
+				// Cancellation here would undo a confirmed target selection.
+				return finish(nil, false, nil)
+			}
 			return finish(nil, false, discovery.ErrSelectionCancelled)
 		}
 		rows := startupFileSetRows(flag, relPaths)

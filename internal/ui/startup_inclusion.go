@@ -7,7 +7,7 @@ import (
 )
 
 var startupInclusionChoices = []StartupModifierChoice{
-	{Key: "with-binaries", Label: "-b, --with-binaries", Description: "Include binary files (images, PDFs, etc.)", Args: []string{"--with-binaries"}},
+	{Key: "with-binaries", Label: "--with-binaries", Description: "Include binary files (images, PDFs, etc.)", Args: []string{"--with-binaries"}},
 	{Key: "no-ignore", Label: "--no-ignore", Description: "Include files hidden by ignore rules", Args: []string{"--no-ignore"}},
 }
 
@@ -42,9 +42,16 @@ func startupInclusionTargetFrame(frame startupInteractiveFrame, flags []string) 
 	}
 	prefix := cloneStringSlice(frame.StartArgs[:start])
 	var inclusion []string
-	for _, arg := range frame.StartArgs[start:] {
+	for i := start; i < len(frame.StartArgs); i++ {
+		arg := frame.StartArgs[i]
+		if arg == "--token-limit" || arg == "-tl" {
+			_, next, _ := cli.ConsumeTokenLimit(frame.StartArgs, i+1)
+			prefix = append(prefix, frame.StartArgs[i:next]...)
+			i = next - 1
+			continue
+		}
 		switch arg {
-		case "--no-ignore", "--with-binaries", "-b":
+		case "--no-ignore", "--with-binaries", "-wb":
 			inclusion = append(inclusion, arg)
 		default:
 			if len(arg) > 0 && arg[0] == '-' {
@@ -70,7 +77,7 @@ func startupTargetFrameUsesBinaries(frame startupInteractiveFrame) bool {
 				return value
 			}
 			value = false
-		case "--with-binaries", "-b":
+		case "--with-binaries", "-wb":
 			value = true
 		}
 		i += cli.FixedValueCount(args[i])
@@ -89,7 +96,7 @@ func inclusionOnlyScope(s command.ExecutionScope) bool {
 
 func startupInclusionGlobalFlag(arg string) bool {
 	switch arg {
-	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--metadata", "--headless":
+	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree", "--no-bundle", "--metadata", "--headless":
 		return true
 	}
 	return false

@@ -287,7 +287,7 @@ func scopeStageKindsForFlags(flags []string) ([]command.StageKind, error) {
 }
 
 func ScopeStageKindForFlag(flag string) (command.StageKind, bool) {
-	if flag == "-b" {
+	if flag == "-wb" {
 		return command.StageWithBinaries, true
 	}
 	spec, ok := scopeModifierFlagSpecForFlag(flag)

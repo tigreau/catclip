@@ -128,7 +128,7 @@ func (p Plan) HasLineOmissions() bool {
 func (p Plan) WriteLineOmissions(w io.Writer, colors platform.Palette) error {
 	writeDetail := func(d lineOmission) error {
 		_, err := fmt.Fprintf(w, "%sOmitted %s: requested %s; file has %s.%s\n", colors.Warn, d.selection.path,
-			formatLinesRange(d.selection.start, d.selection.end), lineCountDescription(d.lines), colors.Reset)
+			"lines "+formatLinesRange(d.selection.start, d.selection.end), lineCountDescription(d.lines), colors.Reset)
 		return err
 	}
 	for _, d := range p.lineOmissions.details {
@@ -151,7 +151,7 @@ func (p Plan) WriteLineOmissions(w io.Writer, colors platform.Palette) error {
 		}
 		average := (g.totalLines + int64(g.count)/2) / int64(g.count)
 		if _, err := fmt.Fprintf(w, "%sOmitted %d %s: requested %s were unavailable.%s\n%sOmitted files average %d lines; longest is %d lines.%s\n",
-			colors.Warn, g.count, word, formatLinesRange(g.rangeRequested.start, g.rangeRequested.end), colors.Reset,
+			colors.Warn, g.count, word, "lines "+formatLinesRange(g.rangeRequested.start, g.rangeRequested.end), colors.Reset,
 			colors.Warn, average, g.longest, colors.Reset); err != nil {
 			return err
 		}

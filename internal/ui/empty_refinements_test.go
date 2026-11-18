@@ -55,7 +55,7 @@ func TestEmptyRefinementRetainedPreviewAndFinalParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	colors := platform.ANSIPalette()
-	notice := "Scope 2 produced no output.\nFull files omitted:\n  src/a.txt"
+	notice := "Full files omitted:\n  src/a.txt"
 	if strings.Count(string(preview.Body), notice) != 1 || !bytes.Contains(preview.Body, []byte(theme.PreviewPalette().Warn+notice+theme.PreviewPalette().Reset)) {
 		t.Fatalf("missing/duplicate/colorless notice: %q", preview.Body)
 	}

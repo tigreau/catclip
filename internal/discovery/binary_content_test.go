@@ -58,7 +58,7 @@ func TestBinaryContentCheckpointClassifiesOnceBeforeReload(t *testing.T) {
 	var walks int
 	defer search.SetMembershipEnumerationObserver(func(search.MembershipEnumerationEvent) { walks++ })()
 	for pass, flag := range []string{"--contains", "--snippet", "--not-contains"} {
-		_, path, cleanup, err := fzfCheckpointContentMatchListCommand([]string{".", "-b"}, flag)
+		_, path, cleanup, err := fzfCheckpointContentMatchListCommand([]string{".", "-wb"}, flag)
 		if err != nil {
 			t.Fatal(err)
 		}

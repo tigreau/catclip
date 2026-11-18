@@ -119,9 +119,12 @@ func BinaryOnlyContentDiagnostic(stage command.Stage, entries iter.Seq[Entry], s
 	if count == 1 {
 		subject, object = SingleQuoted(firstPath)+" is binary", "this file"
 	}
-	return &Diagnostic{ScopeIndex: scopeIndex, ExplainsEmptyResult: true,
-		Message: fmt.Sprintf("%sNo text files available for %s (scope %d).%s\n  %s. %s searches text files only.\n  Remove %s and its pattern to include %s.",
-			colors.Warn, flag, scopeIndex+1, colors.Reset, subject, flag, flag, object)}
+	diag := scopedDiagnostic(scopeIndex, func(si int) string {
+		return fmt.Sprintf("%sNo text files available for %s%s.%s\n  %s. %s searches text files only.\n  Remove %s and its pattern to include %s.",
+			colors.Warn, flag, diagnosticScopeSuffix(si), colors.Reset, subject, flag, flag, object)
+	})
+	diag.ExplainsEmptyResult = true
+	return &diag
 }
 
 // FilterEntriesByNotContent is the inverse of FilterEntriesByContent:

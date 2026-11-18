@@ -712,9 +712,40 @@ func scopeViewMemoLongestPrefix(wd string, args []string) (scopeViewMemoEntry, b
 	return best, true
 }
 
-func scopeViewMemoCanAdvanceTo(wd string, args []string, requested command.Invocation) bool {
-	parent, ok := scopeViewMemoLongestPrefix(wd, args)
-	return ok && scopeViewInvocationCompatible(parent.view.Invocation, requested)
+// Budget replacement may rewrite argv rather than append to it. On a lexical
+// miss, find a parent by parsed scope semantics; never inspect files to do so.
+func scopeViewMemoDerivationParent(wd string, args []string, requested command.Resolved) (scopeViewMemoEntry, bool) {
+	if parent, ok := scopeViewMemoLongestPrefix(wd, args); ok {
+		if _, _, eligible := scopeViewDerivationStage(parent.view, requested); eligible {
+			return parent, true
+		}
+	}
+	scopeViewMemoMu.Lock()
+	defer scopeViewMemoMu.Unlock()
+	var best scopeViewMemoEntry
+	found := false
+	for _, candidate := range scopeViewMemoValues {
+		if candidate.view.Invocation.WorkingDir != wd {
+			continue
+		}
+		if _, _, eligible := scopeViewDerivationStage(candidate.view, requested); !eligible {
+			continue
+		}
+		if !found || len(candidate.view.Scope.Stages) > len(best.view.Scope.Stages) || len(candidate.view.Scope.Stages) == len(best.view.Scope.Stages) && candidate.stateID > best.stateID {
+			best = candidate
+			found = true
+		}
+	}
+	if found {
+		best.args = append([]string(nil), best.args...)
+		best.fileIDs = append([]uint32(nil), best.fileIDs...)
+	}
+	return best, found
+}
+
+func scopeViewMemoCanAdvanceTo(wd string, args []string, requested command.Resolved) bool {
+	_, ok := scopeViewMemoDerivationParent(wd, args, requested)
+	return ok
 }
 
 // scopeViewMemoDiscoveryResult assembles every resolved --then scope from the
@@ -735,6 +766,11 @@ func scopeViewMemoDiscoveryResult(requested command.Resolved) (discovery.Result,
 			continue
 		}
 		for i, scope := range requested.Scopes {
+			// Identical scopes can have different generation evidence and
+			// preformatted diagnostic attribution. Keep the original owner.
+			if candidate.view.ScopeIndex != i || !reflect.DeepEqual(candidate.view.Scopes[:i], requested.Scopes[:i]) {
+				continue
+			}
 			if !reflect.DeepEqual(candidate.view.Scope, scope) {
 				continue
 			}
@@ -1146,7 +1182,7 @@ func resolvedCurrentScopeViewForArgs(args []string) (resolvedScopeView, error) {
 		return resolvedScopeView{}, err
 	}
 	invocation := command.ResolvedFromParsed(cfg)
-	if parent, ok := scopeViewMemoLongestPrefix(wd, args); ok {
+	if parent, ok := scopeViewMemoDerivationParent(wd, args, invocation); ok {
 		finishBench := platform.InternalBenchSpan("ui.resolved_scope_view.derived",
 			"parent_state_id", platform.InternalBenchInt(int(parent.stateID)),
 		)
@@ -1180,26 +1216,27 @@ func resolvedCurrentScopeViewForArgs(args []string) (resolvedScopeView, error) {
 	return materializeScopeView(stored), nil
 }
 
-func deriveScopeViewFromParent(parent scopeViewMemoEntry, requested command.Resolved, renderCfg RenderConfig, requestedKey string) (resolvedScopeView, []uint32, bool, error) {
-	parentConfig := parent.view.Invocation
-	// Metadata's dedicated transport is derived from scope output modes; it
-	// cannot invalidate the retained membership when one such stage is added.
-	parentConfig.PayloadKind = requested.Config.PayloadKind
-	if len(parent.view.Scopes) == 0 || len(parent.view.Scopes) != len(requested.Scopes) || !reflect.DeepEqual(parentConfig, requested.Config) {
-		return resolvedScopeView{}, nil, false, nil
+// Presentation and budget options do not change selected membership. Scopes,
+// inclusion policy and stage semantics still have to match exactly.
+func scopeViewDerivationStage(parent resolvedScopeView, requested command.Resolved) (command.Stage, bool, bool) {
+	if len(parent.Scopes) == 0 || len(parent.Scopes) != len(requested.Scopes) || !scopeViewInvocationCompatible(parent.Invocation, requested.Config) {
+		return command.Stage{}, false, false
 	}
 	last := len(requested.Scopes) - 1
-	if !reflect.DeepEqual(parent.view.Scopes[:last], requested.Scopes[:last]) {
-		return resolvedScopeView{}, nil, false, nil
+	if !reflect.DeepEqual(parent.Scopes[:last], requested.Scopes[:last]) {
+		return command.Stage{}, false, false
 	}
-	parentScope := parent.view.Scopes[last]
+	parentScope := parent.Scopes[last]
 	requestedScope := requested.Scopes[last]
+	if reflect.DeepEqual(parentScope, requestedScope) {
+		return command.Stage{}, false, true
+	}
 	if len(requestedScope.Stages) != len(parentScope.Stages)+1 {
-		return resolvedScopeView{}, nil, false, nil
+		return command.Stage{}, false, false
 	}
 	requestedPrefix := append([]command.Stage(nil), requestedScope.Stages[:len(parentScope.Stages)]...)
 	if !reflect.DeepEqual(requestedPrefix, parentScope.Stages) {
-		return resolvedScopeView{}, nil, false, nil
+		return command.Stage{}, false, false
 	}
 	stage := requestedScope.Stages[len(requestedScope.Stages)-1]
 	expected := parentScope
@@ -1213,17 +1250,17 @@ func deriveScopeViewFromParent(parent scopeViewMemoEntry, requested command.Reso
 		expected.Exclude = append(append([]string(nil), parentScope.Exclude...), stage.Values...)
 	case command.StageContains:
 		if len(stage.Values) != 1 {
-			return resolvedScopeView{}, nil, false, nil
+			return command.Stage{}, false, false
 		}
 		expected.Contains = stage.Values[0]
 	case command.StageNotContains:
 		if len(stage.Values) != 1 {
-			return resolvedScopeView{}, nil, false, nil
+			return command.Stage{}, false, false
 		}
 		expected.NotContains = append(append([]string(nil), parentScope.NotContains...), stage.Values[0])
 	case command.StageSnippet:
 		if len(stage.Values) != 1 {
-			return resolvedScopeView{}, nil, false, nil
+			return command.Stage{}, false, false
 		}
 		expected.Snippet = true
 		expected.SnippetPattern = stage.Values[0]
@@ -1262,19 +1299,33 @@ func deriveScopeViewFromParent(parent scopeViewMemoEntry, requested command.Reso
 		expected.LinesEnd = requestedScope.LinesEnd
 	case command.StageRecent, command.StageSize:
 	default:
-		return resolvedScopeView{}, nil, false, nil
+		return command.Stage{}, false, false
 	}
 	if !reflect.DeepEqual(expected, requestedScope) {
-		return resolvedScopeView{}, nil, false, nil
+		return command.Stage{}, false, false
 	}
 
-	if parent.inventory == nil {
+	return stage, true, true
+}
+
+func deriveScopeViewFromParent(parent scopeViewMemoEntry, requested command.Resolved, renderCfg RenderConfig, requestedKey string) (resolvedScopeView, []uint32, bool, error) {
+	stage, hasStage, eligible := scopeViewDerivationStage(parent.view, requested)
+	if !eligible || parent.inventory == nil {
 		return resolvedScopeView{}, nil, false, nil
 	}
+	if !hasStage {
+		view := parent.view
+		view.Invocation = requested.Config
+		view.Render = renderCfg
+		view.Scopes = cloneExecutionScopes(requested.Scopes)
+		return view, parent.fileIDs, true, nil
+	}
+	last := len(requested.Scopes) - 1
+	requestedScope := requested.Scopes[last]
+
 	started := time.Now()
 	var fileIDs []uint32
 	snippetMatchLines := cloneSnippetLineOverlay(parent.snippetMatchLines)
-	var eligible bool
 	var err error
 	if stage.Kind == command.StageNoIgnore {
 		fileIDs, eligible, err = applyNoIgnoreScopeStageIDs(parent, requestedScope, requested.Config)

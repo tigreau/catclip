@@ -46,8 +46,8 @@ func TestFileInclusionMenuBeforeFilters(t *testing.T) {
 		args  []string
 		count int
 	}{
-		{[]string{"."}, 2}, {[]string{".", "-b"}, 1},
-		{[]string{".", "--no-ignore", "-b"}, 0},
+		{[]string{"."}, 2}, {[]string{".", "-wb"}, 1},
+		{[]string{".", "--no-ignore", "-wb"}, 0},
 		{[]string{".", "--only", "*.go"}, 0},
 		{[]string{".", "--paths"}, 0},
 		{[]string{"src", "--paths", "--then", "assets"}, 2},
@@ -76,7 +76,7 @@ func TestFileInclusionReopensAndSealsSelection(t *testing.T) {
 		flags, want []string
 	}{
 		{"ignored", []string{"--no-ignore"}, []string{".gitignore", "ignored/hidden.txt", "visible.txt"}},
-		{"binary", []string{"-b"}, []string{".gitignore", "visible.jar", "visible.txt"}},
+		{"binary", []string{"-wb"}, []string{".gitignore", "visible.jar", "visible.txt"}},
 		{"both", []string{"--no-ignore", "--with-binaries"}, []string{".gitignore", "ignored/hidden.jar", "ignored/hidden.txt", "visible.jar", "visible.txt"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

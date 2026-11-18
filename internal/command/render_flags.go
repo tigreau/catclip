@@ -43,6 +43,7 @@ func RenderFlagsFromParsed(cfg Parsed) RenderFlags {
 // preview/reload commands suppress prompts.
 func InvocationFromParsed(cfg Parsed) Invocation {
 	return Invocation{
+		TokenLimit:     cfg.TokenLimit,
 		Version:        cfg.Version,
 		Platform:       cfg.Platform,
 		WorkingDir:     cfg.WorkingDir,

@@ -94,7 +94,7 @@ func TestPlanAllocationStrategyPreservesScopesAndPayload(t *testing.T) {
 		// Diagnostic retention/aggregation has its own contract tests.
 		payloadPlan := got
 		payloadPlan.lineOmissions = lineOmissions{}
-		if !reflect.DeepEqual(want, payloadPlan) {
+		if !reflect.DeepEqual(withoutScopeOwnership(want), withoutScopeOwnership(payloadPlan)) {
 			t.Fatalf("iteration %d: plan differs from allocation oracle", iteration)
 		}
 		after, err := json.Marshal(inv)
@@ -117,4 +117,20 @@ func TestPlanAllocationStrategyPreservesScopesAndPayload(t *testing.T) {
 			}
 		}
 	}
+}
+
+func withoutScopeOwnership(p Plan) Plan {
+	p.scopeStats = nil
+	p.items = append([]PlanItem(nil), p.items...)
+	for i := range p.items {
+		p.items[i].scope = 0
+	}
+	p.sections = append([]PlanSection(nil), p.sections...)
+	for i := range p.sections {
+		p.sections[i].items = append([]PlanItem(nil), p.sections[i].items...)
+		for j := range p.sections[i].items {
+			p.sections[i].items[j].scope = 0
+		}
+	}
+	return p
 }

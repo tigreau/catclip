@@ -195,12 +195,12 @@ func TestNeverEmitWritesSelectionReportButStopsBeforePayload(t *testing.T) {
 	} else if strings.Contains(got, "PAYLOAD_MUST_NOT_BE_EMITTED") {
 		t.Fatalf("stdout contains final payload:\n%s", got)
 	} else if strings.Contains(got, "Proceed?") || strings.Contains(got, "Aborted.") {
-		t.Fatalf("--no must not prompt or describe the run as aborted:\n%s", got)
+		t.Fatalf("--only-tree must not prompt or describe the run as aborted:\n%s", got)
 	}
 	if got := stderr.String(); !strings.Contains(got, "Not a git repo") {
-		t.Fatalf("diagnostics should retain stderr for --no, stderr=%q", got)
+		t.Fatalf("diagnostics should retain stderr for --only-tree, stderr=%q", got)
 	} else if strings.Contains(got, "src/") || strings.Contains(got, "Count:") {
-		t.Fatalf("tree/summary leaked to stderr for --no, stderr=%q", got)
+		t.Fatalf("tree/summary leaked to stderr for --only-tree, stderr=%q", got)
 	}
 }
 

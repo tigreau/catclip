@@ -203,13 +203,8 @@ func (p Plan) RefinementNoticeText() []string {
 	for _, n := range p.refinementNotices {
 		var b strings.Builder
 		fmt.Fprintf(&b, "Scope %d produced no output.", n.scope+1)
-		if n.count > 5 {
-			fmt.Fprintf(&b, "\n%d full files omitted.", n.count)
-		} else if n.count > 0 {
-			b.WriteString("\nFull files omitted:")
-			for _, path := range n.paths {
-				fmt.Fprintf(&b, "\n  %s", refinementPathEscaper.Replace(path))
-			}
+		if text := refinementOmissionText(n); text != "" {
+			b.WriteString("\n" + text)
 		}
 		out = append(out, b.String())
 	}
@@ -225,4 +220,17 @@ func (p Plan) WriteRefinementNotices(w io.Writer, colors platform.Palette) error
 		}
 	}
 	return nil
+}
+
+func refinementOmissionText(n refinementNotice) string {
+	var b strings.Builder
+	if n.count > 5 {
+		fmt.Fprintf(&b, "%d full files omitted.", n.count)
+	} else if n.count > 0 {
+		b.WriteString("Full files omitted:")
+		for _, path := range n.paths {
+			fmt.Fprintf(&b, "\n  %s", refinementPathEscaper.Replace(path))
+		}
+	}
+	return b.String()
 }

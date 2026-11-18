@@ -150,7 +150,7 @@ func fzfCheckpointContentMatchListCommand(currentArgs []string, flag string) (st
 	before := len(view.Entries)
 	view.Entries = ExcludeKnownBinaryEntries(view.Entries)
 	// Keep child root scanning disabled if exact binary files were removed,
-	// just as for an explicit -b mixed selection.
+	// just as for an explicit -wb mixed selection.
 	view.WithBinaries = view.WithBinaries || len(view.Entries) != before
 
 	self, err := os.Executable()

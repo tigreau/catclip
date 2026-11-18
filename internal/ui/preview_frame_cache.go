@@ -55,8 +55,9 @@ func newPreviewFrameCache(artifact, kind string, key any) previewFrameCache {
 	encoded, err := json.Marshal(struct {
 		Version        int
 		Artifact, Kind string
+		PreviewColumns string
 		Request        any
-	}{1, artifact, kind, key})
+	}{2, artifact, kind, os.Getenv("FZF_PREVIEW_COLUMNS"), key})
 	if err != nil {
 		return cache
 	}

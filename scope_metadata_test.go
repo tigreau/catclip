@@ -83,7 +83,7 @@ func TestScopeMetadataNeverEmitSkipsReportMaterialization(t *testing.T) {
 		}
 	})
 	defer restore()
-	cfg := parseInProject(t, project, []string{"auth.go", "--metadata", "--then", "auth.go", "--lines", "1", "1", "--no"})
+	cfg := parseInProject(t, project, []string{"auth.go", "--metadata", "--then", "auth.go", "--lines", "1", "1", "--only-tree"})
 	var stdout, stderr bytes.Buffer
 	if err := run(cfg, &stdout, &stderr); err != nil {
 		t.Fatal(err)

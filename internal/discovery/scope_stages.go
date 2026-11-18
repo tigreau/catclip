@@ -193,8 +193,9 @@ func PathOnlyStageDiagnostics(stage command.Stage, scopeIndex int, colors platfo
 	diagnostics := make([]Diagnostic, 0, len(deadValues))
 	for _, value := range deadValues {
 		diagnostics = append(diagnostics, Diagnostic{
-			Message:    trailingSlashGlobStageWarning(stage.Kind, value, scopeIndex, colors),
-			ScopeIndex: scopeIndex,
+			Message:        trailingSlashGlobStageWarning(stage.Kind, value, scopeIndex, colors),
+			GroupedMessage: trailingSlashGlobStageWarning(stage.Kind, value, -1, colors),
+			ScopeIndex:     scopeIndex,
 		})
 	}
 	if resultEmpty && stage.Kind == command.StageOnly && len(deadValues) == len(stage.Values) {

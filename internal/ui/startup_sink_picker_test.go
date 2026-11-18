@@ -498,7 +498,7 @@ while [ "$#" -gt 0 ]; do
 			shift 2
 			;;
 		--bind)
-			bind="$2"
+			bind="$bind $2"
 			shift 2
 			;;
 		*)
@@ -655,7 +655,7 @@ echo "fzf should not be called when raw args already choose a sink" >&2
 exit 91
 `)
 
-	for _, rawArg := range []string{"-p", "--print", "--headless", "--no-bundle", "--no", "-q", "--quiet"} {
+	for _, rawArg := range []string{"-p", "--print", "--headless", "--no-bundle", "--only-tree", "-q", "--quiet"} {
 		t.Run(rawArg, func(t *testing.T) {
 			result, err := maybeResolveStartupSinkPickerArgs([]string{rawArg}, StartupPickerResult{
 				Args:    []string{"src", rawArg},
@@ -683,8 +683,8 @@ func TestSinkPickerGateUsesParsedMeaningOfFlagLikeValues(t *testing.T) {
 		args []string
 		want bool
 	}{
-		{name: "no emission", args: []string{"src", "--no"}, want: true},
-		{name: "no used as contains value", args: []string{"src", "--contains", "--no"}, want: false},
+		{name: "no emission", args: []string{"src", "--only-tree"}, want: true},
+		{name: "no used as contains value", args: []string{"src", "--contains", "--only-tree"}, want: false},
 		{name: "yes used as contains value", args: []string{"src", "--contains", "--yes"}, want: false},
 		{name: "stdout", args: []string{"src", "--print"}, want: true},
 	} {

@@ -184,6 +184,17 @@ func resolveStartupWithUndo(resolver *discovery.Resolver, args []string, opts st
 			}
 		}
 
+		if frame.Kind == startupInteractiveFrameStage || frame.Kind == startupInteractiveFrameLinesEnd {
+			// Typed stages can commit without opening a preview. Retain each
+			// accepted result before --then moves to the next scope, so the
+			// sink can reuse it. One-stage derivation uses the sealed inventory
+			// rather than rediscovering an entire chain at handoff.
+			if _, retainErr := resolvedCurrentScopeViewForArgs(result.Args); retainErr != nil {
+				cleanupStartupFrames(history)
+				return startupUndoResult{}, retainErr
+			}
+		}
+
 		if result.UsedFzf {
 			history = append(history, frame)
 			usedFzf = true
@@ -232,7 +243,15 @@ func nextStartupInteractiveFrame(resolver *discovery.Resolver, currentArgs, pend
 		}
 
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
+		case "--token-limit", "-tl":
+			_, next, err := cli.ConsumeTokenLimit(pending, 1)
+			if err != nil {
+				return startupInteractiveFrame{}, nil, false, err
+			}
+			args = append(args, pending[:next]...)
+			pending = pending[next:]
+			continue
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree", "--no-bundle", "--with-binaries", "-wb":
 			args = append(args, arg)
 			pending = pending[1:]
 			continue
@@ -397,7 +416,16 @@ func runStartupTargetFrame(resolver *discovery.Resolver, frame startupInteractiv
 	pending := cloneStringSlice(frame.PendingArgs)
 	for len(pending) > 0 {
 		arg := pending[0]
-		if arg != "--no-ignore" && arg != "--with-binaries" && arg != "-b" && !startupInclusionGlobalFlag(arg) {
+		if arg == "--token-limit" || arg == "-tl" {
+			_, next, err := cli.ConsumeTokenLimit(pending, 1)
+			if err != nil {
+				return startupInteractiveFrameResult{}, err
+			}
+			finalArgs = append(finalArgs, pending[:next]...)
+			pending = pending[next:]
+			continue
+		}
+		if arg != "--no-ignore" && arg != "--with-binaries" && arg != "-wb" && !startupInclusionGlobalFlag(arg) {
 			break
 		}
 		finalArgs = append(finalArgs, arg)
@@ -459,7 +487,7 @@ func runStartupModifierFrame(frame startupInteractiveFrame) (startupInteractiveF
 		}, nil
 	case startupModifierModeFlags:
 		return startupInteractiveFrameResult{
-			Args:    append(finalArgs, choice.Args...),
+			Args:    appendStartupGlobalOptions(finalArgs, choice.Args),
 			Pending: cloneStringSlice(frame.PendingArgs),
 			UsedFzf: true,
 		}, nil
@@ -557,11 +585,15 @@ func startupFrameCurrentScopeSelections(args []string) ([]string, []string) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
+		case "--token-limit", "-tl":
+			_, next, _ := cli.ConsumeTokenLimit(args, i+1)
+			i = next - 1
+			continue
 		case "--then":
 			selected = selected[:0]
 			explicit = explicit[:0]
 			inModifierMode = false
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree", "--no-bundle", "--with-binaries", "-wb":
 			continue
 		case "--no-ignore":
 			inModifierMode = true
@@ -618,9 +650,13 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
+		case "--token-limit", "-tl":
+			_, next, _ := cli.ConsumeTokenLimit(args, i+1)
+			i = next - 1
+			continue
 		case "--then":
 			inModifierMode = false
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree", "--no-bundle", "--with-binaries", "-wb":
 			continue
 		case "--no-ignore":
 			inModifierMode = true
@@ -665,10 +701,19 @@ func startupFrameCurrentScopeHasModifier(args []string) bool {
 
 func startupFrameTargetPrompt(args []string) string {
 	for i := len(args) - 1; i >= 0; i-- {
+		if i > 0 && (args[i-1] == "--token-limit" || args[i-1] == "-tl") {
+			_, next, _ := cli.ConsumeTokenLimit(args, i)
+			if next > i {
+				i--
+				continue
+			}
+		}
 		switch args[i] {
+		case "--token-limit", "-tl":
+			continue
 		case "--then":
 			return "then> "
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree", "--no-bundle", "--with-binaries", "-wb":
 			continue
 		default:
 			return "select> "

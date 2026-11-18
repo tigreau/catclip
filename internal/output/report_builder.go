@@ -31,6 +31,10 @@ func BuildReportForPlan(gitCtx git.Context, plan Plan, opts ReportOptions) (Repo
 		Notices: append([]string(nil), opts.Notices...),
 	}
 
+	if notice := plan.TokenLimitNotice(); notice != "" {
+		report.Notices = append(report.Notices, notice)
+	}
+
 	if opts.IncludeTreeMetadata {
 		if opts.PrecomputedGitStatuses != nil {
 			report.Statuses = cloneStringMap(opts.PrecomputedGitStatuses)
@@ -42,6 +46,9 @@ func BuildReportForPlan(gitCtx git.Context, plan Plan, opts ReportOptions) (Repo
 			report.Statuses = statuses
 		}
 		report.ModeTags = plan.PreviewModeTags(report.Statuses)
+		if l := plan.tokenLimit; l != nil && l.partial && !l.metadata {
+			report.ModeTags[l.path] = "partial"
+		}
 	}
 
 	report.HumanSize, report.Tokens = formatSizeAndTokens(totalBytes, count)

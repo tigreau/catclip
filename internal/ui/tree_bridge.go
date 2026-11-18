@@ -2,9 +2,12 @@ package ui
 
 import (
 	"bytes"
+	"fmt"
+	"github.com/tigreau/catclip/internal/command"
 	"io"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/tigreau/catclip/internal/output"
 	"github.com/tigreau/catclip/internal/platform"
@@ -39,9 +42,14 @@ func buildTreeDocumentFromPreview(cfg RenderConfig, plan output.Plan, report out
 		FooterNotices: plan.RefinementNoticeText(),
 		Mode:          treeDocumentModeTree,
 		Target:        buildTreeDocumentTargetForPlan(cfg, plan),
-		Entries:       treeEntriesFromPlan(plan, report),
 	}
 
+	if cfg.ShowsScopeTrees(plan) {
+		doc.Groups = preparedScopeGroups(cfg, plan, report)
+		doc.Entries, doc.Target, doc.FooterNotices = nil, nil, nil
+	} else {
+		doc.Entries = treeEntriesFromPlan(plan, report)
+	}
 	doc.Entries = renderpkg.SortedEntries(doc.Entries)
 	doc.EntriesSorted = true
 	doc.Summary = buildTreeSummaryFromReport(report)
@@ -145,6 +153,9 @@ func decodeTreePayload(r io.Reader) (treeDocument, error) {
 }
 
 func renderTreeDocument(w io.Writer, doc treeDocument, opts treeRenderOptions, colors platform.Palette) error {
+	if opts.Width == 0 {
+		opts.Width = treeReportWidth(w)
+	}
 	if opts.PreviewTheme == fzfTreePreviewTheme && colors.Reset != "" {
 		colors = theme.PreviewPalette()
 	}
@@ -185,4 +196,36 @@ func treePalette(colors platform.Palette) renderpkg.Palette {
 		Prompt: colors.Prompt,
 		Git:    colors.Git,
 	}
+}
+
+func (cfg RenderConfig) ShowsScopeTrees(plan output.Plan) bool {
+	return !cfg.NoTree && (!cfg.Quiet || cfg.ForceTreeMetadata) && len(cfg.Scopes) > 1 && plan.HasScopeContributions()
+}
+
+func treeGroupsFromPlan(cfg RenderConfig, plan output.Plan, report output.Report) []renderpkg.DocumentGroup {
+	contributions := plan.ScopeContributions()
+	groups := make([]renderpkg.DocumentGroup, len(contributions))
+	for i, contribution := range contributions {
+		group := &groups[i]
+		group.Label = fmt.Sprintf("Scope %d: %s", i+1, strings.Join(command.CanonicalScopeArgs(cfg.Scopes[i]), " "))
+		group.Empty, group.Notices = contribution.Empty, contribution.Notices
+		group.Entries = make([]treeDocumentEntry, 0, len(contribution.Rows))
+		for _, row := range contribution.Rows {
+			e := row.Entry
+			size := row.Bytes
+			group.Entries = append(group.Entries, treeDocumentEntry{Path: e.RelPath, Size: &size, GitStatus: report.Statuses[e.RelPath], ModeTag: row.Tag, Binary: e.HasBinaryHint(), TargetRoot: e.TargetRoot, IgnoreBypassed: e.IgnoreBypassed, BlockSource: e.BlockSource})
+		}
+		group.Prepared = renderpkg.PrepareTree(group.Entries)
+	}
+	return groups
+}
+
+func treeReportWidth(w io.Writer) int {
+	if width, _ := strconv.Atoi(os.Getenv("FZF_PREVIEW_COLUMNS")); width > 0 {
+		return width
+	}
+	if f, ok := w.(*os.File); ok {
+		return platform.TerminalColumns(f)
+	}
+	return 0
 }

@@ -30,6 +30,8 @@ func TestParsedIsInternalKindCoversEveryInternalField(t *testing.T) {
 		{name: "FileSetSelectionPath", cfg: Parsed{FileSetSelectionPath: "/tmp/selected"}},
 		{name: "FileSetSelectionStage", cfg: Parsed{FileSetSelectionStage: "exclude"}},
 		{name: "SinkTogglePath", cfg: Parsed{SinkTogglePath: "/tmp/toggle"}},
+		{name: "SinkFocusPath", cfg: Parsed{SinkFocusPath: "/tmp/mode"}},
+		{name: "TokenLimitPreview", cfg: Parsed{TokenLimitPreview: 4000}},
 		{name: "SinkPreviewModePath", cfg: Parsed{SinkPreviewModePath: "/tmp/mode"}},
 	}
 	for _, tc := range cases {

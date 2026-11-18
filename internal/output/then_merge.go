@@ -229,7 +229,7 @@ func prepareMergedFileItems(ctx git.Context, scopes []EvaluatedScope, preserveOr
 		if !keep {
 			continue
 		}
-		if c.entry.Mode == command.EntryModeSnippet || c.entry.Mode == command.EntryModeDiff {
+		if c.entry.Mode == command.EntryModeSnippet || c.entry.Mode == command.EntryModeDiff || c.entry.Mode == command.EntryModeLines {
 			represented[requestFor(c.entry)] = true
 		}
 		for _, k := range untracked[c.entry.RelPath] {

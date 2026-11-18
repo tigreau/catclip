@@ -323,7 +323,11 @@ func startupHasUnresolvedScope(args []string) bool {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
+		case "--token-limit", "-tl":
+			_, next, _ := cli.ConsumeTokenLimit(args, i+1)
+			i = next - 1
+			continue
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree", "--no-bundle", "--with-binaries", "-wb":
 			continue
 		case "--then":
 			if !scopeHasExplicitTarget {
@@ -480,8 +484,15 @@ func shouldUseStartupPicker(args []string) (bool, error) {
 			continue
 		case "--then":
 			continue
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-			"--no-bundle", "--with-binaries", "-b", "--changed", "--staged", "--unstaged", "--untracked",
+		case "--token-limit", "-tl":
+			_, next, err := cli.ConsumeTokenLimit(args, i+1)
+			if err != nil {
+				return false, err
+			}
+			i = next - 1
+			continue
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree",
+			"--no-bundle", "--with-binaries", "-wb", "--changed", "--staged", "--unstaged", "--untracked",
 			"--changed-diff", "--staged-diff", "--unstaged-diff", "--", "--diff":
 			continue
 		}
@@ -506,6 +517,7 @@ type startupInputParse struct {
 }
 
 func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
+	tokens = cli.NormalizeHiddenAliases(tokens)
 	parsed := startupInputParse{
 		targets:          make([]string, 0, len(tokens)),
 		modifiers:        make([]string, 0, len(tokens)),
@@ -516,6 +528,15 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 	for i := 0; i < len(tokens); i++ {
 		if cli.IsUnsupportedIncludeOption(tokens[i]) {
 			return startupInputParse{}, cli.IncludeUnsupportedError()
+		}
+		if tokens[i] == "--token-limit" || tokens[i] == "-tl" {
+			_, next, err := cli.ConsumeTokenLimit(tokens, i+1)
+			if err != nil {
+				return startupInputParse{}, err
+			}
+			parsed.modifiers = append(parsed.modifiers, tokens[i:next]...)
+			i = next - 1
+			continue
 		}
 		if !seenModifier && tokens[i] == "--then" {
 			parsed.hasThen = true
@@ -534,8 +555,8 @@ func parseStartupInputTokens(tokens []string) (startupInputParse, error) {
 
 		seenModifier = true
 		switch tokens[i] {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree",
-			"--no-bundle", "--with-binaries", "-b", "--changed", "--staged", "--unstaged", "--untracked",
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree",
+			"--no-bundle", "--with-binaries", "-wb", "--changed", "--staged", "--unstaged", "--untracked",
 			"--changed-diff", "--staged-diff", "--unstaged-diff", "--paths", "--metadata":
 			parsed.modifiers = append(parsed.modifiers, tokens[i])
 		case "--lines":
@@ -844,7 +865,14 @@ func resolveStartupArgsWithMode(resolver *discovery.Resolver, args []string, req
 		}
 
 		switch arg {
-		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
+		case "--token-limit", "-tl":
+			_, next, err := cli.ConsumeTokenLimit(args, i+1)
+			if err != nil {
+				return nil, nil, false, err
+			}
+			finalArgs = append(finalArgs, args[i:next]...)
+			i = next
+		case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree", "--no-bundle", "--with-binaries", "-wb":
 			finalArgs = append(finalArgs, arg)
 			i++
 		case "--then":
@@ -997,9 +1025,11 @@ func startupScopeContainsNoIgnore(args []string, at int) bool {
 
 func startupLeadingModifierNeedsInitialScope(arg string) bool {
 	switch arg {
+	case "--token-limit", "-tl":
+		return false
 	case "--then":
 		return false
-	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--no", "-p", "--print", "-r", "--raw", "-t", "--no-tree", "--no-bundle", "--with-binaries", "-b":
+	case "-v", "--verbose", "-q", "--quiet", "-y", "--yes", "--only-tree", "-p", "--print", "-r", "--raw", "-nt", "--no-tree", "--no-bundle", "--with-binaries", "-wb":
 		return true
 	case "--", "--no-ignore", "--only", "--exclude", "--contains", "--not-contains", "--snippet", "--recent", "--size", "--depth", "--paths",
 		"--changed", "--staged", "--unstaged", "--untracked",
@@ -1179,13 +1209,45 @@ func chooseStartupModifierChoiceWithProgress(currentArgs []string, escHint strin
 
 func chooseStartupExtrasWithEscHint(escHint string, currentArgs ...[]string) ([]string, error) {
 	choices := startupExtrasChoices
+	var current []string
 	if len(currentArgs) > 0 {
-		choices = startupAvailableExtras(currentArgs[0])
+		current = currentArgs[0]
+		choices = startupAvailableExtras(current)
 	}
-	return chooseStartupMultipleOptions(choices, "extras> ", startupExtrasPickerHeaderWithEscHint(escHint))
+	var pending []string
+	for {
+		args, err := chooseStartupMultipleOptionsMarked(choices, "extras> ", startupExtrasPickerHeaderWithEscHint(escHint), pending)
+		if err != nil {
+			return nil, err
+		}
+		if argsContain(args, "--token-limit") {
+			limit, err := chooseStartupTokenLimit(current)
+			if errors.Is(err, discovery.ErrSelectionCancelled) {
+				pending = args
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			for i, arg := range args {
+				if arg == "--token-limit" {
+					args = append(args[:i+1], append([]string{strconv.FormatInt(limit, 10)}, args[i+1:]...)...)
+					break
+				}
+			}
+		}
+		if _, err := cli.StartupPreflightCommandSpec(appendStartupGlobalOptions(current, args)); err != nil {
+			return nil, err
+		}
+		return args, nil
+	}
 }
 
 func chooseStartupMultipleOptions(choices []StartupModifierChoice, prompt, header string) ([]string, error) {
+	return chooseStartupMultipleOptionsMarked(choices, prompt, header, nil)
+}
+
+func chooseStartupMultipleOptionsMarked(choices []StartupModifierChoice, prompt, header string, marked []string) ([]string, error) {
 	lines, index := startupModifierChoiceLines(choices)
 	if len(lines) == 0 {
 		return nil, discovery.ErrSelectionCancelled
@@ -1194,7 +1256,7 @@ func chooseStartupMultipleOptions(choices []StartupModifierChoice, prompt, heade
 	if err != nil {
 		return nil, err
 	}
-	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
+	req := picker.Request{
 		Prompt:   prompt,
 		WithNth:  "1,3",
 		Nth:      "1",
@@ -1203,7 +1265,22 @@ func chooseStartupMultipleOptions(choices []StartupModifierChoice, prompt, heade
 		Bindings: discovery.MultiSelectPickerBindings(),
 		NoSort:   true,
 		Lines:    lines,
-	}))
+	}
+	if len(marked) > 0 {
+		// This small submenu restores pending marks after Esc from its child.
+		// Do not change streaming or selection behavior in project pickers.
+		req.Sync = true
+		var actions []string
+		for i, choice := range choices {
+			if len(choice.Args) > 0 && argsContain(marked, choice.Args[0]) {
+				actions = append(actions, fmt.Sprintf("pos(%d)+select", i+1))
+			}
+		}
+		if len(actions) > 0 {
+			req.Bindings = append(req.Bindings, "load:"+strings.Join(actions, "+"))
+		}
+	}
+	result, err := picker.Run(bin, themedFzfRequest(req))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return nil, discovery.ErrSelectionCancelled
 	}

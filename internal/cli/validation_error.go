@@ -98,15 +98,15 @@ func renderValidationFailure(e ValidationFailure) string {
 	case ReasonEmissionPolicyConflict:
 		switch e.BoundaryFlag {
 		case "--yes":
-			return "Error: --yes cannot be combined with --no.\n  Choose whether catclip should always emit or never emit the final output."
+			return "Error: --yes cannot be combined with --only-tree.\n  Choose whether catclip should always emit or never emit the final output."
 		case "--print":
-			return "Error: --no cannot be combined with --print.\n  --no stops before final output; remove one of these flags."
-		case "--headless":
-			return "Error: --no cannot be combined with --headless.\n  --headless requires final output on stdout; remove one of these flags."
+			return "Error: --only-tree cannot be combined with --print.\n  --only-tree stops before final output; remove one of these flags."
+		case "--no-tree":
+			return "Error: --only-tree cannot be combined with --no-tree.\n  Choose whether to show or hide the tree."
 		case "--quiet":
-			return "Error: --no cannot be combined with --quiet.\n  --no reports what was selected; remove one of these flags."
+			return "Error: --only-tree cannot be combined with --quiet.\n  --only-tree reports what was selected; remove one of these flags."
 		default:
-			return fmt.Sprintf("Error: --no cannot be combined with %s.", e.BoundaryFlag)
+			return fmt.Sprintf("Error: --only-tree cannot be combined with %s.", e.BoundaryFlag)
 		}
 	case ReasonDiffSnippetConflict:
 		return "Error: --snippet and --diff cannot be combined.\n  Use --snippet to extract blocks around content matches.\n  Use --diff to show unified git patches."
@@ -163,7 +163,7 @@ func RequiredStageValueError(flag string) error {
 }
 
 func EmissionPolicyConflictError(flag string) error {
-	return ValidationFailure{Reason: ReasonEmissionPolicyConflict, Flag: "--no", BoundaryFlag: flag}
+	return ValidationFailure{Reason: ReasonEmissionPolicyConflict, Flag: "--only-tree", BoundaryFlag: flag}
 }
 
 func MetadataOutputConflictError(flag string) error {

@@ -5,10 +5,8 @@ import (
 	"path"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/tigreau/catclip/internal/platform"
-	"github.com/tigreau/catclip/internal/search"
 )
 
 // --- Ignored-ancestor probe: when a typed *target* doesn't resolve, ask whether
@@ -31,14 +29,28 @@ type ignoredAncestorCandidate struct {
 // "hidden by ignored ancestor" error. Otherwise fall back to today's
 // targetNotFoundWarning unchanged.
 func targetNotFoundOrIgnoredAncestorMessage(r *Resolver, target string, scopeIndex int, colors platform.Palette) string {
-	if cands := r.findIgnoredAncestors(target); len(cands) > 0 {
-		return ignoredAncestorMessage(target, scopeIndex, cands, colors)
+	return targetNotFoundDiagnostic(r, target, scopeIndex, colors).Message
+}
+
+func targetNotFoundDiagnostic(r *Resolver, target string, scopeIndex int, colors platform.Palette) Diagnostic {
+	var candidates []ignoredAncestorCandidate
+	if r.deferIgnoredDiagnostics && !r.NoIgnore {
+		r.ignoredDiagnosticPending = true
+	} else {
+		candidates = r.findIgnoredAncestors(target)
 	}
-	message := targetNotFoundWarning(target, scopeIndex, colors)
-	if !r.WithBinaries {
-		message += fmt.Sprintf("\n  %sFor binary files, name the complete relative path or add -b (--with-binaries).%s", colors.Dim, colors.Reset)
-	}
-	return message
+	diag := scopedDiagnostic(scopeIndex, func(si int) string {
+		if len(candidates) > 0 {
+			return ignoredAncestorMessage(target, si, candidates, colors)
+		}
+		message := targetNotFoundWarning(target, si, colors)
+		if !r.WithBinaries {
+			message += fmt.Sprintf("\n  %sFor binary files, name the complete relative path or add -wb (--with-binaries).%s", colors.Dim, colors.Reset)
+		}
+		return message
+	})
+	diag.IsTargetNotFound = true
+	return diag
 }
 
 // findIgnoredAncestors runs the lookup-miss probe. Returns nil when:
@@ -52,63 +64,7 @@ func targetNotFoundOrIgnoredAncestorMessage(r *Resolver, target string, scopeInd
 //     came from --no-ignore, so they're either visible or blocked — but we
 //     guard rather than assert).
 func (r *Resolver) findIgnoredAncestors(target string) []ignoredAncestorCandidate {
-	if r.NoIgnore {
-		return nil
-	}
-	target = normalizeRelPath(target)
-	if target == "" || target == "." {
-		return nil
-	}
-	if strings.ContainsAny(target, "*?[") {
-		return nil
-	}
-	base := path.Base(target)
-	parent := path.Dir(target)
-	if parent == "" || parent == "." {
-		parent = "."
-	}
-
-	// Two globs so we catch both file-targets (basename match) and dir-targets
-	// (rg --files lists files only, so a dir-target like `docker` is found via
-	// files inside a `docker/` segment anywhere). gitignore-style globs without
-	// a leading `**/` are anchored, so the inside-dir form needs explicit
-	// `**/<name>/**` to match at any depth.
-	opts := search.RipgrepFileOptions{
-		NoIgnore:    true,
-		Basenames:   []string{base, "**/" + base + "/**"},
-		Timeout:     5 * time.Second,
-		Enumeration: r.membershipEnumeration(search.MembershipReasonIgnoredAncestor),
-	}
-	if parent != "." {
-		opts.Paths = []string{parent}
-	}
-	paths, err := search.RunRipgrepFiles(r.Cfg.WorkingDir, opts)
-	if err != nil || len(paths) == 0 {
-		return nil
-	}
-
-	seen := map[string]bool{}
-	out := make([]ignoredAncestorCandidate, 0, len(paths))
-	for _, p := range paths {
-		rel := normalizeRelPath(p)
-		if rel == "" {
-			continue
-		}
-		// Classify: file-candidate (basename matches) vs dir-candidate
-		// (`target` appears as a non-leaf path segment, so the candidate is
-		// the prefix up to and including that segment).
-		candidatePath, isDir := classifyAncestorCandidate(rel, base)
-		if candidatePath == "" || seen[candidatePath] {
-			continue
-		}
-		seen[candidatePath] = true
-		block := r.findBlockerForPath(candidatePath, isDir)
-		if block == nil {
-			continue
-		}
-		out = append(out, *block)
-	}
-	return out
+	return r.findIgnoredAncestorsBatch([]string{target})[normalizeRelPath(target)]
 }
 
 // ignoredExactFileCandidates turns the skipped side of the exact-basename
@@ -140,23 +96,6 @@ func (r *Resolver) ignoredExactFileCandidates(matches []SkippedMatch) []ignoredA
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
 	return out
-}
-
-// classifyAncestorCandidate inspects a rg result path. If its basename equals
-// the target, it's a file-candidate. Otherwise the target appeared somewhere
-// as a directory segment — the candidate is the prefix up to and including
-// that segment.
-func classifyAncestorCandidate(rel, target string) (string, bool) {
-	if path.Base(rel) == target {
-		return rel, false
-	}
-	segs := strings.Split(rel, "/")
-	for i, seg := range segs {
-		if seg == target && i < len(segs)-1 {
-			return strings.Join(segs[:i+1], "/"), true
-		}
-	}
-	return "", false
 }
 
 // findBlockerForPath returns the *topmost* blocked ancestor of the candidate
@@ -221,28 +160,32 @@ func ignoredAncestorMessage(target string, scopeIndex int, candidates []ignoredA
 	}
 
 	var b strings.Builder
+	// The failed query is already known. Keep recovery scoped to that query
+	// instead of suggesting an export of the entire project; no new probe.
+	queryArg := ShellQuoteArg(target)
 	if len(candidates) == 1 {
 		c := candidates[0]
 		if c.Blocker == c.Path {
-			fmt.Fprintf(&b, "\n%s%sError:%s%s %s is ignored by %s (scope %d).%s\n",
+			fmt.Fprintf(&b, "\n%s%sError:%s%s %s is ignored by %s%s.%s\n",
 				colors.Bold, colors.Err, colors.Reset, colors.Err,
-				SingleQuoted(target), c.Source, scopeIndex+1, colors.Reset)
+				SingleQuoted(target), c.Source, diagnosticScopeSuffix(scopeIndex), colors.Reset)
+			fmt.Fprintf(&b, "\n  %s./%s%s\n", colors.Dim, c.Path, colors.Reset)
 		} else {
-			fmt.Fprintf(&b, "\n%s%sError:%s%s %s is hidden by an ignored ancestor (scope %d).%s\n\n  %s./%s%s — parent %s./%s%s ignored by %s\n",
+			fmt.Fprintf(&b, "\n%s%sError:%s%s %s is hidden by an ignored ancestor%s.%s\n\n  %s./%s%s — parent %s./%s%s ignored by %s\n",
 				colors.Bold, colors.Err, colors.Reset, colors.Err,
-				SingleQuoted(target), scopeIndex+1, colors.Reset,
+				SingleQuoted(target), diagnosticScopeSuffix(scopeIndex), colors.Reset,
 				colors.Dim, c.Path, colors.Reset,
 				colors.Dim, c.Blocker, colors.Reset, c.Source)
 		}
-		fmt.Fprintf(&b, "\n  %sName the ignored path directly:%s\n    %scatclip %s%s\n\n  %sOr disable ignore rules below a target:%s\n    %scatclip . --no-ignore%s\n",
+		fmt.Fprintf(&b, "\n  %sName the complete path above:%s\n    %scatclip %s%s\n\n  %sOr look up the same target with ignore rules disabled:%s\n    %scatclip %s --no-ignore%s\n",
 			colors.Dim, colors.Reset,
 			colors.OK, SingleQuoted(c.Path), colors.Reset,
 			colors.Dim, colors.Reset,
-			colors.OK, colors.Reset)
+			colors.OK, queryArg, colors.Reset)
 	} else {
-		fmt.Fprintf(&b, "\n%s%sError:%s%s %s is hidden by ignore rules. Found in (scope %d):%s\n\n",
+		fmt.Fprintf(&b, "\n%s%sError:%s%s %s is hidden by ignore rules. Found in%s:%s\n\n",
 			colors.Bold, colors.Err, colors.Reset, colors.Err,
-			SingleQuoted(target), scopeIndex+1, colors.Reset)
+			SingleQuoted(target), diagnosticScopeSuffix(scopeIndex), colors.Reset)
 		for _, c := range shown {
 			if c.Blocker == c.Path {
 				fmt.Fprintf(&b, "  %s./%s%s — ignored by %s\n",
@@ -256,10 +199,11 @@ func ignoredAncestorMessage(target string, scopeIndex int, candidates []ignoredA
 		if truncated > 0 {
 			fmt.Fprintf(&b, "  %s…and %d more%s\n", colors.Dim, truncated, colors.Reset)
 		}
-		fmt.Fprintf(&b, "\n  %sName one of the complete paths above, or disable ignore rules:%s\n    %scatclip %s%s\n    %scatclip . --no-ignore%s\n",
+		fmt.Fprintf(&b, "\n  %sName one of the complete paths above:%s\n    %scatclip %s%s\n\n  %sOr look up the same target with ignore rules disabled:%s\n    %scatclip %s --no-ignore%s\n",
 			colors.Dim, colors.Reset,
 			colors.OK, SingleQuoted(candidates[0].Path), colors.Reset,
-			colors.OK, colors.Reset)
+			colors.Dim, colors.Reset,
+			colors.OK, queryArg, colors.Reset)
 	}
 	fmt.Fprintf(&b, "\n  %sSee every active rule:%s   %scatclip --all-ignore-rules%s",
 		colors.Dim, colors.Reset, colors.OK, colors.Reset)

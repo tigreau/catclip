@@ -8,6 +8,7 @@ package command
 // final-output decision; Internal flips true when the process is a short-lived
 // --internal-* helper spawned by fzf (suppresses prompts).
 type Invocation struct {
+	TokenLimit     int64
 	Version        string
 	Platform       string
 	WorkingDir     string

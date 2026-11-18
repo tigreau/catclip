@@ -198,3 +198,30 @@ func TestPreparedPresentationSuppressedTreeStaysLazy(t *testing.T) {
 		t.Fatal("first readers failed to prepare tree")
 	}
 }
+
+func TestScopeTreesReusePreparedRows(t *testing.T) {
+	project := setupTestProject(t, map[string]string{"a.go": "package a\n", "b.go": "package b\n"})
+	t.Chdir(project)
+	scopeViewMemoReset()
+	defer scopeViewMemoReset()
+	ctx, err := buildStartupSinkPickerContext([]string{"a.go", "--then", "b.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ctx.Presentation.groups != nil {
+		t.Fatal("groups should be lazy")
+	}
+	cfg := ctx.Render.WithPreparedPresentation(ctx.Presentation)
+	first := preparedScopeGroups(cfg, ctx.Plan, ctx.Report)
+	second := preparedScopeGroups(cfg, ctx.Plan, ctx.Report)
+	if len(first) != 2 || first[0].Prepared != second[0].Prepared || first[1].Prepared != second[1].Prepared {
+		t.Fatal("tree preparation repeated")
+	}
+	var tree bytes.Buffer
+	if err := printConfiguredPreviewTree(cfg, &tree, ctx.Plan, ctx.Report, platform.Palette{}); err != nil {
+		t.Fatal(err)
+	}
+	if first[0].Prepared != ctx.Presentation.groups[0].Prepared {
+		t.Fatal("final render rebuilt group")
+	}
+}

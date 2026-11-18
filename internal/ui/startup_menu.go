@@ -17,7 +17,7 @@ var startupModifierMetaChoices = []StartupModifierChoice{
 	{
 		Key:         "extras",
 		Label:       "[extras]",
-		Description: "raw/quiet/etc.",
+		Description: "token limit/raw/quiet/etc.",
 		Mode:        startupModifierModeExtras,
 	},
 	{
@@ -168,6 +168,7 @@ var startupModifierChoices = []StartupModifierChoice{
 var startupExtrasChoices = []StartupModifierChoice{
 	// Input order is bottom-to-top under fzf's default layout, so this slice is
 	// the reverse of the visual extras> menu documented in the plan.
+	{Key: "token-limit", Label: "--token-limit", Description: "limit estimated output tokens", Args: []string{"--token-limit"}, Mode: startupModifierModeFlags},
 	{
 		Key:         "verbose",
 		Label:       "--verbose",

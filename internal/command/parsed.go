@@ -46,6 +46,9 @@ const (
 	EmissionNever
 )
 
+// DefaultTokenLimit is the source estimate used by the tree warning and bare --token-limit.
+const DefaultTokenLimit int64 = 100000
+
 // Parsed is the typed result of CLI argv parsing. It captures the entire
 // user intent — what to copy (Command Spec), which final payload to produce
 // (PayloadKind), how to present it (Verbose / Quiet / NoTree / Raw), where it
@@ -60,6 +63,7 @@ const (
 // commands), the canonicalized command Spec, and parser warnings to
 // surface on stderr.
 type Parsed struct {
+	TokenLimit  int64 // Zero means unlimited; one global source-content budget.
 	Action      Action
 	Version     string
 	Platform    string
@@ -100,6 +104,10 @@ type Parsed struct {
 	SnippetBoundaryPreview bool
 	BoundarySourcePath     string
 	BoundaryKey            string
+	TokenLimitPreview      int64
+	SinkFocusPath          string
+	SinkFocusEscHint       string
+	SinkFocusChoice        string
 	SinkTogglePath         string
 	SinkPreviewModePath    string
 	SinkPreviewOutputPath  string
@@ -126,5 +134,5 @@ func (p Parsed) IsInternalKind() bool {
 		p.LinesPreview ||
 		p.CheckpointScope || p.PrediscoveredPath != "" || p.TargetPreviewInventory != "" || p.TreeInputDir != "" ||
 		p.DiffPreviewStatePath != "" || p.TargetRootsPath != "" || p.TargetSelectionPath != "" || p.FileSetSelectionPath != "" || p.FileSetSelectionStage != "" ||
-		p.SinkTogglePath != "" || p.SinkPreviewModePath != ""
+		p.TokenLimitPreview > 0 || p.SinkFocusPath != "" || p.SinkTogglePath != "" || p.SinkPreviewModePath != ""
 }

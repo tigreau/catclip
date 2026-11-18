@@ -252,7 +252,7 @@ func TestThenPreservesCancellingGitComparisonsAndUntrackedProvenance(t *testing.
 			t.Fatalf("payload=%s notices=%v", s, p.RefinementNoticeText())
 		}
 		tag := p.PreviewModeTags(nil)[e.RelPath]
-		if !strings.Contains(tag, "staged diff") || !strings.Contains(tag, "unstaged diff") || !strings.Contains(tag, "snippet") {
+		if !strings.Contains(tag, "staged diff") || !strings.Contains(tag, "unstaged diff") || !strings.Contains(tag, "3-3") {
 			t.Fatal(tag)
 		}
 	}

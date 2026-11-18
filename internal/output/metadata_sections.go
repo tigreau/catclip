@@ -14,6 +14,21 @@ type MetadataPayload interface {
 	WriteMetadata(io.Writer, platform.Palette) (int64, error)
 }
 
+// WithMetadataPayload adapts the dedicated all-metadata report to the same
+// serializer used by mixed scopes, without preparing any file bodies.
+func (p Plan) WithMetadataPayload(payload MetadataPayload) (Plan, error) {
+	if p.metadataOnly {
+		return p, nil
+	}
+	size, err := payload.EncodedSize()
+	if err != nil {
+		return Plan{}, err
+	}
+	p.metadataOnly = true
+	p.sections = []PlanSection{{kind: SectionKindMetadata, items: p.items, metadata: payload, metadataBytes: size}}
+	return p, nil
+}
+
 func (p Plan) HasMetadata() bool {
 	for _, section := range p.sections {
 		if section.kind == SectionKindMetadata {

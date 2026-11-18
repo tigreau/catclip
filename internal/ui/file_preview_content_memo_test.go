@@ -73,7 +73,7 @@ func TestContentAllMatchesPreviewReusesCompletedMembership(t *testing.T) {
 			if !strings.Contains(plain, survivor) || strings.Contains(plain, "outside.go") || strings.Contains(plain, "Searching") {
 				t.Fatalf("wrong completed preview: %s", plain)
 			}
-			if flag == "--snippet" && !strings.Contains(plain, "2 snippets") {
+			if flag == "--snippet" && !strings.Contains(plain, "[3-5, 7-9]") {
 				t.Fatalf("snippet memo lost a matching block: %s", plain)
 			}
 			log, err := os.ReadFile(logPath)

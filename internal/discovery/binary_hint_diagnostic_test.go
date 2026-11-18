@@ -27,7 +27,7 @@ func TestBinaryGlobHintUsesTargetLocalEvidenceWithoutRediscovery(t *testing.T) {
 			if noIgnore {
 				want += " --no-ignore"
 			}
-			want += " -b"
+			want += " -wb"
 			if !strings.Contains(message, want) || !strings.Contains(message, "Binary files were excluded") || strings.Contains(message, "\x1b") {
 				t.Fatalf("wrong hint: %s", message)
 			}
@@ -37,7 +37,7 @@ func TestBinaryGlobHintUsesTargetLocalEvidenceWithoutRediscovery(t *testing.T) {
 			if walks != 1 {
 				t.Fatalf("binary hint caused %d walks, want 1", walks)
 			}
-			// Empty candidates must clear prior evidence, including when -b skips classification.
+			// Empty candidates must clear prior evidence, including when -wb skips classification.
 			for _, withBinaries := range []bool{false, true} {
 				r.WithBinaries = withBinaries
 				r.lastClassificationExcludedBinary = true

@@ -16,6 +16,7 @@ const (
 	progressExtraRaw
 	progressExtraNoTree
 	progressExtraWithBinaries
+	progressExtraTokenLimit
 )
 
 func interactiveProgressExtrasFromParsed(cfg command.Parsed) interactiveProgressExtras {
@@ -40,6 +41,9 @@ func interactiveProgressExtrasFromParsed(cfg command.Parsed) interactiveProgress
 	if cfg.WithBinaries {
 		extras |= progressExtraWithBinaries
 	}
+	if cfg.TokenLimit > 0 {
+		extras |= progressExtraTokenLimit
+	}
 	return extras
 }
 
@@ -60,10 +64,11 @@ func formatInteractiveFilterProgress(extras interactiveProgressExtras, scopes []
 	writeInteractiveProgressExtra(&out, extras, progressExtraVerbose, "--verbose")
 	writeInteractiveProgressExtra(&out, extras, progressExtraQuiet, "--quiet")
 	writeInteractiveProgressExtra(&out, extras, progressExtraYes, "--yes")
-	writeInteractiveProgressExtra(&out, extras, progressExtraNo, "--no")
+	writeInteractiveProgressExtra(&out, extras, progressExtraNo, "--only-tree")
 	writeInteractiveProgressExtra(&out, extras, progressExtraRaw, "--raw")
 	writeInteractiveProgressExtra(&out, extras, progressExtraNoTree, "--no-tree")
 	writeInteractiveProgressExtra(&out, extras, progressExtraWithBinaries, "--with-binaries")
+	writeInteractiveProgressExtra(&out, extras, progressExtraTokenLimit, "--token-limit")
 	for scopeIndex, scope := range scopes {
 		if scopeIndex > 0 {
 			out.WriteString(" --then")

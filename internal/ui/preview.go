@@ -15,6 +15,9 @@ import (
 )
 
 type RenderConfig struct {
+	ScopeIssues       map[int][]string
+	BeforeOutcome     func() error `json:"-"`
+	TokenLimit        int64
 	prepared          *PreparedPresentation
 	NoTree            bool
 	Quiet             bool
@@ -27,6 +30,7 @@ type RenderConfig struct {
 
 func RenderConfigFromParsedCommand(cfg command.Parsed) RenderConfig {
 	return RenderConfig{
+		TokenLimit: cfg.TokenLimit,
 		NoTree:     cfg.NoTree,
 		Quiet:      cfg.Quiet,
 		TreeTarget: cfg.TreeTarget,
@@ -69,7 +73,7 @@ func RenderPreview(cfg RenderConfig, gitCtx git.Context, plan output.Plan, repor
 		}
 	}
 
-	if err := plan.WriteRefinementNotices(stderr, colors); err != nil {
+	if err := writeUngroupedRefinementNotices(cfg, plan, stderr, colors); err != nil {
 		return err
 	}
 	return writeSummary(stdout, report, colors)
@@ -85,7 +89,7 @@ func WriteNormalDiagnostics(
 	presentationColors, diagnosticColors platform.Palette,
 ) (bool, error) {
 	if cfg.Quiet {
-		if err := plan.WriteRefinementNotices(diagnosticWriter, diagnosticColors); err != nil {
+		if err := writeUngroupedRefinementNotices(cfg, plan, diagnosticWriter, diagnosticColors); err != nil {
 			return false, err
 		}
 	}
@@ -101,23 +105,26 @@ func WriteNormalDiagnostics(
 				return false, err
 			}
 		}
-		if err := plan.WriteRefinementNotices(diagnosticWriter, diagnosticColors); err != nil {
+		if err := writeUngroupedRefinementNotices(cfg, plan, diagnosticWriter, diagnosticColors); err != nil {
 			return false, err
 		}
 		if err := writeSummary(presentationWriter, report, presentationColors); err != nil {
 			return false, err
 		}
-		if report.Tokens > tokenWarnThreshold {
+		if cfg.TokenLimit == 0 && report.Tokens > tokenWarnThreshold {
 			if _, err := fmt.Fprintf(diagnosticWriter, "  %s~%d tokens may exceed some LLM context windows.%s\n", diagnosticColors.Warn, report.Tokens, diagnosticColors.Reset); err != nil {
 				return false, err
 			}
 		}
 	}
 
+	if err := cfg.WriteBeforeOutcome(); err != nil {
+		return false, err
+	}
 	if emissionPolicy == command.EmissionNever {
 		return false, nil
 	}
-	if report.Tokens <= tokenWarnThreshold || emissionPolicy == command.EmissionAlways || cfg.Quiet {
+	if cfg.TokenLimit > 0 || report.Tokens <= tokenWarnThreshold || emissionPolicy == command.EmissionAlways || cfg.Quiet {
 		return true, nil
 	}
 
@@ -165,6 +172,9 @@ func WriteMetadataDiagnostics(
 	}
 
 	if emissionPolicy == command.EmissionNever {
+		if err := cfg.WriteBeforeOutcome(); err != nil {
+			return false, err
+		}
 		return false, nil
 	}
 	payloadBytes, err := metadata.EncodedSize()
@@ -172,14 +182,17 @@ func WriteMetadataDiagnostics(
 		return false, err
 	}
 	payloadTokens := payloadBytes / 4
-	if !cfg.Quiet && payloadTokens > tokenWarnThreshold {
+	if cfg.TokenLimit == 0 && !cfg.Quiet && payloadTokens > tokenWarnThreshold {
 		if _, err := fmt.Fprintf(diagnosticWriter,
 			"  %sMetadata output is ~%d tokens and may exceed some LLM context windows.%s\n",
 			diagnosticColors.Warn, payloadTokens, diagnosticColors.Reset); err != nil {
 			return false, err
 		}
 	}
-	if payloadTokens <= tokenWarnThreshold || emissionPolicy == command.EmissionAlways || cfg.Quiet {
+	if err := cfg.WriteBeforeOutcome(); err != nil {
+		return false, err
+	}
+	if cfg.TokenLimit > 0 || payloadTokens <= tokenWarnThreshold || emissionPolicy == command.EmissionAlways || cfg.Quiet {
 		return true, nil
 	}
 
@@ -403,4 +416,42 @@ func ignoreBypassedDirectoryLabel(entry discovery.Entry, relDir string) bool {
 		IgnoreBypassed: entry.IgnoreBypassed,
 		BlockSource:    entry.BlockSource,
 	}, relDir)
+}
+
+func writeUngroupedRefinementNotices(cfg RenderConfig, plan output.Plan, w io.Writer, colors platform.Palette) error {
+	if cfg.ShowsScopeTrees(plan) {
+		return nil
+	}
+	return plan.WriteRefinementNotices(w, colors)
+}
+
+func (cfg RenderConfig) WriteBeforeOutcome() error {
+	if cfg.BeforeOutcome != nil {
+		return cfg.BeforeOutcome()
+	}
+	return nil
+}
+
+// WithScopeDiagnostics routes retained diagnostics only when scope trees are
+// visible. Combined/headless callers retain the original formatted messages.
+func (cfg RenderConfig) WithScopeDiagnostics(plan output.Plan, diagnostics []discovery.Diagnostic) (RenderConfig, []discovery.Diagnostic) {
+	if !cfg.ShowsScopeTrees(plan) || plan.IsEmpty() {
+		return cfg, diagnostics
+	}
+	var remaining []discovery.Diagnostic
+	for _, diag := range diagnostics {
+		if diag.ScopeIndex < 0 || diag.ScopeIndex >= len(cfg.Scopes) {
+			remaining = append(remaining, diag)
+			continue
+		}
+		if cfg.ScopeIssues == nil {
+			cfg.ScopeIssues = make(map[int][]string)
+		}
+		message := diag.GroupedMessage
+		if message == "" {
+			message = diag.Message
+		}
+		cfg.ScopeIssues[diag.ScopeIndex] = append(cfg.ScopeIssues[diag.ScopeIndex], message)
+	}
+	return cfg, remaining
 }

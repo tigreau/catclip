@@ -161,7 +161,7 @@ func TestIgnoredBasenameStillTeachesCompletePath(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected ignored basename to require a complete path")
 	}
-	for _, want := range []string{"hidden by an ignored ancestor", "catclip 'blocked/target.md'", "catclip . --no-ignore"} {
+	for _, want := range []string{"hidden by an ignored ancestor", "catclip 'blocked/target.md'", "catclip target.md --no-ignore"} {
 		if !strings.Contains(stderr, want) {
 			t.Fatalf("ignored basename diagnostic missing %q:\n%s", want, stderr)
 		}

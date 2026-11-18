@@ -46,8 +46,8 @@ func TestCanonicalResolvedInvocationCommandRoundTripsPOSIXShellArguments(t *test
 
 func TestCanonicalGlobalArgsRendersNeverEmitPolicy(t *testing.T) {
 	got := CanonicalGlobalArgs(Invocation{}, RenderFlags{EmissionPolicy: EmissionNever})
-	if !reflect.DeepEqual(got, []string{"--no"}) {
-		t.Fatalf("CanonicalGlobalArgs() = %#v, want [--no]", got)
+	if !reflect.DeepEqual(got, []string{"--only-tree"}) {
+		t.Fatalf("CanonicalGlobalArgs() = %#v, want [--only-tree]", got)
 	}
 }
 

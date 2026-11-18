@@ -33,7 +33,11 @@ func RenderDocument(w io.Writer, doc Document, opts RenderOptions, colors Palett
 			return err
 		}
 	default:
-		if len(doc.Entries) == 0 && doc.Target != nil {
+		if len(doc.Groups) > 0 {
+			if err := RenderGroups(w, doc.Groups, opts, colors); err != nil {
+				return err
+			}
+		} else if len(doc.Entries) == 0 && doc.Target != nil {
 			if err := renderEmptyTarget(w, doc.Target, opts, colors); err != nil {
 				return err
 			}
@@ -234,6 +238,9 @@ func renderEntriesWithLandmarks(w io.Writer, entries []DocumentEntry, opts Rende
 		}
 		if entry.Binary {
 			fileLine += " " + colors.Prompt + "[binary]" + colors.Reset
+		}
+		if opts.Width > 0 && strings.Contains(entry.ModeTag, ",") {
+			fileLine = wrapRangeLine(fileLine, opts.Width, colors)
 		}
 		if _, err := fmt.Fprintln(w, fileLine); err != nil {
 			return err
@@ -813,4 +820,37 @@ func isSmartCaseInsensitive(pattern string) bool {
 		}
 	}
 	return true
+}
+
+// RenderGroups reuses prepared sorting and landmarks when provided by UI.
+func RenderGroups(w io.Writer, groups []DocumentGroup, opts RenderOptions, colors Palette) error {
+	for i, group := range groups {
+		if i > 0 {
+			if _, err := io.WriteString(w, "\n"); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintf(w, "%s%s%s\n", colors.Bold, group.Label, colors.Reset); err != nil {
+			return err
+		}
+		if len(group.Entries) == 0 {
+			if group.Empty != "" {
+				if _, err := fmt.Fprintln(w, group.Empty); err != nil {
+					return err
+				}
+			}
+		} else if group.Prepared != nil {
+			if err := group.Prepared.Render(w, opts, colors); err != nil {
+				return err
+			}
+		} else if err := renderEntries(w, group.Entries, false, opts, colors); err != nil {
+			return err
+		}
+		for _, notice := range group.Notices {
+			if _, err := fmt.Fprintf(w, "%s%s%s\n", colors.Warn, notice, colors.Reset); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

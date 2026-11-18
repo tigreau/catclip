@@ -1,9 +1,7 @@
 package output
 
 import (
-	"errors"
 	"io"
-	"io/fs"
 
 	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/platform"
@@ -16,11 +14,19 @@ import (
 func WriteOutputPlanPreview(w io.Writer, cfg EmitConfig, plan Plan, present func(io.Writer, PreparedFileUnit) (bool, error), palettes ...platform.Palette) ([]search.AccessFailure, error) {
 	observed := &payloadWriter{w: w}
 	w = observed
-	var skipped []search.AccessFailure
+	plan = plan.WithTokenLimit(cfg.TokenLimit)
+	if plan.tokenLimit != nil {
+		var print *printPresentation
+		if len(palettes) > 0 {
+			print = &printPresentation{colors: palettes[0]}
+		}
+		_, err := writeTokenLimitedPlan(w, cfg, plan, print, false, present)
+		return observed.failures, err
+	}
 	for i, section := range plan.sections {
 		if i > 0 && !cfg.Raw {
 			if _, err := io.WriteString(w, outputSectionSeparator(plan.sections[i-1].kind, section.kind)); err != nil {
-				return skipped, err
+				return observed.failures, err
 			}
 		}
 		if section.kind == SectionKindMetadata {
@@ -29,14 +35,14 @@ func WriteOutputPlanPreview(w io.Writer, cfg EmitConfig, plan Plan, present func
 				colors = palettes[0]
 			}
 			if _, err := section.writeMetadata(w, colors); err != nil {
-				return skipped, err
+				return observed.failures, err
 			}
 			continue
 		}
 		for _, item := range section.items {
 			if item.kind == SectionKindPaths {
 				if _, err := io.WriteString(w, item.relPath+"\n"); err != nil {
-					return skipped, err
+					return observed.failures, err
 				}
 				continue
 			}
@@ -45,13 +51,12 @@ func WriteOutputPlanPreview(w io.Writer, cfg EmitConfig, plan Plan, present func
 				// Use the final emitter's actual-write boundary. Only source
 				// permission/vanished errors before this unit writes can skip.
 				if !observed.skip(err, item.unit.Entry.AbsPath, item.relPath, before) {
-					return skipped, err
+					return observed.failures, err
 				}
-				skipped = append(skipped, search.AccessFailure{Path: item.relPath, Vanished: errors.Is(err, fs.ErrNotExist)})
 			}
 		}
 	}
-	return skipped, nil
+	return observed.failures, nil
 }
 
 func writePreviewFileUnit(w io.Writer, cfg EmitConfig, item PlanItem, present func(io.Writer, PreparedFileUnit) (bool, error)) error {

@@ -16,11 +16,13 @@ import (
 // Reports crossing the API are detached; tree preparation stays private and
 // lazy so suppressed trees do not incur row/sort/landmark work.
 type PreparedPresentation struct {
-	git    git.Context
-	plan   output.Plan
-	report output.Report
-	once   sync.Once
-	tree   *renderpkg.PreparedTree
+	git       git.Context
+	plan      output.Plan
+	report    output.Report
+	once      sync.Once
+	tree      *renderpkg.PreparedTree
+	groupOnce sync.Once
+	groups    []renderpkg.DocumentGroup
 }
 
 func PreparePresentation(gitCtx git.Context, plan output.Plan, report output.Report) *PreparedPresentation {
@@ -47,6 +49,10 @@ func (p *PreparedPresentation) matches(plan output.Plan, report output.Report) b
 }
 
 func printConfiguredPreviewTree(cfg RenderConfig, w io.Writer, plan output.Plan, report output.Report, colors platform.Palette) error {
+
+	if cfg.ShowsScopeTrees(plan) {
+		return renderpkg.RenderGroups(w, preparedScopeGroups(cfg, plan, report), treeRenderOptions{Width: treeReportWidth(w), ShowModeTags: true, ShowSizes: true, ShowGitStatus: true}, treePalette(colors))
+	}
 	p := cfg.prepared
 	if !p.matches(plan, report) {
 		return printPreviewTree(w, plan, report, colors)
@@ -54,5 +60,30 @@ func printConfiguredPreviewTree(cfg RenderConfig, w io.Writer, plan output.Plan,
 	p.once.Do(func() {
 		p.tree = renderpkg.PrepareTree(treeEntriesFromPlan(p.plan, p.report))
 	})
-	return p.tree.Render(w, treeRenderOptions{ShowModeTags: true, ShowSizes: true, ShowGitStatus: true}, treePalette(colors))
+	return p.tree.Render(w, treeRenderOptions{Width: treeReportWidth(w), ShowModeTags: true, ShowSizes: true, ShowGitStatus: true}, treePalette(colors))
+}
+
+func preparedScopeGroups(cfg RenderConfig, plan output.Plan, report output.Report) []renderpkg.DocumentGroup {
+	p := cfg.prepared
+	var groups []renderpkg.DocumentGroup
+	if !p.matches(plan, report) {
+		groups = treeGroupsFromPlan(cfg, plan, report)
+	} else {
+		p.groupOnce.Do(func() { p.groups = treeGroupsFromPlan(cfg, plan, report) })
+		groups = p.groups
+	}
+	if len(cfg.ScopeIssues) == 0 {
+		return groups
+	}
+	groups = append([]renderpkg.DocumentGroup(nil), groups...)
+	for i, issues := range cfg.ScopeIssues {
+		if i < 0 || i >= len(groups) {
+			continue
+		}
+		groups[i].Notices = append(append([]string(nil), groups[i].Notices...), issues...)
+		if len(groups[i].Entries) == 0 {
+			groups[i].Empty = ""
+		}
+	}
+	return groups
 }

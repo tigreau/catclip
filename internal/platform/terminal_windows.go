@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"syscall"
+	"unsafe"
 )
 
 var setInputConsoleMode = syscall.NewLazyDLL("kernel32.dll").NewProc("SetConsoleMode")
@@ -68,3 +69,22 @@ func BeginPickerInputSession(input *os.File) (func() error, error) {
 	}
 	return func() error { return setMode(original) }, nil
 }
+
+func TerminalColumns(f *os.File) int {
+	if f == nil {
+		return 0
+	}
+	var info struct {
+		Size, Cursor struct{ X, Y int16 }
+		Attributes   uint16
+		Window       struct{ Left, Top, Right, Bottom int16 }
+		Maximum      struct{ X, Y int16 }
+	}
+	ok, _, _ := getConsoleScreenBufferInfo.Call(f.Fd(), uintptr(unsafe.Pointer(&info)))
+	if ok == 0 {
+		return 0
+	}
+	return int(info.Window.Right - info.Window.Left + 1)
+}
+
+var getConsoleScreenBufferInfo = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleScreenBufferInfo")

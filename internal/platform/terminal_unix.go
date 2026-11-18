@@ -124,3 +124,17 @@ func terminalIOCTLRequests() (uintptr, uintptr, bool) {
 		return 0, 0, false
 	}
 }
+
+// TerminalColumns queries the output descriptor, never shells out or reads
+// terminal input. Pipes return zero so machine-readable reports stay unwrapped.
+func TerminalColumns(f *os.File) int {
+	if f == nil {
+		return 0
+	}
+	var size struct{ Rows, Cols, X, Y uint16 }
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, f.Fd(), syscall.TIOCGWINSZ, uintptr(unsafe.Pointer(&size)))
+	if errno != 0 {
+		return 0
+	}
+	return int(size.Cols)
+}

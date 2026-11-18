@@ -58,6 +58,7 @@ func Main() {
 		exitWithError(contextErr, os.Stderr, os.Args[1:])
 		return
 	}
+	args = cli.NormalizeHiddenAliases(args)
 	// Only descendants carrying a private live picker owner opt in. Establish
 	// their lifetime before tool checks or any other operation can spawn work.
 	// This is inert for ordinary invocations and on Unix.
@@ -160,23 +161,37 @@ func Main() {
 	cfg, err := cli.ParseArgs(args)
 	finishParseBench("err", platform.InternalBenchError(err))
 	if err != nil {
+		quiet := false
+		for i := 0; i < len(args); i++ {
+			if args[i] == "--quiet" || args[i] == "-q" {
+				quiet = true
+			}
+			i += cli.FixedValueCount(args[i])
+		}
+		if shouldWriteResolvedStartupCommand(startupResult, quiet) {
+			if writeErr := writeResolvedStartupCommand(os.Stderr, args); writeErr != nil {
+				err = writeErr
+			}
+		}
 		exitWithError(err, os.Stderr, args)
 		return
 	}
-	if shouldWriteResolvedStartupCommand(startupResult, cfg.Quiet) {
-		if err := writeResolvedStartupCommand(os.Stderr, args); err != nil {
-			exitWithError(err, os.Stderr, args)
-			return
-		}
-	}
+
+	writeCommand := resolvedCommandOnce(os.Stderr, args, shouldWriteResolvedStartupCommand(startupResult, cfg.Quiet))
 
 	finishRunBench := platform.InternalBenchSpan("main.phase", "kind", commandKind, "phase", "run")
-	if err := runFromParsedCommand(cfg, os.Stdout, os.Stderr, startupResult.InitialGit, startupResult.PreparedOutput); err != nil {
+	if err := runWithReportFromParsedCommand(cfg, os.Stdout, os.Stderr, startupResult.InitialGit, writeCommand, startupResult.PreparedOutput); err != nil {
 		finishRunBench("err", platform.InternalBenchError(err))
+		if writeErr := writeCommand(); writeErr != nil {
+			err = writeErr
+		}
 		exitWithError(err, os.Stderr, args)
 		return
 	}
 	finishRunBench("err", "false")
+	if err := writeCommand(); err != nil {
+		exitWithError(err, os.Stderr, args)
+	}
 }
 
 func internalBenchCommandKind(args []string) string {
@@ -261,7 +276,7 @@ func writeResolvedStartupCommand(stderr io.Writer, args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
-	_, err := fmt.Fprintf(stderr, "Resolved command:\n  %s\n\n", cli.FormatResolvedStartupCommand(args))
+	_, err := fmt.Fprintf(stderr, "\nResolved command:\n  %s\n\n", cli.FormatResolvedStartupCommand(args))
 	return err
 }
 
@@ -288,4 +303,17 @@ func linuxSessionGateErrorFor(kind platform.LinuxSessionKind) error {
 			"Linux desktop sessions must use Wayland.\n\n" +
 			"Log into a Wayland session and rerun catclip.",
 	)
+}
+
+// One invocation owns this callback. UI emits it between the report and the
+// outcome; early failures use the same callback before printing their error.
+func resolvedCommandOnce(w io.Writer, args []string, enabled bool) func() error {
+	written := !enabled
+	return func() error {
+		if written {
+			return nil
+		}
+		written = true
+		return writeResolvedStartupCommand(w, args)
+	}
 }

@@ -84,30 +84,28 @@ func EncodePayload(w io.Writer, doc Document) error {
 			}
 		}
 	default:
-		entries := doc.Entries
-		if !doc.EntriesSorted {
-			entries = SortedEntries(entries)
+
+		if len(doc.Groups) > 0 {
+			for _, group := range doc.Groups {
+				if err := writePayloadRecord(bw, payloadRecord{Type: "group", Content: group.Label, State: group.Empty}); err != nil {
+					return err
+				}
+				if err := encodeEntries(bw, group.Entries, false); err != nil {
+					return err
+				}
+				for _, notice := range group.Notices {
+					if err := writePayloadRecord(bw, payloadRecord{Type: "group_notice", Content: notice}); err != nil {
+						return err
+					}
+				}
+				if err := writePayloadRecord(bw, payloadRecord{Type: "group_end"}); err != nil {
+					return err
+				}
+			}
+		} else if err := encodeEntries(bw, doc.Entries, doc.EntriesSorted); err != nil {
+			return err
 		}
-		for _, entry := range entries {
-			record := payloadRecord{
-				Type:           "entry",
-				Path:           entry.Path,
-				Kind:           "file",
-				Git:            entry.GitStatus,
-				Tag:            entry.ModeTag,
-				TargetRoot:     entry.TargetRoot,
-				IgnoreBypassed: entry.IgnoreBypassed,
-				BlockSource:    entry.BlockSource,
-				Binary:         entry.Binary,
-			}
-			if entry.Size != nil {
-				sizeCopy := *entry.Size
-				record.Size = &sizeCopy
-			}
-			if err := writePayloadRecord(bw, record); err != nil {
-				return err
-			}
-		}
+
 	}
 
 	for _, notice := range doc.FooterNotices {
@@ -140,6 +138,7 @@ func DecodePayload(r io.Reader) (Document, error) {
 
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	groupIndex := -1
 	lineNo := 0
 	recordCount := 0
 	for scanner.Scan() {
@@ -179,6 +178,20 @@ func DecodePayload(r io.Reader) (Document, error) {
 				return Document{}, fmt.Errorf("tree payload target on line %d is missing a valid path", lineNo)
 			}
 			doc.Target = &target
+
+		case "group":
+			if groupIndex >= 0 {
+				return Document{}, fmt.Errorf("nested scope group")
+			}
+			groupIndex = len(doc.Groups)
+			doc.Groups = append(doc.Groups, DocumentGroup{Label: record.Content, Empty: record.State})
+		case "group_end":
+			groupIndex = -1
+		case "group_notice":
+			if groupIndex < 0 {
+				return Document{}, fmt.Errorf("scope notice outside group")
+			}
+			doc.Groups[groupIndex].Notices = append(doc.Groups[groupIndex].Notices, record.Content)
 		case "entry":
 			kind := record.Kind
 			if kind == "" {
@@ -191,7 +204,7 @@ func DecodePayload(r io.Reader) (Document, error) {
 			if relPath == "" || relPath == "." {
 				return Document{}, fmt.Errorf("tree payload entry on line %d is missing a file path", lineNo)
 			}
-			doc.Entries = append(doc.Entries, DocumentEntry{
+			entry := DocumentEntry{
 				Path:           relPath,
 				Size:           record.Size,
 				GitStatus:      record.Git,
@@ -200,7 +213,12 @@ func DecodePayload(r io.Reader) (Document, error) {
 				IgnoreBypassed: record.IgnoreBypassed,
 				BlockSource:    record.BlockSource,
 				Binary:         record.Binary,
-			})
+			}
+			if groupIndex >= 0 {
+				doc.Groups[groupIndex].Entries = append(doc.Groups[groupIndex].Entries, entry)
+			} else {
+				doc.Entries = append(doc.Entries, entry)
+			}
 		case "notice":
 			doc.FooterNotices = append(doc.FooterNotices, record.Content)
 		case "summary":
@@ -253,4 +271,31 @@ func writePayloadRecord(w io.Writer, record payloadRecord) error {
 	}
 	_, err = w.Write([]byte{'\n'})
 	return err
+}
+
+func encodeEntries(bw io.Writer, entries []DocumentEntry, sorted bool) error {
+	if !sorted {
+		entries = SortedEntries(entries)
+	}
+	for _, entry := range entries {
+		record := payloadRecord{
+			Type:           "entry",
+			Path:           entry.Path,
+			Kind:           "file",
+			Git:            entry.GitStatus,
+			Tag:            entry.ModeTag,
+			TargetRoot:     entry.TargetRoot,
+			IgnoreBypassed: entry.IgnoreBypassed,
+			BlockSource:    entry.BlockSource,
+			Binary:         entry.Binary,
+		}
+		if entry.Size != nil {
+			sizeCopy := *entry.Size
+			record.Size = &sizeCopy
+		}
+		if err := writePayloadRecord(bw, record); err != nil {
+			return err
+		}
+	}
+	return nil
 }

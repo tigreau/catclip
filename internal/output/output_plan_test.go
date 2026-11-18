@@ -122,8 +122,8 @@ func TestOutputPlanPreviewModeTagsLines(t *testing.T) {
 	got := plan.PreviewModeTags(nil)
 	want := map[string]string{
 		"bare.go":   "numbered",
-		"ranged.go": "lines 1-5",
-		"open.go":   "lines 400-",
+		"ranged.go": "1-5",
+		"open.go":   "400-",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
@@ -142,7 +142,7 @@ func TestOutputPlanPreviewModeTagsLinesWithPaths(t *testing.T) {
 	got := plan.PreviewModeTags(nil)
 	want := map[string]string{
 		"numbered.go": "path + numbered",
-		"ranged.go":   "path + lines 1-5",
+		"ranged.go":   "path + 1-5",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
@@ -158,7 +158,7 @@ func TestOutputPlanPreviewModeTagsLinesMultiEntry(t *testing.T) {
 	}
 	got := plan.PreviewModeTags(nil)
 	want := map[string]string{
-		"multi.go": "lines 1-5, lines 400-450",
+		"multi.go": "1-5, 400-450",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
@@ -175,7 +175,7 @@ func TestOutputPlanPreviewModeTagsLinesAndSnippet(t *testing.T) {
 	}
 	got := plan.PreviewModeTags(nil)
 	want := map[string]string{
-		"snippet-wins.go": "snippet + lines 1-5",
+		"snippet-wins.go": "snippet + 1-5",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)
@@ -204,9 +204,9 @@ func TestOutputPlanPreviewModeTagsSnippetRanges(t *testing.T) {
 	}
 	got := plan.PreviewModeTags(nil)
 	want := map[string]string{
-		"one.go":   "snippet 12-16",
-		"two.go":   "2 snippets 12-16,80-84",
-		"three.go": "3 snippets 12-16,80-84,...",
+		"one.go":   "12-16",
+		"two.go":   "12-16, 80-84",
+		"three.go": "12-16, 80-84, 120-122",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("PreviewModeTags() = %#v, want %#v", got, want)

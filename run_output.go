@@ -83,7 +83,18 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 	if ctx.Invocation.Headless {
 		ctx.Colors = platform.Palette{}
 	}
-	if err := writeDiscoveryDiagnostics(state.Diagnostics, ctx.Stderr, ctx.Colors); err != nil {
+
+	// An empty plan has no report to precede early discovery errors.
+	if state.Plan.IsEmpty() && len(state.Diagnostics) > 0 {
+		if err := ctx.Render.WriteBeforeOutcome(); err != nil {
+			return err
+		}
+	}
+	diagnostics := state.Diagnostics
+	if !ctx.Invocation.Headless {
+		ctx.Render, diagnostics = ctx.Render.WithScopeDiagnostics(state.Plan, diagnostics)
+	}
+	if err := writeDiscoveryDiagnostics(diagnostics, ctx.Stderr, ctx.Colors); err != nil {
 		return err
 	}
 	if err := state.Plan.WriteLineOmissions(ctx.Stderr, ctx.Colors); err != nil {
@@ -92,10 +103,24 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 	if state.Plan.IsEmpty() {
 		return executeEmptyOutput(ctx, state)
 	}
+	if ctx.Emit.TokenLimit > 0 && ctx.Emit.Raw {
+		if err := output.ValidateRawPlan(ctx.Emit, state.Plan); err != nil {
+			return err
+		}
+	}
+	if ctx.Emit.TokenLimit > 0 && ctx.Invocation.PayloadKind != command.PayloadMetadata && !state.Plan.HasMetadata() {
+		state.Plan = state.Plan.WithTokenLimit(ctx.Emit.TokenLimit)
+	}
 	reportStarted := time.Now()
 	finishReportBench := platform.InternalBenchSpan("output.report", "items", platform.InternalBenchInt(state.Plan.Len()))
 	notices := discovery.DedupePreserveOrder(state.Notices)
-	report, reused := state.Presentation.ReportForPlan(ctx.Git, state.Plan, notices)
+	lookupNotices := notices
+	if ctx.Emit.TokenLimit > 0 {
+		if notice := state.Plan.TokenLimitNotice(); notice != "" {
+			lookupNotices = append(append([]string(nil), notices...), notice)
+		}
+	}
+	report, reused := state.Presentation.ReportForPlan(ctx.Git, state.Plan, lookupNotices)
 	var err error
 	if reused {
 		ctx.Render = ctx.Render.WithPreparedPresentation(state.Presentation)
@@ -120,6 +145,22 @@ func executePlanOutput(ctx outputExecutionContext, state outputExecutionState) e
 		state.Presentation = ui.PreparePresentation(ctx.Git, state.Plan, report)
 		ctx.Render = ctx.Render.WithPreparedPresentation(state.Presentation)
 	}
+	if ctx.Emit.TokenLimit > 0 && ctx.Invocation.PayloadKind != command.PayloadMetadata && state.Plan.HasMetadata() && state.Plan.MetadataPrepared() {
+		previous := state.Plan
+		state.Plan = state.Plan.WithTokenLimit(ctx.Emit.TokenLimit)
+		if !state.Plan.SameInstance(previous) {
+			statuses := report.Statuses
+			if statuses == nil {
+				statuses = map[string]string{}
+			}
+			report, err = output.BuildReportForPlan(ctx.Git, state.Plan, output.ReportOptions{IncludeTreeMetadata: true, PrecomputedGitStatuses: statuses, Notices: notices})
+			if err != nil {
+				return err
+			}
+			state.Presentation = ui.PreparePresentation(ctx.Git, state.Plan, report)
+			ctx.Render = ctx.Render.WithPreparedPresentation(state.Presentation)
+		}
+	}
 	if ctx.Invocation.PayloadKind == command.PayloadMetadata {
 		return executeMetadata(ctx, state, report)
 	}
@@ -140,6 +181,9 @@ func executeEmptyOutput(ctx outputExecutionContext, state outputExecutionState) 
 		for _, notice := range discovery.DedupePreserveOrder(state.Notices) {
 			fmt.Fprintln(ctx.Stderr, notice)
 		}
+	}
+	if err := ctx.Render.WriteBeforeOutcome(); err != nil {
+		return err
 	}
 	if state.Plan.HasLineOmissions() || len(state.Plan.RefinementNoticeText()) > 0 {
 		if _, err := fmt.Fprintf(ctx.Stderr, "%sNo output was emitted.%s\n", ctx.Colors.Warn, ctx.Colors.Reset); err != nil {
@@ -164,7 +208,9 @@ func executeMetadata(ctx outputExecutionContext, state outputExecutionState, rep
 	presentationColors := ctx.Colors
 	if ctx.Invocation.EmissionPolicy == command.EmissionNever {
 		presentationWriter = ctx.Stdout
-		presentationColors = platform.ActivePaletteForWriter(ctx.Stdout)
+		if !ctx.Invocation.Headless {
+			presentationColors = platform.ActivePaletteForWriter(ctx.Stdout)
+		}
 		proceed, err := ui.WriteNormalDiagnostics(ctx.Render, ctx.Git, state.Plan, report,
 			ctx.Invocation.EmissionPolicy, presentationWriter, ctx.Stderr, presentationColors, ctx.Colors)
 		if err != nil {
@@ -194,6 +240,16 @@ func executeMetadata(ctx outputExecutionContext, state outputExecutionState, rep
 			return err
 		}
 	}
+	if ctx.Emit.TokenLimit > 0 {
+		state.Plan, err = state.Plan.WithMetadataPayload(metadata)
+		if err != nil {
+			return err
+		}
+		state.Plan = state.Plan.WithTokenLimit(ctx.Emit.TokenLimit)
+		if notice := state.Plan.TokenLimitNotice(); notice != "" {
+			report.Notices = discovery.DedupePreserveOrder(append(report.Notices, notice))
+		}
+	}
 	proceed, err := ui.WriteMetadataDiagnostics(ctx.Render, ctx.Git, state.Plan, report, metadata,
 		ctx.Invocation.EmissionPolicy, presentationWriter, ctx.Stderr, presentationColors, ctx.Colors)
 	if err != nil {
@@ -218,13 +274,19 @@ func executeMetadata(ctx outputExecutionContext, state outputExecutionState, rep
 	finishEmitBench := platform.InternalBenchSpan("output.metadata.emit")
 	metadataColors := output.TerminalPrintPalette(ctx.Emit, ctx.Invocation.Headless, ctx.Invocation.Quiet, ctx.Stdout)
 	var metadataANSIBytes int64
-	emitStats, err := output.WithTerminalPrintSurface(ctx.Stdout, metadataColors, func(sink io.Writer) (output.EmitStats, error) {
-		return output.WithPayloadWriter(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), sink, ctx.Colors, func(w io.Writer) error {
-			var writeErr error
-			metadataANSIBytes, writeErr = ui.WriteMetadataReportWithPalette(w, metadata, metadataColors)
-			return writeErr
+	var emitStats output.EmitStats
+	if ctx.Emit.TokenLimit > 0 {
+		emitStats, err = output.EmitOutputPlan(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), state.Plan, ctx.Stdout, ctx.Colors,
+			output.PrintPresentation{Headless: ctx.Invocation.Headless, Quiet: ctx.Invocation.Quiet, Highlight: render.HighlightPrintSource})
+	} else {
+		emitStats, err = output.WithTerminalPrintSurface(ctx.Stdout, metadataColors, func(sink io.Writer) (output.EmitStats, error) {
+			return output.WithPayloadWriter(ctx.Emit, outputEnvironmentFromInvocation(ctx.Invocation), sink, ctx.Colors, func(w io.Writer) error {
+				var writeErr error
+				metadataANSIBytes, writeErr = ui.WriteMetadataReportWithPalette(w, metadata, metadataColors)
+				return writeErr
+			})
 		})
-	})
+	}
 	if err == nil {
 		emitStats.PayloadBytes -= metadataANSIBytes
 	}
@@ -261,7 +323,9 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 	presentationColors := ctx.Colors
 	if ctx.Invocation.EmissionPolicy == command.EmissionNever {
 		presentationWriter = ctx.Stdout
-		presentationColors = platform.ActivePaletteForWriter(ctx.Stdout)
+		if !ctx.Invocation.Headless {
+			presentationColors = platform.ActivePaletteForWriter(ctx.Stdout)
+		}
 	}
 	proceed, err := ui.WriteNormalDiagnostics(
 		ctx.Render,
@@ -318,6 +382,11 @@ func executeNormalOutput(ctx outputExecutionContext, state outputExecutionState,
 		return err
 	}
 	outputSpinnerStop()
+	if emitStats.TokenLimitNotice != "" {
+		if _, err := io.WriteString(ctx.Stderr, emitStats.TokenLimitNotice); err != nil {
+			return err
+		}
+	}
 	state.Plan = state.Plan.WithoutFiles(emitStats.SkippedPaths)
 	outputMetrics.PayloadBytes = emitStats.PayloadBytes
 	if ctx.Invocation.Verbose {

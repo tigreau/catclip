@@ -64,6 +64,7 @@ func ParseArgsAllowImplicitDot(args []string) (command.Parsed, error) {
 }
 
 func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parsed, error) {
+	args = NormalizeHiddenAliases(args)
 	wd, err := os.Getwd()
 	if err != nil {
 		return command.Parsed{}, err
@@ -164,6 +165,13 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			cfg.Action = command.ActionResetHiss
 		case "--all-ignore-rules":
 			cfg.Action = command.ActionListIgnoreRules
+		case "--token-limit", "-tl":
+			limit, next, err := ConsumeTokenLimit(args, i+1)
+			if err != nil {
+				return command.Parsed{}, err
+			}
+			cfg.TokenLimit = limit
+			i = next - 1
 		case "-v", "--verbose":
 			cfg.Verbose = true
 		case "-q", "--quiet":
@@ -171,7 +179,7 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 		case "-y", "--yes":
 			sawYes = true
 			cfg.EmissionPolicy = command.EmissionAlways
-		case "--no":
+		case "--only-tree":
 			sawNo = true
 			cfg.EmissionPolicy = command.EmissionNever
 		case "-p", "--print":
@@ -180,12 +188,12 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			cfg.Headless = true
 		case "-r", "--raw":
 			cfg.Raw = true
-		case "-b", "--with-binaries":
+		case "-wb", "--with-binaries":
 			inModifierMode = true
 			lastNoValueModifier = arg
 			current.WithBinaries = true
 			current.Stages = append(current.Stages, command.Stage{Kind: command.StageWithBinaries})
-		case "-t", "--no-tree":
+		case "-nt", "--no-tree":
 			cfg.NoTree = true
 		case "--no-bundle":
 			cfg.NoBundle = true
@@ -310,6 +318,22 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 			}
 			i++
 			cfg.RecentData = args[i]
+		case "--internal-token-limit-preview":
+			if i+1 >= len(args) {
+				return command.Parsed{}, newUsageError("Error: --internal-token-limit-preview requires a preset.")
+			}
+			i++
+			n, err := strconv.ParseInt(args[i], 10, 64)
+			if err != nil || n <= 0 {
+				return command.Parsed{}, newUsageError("Error: invalid token limit preview preset.")
+			}
+			cfg.TokenLimitPreview = n
+		case "--internal-sink-focus":
+			if i+3 >= len(args) {
+				return command.Parsed{}, newUsageError("Error: --internal-sink-focus requires mode path, Esc hint, and choice.")
+			}
+			cfg.SinkFocusPath, cfg.SinkFocusEscHint, cfg.SinkFocusChoice = args[i+1], args[i+2], args[i+3]
+			i += 3
 		case "--internal-sink-toggle":
 			if i+1 >= len(args) {
 				return command.Parsed{}, newUsageError("Error: --internal-sink-toggle requires a path.")
@@ -580,7 +604,11 @@ func parseArgsWithMode(args []string, allowImplicitDotScope bool) (command.Parse
 
 	if cfg.Headless || cfg.IsInternalKind() {
 		cfg.OutputMode = command.OutputModeStdout
-		cfg.Quiet = true
+		// Headless inspection requests the report itself. Preserve explicit
+		// quiet, while ordinary headless payloads keep their quiet default.
+		if cfg.EmissionPolicy != command.EmissionNever || cfg.IsInternalKind() {
+			cfg.Quiet = true
+		}
 	}
 
 	if len(executionScopes) == 0 {
@@ -619,8 +647,8 @@ func validateEmissionPolicyCompatibility(cfg command.Parsed, sawYes, sawNo bool)
 	if cfg.OutputMode == command.OutputModeStdout {
 		return EmissionPolicyConflictError("--print")
 	}
-	if cfg.Headless {
-		return EmissionPolicyConflictError("--headless")
+	if cfg.NoTree {
+		return EmissionPolicyConflictError("--no-tree")
 	}
 	if cfg.Quiet {
 		return EmissionPolicyConflictError("--quiet")

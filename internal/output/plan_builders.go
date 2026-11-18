@@ -24,8 +24,18 @@ func BuildPlanForResolvedScopes(
 	evaluatedScopes []EvaluatedScope,
 	allEntries []discovery.Entry,
 	raw ...bool,
-) (plan Plan, err error) {
-	defer func() { plan.representedRequests = nil }()
+) (Plan, error) {
+	return buildPlanForResolvedScopes(gitCtx, scopes, evaluatedScopes, allEntries, true, raw...)
+}
+
+func buildPlanForResolvedScopes(gitCtx git.Context, scopes []command.ExecutionScope, evaluatedScopes []EvaluatedScope, allEntries []discovery.Entry, scopeTrees bool, raw ...bool) (plan Plan, err error) {
+	originalScopes := evaluatedScopes
+	defer func() {
+		if err == nil && scopeTrees {
+			plan.recordScopeContributions(originalScopes)
+		}
+		plan.representedRequests = nil
+	}()
 	if len(scopes) == len(evaluatedScopes) {
 		copied := false
 		for i, scope := range scopes {
@@ -38,6 +48,7 @@ func BuildPlanForResolvedScopes(
 			}
 		}
 	}
+	originalScopes = evaluatedScopes
 	filtered, refinements := beginRefinementMerge(scopes, evaluatedScopes)
 	if refinements != nil {
 		defer func() {
@@ -64,7 +75,7 @@ func BuildPlanForResolvedScopes(
 		}
 		plan.items = make([]PlanItem, 0, len(prepared))
 		for _, item := range prepared {
-			plan.items = append(plan.items, newFileOutputPlanItem(item.unit))
+			plan.items = append(plan.items, scopedFileItem(item.unit, item.scopeIndex))
 		}
 		if len(plan.items) > 0 {
 			plan.sections = []PlanSection{{kind: SectionKindFiles, items: plan.items[:len(plan.items):len(plan.items)]}}
@@ -97,7 +108,11 @@ func BuildPlanForResolvedScopes(
 	} else {
 		entries = discovery.DedupeEntriesByPath(entries)
 	}
-	return preparePlan(gitCtx, entries, omissions, raw...)
+	plan, err = preparePlan(gitCtx, entries, omissions, raw...)
+	if err == nil && scopeTrees {
+		plan.assignFirstSelectingScopes(evaluatedScopes)
+	}
+	return plan, err
 }
 
 // BuildLinesPreviewPlanForResolvedScopes is the lighter-weight planner
@@ -131,6 +146,14 @@ func BuildLinesPreviewPlanForResolvedScopes(scopes []command.ExecutionScope, all
 // EvaluatedScope list, and produces the merged plan. cli.go's run()
 // calls this once per invocation.
 func BuildPlanForDiscoveredInvocation(gitCtx git.Context, inv discovery.Discovered, raw ...bool) (Plan, error) {
+	return BuildPlanForDiscoveredInvocationWithOptions(gitCtx, inv, PlanOptions{Raw: rawPreparation(raw), ScopeTrees: true})
+}
+
+// PlanOptions lets source-only callers avoid presentation provenance work.
+// Interactive preview callers retain ownership for their later tree report.
+type PlanOptions struct{ Raw, ScopeTrees bool }
+
+func BuildPlanForDiscoveredInvocationWithOptions(gitCtx git.Context, inv discovery.Discovered, opts PlanOptions) (Plan, error) {
 	evaluatedScopes := make([]EvaluatedScope, 0, len(inv.Scopes))
 	resolvedScopes := make([]command.ExecutionScope, 0, len(inv.Scopes))
 	for _, scope := range inv.Scopes {
@@ -151,14 +174,14 @@ func BuildPlanForDiscoveredInvocation(gitCtx git.Context, inv discovery.Discover
 		})
 	}
 	// Flatten once, after empty refinements have suppressed whole bodies.
-	return BuildPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, nil, raw...)
+	return buildPlanForResolvedScopes(gitCtx, resolvedScopes, evaluatedScopes, nil, opts.ScopeTrees, opts.Raw)
 }
 
 // BuildMetadataPlanForDiscoveredInvocation constructs the same deduped,
 // ordered file view as the ordinary planner without preparing content bodies.
 // Metadata needs captured size and modification time, so script-mode gaps are
 // filled once here and carried in the plan through report construction.
-func BuildMetadataPlanForDiscoveredInvocation(workingDir string, inv discovery.Discovered) (Plan, error) {
+func BuildMetadataPlanForDiscoveredInvocation(workingDir string, inv discovery.Discovered, scopeTrees ...bool) (Plan, error) {
 	var entries []discovery.Entry
 	scopes := make([]command.ExecutionScope, 0, len(inv.Scopes))
 	for _, scope := range inv.Scopes {
@@ -179,7 +202,16 @@ func BuildMetadataPlanForDiscoveredInvocation(workingDir string, inv discovery.D
 	for _, entry := range entries {
 		units = append(units, PreparedFileUnit{Entry: entry, BodyBytes: entry.SizeBytes})
 	}
-	return BuildPlan(units), nil
+	plan := BuildPlan(units)
+	if len(inv.Scopes) > 1 && (len(scopeTrees) == 0 || scopeTrees[0]) {
+		evaluated := make([]EvaluatedScope, len(inv.Scopes))
+		for i, scope := range inv.Scopes {
+			evaluated[i] = EvaluatedScope{Entries: scope.Entries}
+		}
+		plan.assignFirstSelectingScopes(evaluated)
+		plan.recordScopeContributions(evaluated)
+	}
+	return plan, nil
 }
 
 // ExecutionScopesPreserveEvaluatedOrder reports whether any scope contains a

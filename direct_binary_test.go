@@ -24,7 +24,7 @@ func TestDirectBinaryInclusionAndContentDiagnostics(t *testing.T) {
 		for _, binaryFlag := range []bool{false, true} {
 			args := []string{"hidden/tool"}
 			if binaryFlag {
-				args = append(args, "-b")
+				args = append(args, "-wb")
 			}
 			args = append(args, flag, "needle", "--headless", "--print")
 			var stdout, stderr bytes.Buffer
@@ -63,7 +63,7 @@ func TestBinaryContentFilterBeforeMetadata(t *testing.T) {
 	})
 	for _, flag := range []string{"--contains", "--not-contains"} {
 		var stdout, stderr bytes.Buffer
-		args := []string{"hit.txt", "miss.txt", "blob.fixture", "-b", flag, "needle", "--metadata", "--headless"}
+		args := []string{"hit.txt", "miss.txt", "blob.fixture", "-wb", flag, "needle", "--metadata", "--headless"}
 		if err := run(parseInProject(t, project, args), &stdout, &stderr); err != nil {
 			t.Fatalf("%s: %v: %s", flag, err, stderr.String())
 		}
@@ -86,9 +86,9 @@ func TestBinaryOnlyDiagnosticFollowsOrderedFilters(t *testing.T) {
 		args   []string
 		binary bool
 	}{
-		{[]string{".", "-b", "--only", "*.jar", "--snippet", "needle"}, true},
-		{[]string{".", "-b", "--only", "missing", "--snippet", "needle"}, false},
-		{[]string{".", "-b", "--snippet", "absent"}, false},
+		{[]string{".", "-wb", "--only", "*.jar", "--snippet", "needle"}, true},
+		{[]string{".", "-wb", "--only", "missing", "--snippet", "needle"}, false},
+		{[]string{".", "-wb", "--snippet", "absent"}, false},
 	} {
 		var stdout, stderr bytes.Buffer
 		args := append(tc.args, "--headless", "--print")

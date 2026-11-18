@@ -95,6 +95,10 @@ type Resolver struct {
 	caseFoldIndexesReady    bool
 	ignoreSetsReady         bool
 	directoryInventories    map[directoryInventoryKey][]string
+	// Scope execution completes failure diagnostics together after resolving
+	// targets. Standalone/startup priority probes retain their immediate behavior.
+	deferIgnoredDiagnostics  bool
+	ignoredDiagnosticPending bool
 }
 
 // Scope is the typed output of the discover stage for a
@@ -142,13 +146,14 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	}()
 
 	resolver := Resolver{
-		Cfg:               cfg,
-		GitCtx:            gitCtx,
-		AllowFileSymlinks: false,
-		WithBinaries:      cfg.WithBinaries,
-		NoIgnore:          s.NoIgnore || s.HasStage(command.StageNoIgnore),
-		WantedBasenames:   CollectWantedBasenames(s.Targets),
-		ScopeTargets:      append([]string(nil), s.Targets...),
+		deferIgnoredDiagnostics: true,
+		Cfg:                     cfg,
+		GitCtx:                  gitCtx,
+		AllowFileSymlinks:       false,
+		WithBinaries:            cfg.WithBinaries,
+		NoIgnore:                s.NoIgnore || s.HasStage(command.StageNoIgnore),
+		WantedBasenames:         CollectWantedBasenames(s.Targets),
+		ScopeTargets:            append([]string(nil), s.Targets...),
 		MembershipEnumeration: search.MembershipEnumerationContext{
 			ScopeIndex: scopeIndex,
 			ScopeKnown: true,
@@ -161,6 +166,7 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 	var entries []Entry
 	selectedPaths := make([]string, 0, len(s.Targets))
 	explainedTargetCount := 0
+	var pendingIgnored []pendingIgnoredTargetDiagnostic
 	for _, target := range s.Targets {
 		normalized := normalizeRelPath(target)
 		if normalized == "" {
@@ -186,6 +192,7 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 			}
 		}
 		diagnosticStart := len(result.Diagnostics)
+		resolver.ignoredDiagnosticPending = false
 		discovered, targetDiagnostics, targetNotices, selectionCancelled, err := resolver.resolveAndDiscoverTarget(scopeIndex, target, stderr, colors)
 		if err != nil {
 			return result, err
@@ -200,12 +207,16 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		// preventing the warning (and therefore the inline probe). See
 		// docs/versions/v0.5.7/reports/ACTIVE_PLAN_surface_ignored_ancestor.md.
 		if !exactPath && len(discovered) == 0 && len(targetDiagnostics) == 0 && !hasGlobChars(target) {
-			if cands := resolver.findIgnoredAncestors(target); len(cands) > 0 {
-				result.Diagnostics = append(result.Diagnostics, Diagnostic{
-					Message:          ignoredAncestorMessage(target, scopeIndex, cands, colors),
-					IsTargetNotFound: true,
-				})
+			resolver.ignoredDiagnosticPending = !resolver.NoIgnore
+			if resolver.ignoredDiagnosticPending {
+				result.Diagnostics = append(result.Diagnostics, Diagnostic{})
 			}
+		}
+		if resolver.ignoredDiagnosticPending {
+			pendingIgnored = append(pendingIgnored, pendingIgnoredTargetDiagnostic{
+				target: target, start: diagnosticStart, end: len(result.Diagnostics),
+				explained: diagnosticsExplainTargetRequest(result.Diagnostics[diagnosticStart:]),
+			})
 		}
 		if len(discovered) == 0 && diagnosticsExplainTargetRequest(result.Diagnostics[diagnosticStart:]) {
 			explainedTargetCount++
@@ -215,6 +226,9 @@ func EvaluateScope(cfg command.Invocation, gitCtx git.Context, scopeIndex int, s
 		}
 		result.SelectionCancel = result.SelectionCancel || selectionCancelled
 	}
+	var additionallyExplained int
+	result.Diagnostics, additionallyExplained = resolver.completeIgnoredDiagnostics(result.Diagnostics, pendingIgnored, scopeIndex, colors)
+	explainedTargetCount += additionallyExplained
 
 	entries = DedupeEntriesByPath(entries)
 	// Per-target diagnostics explain an empty scope only when every requested
@@ -626,7 +640,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 			return nil, Diagnostics, notices, false, err
 		}
 		if blockedDir != nil && !r.NoIgnore {
-			Diagnostics = append(Diagnostics, Diagnostic{Message: targetNotFoundOrIgnoredAncestorMessage(r, target, scopeIndex, colors), IsTargetNotFound: true})
+			Diagnostics = append(Diagnostics, targetNotFoundDiagnostic(r, target, scopeIndex, colors))
 			return nil, Diagnostics, notices, false, nil
 		}
 		if blockedDir != nil {
@@ -680,7 +694,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 			}
 			return discovered, Diagnostics, notices, false, nil
 		}
-		Diagnostics = append(Diagnostics, Diagnostic{Message: targetNotFoundOrIgnoredAncestorMessage(r, target, scopeIndex, colors), IsTargetNotFound: true})
+		Diagnostics = append(Diagnostics, targetNotFoundDiagnostic(r, target, scopeIndex, colors))
 		return nil, Diagnostics, notices, false, nil
 	}
 
@@ -690,7 +704,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 			return nil, Diagnostics, notices, false, err
 		}
 		if len(targetMatches) == 0 {
-			Diagnostics = append(Diagnostics, Diagnostic{Message: targetNotFoundOrIgnoredAncestorMessage(r, target, scopeIndex, colors), IsTargetNotFound: true})
+			Diagnostics = append(Diagnostics, targetNotFoundDiagnostic(r, target, scopeIndex, colors))
 			return nil, Diagnostics, notices, false, nil
 		}
 		discovered, cancelled, err := r.resolveRankedTargetMatches(normalizedTarget, targetMatches, stderr, colors)
@@ -713,8 +727,12 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 			return discovered, Diagnostics, notices, false, nil
 		}
 		if hidden := r.ignoredExactFileCandidates(skipped); len(hidden) > 0 {
+			if r.deferIgnoredDiagnostics {
+				r.ignoredDiagnosticPending = true
+			}
 			Diagnostics = append(Diagnostics, Diagnostic{
 				Message:          ignoredAncestorMessage(target, scopeIndex, hidden, colors),
+				GroupedMessage:   ignoredAncestorMessage(target, -1, hidden, colors),
 				IsTargetNotFound: true,
 			})
 			return nil, Diagnostics, notices, false, nil
@@ -756,6 +774,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 			if hidden := r.findIgnoredAncestors(normalizedTarget); len(hidden) > 0 {
 				Diagnostics = append(Diagnostics, Diagnostic{
 					Message:          ignoredAncestorMessage(target, scopeIndex, hidden, colors),
+					GroupedMessage:   ignoredAncestorMessage(target, -1, hidden, colors),
 					IsTargetNotFound: true,
 				})
 				return nil, Diagnostics, notices, false, nil
@@ -800,7 +819,7 @@ func (r *Resolver) resolveAndDiscoverTarget(scopeIndex int, target string, stder
 	}
 
 	if len(notices) == 0 {
-		Diagnostics = append(Diagnostics, Diagnostic{Message: targetNotFoundOrIgnoredAncestorMessage(r, target, scopeIndex, colors), IsTargetNotFound: true})
+		Diagnostics = append(Diagnostics, targetNotFoundDiagnostic(r, target, scopeIndex, colors))
 	}
 	return nil, Diagnostics, notices, false, nil
 }
@@ -817,12 +836,9 @@ func (r *Resolver) resolveGlobTarget(scopeIndex int, pattern string, colors plat
 		r.markNoIgnoreTargetWalk(pattern)
 	}
 	if len(matched) == 0 {
-		diag := Diagnostic{
-			Message:             globZeroMatchWarning(r, pattern, scopeIndex, colors),
-			IsTargetNotFound:    !r.lastClassificationExcludedBinary,
-			ExplainsEmptyResult: true,
-			ScopeIndex:          scopeIndex,
-		}
+		diag := scopedDiagnostic(scopeIndex, globZeroMatchFormatter(r, pattern, colors))
+		diag.IsTargetNotFound = !r.lastClassificationExcludedBinary
+		diag.ExplainsEmptyResult = true
 		return nil, []Diagnostic{diag}, nil, false, nil
 	}
 	return withTargetRoot(matched, "."), nil, nil, false, nil

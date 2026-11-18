@@ -16,7 +16,7 @@ func TestTargetInventoryPreviewAcceptsInclusionButRejectsFilters(t *testing.T) {
 	if err := discovery.WriteTargetPreviewInventory(inventory, git.Context{}, []discovery.TargetMatch{{Path: "lib.jar", Kind: "file", SizeKnown: true, SizeBytes: 42}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, flags := range [][]string{{"--with-binaries"}, {"--no-ignore", "-b"}, {"-b", "--no-ignore"}} {
+	for _, flags := range [][]string{{"--with-binaries"}, {"--no-ignore", "-wb"}, {"-wb", "--no-ignore"}} {
 		args := append([]string{"--internal-tree-preview", "--internal-target-inventory", inventory, "."}, flags...)
 		cfg := parseInProject(t, project, args)
 		var out, diagnostic bytes.Buffer
@@ -32,7 +32,7 @@ func TestTargetInventoryPreviewAcceptsInclusionButRejectsFilters(t *testing.T) {
 		}
 	}
 	for _, stage := range []string{"--paths", "--lines"} {
-		cfg := parseInProject(t, project, []string{"--internal-tree-preview", "--internal-target-inventory", inventory, ".", "-b", stage})
+		cfg := parseInProject(t, project, []string{"--internal-tree-preview", "--internal-target-inventory", inventory, ".", "-wb", stage})
 		var out, diagnostic bytes.Buffer
 		if err := run(cfg, &out, &diagnostic); err == nil || !strings.Contains(err.Error(), "does not accept filter or output stages") {
 			t.Fatalf("guard accepted %s: %v", stage, err)

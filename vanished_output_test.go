@@ -19,10 +19,10 @@ import (
 func TestVanishedFileDuringBroadDiscovery(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, args := range [][]string{
-		{".", "--no"}, {".", "--metadata", "--no"},
+		{".", "--only-tree"}, {".", "--metadata", "--only-tree"},
 		{".", "--print"}, {".", "--headless"}, {".", "--metadata", "--print"},
-		{"*.json", "--no-ignore", "--no"},
-		{".", "--exclude", "rotating.json", "--no"},
+		{"*.json", "--no-ignore", "--only-tree"},
+		{".", "--exclude", "rotating.json", "--only-tree"},
 	} {
 		t.Run(strings.Join(args, " "), func(t *testing.T) {
 			root := t.TempDir()

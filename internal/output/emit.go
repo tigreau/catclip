@@ -29,6 +29,7 @@ var (
 )
 
 type EmitStats struct {
+	TokenLimitNotice      string
 	SkippedPaths          []string
 	PayloadBytes          int64
 	GenerateDuration      time.Duration
@@ -40,6 +41,7 @@ type EmitStats struct {
 }
 
 type EmitConfig struct {
+	TokenLimit int64
 	OutputMode command.OutputMode
 	Raw        bool
 	NoBundle   bool
@@ -218,6 +220,8 @@ func EmitOutputPlan(cfg EmitConfig, env RuntimeEnvironment, plan Plan, stdout io
 	if len(presentation) > 0 && printPresentationEnabled(cfg, presentation[0], stdout) {
 		print = &printPresentation{highlight: presentation[0].Highlight, limit: printHighlightLimit, colors: TerminalPrintPalette(cfg, presentation[0].Headless, presentation[0].Quiet, stdout)}
 	}
+	plan = plan.WithTokenLimit(cfg.TokenLimit)
+	var rawNotice string
 	var skipped []string
 	var surfaceColors platform.Palette
 	if print != nil {
@@ -226,7 +230,12 @@ func EmitOutputPlan(cfg EmitConfig, env RuntimeEnvironment, plan Plan, stdout io
 	stats, err := WithTerminalPrintSurface(stdout, surfaceColors, func(sink io.Writer) (EmitStats, error) {
 		return WithPayloadWriter(cfg, env, sink, colors, func(w io.Writer) error {
 			observed := &payloadWriter{w: w}
-			err := writeOutputPlanPayloadPresented(observed, cfg, plan, true, print)
+			var err error
+			if plan.tokenLimit != nil {
+				rawNotice, err = writeTokenLimitedPlan(observed, cfg, plan, print, true, nil)
+			} else {
+				err = writeOutputPlanPayloadPresented(observed, cfg, plan, true, print)
+			}
 			skipped = observed.skipped
 			if err == nil && observed.n == 0 && len(skipped) > 0 {
 				return ErrNoAccessibleOutput
@@ -235,6 +244,7 @@ func EmitOutputPlan(cfg EmitConfig, env RuntimeEnvironment, plan Plan, stdout io
 		})
 	})
 	stats.SkippedPaths = skipped
+	stats.TokenLimitNotice = rawNotice
 	if print != nil && err == nil {
 		stats.PayloadBytes -= print.addedBytes
 	}
@@ -254,6 +264,11 @@ func writeOutputPlanPayloadWithPrefetch(w io.Writer, cfg EmitConfig, plan Plan, 
 }
 
 func writeOutputPlanPayloadPresented(w io.Writer, cfg EmitConfig, plan Plan, prefetch bool, print *printPresentation) error {
+	plan = plan.WithTokenLimit(cfg.TokenLimit)
+	if plan.tokenLimit != nil {
+		_, err := writeTokenLimitedPlan(w, cfg, plan, print, prefetch, nil)
+		return err
+	}
 	if cfg.Raw {
 		return WriteRawOutputPlanPayload(w, plan)
 	}

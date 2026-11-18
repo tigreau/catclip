@@ -1595,7 +1595,7 @@ func TestStartupAvailableModifierChoicesEmptyKnownScopeOffersNoIgnoreOnce(t *tes
 	}
 
 	choices = startupAvailableModifierChoicesWithState(
-		[]string{"src", "--no-ignore", "-b"},
+		[]string{"src", "--no-ignore", "-wb"},
 		startupCurrentScopeState{Known: true, Empty: true},
 	)
 	if len(choices) != 0 {
@@ -1633,7 +1633,7 @@ func TestEmptyScopeAfterBothInclusionsReturnsNoFilesWithoutReopeningPicker(t *te
 	defer scopeViewMemoReset()
 	t.Setenv("CATCLIP_FZF", filepath.Join(t.TempDir(), "must-not-run-fzf"))
 
-	_, err := chooseStartupModifierChoiceWithProgress([]string{"empty", "--no-ignore", "-b"}, "", 1)
+	_, err := chooseStartupModifierChoiceWithProgress([]string{"empty", "--no-ignore", "-wb"}, "", 1)
 	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "no text files found") {
 		t.Fatalf("empty no-ignore scope error = %v, want normal no-files result", err)
 	}
@@ -2402,9 +2402,9 @@ func TestMaybeResolveStartupPickerArgsBareGlobalRunFlagsPickTargetsFirst(t *test
 	}{
 		{name: "quiet", arg: "-q", want: "src\n-q"},
 		{name: "print", arg: "-p", want: "src\n-p"},
-		{name: "no-tree", arg: "-t", want: "src\n-t"},
+		{name: "no-tree", arg: "-nt", want: "src\n-t"},
 		{name: "yes", arg: "-y", want: "src\n-y"},
-		{name: "no", arg: "--no", want: "src\n--no"},
+		{name: "no", arg: "--only-tree", want: "src\n--only-tree"},
 		{name: "verbose", arg: "-v", want: "src\n-v"},
 	}
 

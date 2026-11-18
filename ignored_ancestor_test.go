@@ -49,7 +49,7 @@ func TestRunSurfacesIgnoredAncestorForBasenameTarget(t *testing.T) {
 		"./myblocked/target.md",
 		"parent ./myblocked ignored by .gitignore",
 		"catclip 'myblocked/target.md'",
-		"catclip . --no-ignore",
+		"catclip target.md --no-ignore",
 		"catclip --all-ignore-rules",
 	} {
 		if !strings.Contains(out, want) {
@@ -78,7 +78,7 @@ func TestRunSurfacesIgnoredAncestorForDirTarget(t *testing.T) {
 		"./myblocked/somedir",
 		"parent ./myblocked ignored by .gitignore",
 		"catclip 'myblocked/somedir'",
-		"catclip . --no-ignore",
+		"catclip somedir --no-ignore",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -106,7 +106,7 @@ func TestRunHiddenExactFileBeatsUnrelatedVisibleFuzzyMatch(t *testing.T) {
 		"hidden by an ignored ancestor",
 		"./src/build/nested.ts",
 		"catclip 'src/build/nested.ts'",
-		"catclip . --no-ignore",
+		"catclip nested.ts --no-ignore",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("hidden exact diagnostic missing %q:\n%s", want, stderr.String())
@@ -137,7 +137,7 @@ func TestRunHiddenExactDirectoryBeatsUnrelatedVisibleFuzzyMatch(t *testing.T) {
 		"hidden by an ignored ancestor",
 		"./blocked/secret",
 		"catclip 'blocked/secret'",
-		"catclip . --no-ignore",
+		"catclip secret --no-ignore",
 	} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("hidden exact directory diagnostic missing %q:\n%s", want, stderr.String())
@@ -201,6 +201,9 @@ func TestRunSurfacesIgnoredAncestorMultiHit(t *testing.T) {
 	if !strings.Contains(out, "is hidden by ignore rules. Found in") {
 		t.Errorf("expected multi-hit header, got:\n%s", out)
 	}
+	if !strings.Contains(out, "catclip somefile.md --no-ignore") || strings.Contains(out, "catclip . --no-ignore") {
+		t.Fatalf("recovery must retain the original query:\n%s", out)
+	}
 	// Both top-level ignored ancestors should appear as blockers.
 	if !strings.Contains(out, "./alpha") {
 		t.Errorf("missing alpha ancestor:\n%s", out)
@@ -213,6 +216,34 @@ func TestRunSurfacesIgnoredAncestorMultiHit(t *testing.T) {
 		if !strings.Contains(out, p) {
 			t.Errorf("missing path %q in multi-hit listing:\n%s", p, out)
 		}
+	}
+}
+
+func TestIgnoredVersionDirectoryHintKeepsQueryAndReplays(t *testing.T) {
+	setupAncestorXDG(t)
+	project := setupTestProject(t, map[string]string{
+		".gitignore":                   "docs/\n",
+		"docs/versions/v0.7.12/fix.go": "package fix\n",
+		"docs/versions/v0.7.11/old.go": "package old\n",
+		"src/main.go":                  "package main\n",
+	})
+	cfg := parseInProject(t, project, []string{"v0.7.12", "--headless"})
+	var stdout, stderr bytes.Buffer
+	if err := run(cfg, &stdout, &stderr); err == nil {
+		t.Fatal("expected hidden-target diagnostic")
+	}
+	message := stderr.String()
+	if !strings.Contains(message, "catclip v0.7.12 --no-ignore") || strings.Contains(message, "catclip . --no-ignore") {
+		t.Fatal(message)
+	}
+	cfg = parseInProject(t, project, []string{"v0.7.12", "--no-ignore", "--paths", "--headless"})
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(cfg, &stdout, &stderr); err != nil {
+		t.Fatalf("recovery failed: %v\n%s", err, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "docs/versions/v0.7.12/fix.go" {
+		t.Fatalf("recovery widened selection: %s", got)
 	}
 }
 

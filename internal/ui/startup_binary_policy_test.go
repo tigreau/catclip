@@ -11,8 +11,8 @@ func TestStartupBinaryPolicyPreservesOperandsAndStageOrder(t *testing.T) {
 	for _, tc := range []struct {
 		args, want []string
 	}{
-		{[]string{"lib.jar", "--with-binaries", "--no"}, []string{"lib.jar", "--with-binaries", "--no"}},
-		{[]string{"src", "--recent", "10", "--then", "other", "-b"}, []string{"src", "--recent", "10", "--then", "other", "-b"}},
+		{[]string{"lib.jar", "--with-binaries", "--only-tree"}, []string{"lib.jar", "--with-binaries", "--only-tree"}},
+		{[]string{"src", "--recent", "10", "--then", "other", "-wb"}, []string{"src", "--recent", "10", "--then", "other", "-wb"}},
 		{[]string{"src", "--contains", "--with-binaries"}, []string{"src", "--contains", "--with-binaries"}},
 	} {
 		globals, pending := startupBinaryPolicyArgs(tc.args)
@@ -29,9 +29,9 @@ func TestStartupBinarySelectionRetainedHandoff(t *testing.T) {
 	})
 	t.Chdir(project)
 	for _, raw := range [][]string{
-		{"one/lib.jar", "--with-binaries", "--no"},
-		{"one/lib.jar", "-b", "--no"},
-		{"one/lib.jar", "-b", "--then", "two/lib.jar", "--with-binaries", "--no"},
+		{"one/lib.jar", "--with-binaries", "--only-tree"},
+		{"one/lib.jar", "-wb", "--only-tree"},
+		{"one/lib.jar", "-wb", "--then", "two/lib.jar", "--with-binaries", "--only-tree"},
 	} {
 		t.Run(raw[0]+raw[1], func(t *testing.T) {
 			scopeViewMemoReset()

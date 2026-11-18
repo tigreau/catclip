@@ -34,6 +34,10 @@ func run(cfg command.Parsed, stdout, stderr io.Writer, preparedOpt ...*ui.Startu
 }
 
 func runFromParsedCommand(cfg command.Parsed, stdout, stderr io.Writer, initialGit *ui.StartupGitContext, preparedOpt ...*ui.StartupPreparedOutputState) error {
+	return runWithReportFromParsedCommand(cfg, stdout, stderr, initialGit, nil, preparedOpt...)
+}
+
+func runWithReportFromParsedCommand(cfg command.Parsed, stdout, stderr io.Writer, initialGit *ui.StartupGitContext, beforeOutcome func() error, preparedOpt ...*ui.StartupPreparedOutputState) error {
 	var prepared *ui.StartupPreparedOutputState
 	if len(preparedOpt) > 0 {
 		prepared = preparedOpt[0]
@@ -220,8 +224,14 @@ func runFromParsedCommand(cfg command.Parsed, stdout, stderr io.Writer, initialG
 		if cfg.RecentPreview {
 			return ui.RunInternalRecentPreview(ui.RecentPreviewConfigFromParsedCommand(cfg), stdout)
 		}
+		if cfg.TokenLimitPreview > 0 {
+			return ui.RunInternalTokenLimitPreview(cfg.TokenLimitPreview, stdout)
+		}
 		if cfg.SinkTogglePath != "" {
 			return ui.RunInternalSinkToggle(cfg.SinkTogglePath, stdout)
+		}
+		if cfg.SinkFocusPath != "" {
+			return ui.RunInternalSinkFocus(cfg.SinkFocusPath, cfg.SinkFocusEscHint, cfg.SinkFocusChoice, stdout)
 		}
 		if cfg.SinkPreviewModePath != "" {
 			return ui.RunInternalSinkPreview(cfg.SinkPreviewModePath, cfg.SinkPreviewOutputPath, cfg.SinkPreviewTreePath, stdout)
@@ -309,9 +319,9 @@ func runFromParsedCommand(cfg command.Parsed, stdout, stderr io.Writer, initialG
 					"scopes", platform.InternalBenchInt(len(discoveryResult.Invocation.Scopes)),
 				)
 				if cfg.PayloadKind == command.PayloadMetadata {
-					outputPlan, err = output.BuildMetadataPlanForDiscoveredInvocation(cfg.WorkingDir, discoveryResult.Invocation)
+					outputPlan, err = output.BuildMetadataPlanForDiscoveredInvocation(cfg.WorkingDir, discoveryResult.Invocation, ui.NeedsTreeRender(renderCfg))
 				} else {
-					outputPlan, err = output.BuildPlanForDiscoveredInvocation(gitCtx, discoveryResult.Invocation, cfg.Raw)
+					outputPlan, err = output.BuildPlanForDiscoveredInvocationWithOptions(gitCtx, discoveryResult.Invocation, output.PlanOptions{Raw: cfg.Raw, ScopeTrees: ui.NeedsTreeRender(renderCfg)})
 				}
 				preparationSpinnerStop()
 				finishPlanBench(
@@ -347,6 +357,7 @@ func runFromParsedCommand(cfg command.Parsed, stdout, stderr io.Writer, initialG
 			}
 			return err
 		}
+		renderCfg.BeforeOutcome = beforeOutcome
 		outputCtx := outputExecutionContext{
 			Invocation: invocationCfg,
 			Render:     renderCfg,
@@ -736,6 +747,7 @@ func validateImplementedFeatureSet(cfg internalCommandConfig) error {
 
 func emitConfigFromParsedCommand(cfg command.Parsed) output.EmitConfig {
 	return output.EmitConfig{
+		TokenLimit: cfg.TokenLimit,
 		OutputMode: cfg.OutputMode,
 		Raw:        cfg.Raw,
 		NoBundle:   cfg.NoBundle,
