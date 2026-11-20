@@ -181,14 +181,10 @@ func TestBinaryMove(t *testing.T) {
 	})
 }
 
-func TestMoveRetryStaysInRootWithExistingDestination(t *testing.T) {
+func TestMoveRetryReportsExistingDestination(t *testing.T) {
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "src/new.go"), "unverified\n")
-	mustWrite(t, filepath.Join(root, "backup/src/old.go"), "backup\n")
 	b := Bundle{Entries: []Entry{{Path: "src/new.go", From: "src/old.go"}}}
-	if home, found := FindBundleHome(root, b); found {
-		t.Fatalf("retry redirected to %s", home)
-	}
 	p, err := BuildPlan(root, b)
 	if err != nil {
 		t.Fatal(err)

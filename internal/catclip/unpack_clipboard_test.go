@@ -57,6 +57,37 @@ func TestUnpackReadsOneCopiedBundleFile(t *testing.T) {
 	}
 }
 
+func TestUnpackUsesCurrentDirectoryWhenSiblingContainsBundlePaths(t *testing.T) {
+	source := setupUnpackProject(t)
+	destination := t.TempDir()
+	t.Chdir(destination)
+	destination, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stubUnpackClipboard(t, output.ClipboardContent{Files: []string{filepath.Join(source, "bundle.txt")}}, nil)
+	prompts := stubUnpackUI(t, true, func(plan unpack.Plan) ([]int, error) {
+		if plan.Root != destination || len(plan.Changes) != 3 {
+			t.Fatalf("unexpected destination or changes: %+v", plan)
+		}
+		for _, change := range plan.Changes {
+			if change.Kind != unpack.KindNew {
+				t.Fatalf("expected a new file at %s, got %s", change.Path, change.Kind)
+			}
+		}
+		return []int{0}, nil
+	})
+	if err := runUnpack(cli.UnpackOptions{}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if *prompts != 1 || readUnpackFile(t, destination, "src/a.go") != "new a\n" ||
+		readUnpackFile(t, destination, "src/b.go") != "<missing>" ||
+		readUnpackFile(t, source, "src/a.go") != "old a\n" {
+		t.Fatal("expected a confirmation and only the selected write in the current directory")
+	}
+}
+
 func TestUnpackClipboardProblemsWriteNothingAndSayWhatToDo(t *testing.T) {
 	root := setupUnpackProject(t)
 	for _, tt := range []struct {

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/tigreau/catclip/internal/cli"
@@ -103,21 +102,6 @@ func prepareUnpack(opts cli.UnpackOptions, colors platform.Palette) (unpackPrepa
 		return unpackPrepared{}, newExitError(1, fmt.Sprintf("Error: refusing to unpack %s: %v\n  Nothing was written.", src.name, err))
 	} else if err != nil {
 		return unpackPrepared{}, err
-	}
-	// Bundle paths are relative to the folder the copy was made in. When none
-	// of them exists here but they do in a nearby folder (frontend/ in a
-	// repository unpacked from its root), point there instead of creating the
-	// files in the wrong place.
-	if home, ok := unpack.FindBundleHome(root, bundle); ok {
-		rel, relErr := filepath.Rel(root, home)
-		if relErr != nil {
-			rel = home
-		}
-		return unpackPrepared{}, unpackProblem{
-			title:   fmt.Sprintf("None of the files in %s exist here, but they do in %s.", src.name, platform.DisplayPath(home)),
-			cliFix:  []string{"Paths in a bundle are relative to the folder it was copied in. Run catclip --unpack there:", "  cd " + rel, "Nothing was written."},
-			menuFix: []string{"Paths are relative to the folder the copy was\nmade in. Quit catclip and unpack there:\n  cd " + rel},
-		}
 	}
 	plan, err := unpack.BuildPlan(root, bundle)
 	if err != nil {
