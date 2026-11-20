@@ -7,7 +7,7 @@ on:
 
 env:
   RIPGREP_VERSION: 15.2.0
-  FZF_VERSION: 0.74.1
+  FZF_VERSION: 0.74.5
 
 jobs:
   test:

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -197,6 +198,15 @@ func RunInternalThemeFocus(args []string, stdout io.Writer) error {
 		if args[1] == "" {
 			return nil
 		}
+		// Windows: save and close at once. The freeze below guards against
+		// macOS trackpad/wheel momentum leaking into the shell; on Windows its
+		// background accept after reload-sync never fired, so Enter had to be
+		// pressed twice (user, 2026-11-20), and a stray wheel event after exit
+		// only scrolls the terminal there.
+		if themeSaveImmediately {
+			_, err := fmt.Fprintf(stdout, "print(%s%s)+accept", themeSaveMarker, args[1])
+			return err
+		}
 		executable, err := os.Executable()
 		if err != nil {
 			return err
@@ -244,3 +254,7 @@ func RunInternalThemeFocus(args []string, stdout io.Writer) error {
 	_, err = fmt.Fprintf(stdout, "print(%s%d)+accept", themeReloadMarker, position)
 	return err
 }
+
+// themeSaveImmediately: on Windows Enter saves and closes the theme picker at
+// once (see RunInternalThemeFocus "save"). Replaceable in tests.
+var themeSaveImmediately = runtime.GOOS == "windows"

@@ -24,6 +24,7 @@ const (
 	startupModifierModeFinish      startupModifierMode = "finish"
 	startupModifierModeExtras      startupModifierMode = "extras"
 	startupModifierModeInclusion   startupModifierMode = "inclusion"
+	startupModifierModeUnpack      startupModifierMode = "unpack"
 	startupModifierModeThen        startupModifierMode = "then"
 	startupModifierModeOnly        startupModifierMode = "only"
 	startupModifierModeExclude     startupModifierMode = "exclude"
@@ -1097,6 +1098,15 @@ func chooseStartupModifierWithProgress(currentArgs []string, escHint string, fil
 	for {
 		choice, err := chooseStartupModifierChoiceWithProgress(currentArgs, escHint, filterSlots)
 		if err != nil {
+			return StartupModifierChoice{}, err
+		}
+		if choice.Mode == startupModifierModeUnpack {
+			// unpack> is a submenu like extras>: Esc returns to filter>. It
+			// otherwise ends the session (see StartupUnpackDone) or fails.
+			err = chooseStartupUnpack()
+			if errors.Is(err, discovery.ErrSelectionCancelled) {
+				continue
+			}
 			return StartupModifierChoice{}, err
 		}
 		if choice.Mode != startupModifierModeExtras && choice.Mode != startupModifierModeInclusion {

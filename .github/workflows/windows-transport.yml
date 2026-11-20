@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  FZF_VERSION: 0.74.1
+  FZF_VERSION: 0.74.5
 
 jobs:
   shell-transport:

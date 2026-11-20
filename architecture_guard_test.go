@@ -118,6 +118,7 @@ var previewCommandBuilders = map[string]struct{}{
 	"buildDepthPickerPreview":                   {},
 	"recentPickerPreviewCommand":                {},
 	"unpackPreviewCommand":                      {},
+	"unpackMenuPreviewCommand":                  {},
 	"buildLinesPickerStartPreviewCommand":       {},
 	"buildLinesPickerEndPreviewCommand":         {},
 }
@@ -137,7 +138,7 @@ var fzfPlaceholderExemptFuncs = map[string]struct{}{
 var previewBuilderFiles = []string{
 	"theme_picker.go", "token_limit_picker.go",
 	"resolver.go", "startup_picker.go", "depth_picker.go",
-	"recent_picker.go", "lines_picker.go", "startup_sink_picker.go", "unpack_picker.go",
+	"recent_picker.go", "lines_picker.go", "startup_sink_picker.go", "unpack_picker.go", "unpack_menu.go",
 }
 
 // previewBuilderDiscoveryFunctions are the fzf preview builders that

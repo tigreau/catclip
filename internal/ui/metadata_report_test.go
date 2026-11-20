@@ -46,7 +46,7 @@ func TestWriteMetadataReportPlainStableLayout(t *testing.T) {
 		"Git: main @ abc123 · 1 modified\n",
 		"Coverage: 4 raw visible files · 2 selected files\n",
 		"Ignored within target scope: 1 boundary path\n",
-		"internal/ui/cache [directory] · source: .gitignore · pattern: cache/",
+		"  internal/ui/cache/   .gitignore\n",
 		"Composition (largest 5 by size):",
 		"2 files · 40.80KB · ~10,445 tokens\n",
 	} {
@@ -198,13 +198,61 @@ func TestPopulateMetadataIgnoreTraceNoIgnoreSkipsDiagnosticWalk(t *testing.T) {
 }
 
 func TestMetadataIgnoredCollectorCapsRowsButRetainsExactTotal(t *testing.T) {
-	collector := metadataIgnoredCollector{workingDir: t.TempDir()}
+	root := t.TempDir()
+	collector := metadataIgnoredCollector{workingDir: root}
+	// More single-rule folders than the cap: the rest are counted, not listed.
 	for i := 0; i < metadataIgnoredDisplayLimit+7; i++ {
-		collector.add(search.IgnoreTraceRecord{Path: fmt.Sprintf("ignored-%02d", i), Pattern: "ignored-*"})
+		name := fmt.Sprintf("dir-%02d", i)
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		collector.add(search.IgnoreTraceRecord{Path: name, Pattern: name + "/", RuleDirectoryOnly: true})
 	}
 	summary := collector.summary()
-	if summary.Total != metadataIgnoredDisplayLimit+7 || len(summary.Rows) != metadataIgnoredDisplayLimit {
+	if summary.Total != metadataIgnoredDisplayLimit+7 || len(summary.Rows) != metadataIgnoredDisplayLimit || summary.Listed() != metadataIgnoredDisplayLimit {
 		t.Fatalf("ignored summary = total %d, rows %d", summary.Total, len(summary.Rows))
+	}
+}
+
+// Folders each get a line (even when one rule ignored several), a rule that
+// ignored several files becomes one line with its count and three examples,
+// and single files are listed; every path is accounted for (user, 2026-11-19).
+func TestMetadataIgnoredListsFoldersThenRulesThenFiles(t *testing.T) {
+	root := t.TempDir()
+	for _, dir := range []string{"docs", "sub/docs", "sub"} {
+		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := []string{"._a", "._b", "sub/._c", "sub/._d", "coverage.out", ".DS_Store"}
+	for _, f := range files {
+		if err := os.WriteFile(filepath.Join(root, f), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	collector := metadataIgnoredCollector{workingDir: root}
+	collector.add(search.IgnoreTraceRecord{Path: "docs", Source: ".gitignore", Pattern: "docs/", RuleDirectoryOnly: true})
+	collector.add(search.IgnoreTraceRecord{Path: "sub/docs", Source: ".gitignore", Pattern: "docs/", RuleDirectoryOnly: true})
+	for _, f := range []string{"sub/._d", "._b", "sub/._c", "._a"} {
+		collector.add(search.IgnoreTraceRecord{Path: f, Source: ".gitignore", Pattern: "._*"})
+	}
+	collector.add(search.IgnoreTraceRecord{Path: "coverage.out", Source: ".gitignore", Pattern: "*.out"})
+	collector.add(search.IgnoreTraceRecord{Path: ".DS_Store", Source: ".gitignore", Pattern: ".DS_Store"})
+
+	var buf bytes.Buffer
+	scope := MetadataScope{Selected: 1, Visible: 1, VisibleKnown: true, Ignored: collector.summary()}
+	if err := writeMetadataScopeFacts(&buf, scope, ""); err != nil {
+		t.Fatal(err)
+	}
+	want := "Coverage: 1 raw visible file · 1 selected file\n" +
+		"Ignored within target scope: 8 boundary paths\n" +
+		"  docs/          .gitignore\n" +
+		"  sub/docs/      .gitignore\n" +
+		"  4 files        .gitignore: ._* (e.g. ._a, ._b, sub/._c)\n" +
+		"  .DS_Store      .gitignore\n" +
+		"  coverage.out   .gitignore: *.out\n"
+	if buf.String() != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", buf.String(), want)
 	}
 }
 
@@ -224,7 +272,7 @@ func BenchmarkMetadataIgnoredCollector(b *testing.B) {
 		for _, record := range records {
 			collector.add(record)
 		}
-		if len(collector.rows) != metadataIgnoredDisplayLimit || collector.total != len(records) {
+		if len(collector.rules) != 1 || collector.total != len(records) {
 			b.Fatal("lost count or cap")
 		}
 	}

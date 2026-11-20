@@ -89,8 +89,8 @@ func TestSnippetResolutionMatchesPreviewAndPreparedPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("output.BuildPreparedSnippetPayload returned error: %v", err)
 	}
-	if !strings.Contains(string(payload), `<file path="src/app.ts" lines="1-4">`) ||
-		!strings.Contains(string(payload), `<file path="src/app.ts" lines="6-8">`) {
+	if !strings.Contains(string(payload), `<file path="src/app.ts" lines="1-4" out-of="8">`) ||
+		!strings.Contains(string(payload), `<file path="src/app.ts" lines="6-8" out-of="8">`) {
 		t.Fatalf("expected payload to use shared snippet ranges, got:\n%s", string(payload))
 	}
 	if !reflect.DeepEqual(ranges, wantRanges) {

@@ -2,7 +2,6 @@ package output
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -110,7 +109,7 @@ func highlightPrintedUnit(raw []byte, unit PreparedFileUnit, highlight func(stri
 		var out strings.Builder
 		rest := raw
 		for _, r := range unit.SnippetRanges {
-			tag := buildFileOpenTagWithLines(entry.RelPath, unit.sourceType, fmt.Sprintf("%d-%d", r.Start, r.End))
+			tag := excerptOpenTag(entry.RelPath, unit.sourceType, r, fileLineTotal(entry.AbsPath))
 			if !bytes.HasPrefix(rest, tag) {
 				return plain
 			}
@@ -147,14 +146,7 @@ func highlightPrintedUnit(raw []byte, unit PreparedFileUnit, highlight func(stri
 			}
 		}
 	} else if entry.Lines {
-		attr := ""
-		if entry.LinesStart > 0 {
-			attr = fmt.Sprintf("%d-", entry.LinesStart)
-			if entry.LinesEnd > 0 {
-				attr += fmt.Sprint(entry.LinesEnd)
-			}
-		}
-		tag = buildNumberedOpenTag(entry.RelPath, unit.sourceType, attr)
+		tag = rangedLinesOpenTag(entry, unit.sourceType)
 	} else {
 		tag = buildFileOpenTag(entry.RelPath, unit.sourceType)
 	}

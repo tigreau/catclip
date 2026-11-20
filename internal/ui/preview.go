@@ -128,7 +128,7 @@ func WriteNormalDiagnostics(
 		return true, nil
 	}
 
-	proceedPrompt, err := PromptYesNo(diagnosticColors.Prompt+"Proceed? [y/N]"+diagnosticColors.Reset, false, diagnosticWriter)
+	proceedPrompt, err := PromptYesNo(diagnosticColors.Prompt+"Proceed? [y/N]:"+diagnosticColors.Reset, false, diagnosticWriter)
 	if err != nil {
 		return false, err
 	}
@@ -196,7 +196,7 @@ func WriteMetadataDiagnostics(
 		return true, nil
 	}
 
-	proceedPrompt, err := PromptYesNo(diagnosticColors.Prompt+"Proceed? [y/N]"+diagnosticColors.Reset, false, diagnosticWriter)
+	proceedPrompt, err := PromptYesNo(diagnosticColors.Prompt+"Proceed? [y/N]:"+diagnosticColors.Reset, false, diagnosticWriter)
 	if err != nil {
 		return false, err
 	}

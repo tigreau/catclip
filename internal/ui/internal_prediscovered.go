@@ -441,6 +441,7 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 			return nil
 		}
 		if errors.Is(err, search.ErrRipgrepBadPattern) {
+			markContentMatchInvalid(cfg.CheckpointPath, contentMatchScopePattern(scope))
 			finishBench("err", "false", "bad_pattern", "true", "rows", "0", "route", "direct")
 			return nil
 		}
@@ -459,6 +460,7 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		)
 		if err != nil {
 			if errors.Is(err, search.ErrRipgrepBadPattern) {
+				markContentMatchInvalid(cfg.CheckpointPath, contentMatchScopePattern(scope))
 				finishBench("err", "false", "bad_pattern", "true", "rows", "0")
 				return nil
 			}
@@ -490,6 +492,7 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 	)
 	if err != nil {
 		if errors.Is(err, search.ErrRipgrepBadPattern) {
+			markContentMatchInvalid(cfg.CheckpointPath, contentMatchScopePattern(scope))
 			finishBench("err", "false", "bad_pattern", "true", "rows", "0")
 			return nil
 		}
@@ -514,6 +517,7 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 		)
 		if err != nil {
 			if errors.Is(err, search.ErrRipgrepBadPattern) {
+				markContentMatchInvalid(cfg.CheckpointPath, contentMatchScopePattern(scope))
 				finishBench("err", "false", "bad_pattern", "true", "rows", "0")
 				return nil
 			}
@@ -558,6 +562,7 @@ func RunInternalPrediscoveredContentMatchList(cfg prediscoveredCommandConfig, st
 	)
 	if err != nil {
 		if errors.Is(err, search.ErrRipgrepBadPattern) {
+			markContentMatchInvalid(cfg.CheckpointPath, contentMatchScopePattern(scope))
 			finishBench("err", "false", "bad_pattern", "true", "rows", "0")
 			return nil
 		}

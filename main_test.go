@@ -1291,7 +1291,7 @@ func TestRunLinesSliceDropsFilesShorterThanStart(t *testing.T) {
 	if strings.Contains(got, `<file path="short.txt"`) {
 		t.Fatalf("expected short.txt to be dropped (no lines in range 5-10), got:\n%s", got)
 	}
-	if !strings.Contains(got, `<file path="long.txt" lines="5-10">`) {
+	if !strings.Contains(got, `<file path="long.txt" lines="5-10" out-of="12">`) {
 		t.Fatalf("expected long.txt with lines=\"5-10\", got:\n%s", got)
 	}
 	if !strings.Contains(got, "     5\te\n") || !strings.Contains(got, "    10\tj\n") {
@@ -3379,10 +3379,10 @@ func TestRunSnippetEmitsBlankLineBoundedBlocks(t *testing.T) {
 	if got := strings.Count(out, `<file path="src/app.ts" lines="`); got != 2 {
 		t.Fatalf("expected 2 snippet blocks, got %d:\n%s", got, out)
 	}
-	if !strings.Contains(out, "<file path=\"src/app.ts\" lines=\"1-4\">\nconst a = 1\nTODO: first\nconst b = 2\nTODO: second\n</file>\n\n") {
+	if !strings.Contains(out, "<file path=\"src/app.ts\" lines=\"1-4\" out-of=\"8\">\nconst a = 1\nTODO: first\nconst b = 2\nTODO: second\n</file>\n\n") {
 		t.Fatalf("expected first snippet block, got:\n%s", out)
 	}
-	if !strings.Contains(out, "<file path=\"src/app.ts\" lines=\"6-8\">\nconst c = 3\nTODO: third\nconst d = 4\n</file>\n\n") {
+	if !strings.Contains(out, "<file path=\"src/app.ts\" lines=\"6-8\" out-of=\"8\">\nconst c = 3\nTODO: third\nconst d = 4\n</file>\n\n") {
 		t.Fatalf("expected second snippet block, got:\n%s", out)
 	}
 }
@@ -3515,15 +3515,15 @@ func TestRunMetadataReportsOnlyCausalIgnoreSources(t *testing.T) {
 	out := stdout.String()
 	normalizedOut := filepath.ToSlash(out)
 	for _, provenance := range []string{
-		"source: .gitignore · pattern: *.tmp",
-		"source: src/.gitignore · pattern: *.generated",
-		"config/catclip/.hiss · pattern: *.secret",
+		"   .gitignore: *.tmp",
+		"   src/.gitignore: *.generated",
+		"config/catclip/.hiss: *.secret",
 	} {
 		if !strings.Contains(normalizedOut, provenance) {
 			t.Fatalf("metadata ignore provenance missing %q:\n%s", provenance, out)
 		}
 	}
-	if strings.Contains(normalizedOut, "source: config/catclip/.hiss") {
+	if strings.Contains(normalizedOut, "   config/catclip/.hiss") {
 		t.Fatalf("global .hiss provenance looks project-local:\n%s", out)
 	}
 	for _, ignored := range []string{"src/root.tmp", "src/skip.generated", "src/machine.secret"} {

@@ -73,7 +73,7 @@ func TestPrintPresentationSerializedParity(t *testing.T) {
 	numeric.Entry.Mode = command.EntryModeSnippet
 	numeric.SnippetRanges = []SnippetRange{{Start: 1, End: 1}, {Start: 3, End: 3}}
 	smart := numeric
-	smart.Payload = []byte("<file path=\"a.go\" lines=\"1-1\">\npackage main\n</file>\n\n<file path=\"a.go\" lines=\"3-3\">\nfunc main() {}\n</file>\n\n")
+	smart.Payload = []byte("<file path=\"a.go\" lines=\"1-1\" out-of=\"3\">\npackage main\n</file>\n\n<file path=\"a.go\" lines=\"3-3\" out-of=\"3\">\nfunc main() {}\n</file>\n\n")
 	diff := full
 	diff.Entry.Mode = command.EntryModeDiff
 	diff.Payload, diff.BodyBytes = BuildWrappedPayload("a.go", "staged-diff", []byte("@@ -1 +1 @@\n-old\n+new\n"))

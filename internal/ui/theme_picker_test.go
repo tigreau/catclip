@@ -1,10 +1,12 @@
 package ui
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/tigreau/catclip/internal/picker"
+	"github.com/tigreau/catclip/internal/theme"
 )
 
 func TestThemePickerUsesOnlyBuiltInSamples(t *testing.T) {
@@ -70,5 +72,28 @@ func TestThemeFocusDoesNotActOnEmptyOrUnchangedSelection(t *testing.T) {
 		if err := RunInternalThemeFocus([]string{"terminal", focused}, &out); err != nil || out.Len() != 0 {
 			t.Fatalf("unchanged focus emitted an action: %q %v", out.String(), err)
 		}
+	}
+}
+
+// Enter on Windows saves and closes at once (the macOS momentum guard's
+// background accept never fired there, so Enter had to be pressed twice);
+// elsewhere Enter freezes the list first and accepts once input settles.
+func TestThemeSaveIsImmediateOnWindowsAndGuardedElsewhere(t *testing.T) {
+	id := theme.Choices()[0].ID
+	prev := themeSaveImmediately
+	t.Cleanup(func() { themeSaveImmediately = prev })
+
+	themeSaveImmediately = true
+	var out bytes.Buffer
+	if err := RunInternalThemeFocus([]string{"terminal", id, "save"}, &out); err != nil || out.String() != "print("+themeSaveMarker+id+")+accept" {
+		t.Fatalf("windows save = %q, %v", out.String(), err)
+	}
+
+	themeSaveImmediately = false
+	out.Reset()
+	t.Setenv("FZF_PROMPT", "theme> ")
+	if err := RunInternalThemeFocus([]string{"terminal", id, "save"}, &out); err != nil ||
+		!strings.Contains(out.String(), "change-header(Setting theme") || !strings.Contains(out.String(), "bg-transform(") {
+		t.Fatalf("guarded save = %q, %v", out.String(), err)
 	}
 }

@@ -503,7 +503,8 @@ func ChooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, f
 		Disabled:       true,
 		Multi:          true,
 		PrintQuery:     true,
-		Bindings:       append(contentMatchReloadBindings(command, searchingPreviewCommand), MultiSelectPickerBindings()...),
+		Bindings: append(append(contentMatchReloadBindings(command, searchingPreviewCommand),
+			contentMatchDoneBinding), MultiSelectPickerBindings()...),
 	}))
 	if errors.Is(err, picker.ErrSelectionCancelled) {
 		return fzfChooseResult{}, ErrSelectionCancelled
@@ -520,6 +521,21 @@ func ChooseContentMatchesWithFzfAndEscHint(query string, currentArgs []string, f
 	}
 	return fzfChooseResult{Query: result.Query, Key: result.Key, Matches: result.Matches, MatchMemo: matchMemo}, nil
 }
+
+// contentMatchDoneBinding reruns the normal preview when a search finishes
+// (fzf's load event; fzf runs it even with an empty list). With no row, that
+// preview reads the reload's memo: a finished search for this pattern with no
+// results shows "No matches" instead of the "Searching file contents..." hint
+// (user, 2026-11-20). One ordinary preview: a second preview command started
+// at the same moment loses the Windows preview claim to the default preview
+// (equal process start times count as superseded).
+//
+// Known side effect, accepted: fzf cannot bind "load" only when the search
+// found nothing, so when it did find results the focused row's preview runs
+// once more as the search finishes (fzf cancels the earlier run). At most one
+// extra preview per finished search, never per keystroke; avoiding it would
+// need a helper process on every load, which costs about as much.
+const contentMatchDoneBinding = "load:refresh-preview"
 
 func contentMatchReloadBindings(reloadCommand, searchingPreviewCommand string) []string {
 	if searchingPreviewCommand == "" {

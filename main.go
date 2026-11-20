@@ -141,10 +141,30 @@ func Main() {
 		}
 		return
 	}
+	// The preview of one row of the interactive unpack menu (row key, and for
+	// the [file] input the typed path).
+	if len(args) >= 2 && args[0] == "--internal-unpack-menu-preview" {
+		if err := runUnpackMenuPreview(args[1:], os.Stdout); err != nil {
+			exitWithError(err, os.Stderr, args)
+		}
+		return
+	}
 	if cli.IsUnpackRequest(args) {
 		opts, err := cli.ParseUnpackArgs(args)
 		if err == nil {
 			err = runUnpack(opts, os.Stdout, os.Stderr)
+		}
+		if err != nil {
+			exitWithError(err, os.Stderr, args)
+		}
+		return
+	}
+	// --unpack-reply-format copies (or with --print shows) the format a chat
+	// agent's reply needs for --unpack. A standalone action like --theme.
+	if cli.IsUnpackReplyFormatRequest(args) {
+		opts, err := cli.ParseUnpackReplyFormatArgs(args)
+		if err == nil {
+			err = runUnpackReplyFormat(opts, os.Stdout, os.Stderr)
 		}
 		if err != nil {
 			exitWithError(err, os.Stderr, args)
@@ -182,6 +202,13 @@ func Main() {
 		"handled", fmt.Sprint(handled),
 	)
 	if err != nil {
+		// The interactive unpack menu finished its job: no copy follows.
+		if ended, writeErr := unpackMenuSessionEnded(err, os.Stderr); ended {
+			if writeErr != nil {
+				exitWithError(writeErr, os.Stderr, args)
+			}
+			return
+		}
 		exitWithError(err, os.Stderr, args)
 		return
 	} else if handled {

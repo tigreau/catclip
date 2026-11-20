@@ -147,7 +147,7 @@ func TestLinesPreviewOmissionsAndActualBounds(t *testing.T) {
 		if strings.Contains(got, "Omitted") || strings.Contains(got, "0.txt") || strings.Contains(got, "2.txt") || !strings.Contains(got, "d\n") {
 			t.Fatal(got)
 		}
-		if !raw && !strings.Contains(got, `lines="3-4"`) {
+		if !raw && !strings.Contains(got, `lines="3-4" out-of="4"`) {
 			t.Fatal(got)
 		}
 		if raw && strings.Contains(got, "<file") {

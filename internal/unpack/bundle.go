@@ -11,33 +11,66 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 )
 
-// Entry is one complete file from the bundle.
+// Entry is one file from the bundle: either a complete file (Body) or line
+// edits to it (Edits, from excerpt tags with lines="A-B").
 type Entry struct {
-	Path string
-	Body []byte
+	Path  string
+	Body  []byte
+	Edits []LineEdit
 }
 
-// Skipped is a bundle entry that is not a complete file and is never written.
+// Skipped is a bundle entry that is never written. Entries skipped by design
+// (Git patches, binary descriptions, partial="true") are listed and ignored.
+// Blocking entries were meant to be written but cannot be (the file changed
+// since the excerpt was copied, is missing here, or is a folder or binary):
+// a reply is one change, so any of them stops the whole unpack.
 type Skipped struct {
-	Path   string
+	Path string
+	// Reason describes an entry that is listed and ignored ("Git patch",
+	// "binary description"). Blocking entries use Problem and Detail instead.
 	Reason string
+	// Problem is the kind of problem of a blocking entry. Messages explain
+	// each kind once and list its files under it, so 100 stale excerpts do
+	// not repeat the same explanation 100 times (user, 2026-11-20).
+	Problem Problem
+	// Detail is what is specific to this file, e.g. `lines="1-1" out-of="9",
+	// but the file has 251 lines now`, or the placeholder line found.
+	Detail   string
+	Blocking bool
 }
+
+// Problem is why a blocking entry cannot be applied.
+type Problem string
+
+const (
+	ProblemChanged   Problem = "changed"   // out-of no longer matches the file
+	ProblemMissing   Problem = "missing"   // an excerpt for a file that is not here
+	ProblemShortened Problem = "shortened" // code replaced by a placeholder
+	ProblemFolder    Problem = "folder"    // a folder where a file should go
+	ProblemBinary    Problem = "binary"    // the local copy is binary
+)
 
 // Bundle is the parsed, validated content of a catclip bundle.
 type Bundle struct {
 	Entries []Entry
 	Skipped []Skipped
+	// Notes is the text outside the entries: in an agent's reply, its
+	// explanations and caveats ("I assumed User has an Email field"), shown
+	// before anything is written. Code fences and outer blank lines are
+	// dropped.
+	Notes []string
 }
 
 // ErrNotBundle reports input without any catclip file wrapper.
 var ErrNotBundle = errors.New("not a catclip bundle")
 
 var (
-	openTagPattern = regexp.MustCompile(`^<file path="([^"]*)"((?: [a-z]+="[^"]*")*)>$`)
-	attrPattern    = regexp.MustCompile(` ([a-z]+)="([^"]*)"`)
+	openTagPattern = regexp.MustCompile(`^<file path="([^"]*)"((?: [a-z][a-z-]*="[^"]*")*)>$`)
+	attrPattern    = regexp.MustCompile(` ([a-z][a-z-]*)="([^"]*)"`)
 )
 
 const closeTag = "</file>"
@@ -54,6 +87,8 @@ const closeTag = "</file>"
 // a known limit of the current format.
 func Parse(data []byte) (Bundle, error) {
 	var b Bundle
+	// index of each path's entry; a path is either a complete file or line
+	// edits, never both.
 	full := map[string]int{}
 	pos := 0
 	line := 1
@@ -78,6 +113,7 @@ func Parse(data []byte) (Bundle, error) {
 		margin := string(trimmed[:len(trimmed)-len(tagStart)])
 		trimmed = tagStart
 		if !bytes.HasPrefix(trimmed, []byte("<file ")) {
+			b.Notes = appendNote(b.Notes, string(trimmed))
 			pos, line = next, line+1
 			continue
 		}
@@ -86,7 +122,10 @@ func Parse(data []byte) (Bundle, error) {
 			return Bundle{}, fmt.Errorf("line %d: unreadable file tag: %s", tagLine, clip(string(trimmed)))
 		}
 		found = true
-		path := string(m[1])
+		// Bundles always use forward slashes; an agent that assumes Windows
+		// may write src\main.go, which on macOS/Linux would otherwise become
+		// one file with a backslash in its name.
+		path := strings.ReplaceAll(string(m[1]), `\`, "/")
 		attrs := map[string]string{}
 		for _, a := range attrPattern.FindAllSubmatch(m[2], -1) {
 			attrs[string(a[1])] = string(a[2])
@@ -106,13 +145,36 @@ func Parse(data []byte) (Bundle, error) {
 				body := stripMargin(data[bodyStart:pos], margin)
 				if reason := partialReason(attrs); reason != "" {
 					b.Skipped = append(b.Skipped, Skipped{Path: path, Reason: reason})
-				} else if i, dup := full[path]; dup {
-					if !bytes.Equal(b.Entries[i].Body, body) {
-						return Bundle{}, fmt.Errorf("%s appears twice with different contents", path)
+				} else if rangeValue, isEdit := attrs["lines"]; isEdit {
+					edit, err := parseEdit(path, rangeValue, attrs["out-of"], body)
+					if err != nil {
+						return Bundle{}, fmt.Errorf("line %d: %w", tagLine, err)
+					}
+					i, seen := full[path]
+					switch {
+					case !seen:
+						full[path] = len(b.Entries)
+						b.Entries = append(b.Entries, Entry{Path: path, Edits: []LineEdit{edit}})
+					case b.Entries[i].Edits == nil:
+						return Bundle{}, fmt.Errorf("%s appears both as a whole file and as line edits", path)
+					case !containsEdit(b.Entries[i].Edits, edit):
+						b.Entries[i].Edits = append(b.Entries[i].Edits, edit)
 					}
 				} else {
-					full[path] = len(b.Entries)
-					b.Entries = append(b.Entries, Entry{Path: path, Body: body})
+					if attrs["numbered"] == "true" {
+						body = stripLineNumbers(body, 1)
+					}
+					if i, dup := full[path]; dup {
+						if b.Entries[i].Edits != nil {
+							return Bundle{}, fmt.Errorf("%s appears both as a whole file and as line edits", path)
+						}
+						if !bytes.Equal(b.Entries[i].Body, body) {
+							return Bundle{}, fmt.Errorf("%s appears twice with different contents", path)
+						}
+					} else {
+						full[path] = len(b.Entries)
+						b.Entries = append(b.Entries, Entry{Path: path, Body: body})
+					}
 				}
 				pos, line = after, line+1
 				closed = true
@@ -125,9 +187,44 @@ func Parse(data []byte) (Bundle, error) {
 		}
 	}
 	if !found {
-		return Bundle{}, ErrNotBundle
+		return Bundle{Notes: b.Notes}, ErrNotBundle
+	}
+	for _, e := range b.Entries {
+		if err := checkEditsConsistent(e.Path, e.Edits); err != nil {
+			return Bundle{}, err
+		}
 	}
 	return b, nil
+}
+
+// parseEdit reads an excerpt entry: lines="A-B", an optional out-of="N" (the
+// file's line count when the excerpt was copied), and
+// the body with any --lines number column removed.
+func parseEdit(path, rangeValue, totalValue string, body []byte) (LineEdit, error) {
+	start, end, ok := parseLineRange(rangeValue)
+	if !ok {
+		return LineEdit{}, fmt.Errorf("%s has an unreadable line range lines=%q", path, rangeValue)
+	}
+	total := 0
+	if totalValue != "" {
+		n, err := strconv.Atoi(totalValue)
+		if err != nil || n < 0 {
+			return LineEdit{}, fmt.Errorf("%s has an unreadable out-of=%q", path, totalValue)
+		}
+		total = n
+	}
+	return LineEdit{Start: start, End: end, Total: total, HasTotal: totalValue != "", Body: stripLineNumbers(body, start)}, nil
+}
+
+// containsEdit reports an identical repeat (same range and body), which is
+// harmless and applied once.
+func containsEdit(edits []LineEdit, e LineEdit) bool {
+	for _, x := range edits {
+		if x.Start == e.Start && x.End == e.End && bytes.Equal(x.Body, e.Body) {
+			return true
+		}
+	}
+	return false
 }
 
 // stripMargin returns a copy of body with margin removed from the start of
@@ -149,12 +246,6 @@ func partialReason(attrs map[string]string) string {
 	if attrs["partial"] == "true" {
 		return "cut short by --token-limit"
 	}
-	if attrs["numbered"] == "true" {
-		return "numbered lines (copy without --lines to unpack)"
-	}
-	if lines, ok := attrs["lines"]; ok {
-		return "excerpt (lines " + lines + ")"
-	}
 	switch kind, ok := attrs["type"]; {
 	case !ok, kind == "untracked":
 	case kind == "binary":
@@ -166,7 +257,9 @@ func partialReason(attrs map[string]string) string {
 	}
 	var unknown []string
 	for name := range attrs {
-		if name != "type" {
+		switch name {
+		case "type", "lines", "out-of", "numbered":
+		default:
 			unknown = append(unknown, name)
 		}
 	}
@@ -182,4 +275,26 @@ func clip(s string) string {
 		return s[:117] + "..."
 	}
 	return s
+}
+
+// appendNote keeps a line of text from outside the entries, without code
+// fences and without leading blank lines.
+func appendNote(notes []string, line string) []string {
+	t := strings.TrimSpace(line)
+	if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+		return notes
+	}
+	if t == "" && (len(notes) == 0 || notes[len(notes)-1] == "") {
+		return notes
+	}
+	return append(notes, strings.TrimRight(line, " \t"))
+}
+
+// NoteText returns the notes as one block, without trailing blank lines.
+func (b Bundle) NoteText() string {
+	notes := b.Notes
+	for len(notes) > 0 && notes[len(notes)-1] == "" {
+		notes = notes[:len(notes)-1]
+	}
+	return strings.Join(notes, "\n")
 }

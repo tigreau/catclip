@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -74,11 +75,16 @@ func PromptYesNo(prompt string, defaultYes bool, stderr io.Writer) (bool, error)
 	return defaultYes, nil
 }
 
+// readPromptResponse asks on stdin only when stdin is a real console a person
+// can type into. A redirected stdin, such as NUL on Windows (a character
+// device that reads as an empty line), is never read as an answer: the
+// question goes to the controlling terminal instead, and when there is none
+// nobody answered (ok is false).
 func readPromptResponse(prompt string, stderr io.Writer) (string, bool, error) {
 	if headlessPromptGuardActive() {
 		return "", false, headlessPromptBugError()
 	}
-	if platform.IsTerminalFile(os.Stdin) {
+	if platform.IsConsoleInput(os.Stdin) {
 		response, ok := readPromptKey(os.Stdin, stderr, prompt)
 		return response, ok, nil
 	}
@@ -113,4 +119,31 @@ func readPromptLine(input *os.File, output io.Writer, prompt string) (string, bo
 		return "", true
 	}
 	return response, true
+}
+
+// PromptChoice writes prompt to stderr and reads one of the numbered choices
+// 1..count. Enter picks defaultChoice; any other answer asks again, up to
+// three times, then the default applies. It returns 0 when nobody answered
+// (stdin is not a console, e.g. NUL or a closed pipe, and there is no
+// terminal to ask on), so the caller can choose the safe option instead of
+// the default.
+func PromptChoice(prompt string, count, defaultChoice int, stderr io.Writer) (int, error) {
+	for attempt := 0; attempt < 3; attempt++ {
+		response, ok, err := readPromptResponse(prompt, stderr)
+		if err != nil {
+			return 0, err
+		}
+		if !ok {
+			fmt.Fprintln(stderr)
+			return 0, nil
+		}
+		response = strings.TrimSpace(response)
+		if response == "" {
+			return defaultChoice, nil
+		}
+		if n, err := strconv.Atoi(response); err == nil && n >= 1 && n <= count {
+			return n, nil
+		}
+	}
+	return defaultChoice, nil
 }

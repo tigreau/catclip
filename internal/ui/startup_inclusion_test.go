@@ -39,7 +39,9 @@ func TestFileInclusionMenuBeforeFilters(t *testing.T) {
 	choices := startupAvailableModifierChoicesWithState([]string{"."}, startupCurrentScopeState{})
 	keys := startupModifierChoiceKeys(choices)
 	// fzf's default layout displays the input rows bottom-to-top.
-	if len(keys) < 3 || !reflect.DeepEqual(keys[len(keys)-3:], []string{"file-inclusion", "extras", "finish"}) {
+	// [unpack] sits on top while no filter is chosen: like [finish early] it
+	// leaves the menu, and it is farthest from where the cursor starts.
+	if len(keys) < 4 || !reflect.DeepEqual(keys[len(keys)-4:], []string{"file-inclusion", "extras", "finish", "unpack"}) {
 		t.Fatalf("unexpected top-of-menu order (reversed): %v", keys)
 	}
 	for _, tc := range []struct {

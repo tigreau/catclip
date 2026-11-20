@@ -77,7 +77,7 @@ func unpackPickerHeader(changed, added, identical int) string {
 func unpackPickerLines(p unpack.Plan) []string {
 	lines := make([]string, len(p.Changes))
 	for i, c := range p.Changes {
-		lines[i] = fmt.Sprintf("[%s]\t%d\t%s", c.Kind, i, c.Path)
+		lines[i] = fmt.Sprintf("[%s]\t%d\t%s%s", c.Kind, i, c.Path, unpackRowNote(c))
 	}
 	return lines
 }
@@ -101,6 +101,11 @@ func unpackChosenIndices(keys []string, count int) []int {
 // gets the bundle copy from the state folder and reads only that one local
 // file, so the preview reflects the project at hover time.
 func writeUnpackPreviewState(dir string, p unpack.Plan) error {
+	if p.Notes != "" {
+		if err := os.WriteFile(unpackNotesPath(dir), []byte(p.Notes), 0o600); err != nil {
+			return err
+		}
+	}
 	var manifest strings.Builder
 	for i, c := range p.Changes {
 		if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(i)+".body"), c.Body, 0o600); err != nil {
@@ -182,6 +187,13 @@ func RunInternalUnpackPreview(stateDir, index, selectionPath string, stdout io.W
 	if err != nil {
 		return err
 	}
+	// The agent's caveats ("I assumed User has an Email field") stay on
+	// screen above every file while the user decides what to write.
+	if notes, err := os.ReadFile(unpackNotesPath(stateDir)); err == nil && len(notes) > 0 {
+		if _, err := io.WriteString(stdout, unpackNotesBlock(string(notes), platform.ActivePaletteForWriter(stdout))); err != nil {
+			return err
+		}
+	}
 	if mode, _ := os.ReadFile(unpackModePath(stateDir)); strings.TrimSpace(string(mode)) == "tree" && selectionPath != "" {
 		return writeUnpackSelectionTree(stateDir, rows, selectionPath, stdout)
 	}
@@ -244,4 +256,35 @@ func writeUnpackSelectionTree(stateDir string, rows map[string]unpackManifestRow
 		Entries: entries,
 		Summary: renderpkg.BuildSummary(sizes, human, 0, ""),
 	}, opts, platform.ANSIPalette())
+}
+
+// unpackRowNote marks a file changed by excerpt edits rather than replaced
+// whole, so the user knows only those lines change.
+func unpackRowNote(c unpack.Change) string {
+	if c.LineEdits {
+		return "  (line edits)"
+	}
+	return ""
+}
+
+func unpackNotesPath(stateDir string) string { return filepath.Join(stateDir, "notes") }
+
+// unpackNotesLimit keeps a long chat explanation from pushing the diff out of
+// the preview; the full notes are in the report after writing.
+const unpackNotesLimit = 12
+
+// unpackNotesBlock renders the reply's notes above a preview.
+func unpackNotesBlock(notes string, colors platform.Palette) string {
+	lines := strings.Split(strings.TrimSpace(notes), "\n")
+	var b strings.Builder
+	fmt.Fprintf(&b, "%sNotes from the reply:%s\n", colors.Bold, colors.Reset)
+	for i, line := range lines {
+		if i == unpackNotesLimit {
+			fmt.Fprintf(&b, "%s  ... %d more lines, shown after writing%s\n", colors.Dim, len(lines)-i, colors.Reset)
+			break
+		}
+		fmt.Fprintf(&b, "  %s\n", line)
+	}
+	b.WriteString("\n")
+	return b.String()
 }

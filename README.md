@@ -6,6 +6,8 @@ Copy code context for AI assistants. One command, smart defaults, no setup.
 catclip src                # copy src/ to your clipboard
 ```
 
+**[↓ Jump to installation](#installation)**: one command, cross-platform.
+
 ---
 
 ## You don't need to remember the flags
@@ -143,7 +145,29 @@ Other Wayland compositors such as Sway or Hyprland should work but are untested.
 
 catclip bundles its own `fzf` and `ripgrep` — no external dependencies needed.
 
-<details><summary>Manual install, build from source, updating, uninstalling</summary>
+### Updating & uninstalling
+
+Run `catclip --check-update` to compare your version with the latest release
+and show the correct update command. Catclip does not run that command for you.
+
+Uninstall (Homebrew):
+```bash
+brew uninstall catclip
+```
+
+Uninstall (macOS / Linux):
+```bash
+curl -fsSL https://raw.githubusercontent.com/tigreau/catclip/main/uninstall.sh | bash
+```
+
+Uninstall (Windows PowerShell):
+```powershell
+irm https://raw.githubusercontent.com/tigreau/catclip/main/uninstall.ps1 | iex
+```
+
+For a checkout-local install, run `./uninstall.sh` from the repo root instead.
+
+<details><summary>Manual install, build from source</summary>
 
 #### Manual install (Windows release bundle)
 
@@ -203,29 +227,35 @@ The Windows command sets execution policy only for the installer process; it doe
 
 Requires Go (version in `go.mod`), `rg`, and `fzf` at install time.
 
-#### Updating & uninstalling
-
-Run `catclip --check-update` to compare your version with the latest release
-and show the correct update command. Catclip does not run that command for you.
-
-Uninstall (Homebrew):
-```bash
-brew uninstall catclip
-```
-
-Uninstall (macOS / Linux):
-```bash
-curl -fsSL https://raw.githubusercontent.com/tigreau/catclip/main/uninstall.sh | bash
-```
-
-Uninstall (Windows PowerShell):
-```powershell
-irm https://raw.githubusercontent.com/tigreau/catclip/main/uninstall.ps1 | iex
-```
-
-For a checkout-local install, run `./uninstall.sh` from the repo root instead.
-
 </details>
+
+---
+
+## Unpack chat replies and bundles into your project
+
+Let a chat in the browser change your code. `catclip --unpack` writes its reply from your clipboard into your project.
+
+Each of these copies to your clipboard. Paste them into the chat: the reply format once, then your file list and the code to change.
+
+```bash
+catclip --unpack-reply-format   # the format its reply must use, so --unpack can read it
+catclip . --metadata            # every file path, so it knows where things are
+catclip Button.tsx              # the code to change: it can only edit what it has seen
+```
+
+Ask for the change. If the chat needs more code, it asks for catclip commands: run them and paste the output. Then copy its reply, and in your project root run:
+
+```bash
+catclip --unpack                # reads the reply from your clipboard
+```
+
+The chat answers as a catclip bundle (`<file path="...">` blocks). `--unpack` doesn't read ordinary chat text. You see every change before anything is written, and nothing is written if any part of the reply has a problem.
+
+A teammate sent you a bundle? Copy it and run `catclip --unpack`, or give the file. Ask teammates to send whole files: a chat sends your parts back with your labels, but a teammate's parts are labeled for their copy, not yours.
+
+```bash
+catclip --unpack bundle.txt
+```
 
 ---
 

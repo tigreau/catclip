@@ -88,3 +88,14 @@ func TerminalColumns(f *os.File) int {
 }
 
 var getConsoleScreenBufferInfo = syscall.NewLazyDLL("kernel32.dll").NewProc("GetConsoleScreenBufferInfo")
+
+// IsConsoleInput reports whether f is a real console a person can type
+// into. Stricter than IsTerminalFile: NUL is a character device too, and a
+// read from it looks like Enter, so a question must not trust it.
+func IsConsoleInput(f *os.File) bool {
+	if f == nil {
+		return false
+	}
+	var mode uint32
+	return syscall.GetConsoleMode(syscall.Handle(f.Fd()), &mode) == nil
+}

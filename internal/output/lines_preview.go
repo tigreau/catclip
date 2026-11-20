@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 
@@ -90,11 +89,8 @@ func writeLinesPreviewFile(w *PreviewCapWriter, cfg EmitConfig, entry discovery.
 		return nil
 	}
 	if !cfg.Raw {
-		attr := ""
-		if entry.LinesStart > 0 {
-			attr = fmt.Sprintf("%d-%d", start, lastSelected)
-		}
-		if _, err := w.Write(buildNumberedOpenTag(entry.RelPath, "", attr)); err != nil {
+		// The same tag the copy will carry (lines="A-B" out-of="N").
+		if _, err := w.Write(rangedLinesOpenTag(entry, "")); err != nil {
 			return err
 		}
 	}

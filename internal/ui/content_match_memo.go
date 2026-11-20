@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tigreau/catclip/internal/command"
 	"github.com/tigreau/catclip/internal/discovery"
 	"github.com/tigreau/catclip/internal/platform"
 )
@@ -193,4 +194,71 @@ func matchedAbsPathsFromRows(rows []contentMatchRow, entries []discovery.Entry) 
 		}
 	}
 	return out
+}
+
+// contentSearchFinishedEmpty reports whether the content picker's reload for
+// the scope's current pattern has finished and found nothing: its memo holds
+// this exact pattern and no paths. While a search runs the memo still holds
+// the previous pattern, so this stays false and the preview keeps saying
+// "Searching file contents...".
+func contentSearchFinishedEmpty(checkpointPath string, scope command.ExecutionScope) bool {
+	pattern := contentMatchScopePattern(scope)
+	if strings.TrimSpace(pattern) == "" {
+		return false
+	}
+	memo, ok := readContentMatchMemo(contentMatchMemoPath(checkpointPath))
+	return ok && memo.Pattern == pattern && len(memo.AbsPaths) == 0
+}
+
+// contentMatchInvalidFilename records the last pattern the reload refused as
+// an invalid regular expression, next to the checkpoint. It is separate from
+// the memo on purpose: the memo also narrows the next search to the previous
+// result files, and a refused pattern with "no files" would make the next,
+// corrected pattern search nothing.
+const contentMatchInvalidFilename = "content-match-invalid.txt"
+
+func contentMatchInvalidPath(checkpointPath string) string {
+	if strings.TrimSpace(checkpointPath) == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(checkpointPath), contentMatchInvalidFilename)
+}
+
+// markContentMatchInvalid records that the reload refused pattern, so the
+// preview can say so instead of "Searching file contents..." forever
+// (user, 2026-11-20: "Main(" kept showing searching). Errors are silent.
+func markContentMatchInvalid(checkpointPath, pattern string) {
+	path := contentMatchInvalidPath(checkpointPath)
+	if path == "" || strings.TrimSpace(pattern) == "" || !platform.InternalWorkCanPublish() {
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err := tmp.WriteString(pattern); err != nil {
+		_ = tmp.Close()
+		return
+	}
+	if tmp.Close() != nil || !platform.InternalWorkCanPublish() {
+		return
+	}
+	if os.Rename(tmpPath, path) != nil {
+		_ = os.Remove(path)
+		_ = os.Rename(tmpPath, path)
+	}
+}
+
+// contentPatternInvalid reports whether the reload refused the scope's
+// current pattern as an invalid regular expression.
+func contentPatternInvalid(checkpointPath string, scope command.ExecutionScope) bool {
+	pattern := contentMatchScopePattern(scope)
+	path := contentMatchInvalidPath(checkpointPath)
+	if path == "" || strings.TrimSpace(pattern) == "" {
+		return false
+	}
+	data, err := os.ReadFile(path)
+	return err == nil && string(data) == pattern
 }

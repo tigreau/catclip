@@ -15,7 +15,7 @@ const sampleBundle = "<file path=\"src/main.go\">\npackage main\n</file>\n\n" +
 	"<file path=\"src/new.go\">\npackage newer\n</file>\n\n" +
 	"<file path=\"src/same.go\">\nsame\n</file>\n\n" +
 	"src/listed-only.go\n" +
-	"<file path=\"src/auth.go\" lines=\"40-88\">\n40\tx\n</file>\n\n" +
+	"<file path=\"src/auth.go\" lines=\"40-88\" out-of=\"88\">\n40\tx\n</file>\n\n" +
 	"<file path=\"src/num.go\" numbered=\"true\">\n     1\tx\n</file>\n\n" +
 	"<file path=\"assets/logo.png\" type=\"binary\">\nFormat: x\n</file>\n\n" +
 	"<file path=\"src/p.go\" type=\"diff\">\n@@\n</file>\n\n" +
@@ -32,19 +32,24 @@ func TestParseKeepsOnlyCompleteFilesAndListsTheRest(t *testing.T) {
 	for _, e := range b.Entries {
 		paths = append(paths, e.Path)
 	}
-	if !reflect.DeepEqual(paths, []string{"src/main.go", "src/new.go", "src/same.go", "src/untracked.go"}) {
+	// Since v0.7.15 excerpts (lines="A-B") are line edits and numbered whole
+	// files are unpacked after their number column is stripped.
+	if !reflect.DeepEqual(paths, []string{"src/main.go", "src/new.go", "src/same.go", "src/auth.go", "src/num.go", "src/untracked.go"}) {
 		t.Fatalf("entries %v", paths)
 	}
-	if string(b.Entries[0].Body) != "package main\n" || string(b.Entries[3].Body) != "whole\n" {
-		t.Fatalf("bodies %q %q", b.Entries[0].Body, b.Entries[3].Body)
+	if string(b.Entries[0].Body) != "package main\n" || string(b.Entries[5].Body) != "whole\n" || string(b.Entries[4].Body) != "x\n" {
+		t.Fatalf("bodies %q %q %q", b.Entries[0].Body, b.Entries[5].Body, b.Entries[4].Body)
+	}
+	if e := b.Entries[3]; len(e.Edits) != 1 || e.Edits[0].Start != 40 || e.Edits[0].End != 88 || e.Edits[0].Total != 88 || string(e.Edits[0].Body) != "x\n" {
+		t.Fatalf("excerpt edit %+v", e)
 	}
 	reasons := map[string]string{}
 	for _, s := range b.Skipped {
 		reasons[s.Path] = s.Reason
 	}
 	for path, want := range map[string]string{
-		"src/auth.go": "excerpt", "src/num.go": "numbered", "assets/logo.png": "binary",
-		"src/p.go": "Git patch", "src/cut.go": "token-limit",
+		"assets/logo.png": "binary",
+		"src/p.go":        "Git patch", "src/cut.go": "token-limit",
 	} {
 		if !strings.Contains(reasons[path], want) {
 			t.Errorf("%s: reason %q, want %q", path, reasons[path], want)
@@ -130,14 +135,14 @@ func TestBuildPlanCheckWriteRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	changed, added := p.Counts()
-	if changed != 1 || added != 2 || p.Identical != 1 {
+	if changed != 1 || added != 3 || p.Identical != 1 {
 		t.Fatalf("changed=%d added=%d identical=%d", changed, added, p.Identical)
 	}
 	if err := Check(p.Changes); err != nil {
 		t.Fatal(err)
 	}
 	written, err := Write(p.Changes)
-	if err != nil || len(written) != 3 {
+	if err != nil || len(written) != 4 {
 		t.Fatalf("written %v err %v", written, err)
 	}
 	for path, want := range map[string]string{
@@ -153,9 +158,15 @@ func TestBuildPlanCheckWriteRoundTrip(t *testing.T) {
 	if len(leftovers) != 0 {
 		t.Fatalf("temporary files left: %v", leftovers)
 	}
+	// Unpacking the same bundle again changes nothing. The excerpt edits
+	// src/auth.go, which does not exist: it is skipped both times rather
+	// than creating a file that holds only the excerpt.
 	again, err := BuildPlan(root, b)
-	if err != nil || len(again.Changes) != 0 || again.Identical != 4 {
+	if err != nil || len(again.Changes) != 0 || again.Identical != 5 {
 		t.Fatalf("second plan %+v %v", again, err)
+	}
+	if last := again.Skipped[len(again.Skipped)-1]; last.Path != "src/auth.go" || last.Problem != ProblemMissing {
+		t.Fatalf("the excerpt for a missing file should be skipped, got %+v", again.Skipped)
 	}
 }
 

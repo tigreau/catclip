@@ -16,7 +16,7 @@ func TestMetadataIgnoredDirectoriesSurviveDisplayCap(t *testing.T) {
 		records = append(records, search.IgnoreTraceRecord{Path: fmt.Sprintf("a%02d.tmp", i), Source: ".gitignore", Pattern: "*.tmp"})
 	}
 	records = append(records, search.IgnoreTraceRecord{Path: "pkg/node_modules", Source: ".gitignore", Pattern: "node_modules/", RuleDirectoryOnly: true})
-	var expected []MetadataIgnoredPath
+	var expected MetadataIgnoredSummary
 	rng := rand.New(rand.NewSource(7))
 	for iteration := 0; iteration < 20; iteration++ {
 		rng.Shuffle(len(records), func(i, j int) { records[i], records[j] = records[j], records[i] })
@@ -25,15 +25,20 @@ func TestMetadataIgnoredDirectoriesSurviveDisplayCap(t *testing.T) {
 			collector.add(record)
 		}
 		summary := collector.summary()
-		if len(summary.Rows) != metadataIgnoredDisplayLimit || summary.Total != len(records) {
-			t.Fatalf("lost count/cap: %+v", summary)
+		// The 30 files collapse into one rule line, so the folder is never
+		// lost behind them and every path is accounted for.
+		if summary.Total != len(records) || summary.Listed() != len(records) || len(summary.Rows) != 1 || len(summary.Rules) != 1 {
+			t.Fatalf("lost count: %+v", summary)
 		}
 		if summary.Rows[0].Path != "pkg/node_modules" || summary.Rows[0].Kind != "directory" {
 			t.Fatalf("directory lost behind files: %+v", summary.Rows)
 		}
+		if rule := summary.Rules[0]; rule.Count != 30 || !reflect.DeepEqual(rule.Examples, []string{"a00.tmp", "a01.tmp", "a02.tmp"}) {
+			t.Fatalf("rule line: %+v", rule)
+		}
 		if iteration == 0 {
-			expected = summary.Rows
-		} else if !reflect.DeepEqual(summary.Rows, expected) {
+			expected = summary
+		} else if !reflect.DeepEqual(summary, expected) {
 			t.Fatal("stream arrival order changed display")
 		}
 	}

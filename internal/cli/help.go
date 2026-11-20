@@ -186,7 +186,8 @@ func shortHelpText(version, hissDisplayPath string, colors platform.Palette, usa
 		{Left: "--version", Right: "Show version"},
 		{Left: "--theme", Right: "Choose and save a theme for interactive mode and terminal --print"},
 		{Left: "--check-update", Right: "Check for a newer release and show how to update"},
-		{Left: "--unpack FILE", Right: "Write the files from a catclip bundle into this project (asks first)"},
+		{Left: "--unpack [FILE]", Right: "Apply a copied chat reply or a bundle FILE to this project (asks first)"},
+		{Left: "--unpack-reply-format", Right: "Copy the reply format to paste into a chat before asking for changes"},
 		{Left: "--hiss", Right: "Edit catclip's own ignore rules (applied on top of .gitignore)"},
 		{Left: "--hiss-reset", Right: "Reset catclip's ignore rules to defaults"},
 		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — your .gitignore(s) + .hiss, merged"},
@@ -583,17 +584,19 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	b.WriteString("    ...file contents...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
 	fmt.Fprintf(&b, "  %s (%s):\n", bold("Snippets"), flag("--snippet REGEX [N]"))
-	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/components/Button.tsx\" lines=\"42-57\">"))
+	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"src/components/Button.tsx\" lines=\"42-57\" out-of=\"210\">"))
 	b.WriteString("    ...matched block...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
-	b.WriteString("    With N set, lines=\"...\" is the fixed context window around the match.\n\n")
+	b.WriteString("    With N set, lines=\"...\" is the fixed context window around the match.\n")
+	b.WriteString("    out-of=\"210\": the whole file had 210 lines when copied (not the\n")
+	b.WriteString("    excerpt's length). --unpack uses it to check the file is unchanged.\n\n")
 	fmt.Fprintf(&b, "  %s (%s):\n", bold("Lines"), flag("--lines"))
 	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"cmd/api/main.go\" numbered=\"true\">"))
 	b.WriteString("         1\tpackage main\n")
 	b.WriteString("         2\t...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
 	fmt.Fprintf(&b, "  %s (%s):\n", bold("Lines range"), flag("--lines 42 57"))
-	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"internal/handler/user.go\" lines=\"42-57\">"))
+	fmt.Fprintf(&b, "    %s\n", cmd("<file path=\"internal/handler/user.go\" lines=\"42-57\" out-of=\"210\">"))
 	b.WriteString("        42\tfunc main() {\n")
 	b.WriteString("        43\t  ...\n")
 	fmt.Fprintf(&b, "    %s\n\n", cmd("</file>"))
@@ -664,37 +667,82 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 
 	// ── Unpack ──────────────────────────────────────────────────────────
 	head("UNPACKING A BUNDLE (--unpack)")
-	b.WriteString("  Writes the files of a catclip bundle into your project. A bundle is the\n")
-	b.WriteString("  text catclip copies or saves: <file path=\"...\"> entries, each holding one\n")
-	b.WriteString("  file. Save one to a file, or a reply in the same format from an AI agent or\n")
-	b.WriteString("  a teammate, then:\n\n")
-	fmt.Fprintf(&b, "    %s\n\n", cmd("catclip --unpack bundle.txt"))
-	b.WriteString("  Run it from your project root. Each file in the bundle replaces the file\n")
-	b.WriteString("  with the same relative path, or is added if you don't have it. Your other\n")
-	b.WriteString("  files are never deleted. Steps:\n\n")
-	b.WriteString("    1. Is <current folder> the project root? [Y/n]  (Enter = yes)\n")
-	b.WriteString("    2. A list of new and changed files, all selected, with a diff preview.\n")
-	b.WriteString("       Tab unselects or selects a file, Alt-A (Ctrl-A on macOS) all of them,\n")
-	b.WriteString("       Ctrl-T switches the preview between diff and tree, Enter writes the\n")
-	b.WriteString("       selected files, Esc cancels.\n\n")
-	b.WriteString("  Nothing is written until you confirm, and every chosen file is checked\n")
-	b.WriteString("  first, so a read-only or locked file stops the unpack with nothing changed.\n")
-	b.WriteString("  Identical files are skipped. There is no undo yet: commit or back up first.\n\n")
-	b.WriteString("  Only full files are written. Excerpts (--snippet, --lines ranges), numbered\n")
-	b.WriteString("  --lines output, Git patches, binary descriptions and files cut by\n")
-	b.WriteString("  --token-limit are skipped and listed. Send binaries separately. A file\n")
-	b.WriteString("  that had no final newline gets one. A bundle with an absolute path, '..',\n")
-	b.WriteString("  a path into .git or through a symlink is refused before anything happens.\n\n")
-	fmt.Fprintf(&b, "    %s        %s\n", cmd("catclip --unpack bundle.txt --yes"), "no questions; write all new and changed files")
-	fmt.Fprintf(&b, "    %s   %s\n", cmd("catclip --unpack bundle.txt --headless"), "same, for scripts and agents; report on stdout")
-	fmt.Fprintf(&b, "    %s      %s\n\n", cmd("catclip --unpack bundle.txt --print"), "show the diffs only; write nothing")
-	b.WriteString("  The report names each file written as changed or new, and each skipped\n")
-	b.WriteString("  entry with the reason. --print sends a plain unified diff to stdout when\n")
-	b.WriteString("  piped, e.g. catclip --unpack bundle.txt --print > changes.patch, and the\n")
-	b.WriteString("  summary to stderr. With --headless the diffs are plain and stderr stays\n")
-	b.WriteString("  silent; --print never writes, even with --headless. --unpack\n")
-	b.WriteString("  takes no targets or filters; it combines only with --print, --yes,\n")
-	b.WriteString("  --headless, --quiet and --verbose.\n\n")
+	b.WriteString("  Writes a catclip bundle, or an AI agent's reply in the same format, back\n")
+	fmt.Fprintf(&b, "  into your project. Copy the reply in the chat (or the bundle, or a bundle\n")
+	fmt.Fprintf(&b, "  file, or its path), then run %s from the %s: it\n", cmd("catclip --unpack"), bold("project root"))
+	b.WriteString("  reads the clipboard, shows the changes and asks before writing.\n\n")
+	for _, row := range [][2]string{
+		{"catclip --unpack", "Apply what you copied to this project"},
+		{"catclip --unpack FILE", "Apply a bundle file to this project"},
+		{"catclip --unpack --yes", "Write every change without asking"},
+		{"catclip --unpack FILE --headless", "The same, for scripts and agents"},
+		{"catclip --unpack FILE --print", "Show the diffs, write nothing"},
+	} {
+		fmt.Fprintf(&b, "  %s%s  %s\n", cmd(row[0]), strings.Repeat(" ", 32-len(row[0])), row[1])
+	}
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "  %s\n", bold("What gets written:"))
+	b.WriteString("    - Each file replaces the one at the same relative path, or is added.\n")
+	fmt.Fprintf(&b, "    - Other files are %s. Identical files are skipped.\n", bold("never deleted"))
+	b.WriteString("    - Every file is checked before the first write, so a read-only or\n")
+	b.WriteString("      locked file stops the unpack with nothing changed.\n")
+	b.WriteString("    - Existing files keep their line endings. New files get LF.\n")
+	fmt.Fprintf(&b, "    - There is %s. Commit or back up first.\n\n", bold("no undo"))
+	fmt.Fprintf(&b, "  %s\n", bold("Excerpts (lines=\"A-B\" out-of=\"N\"):"))
+	b.WriteString("    - lines=\"40-60\" out-of=\"210\" means lines 40 to 60, out of a file that\n")
+	b.WriteString("      had 210 lines when the excerpt was copied.\n")
+	b.WriteString("    - If your file no longer has 210 lines, it changed since the copy and\n")
+	b.WriteString("      line 40 may now be other code: nothing is written.\n")
+	b.WriteString("    - Otherwise lines 40-60 are replaced by the body, which may be shorter\n")
+	b.WriteString("      or longer. Several excerpts of one file are applied bottom-up.\n")
+	fmt.Fprintf(&b, "    - Line numbers added by %s are removed.\n", flag("--lines"))
+	b.WriteString("    - Excerpts are for a chat to send back. To share your changes with a\n")
+	b.WriteString("      teammate, copy whole files: their line numbers would not fit yours.\n\n")
+	fmt.Fprintf(&b, "  %s If any file in it has a problem, nothing is\n", bold("A reply is one change."))
+	b.WriteString("  written, and catclip lists what to fix:\n")
+	b.WriteString("    - its file changed, or is missing here\n")
+	b.WriteString("    - its code was shortened with a placeholder such as\n")
+	b.WriteString("      \"// ... rest unchanged\", which would delete the code it stands for\n\n")
+	fmt.Fprintf(&b, "  %s Git patches, binary descriptions, and files cut by\n", bold("Skipped and listed:"))
+	fmt.Fprintf(&b, "  %s. Send binaries separately.\n\n", flag("--token-limit"))
+	fmt.Fprintf(&b, "  %s absolute paths, '..', paths into .git\n", bold("Refused before anything happens:"))
+	b.WriteString("  or through a symlink, and overlapping or conflicting entries for a file.\n\n")
+	fmt.Fprintf(&b, "  %s\n", bold("Output:"))
+	b.WriteString("    - The report lists each file written (changed or new) and each skipped\n")
+	b.WriteString("      entry with its reason.\n")
+	fmt.Fprintf(&b, "    - %s writes a plain unified diff to stdout when piped, and the\n", flag("--print"))
+	fmt.Fprintf(&b, "      summary to stderr: %s\n", cmd("catclip --unpack bundle.txt --print > changes.patch"))
+	fmt.Fprintf(&b, "    - %s keeps stderr silent. It never reads the clipboard, so it\n", flag("--headless"))
+	b.WriteString("      needs a FILE.\n")
+	fmt.Fprintf(&b, "    - %s takes no targets or filters. It combines only with\n", flag("--unpack"))
+	fmt.Fprintf(&b, "      %s, %s, %s, %s and %s.\n\n", flag("--print"), flag("--yes"), flag("--headless"), flag("--quiet"), flag("--verbose"))
+
+	// ── Reply format ────────────────────────────────────────────────────
+	head("REPLY FORMAT FOR CHAT AGENTS (--unpack-reply-format)")
+	fmt.Fprintf(&b, "  Copies the guide a chat agent needs to send changes %s can apply:\n", flag("--unpack"))
+	b.WriteString("  how to reply, how to ask you for more code, and what your tags mean.\n\n")
+	fmt.Fprintf(&b, "  %s          %s\n", cmd("catclip --unpack-reply-format"), "Copy it")
+	fmt.Fprintf(&b, "  %s  %s\n\n", cmd("catclip --unpack-reply-format --print"), "Show it instead")
+	fmt.Fprintf(&b, "  Paste it %s into the chat's custom instructions or a Project, or at the\n", bold("once"))
+	b.WriteString("  start of a new chat with your code and request. Paste it again if replies\n")
+	b.WriteString("  stop following it.\n\n")
+	fmt.Fprintf(&b, "  Your copy is %s and you can\n", flag("~/.config/catclip/"+UnpackReplyFormatFile))
+	b.WriteString("  edit it. If it differs from catclip's version (your edits, or an update),\n")
+	b.WriteString("  catclip asks which one to use. Enter takes catclip's version.\n\n")
+	fmt.Fprintf(&b, "  %s\n", bold("What to send the chat:"))
+	for _, row := range [][2]string{
+		{"The project layout, first", "catclip . --metadata"},
+		{"A small file (about 150 lines)", "catclip FILE"},
+		{"A function in a bigger file", "catclip FILE --snippet 'func Login'"},
+		{"Its imports", "catclip FILE --lines 1 15"},
+		{"A one-line fix", "catclip FILE --lines START END"},
+	} {
+		fmt.Fprintf(&b, "    %s%s  %s\n", row[0], strings.Repeat(" ", 31-len(row[0])), cmd(row[1]))
+	}
+	b.WriteString("\n")
+	b.WriteString("  When the agent needs more, it asks for catclip commands: run each one and\n")
+	fmt.Fprintf(&b, "  paste the output. If you copy such a reply, %s lists those\n", cmd("catclip --unpack"))
+	b.WriteString("  commands. The agent's notes are shown before anything is written.\n\n")
 
 	// ── Exit codes ──────────────────────────────────────────────────────
 	head("EXIT CODES")
@@ -711,6 +759,10 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 	fmt.Fprintf(&b, "    → If the target is ignored, name its complete relative path or add %s.\n", flag("--no-ignore"))
 	b.WriteString("    → Target may be empty or contain only binary files.\n")
 	b.WriteString("    → Check for typos in the target path.\n\n")
+	fmt.Fprintf(&b, "  %s\n", bad("\"No lines matched --snippet '...'.\""))
+	b.WriteString("    → The pattern is a regular expression: escape ( ) [ ] . * + ? and similar,\n")
+	b.WriteString("      e.g. 'Main\\(' for \"Main(\"; \\n means a line break, not the text \\n.\n")
+	b.WriteString("    → Uppercase letters make it case-sensitive.\n\n")
 	fmt.Fprintf(&b, "  %s\n", bad("\"no files at depth N\""))
 	b.WriteString("    → Depth counts path segments below each target (like rg --max-depth).\n")
 	b.WriteString("    → The error shows the actual depth range. Use the suggested value.\n\n")
@@ -797,7 +849,8 @@ func fullHelpText(version, hissDisplayPath string, colors platform.Palette, usag
 		{Left: "--all-ignore-rules", Right: "List every ignore rule in effect — .gitignore(s) + .hiss, merged"},
 		{Left: "--theme", Right: "Choose and save a theme for interactive mode and terminal --print"},
 		{Left: "--check-update", Right: "Check for a newer release and show the update command"},
-		{Left: "--unpack FILE", Right: "Write a catclip bundle's full files into this project"},
+		{Left: "--unpack [FILE]", Right: "Apply a copied chat reply or a bundle FILE to this project"},
+		{Left: "--unpack-reply-format", Right: "Copy the reply format for chat agents (--print shows it)"},
 	})
 
 	return b.String()

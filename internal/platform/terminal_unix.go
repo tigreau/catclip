@@ -138,3 +138,6 @@ func TerminalColumns(f *os.File) int {
 	}
 	return int(size.Cols)
 }
+
+// IsConsoleInput reports whether f is a terminal a person can type into.
+func IsConsoleInput(f *os.File) bool { return IsTerminalFile(f) }

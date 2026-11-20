@@ -85,7 +85,7 @@ func quoteCommandArg(value string, shell commandShell) string {
 	}
 	if shell == commandCmd {
 		// Native argv encoding followed by cmd metacharacter escaping, matching
-		// fzf 0.74.1's Windows QuoteEntry boundary. Go string literals are not
+		// fzf 0.74.5's Windows QuoteEntry boundary (unchanged since 0.74.1). Go string literals are not
 		// Windows command-line literals: ordinary backslashes must stay single.
 		var b strings.Builder
 		b.WriteByte('"')

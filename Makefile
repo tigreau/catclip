@@ -8,7 +8,7 @@ UNAME_M := $(shell uname -m)
 
 # Pinned versions
 RG_V := 15.2.0
-FZF_V := 0.74.1
+FZF_V := 0.74.5
 FZF_MIN_V := 0.71.0
 FZF_TAG := v$(FZF_V)
 ACTIONLINT_V := v1.7.12
@@ -97,7 +97,7 @@ $(BIN_DIR)/fzf:
 	fi
 
 RIPGREP_VERSION := 15.2.0
-FZF_VERSION := 0.74.1
+FZF_VERSION := 0.74.5
 RELEASE_PLATFORM ?= all
 ifneq ($(strip $(PLATFORM)),)
 RELEASE_PLATFORM := $(PLATFORM)

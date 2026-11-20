@@ -269,7 +269,7 @@ func startupAvailableModifierChoicesWithState(currentArgs []string, state startu
 		}
 		return nil
 	}
-	choices := make([]StartupModifierChoice, 0, len(startupModifierChoices)+len(startupModifierMetaChoices))
+	choices := make([]StartupModifierChoice, 0, len(startupModifierChoices)+len(startupModifierMetaChoices)+1)
 	for _, choice := range startupModifierChoices {
 		if startupModifierChoiceAllowed(currentArgs, choice, state) {
 			choices = append(choices, choice)
@@ -280,6 +280,10 @@ func startupAvailableModifierChoicesWithState(currentArgs []string, state startu
 			choices = append(choices, inclusion)
 		}
 		choices = append(choices, startupModifierMetaChoices...)
+		// Last input row, so the top row on screen. Only before any filter.
+		if startupUnpackOffered(currentArgs) {
+			choices = append(choices, startupUnpackChoice)
+		}
 	}
 	return choices
 }

@@ -41,7 +41,7 @@ func TestPrepareFileUnitsUsesSnippetBodyBytes(t *testing.T) {
 	if got := units[0].BodyBytes; got != wantBody {
 		t.Fatalf("expected snippet body bytes %d, got %d", wantBody, got)
 	}
-	if !strings.Contains(string(units[0].Payload), `<file path="src/app.ts" lines="1-3">`) {
+	if !strings.Contains(string(units[0].Payload), `<file path="src/app.ts" lines="1-3" out-of="5">`) {
 		t.Fatalf("expected prepared snippet payload, got:\n%s", string(units[0].Payload))
 	}
 	if want := []output.SnippetRange{{Start: 1, End: 3}}; !reflect.DeepEqual(units[0].SnippetRanges, want) {
@@ -108,8 +108,8 @@ func TestPrepareFileUnitsNumericSnippetUsesRangesWithoutPayload(t *testing.T) {
 	if err := output.WriteOutputPlanPayloadWithoutPrefetch(&stdout, output.EmitConfig{}, output.BuildPlan(units)); err != nil {
 		t.Fatalf("output.WriteOutputPlanPayloadWithoutPrefetch returned error: %v", err)
 	}
-	want := "<file path=\"src/app.ts\" lines=\"2-2\">\nTODO one\n</file>\n\n" +
-		"<file path=\"src/app.ts\" lines=\"5-5\">\nTODO two\n</file>\n\n"
+	want := "<file path=\"src/app.ts\" lines=\"2-2\" out-of=\"6\">\nTODO one\n</file>\n\n" +
+		"<file path=\"src/app.ts\" lines=\"5-5\" out-of=\"6\">\nTODO two\n</file>\n\n"
 	if got := stdout.String(); got != want {
 		t.Fatalf("numeric snippet emit mismatch\nwant:\n%s\ngot:\n%s", want, got)
 	}

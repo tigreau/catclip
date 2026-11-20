@@ -393,7 +393,7 @@ func buildSnippetPayloadFromLines(relPath string, lines []string, matchedLines [
 	for _, r := range snippet.Ranges {
 		block := snippetBlock{start: payload.Len()}
 		before := bodyBytes
-		if _, err := payload.Write(buildFileOpenTagWithLines(relPath, sourceType, fmt.Sprintf("%d-%d", r.Start, r.End))); err != nil {
+		if _, err := payload.Write(excerptOpenTag(relPath, sourceType, r, len(lines))); err != nil {
 			return nil, 0, nil, err
 		}
 		for i := r.Start - 1; i < r.End; i++ {

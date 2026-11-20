@@ -612,7 +612,7 @@ func runResetHiss(cfg hissConfig, stderr io.Writer) error {
 		if !cfg.Quiet {
 			fmt.Fprintf(stderr, "This will overwrite %s with defaults.\n", path)
 		}
-		shouldReset, err = ui.PromptYesNo("Are you sure? [y/N]", false, stderr)
+		shouldReset, err = ui.PromptYesNo("Are you sure? [y/N]:", false, stderr)
 		if err != nil {
 			return err
 		}

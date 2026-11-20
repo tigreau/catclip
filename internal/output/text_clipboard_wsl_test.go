@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/tigreau/catclip/fileclip"
 	"github.com/tigreau/catclip/internal/platform"
 )
 
@@ -49,5 +51,39 @@ func TestRealWSLClipboardRoundTripsUnicode(t *testing.T) {
 		if got := readBack(); got != tt.want {
 			t.Errorf("round trip: got %q, want %q", got, tt.want)
 		}
+	}
+}
+
+// Reads the Windows clipboard from WSL in one PowerShell call: text arrives
+// with LF line breaks; a copied file arrives as its Linux path.
+func TestRealWSLClipboardRead(t *testing.T) {
+	if os.Getenv("CATCLIP_TEST_REAL_CLIPBOARD") != "1" || platform.Detect() != "wsl" {
+		t.Skip("set CATCLIP_TEST_REAL_CLIPBOARD=1 inside WSL to overwrite the Windows clipboard")
+	}
+	t.Chdir(t.TempDir())
+	text := "<file path=\"src/a.go\">\nfunc A() {} // — é 😀 中\n</file>\n"
+	cmd, err := ClipboardCommand("wsl", platform.Palette{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Stdin = strings.NewReader(text)
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadClipboard("wsl", platform.Palette{})
+	if err != nil || got.Text != text || got.Files != nil {
+		t.Fatalf("text read: %+v %v", got, err)
+	}
+	file := filepath.Join("/mnt/c/Users/Public", "catclip-wsl-read-test.txt")
+	if err := os.WriteFile(file, []byte(text), 0o644); err != nil {
+		t.Skipf("no writable Windows folder: %v", err)
+	}
+	t.Cleanup(func() { os.Remove(file) })
+	if err := fileclip.Copy(file); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ReadClipboard("wsl", platform.Palette{})
+	if err != nil || len(got.Files) != 1 || got.Files[0] != file {
+		t.Fatalf("file read: %+v %v (want %s)", got, err, file)
 	}
 }

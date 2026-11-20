@@ -106,3 +106,65 @@ func openClipboardWithRetry() error {
 	}
 	return fmt.Errorf("Error: The clipboard is in use by another program (%v). Try again, or use --print.", lastErr)
 }
+
+// Reading, for `catclip --unpack` without a file.
+
+const cfHDrop = 15
+
+var (
+	shell32                        = syscall.NewLazyDLL("shell32.dll")
+	procGetClipboardData           = user32.NewProc("GetClipboardData")
+	procIsClipboardFormatAvailable = user32.NewProc("IsClipboardFormatAvailable")
+	procLstrlenW                   = kernel32.NewProc("lstrlenW")
+	procDragQueryFileW             = shell32.NewProc("DragQueryFileW")
+)
+
+func init() {
+	nativeClipboardRead = readWindowsClipboard
+}
+
+// readWindowsClipboard returns copied files (CF_HDROP: files copied in
+// Explorer, or catclip's own bundle copy) or CF_UNICODETEXT text, without a
+// child process. Copied files win: Explorer also offers their names as text.
+func readWindowsClipboard() (ClipboardContent, error) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := openClipboardWithRetry(); err != nil {
+		return ClipboardContent{}, err
+	}
+	defer procCloseClipboard.Call()
+
+	if r, _, _ := procIsClipboardFormatAvailable.Call(cfHDrop); r != 0 {
+		if h, _, _ := procGetClipboardData.Call(cfHDrop); h != 0 {
+			count, _, _ := procDragQueryFileW.Call(h, 0xFFFFFFFF, 0, 0)
+			files := make([]string, 0, count)
+			for i := uintptr(0); i < count; i++ {
+				size, _, _ := procDragQueryFileW.Call(h, i, 0, 0)
+				buf := make([]uint16, size+1)
+				procDragQueryFileW.Call(h, i, uintptr(unsafe.Pointer(&buf[0])), size+1)
+				files = append(files, syscall.UTF16ToString(buf))
+			}
+			if len(files) > 0 {
+				return ClipboardContent{Files: files}, nil
+			}
+		}
+	}
+	if r, _, _ := procIsClipboardFormatAvailable.Call(cfUnicodeText); r == 0 {
+		return ClipboardContent{}, nil
+	}
+	h, _, err := procGetClipboardData.Call(cfUnicodeText)
+	if h == 0 {
+		return ClipboardContent{}, fmt.Errorf("Error: Could not read the clipboard: %v", err)
+	}
+	ptr, _, err := procGlobalLock.Call(h)
+	if ptr == 0 {
+		return ClipboardContent{}, fmt.Errorf("Error: Could not read the clipboard: %v", err)
+	}
+	defer procGlobalUnlock.Call(h)
+	n, _, _ := procLstrlenW.Call(ptr)
+	buf := make([]uint16, n)
+	if n > 0 {
+		procRtlMoveMemory.Call(uintptr(unsafe.Pointer(&buf[0])), ptr, n*2)
+	}
+	return ClipboardContent{Text: syscall.UTF16ToString(buf)}, nil
+}

@@ -50,9 +50,20 @@ type MetadataScope struct {
 	Ignored      MetadataIgnoredSummary
 }
 
+// MetadataIgnoredSummary lists the ignored boundary paths: Rows holds the
+// folders (each on its own line) and the single files; Rules holds each rule
+// that ignored several files, with its count and a few examples.
 type MetadataIgnoredSummary struct {
 	Total int
 	Rows  []MetadataIgnoredPath
+	Rules []MetadataIgnoredRule
+}
+
+type MetadataIgnoredRule struct {
+	Count    int
+	Source   string
+	Pattern  string
+	Examples []string
 }
 
 type MetadataIgnoredPath struct {
@@ -98,6 +109,7 @@ type MetadataRow struct {
 
 const (
 	metadataIgnoredDisplayLimit = 20
+	metadataIgnoredExamples     = 3 // example paths on a rule line
 	metadataAggregateLimit      = 5
 	metadataLargeSummaryMinimum = 20
 )
@@ -529,11 +541,26 @@ func metadataSlashPath(value string) string {
 	return value
 }
 
+// metadataIgnoredCollector groups every ignored boundary path by the rule
+// that ignored it (source + pattern). Each add is one map lookup plus a
+// bounded insert into at most metadataIgnoredDisplayLimit sorted examples, so
+// the cost does not grow with the number of paths a rule matches, and only
+// the paths that are finally listed are ever stat'ed.
 type metadataIgnoredCollector struct {
 	workingDir     string
 	globalHissPath string
 	total          int
-	rows           []metadataIgnoredCandidate
+	rules          map[metadataIgnoredRuleKey]*metadataIgnoredRuleGroup
+}
+
+type metadataIgnoredRuleKey struct {
+	source, pattern string
+}
+
+type metadataIgnoredRuleGroup struct {
+	count    int
+	dirOnly  bool
+	examples []metadataIgnoredCandidate // shallowest first, at most metadataIgnoredDisplayLimit
 }
 
 type metadataIgnoredCandidate struct {
@@ -542,77 +569,85 @@ type metadataIgnoredCandidate struct {
 }
 
 func metadataIgnoredCandidateLess(a, b metadataIgnoredCandidate) bool {
-	if a.RuleDirectoryOnly != b.RuleDirectoryOnly {
-		return a.RuleDirectoryOnly
-	}
 	if a.depth != b.depth {
 		return a.depth < b.depth
 	}
-	if a.Path != b.Path {
-		return a.Path < b.Path
-	}
-	return a.Source < b.Source
+	return a.Path < b.Path
 }
 
 func (collector *metadataIgnoredCollector) add(record search.IgnoreTraceRecord) {
 	collector.total++
-	// Directory-only rules already provide useful type evidence. Retain a
-	// bounded priority list without statting every rejected path or repeatedly
-	// cleaning/sorting the same twenty paths for every incoming record.
+	if collector.rules == nil {
+		collector.rules = make(map[metadataIgnoredRuleKey]*metadataIgnoredRuleGroup)
+	}
+	key := metadataIgnoredRuleKey{source: record.Source, pattern: record.Pattern}
+	group := collector.rules[key]
+	if group == nil {
+		group = &metadataIgnoredRuleGroup{}
+		collector.rules[key] = group
+	}
+	group.count++
+	group.dirOnly = group.dirOnly || record.RuleDirectoryOnly
+	// Most paths only bump the count: compare with the last kept example
+	// before cleaning the path.
+	if len(group.examples) == metadataIgnoredDisplayLimit {
+		last := group.examples[len(group.examples)-1]
+		depth := strings.Count(record.Path, "/")
+		plain := !strings.Contains(record.Path, "\\") && !strings.HasPrefix(record.Path, "./")
+		if !plain {
+			depth += strings.Count(record.Path, "\\")
+		}
+		if depth > last.depth || (plain && depth == last.depth && record.Path >= last.Path) {
+			return
+		}
+	}
 	record.Path = metadataSlashPath(record.Path)
 	candidate := metadataIgnoredCandidate{IgnoreTraceRecord: record, depth: strings.Count(record.Path, "/")}
-	index := sort.Search(len(collector.rows), func(i int) bool { return metadataIgnoredCandidateLess(candidate, collector.rows[i]) })
+	index := sort.Search(len(group.examples), func(i int) bool { return metadataIgnoredCandidateLess(candidate, group.examples[i]) })
 	if index >= metadataIgnoredDisplayLimit {
 		return
 	}
-	if len(collector.rows) < metadataIgnoredDisplayLimit {
-		collector.rows = append(collector.rows, metadataIgnoredCandidate{})
+	if len(group.examples) < metadataIgnoredDisplayLimit {
+		group.examples = append(group.examples, metadataIgnoredCandidate{})
 	}
-	copy(collector.rows[index+1:], collector.rows[index:len(collector.rows)-1])
-	collector.rows[index] = candidate
+	copy(group.examples[index+1:], group.examples[index:len(group.examples)-1])
+	group.examples[index] = candidate
 }
 
+// summary lists, in this order: the ignored folders, then each rule that
+// ignored several paths as one line with its count and a few examples, then
+// the single ignored files that belong to no such rule (user, 2026-11-19).
 func (collector *metadataIgnoredCollector) summary() MetadataIgnoredSummary {
-	summary := MetadataIgnoredSummary{Total: collector.total, Rows: make([]MetadataIgnoredPath, 0, len(collector.rows))}
-	for _, record := range collector.rows {
-		kind := "path"
-		if info, err := os.Stat(filepath.Join(collector.workingDir, filepath.FromSlash(record.Path))); err == nil {
-			if info.IsDir() {
-				kind = "directory"
-			} else if info.Mode().IsRegular() {
-				kind = "file"
+	summary := MetadataIgnoredSummary{Total: collector.total}
+	var singles []MetadataIgnoredPath
+	for key, group := range collector.rules {
+		source := collector.displaySource(key.source)
+		pattern := metadataInlineValue(key.pattern)
+		first := collector.kind(group.examples[0].Path, group.dirOnly)
+		// Folders are what an agent most needs to see: each is listed on
+		// its own line, even when one rule ignored several of them.
+		if group.count == 1 || first == "directory" {
+			for i, record := range group.examples {
+				kind := first
+				if i > 0 {
+					kind = collector.kind(record.Path, group.dirOnly)
+				}
+				singles = append(singles, MetadataIgnoredPath{Path: record.Path, Kind: kind, Source: source, Pattern: pattern})
 			}
-		} else if record.RuleDirectoryOnly {
-			kind = "directory"
+			continue
 		}
-		source := strings.TrimSpace(record.Source)
-		if source == "" {
-			source = "(ripgrep)"
-		} else {
-			if !filepath.IsAbs(source) {
-				source = filepath.Join(collector.workingDir, filepath.FromSlash(source))
+		rule := MetadataIgnoredRule{Count: group.count, Source: source, Pattern: pattern}
+		for i, example := range group.examples {
+			if i == metadataIgnoredExamples {
+				break
 			}
-			if collector.globalHissPath != "" && metadataPathsReferToSameFile(source, collector.globalHissPath) {
-				// The global Catclip ignore file is user configuration, even when
-				// its configured location happens to sit below the current working
-				// directory. Never make it look like a project-owned ignore file.
-				source = metadataDisplayGlobalHissPath(collector.globalHissPath)
-			} else {
-				source = metadataDisplayPath(collector.workingDir, source)
-			}
+			rule.Examples = append(rule.Examples, example.Path)
 		}
-		summary.Rows = append(summary.Rows, MetadataIgnoredPath{
-			Path:    metadataSlashPath(record.Path),
-			Kind:    kind,
-			Source:  source,
-			Pattern: metadataInlineValue(record.Pattern),
-		})
+		summary.Rules = append(summary.Rules, rule)
 	}
-	// Only the retained rows incur the existing bounded metadata checks.
-	// A rule without a trailing slash may also name a directory; promote it
-	// after those checks, but never probe the entire ignored inventory.
-	sort.Slice(summary.Rows, func(i, j int) bool {
-		a, b := summary.Rows[i], summary.Rows[j]
+
+	sort.Slice(singles, func(i, j int) bool {
+		a, b := singles[i], singles[j]
 		if (a.Kind == "directory") != (b.Kind == "directory") {
 			return a.Kind == "directory"
 		}
@@ -624,21 +659,87 @@ func (collector *metadataIgnoredCollector) summary() MetadataIgnoredSummary {
 		}
 		return a.Source < b.Source
 	})
-	kept := summary.Rows[:0]
-	for _, row := range summary.Rows {
+	var folders, files int
+	for _, row := range singles {
 		covered := false
-		for _, parent := range kept {
+		for _, parent := range summary.Rows {
 			if parent.Kind == "directory" && strings.HasPrefix(row.Path, parent.Path+"/") {
 				covered = true
 				break
 			}
 		}
-		if !covered {
-			kept = append(kept, row)
+		if covered {
+			continue
 		}
+		if row.Kind == "directory" {
+			if folders == metadataIgnoredDisplayLimit {
+				continue
+			}
+			folders++
+		} else {
+			if files == metadataIgnoredDisplayLimit {
+				continue
+			}
+			files++
+		}
+		summary.Rows = append(summary.Rows, row)
 	}
-	summary.Rows = kept
+
+	sort.Slice(summary.Rules, func(i, j int) bool {
+		a, b := summary.Rules[i], summary.Rules[j]
+		if a.Count != b.Count {
+			return a.Count > b.Count
+		}
+		if a.Pattern != b.Pattern {
+			return a.Pattern < b.Pattern
+		}
+		return a.Source < b.Source
+	})
+	if len(summary.Rules) > metadataIgnoredDisplayLimit {
+		summary.Rules = summary.Rules[:metadataIgnoredDisplayLimit]
+	}
 	return summary
+}
+
+// Listed counts the paths the summary shows, one by one or through a rule.
+func (summary MetadataIgnoredSummary) Listed() int {
+	listed := len(summary.Rows)
+	for _, rule := range summary.Rules {
+		listed += rule.Count
+	}
+	return listed
+}
+
+// kind stats one listed path: directory, file or path.
+func (collector *metadataIgnoredCollector) kind(rel string, dirOnly bool) string {
+	if info, err := os.Stat(filepath.Join(collector.workingDir, filepath.FromSlash(rel))); err == nil {
+		if info.IsDir() {
+			return "directory"
+		}
+		if info.Mode().IsRegular() {
+			return "file"
+		}
+	} else if dirOnly {
+		return "directory"
+	}
+	return "path"
+}
+
+func (collector *metadataIgnoredCollector) displaySource(raw string) string {
+	source := strings.TrimSpace(raw)
+	if source == "" {
+		return "(ripgrep)"
+	}
+	if !filepath.IsAbs(source) {
+		source = filepath.Join(collector.workingDir, filepath.FromSlash(source))
+	}
+	if collector.globalHissPath != "" && metadataPathsReferToSameFile(source, collector.globalHissPath) {
+		// The global Catclip ignore file is user configuration, even when
+		// its configured location happens to sit below the current working
+		// directory. Never make it look like a project-owned ignore file.
+		return metadataDisplayGlobalHissPath(collector.globalHissPath)
+	}
+	return metadataDisplayPath(collector.workingDir, source)
 }
 
 func metadataInlineValue(value string) string {
@@ -941,25 +1042,76 @@ func writeMetadataScopeFacts(w io.Writer, scope MetadataScope, indent string, st
 	if scope.Ignored.Total == 1 {
 		boundaryWord = "path"
 	}
-	if _, err := fmt.Fprintf(w, "%sIgnored within target scope: %d boundary %s\n", indent, scope.Ignored.Total, boundaryWord); err != nil {
+	// How to read an ignored path is in the reply format and --help, not here.
+	if _, err := fmt.Fprintf(w, "%sIgnored within target scope: %d boundary %s\n",
+		indent, scope.Ignored.Total, boundaryWord); err != nil {
 		return err
 	}
-	for _, row := range scope.Ignored.Rows {
+	// Folders first, then rules that ignored several files, then single
+	// files. Tight rows: the path, its source, and the pattern only when it
+	// is not just the path's name.
+	type line struct{ left, right string }
+	var lines []line
+	for _, pass := range []bool{true, false} {
+		for _, row := range scope.Ignored.Rows {
+			if (row.Kind == "directory") != pass {
+				continue
+			}
+			left := row.Path
+			if row.Kind == "directory" {
+				left += "/"
+			}
+			right := row.Source
+			if !metadataPatternIsName(row.Pattern, row.Path) {
+				right += ": " + row.Pattern
+			}
+			lines = append(lines, line{left, right})
+		}
+		if !pass {
+			break
+		}
+		for _, rule := range scope.Ignored.Rules {
+			right := rule.Source + ": " + rule.Pattern
+			if len(rule.Examples) > 0 {
+				right += " (e.g. " + strings.Join(rule.Examples, ", ") + ")"
+			}
+			lines = append(lines, line{fmt.Sprintf("%d files", rule.Count), right})
+		}
+	}
+	width := 0
+	for _, l := range lines {
+		if n := len([]rune(l.left)); n > width && n <= 32 {
+			width = n
+		}
+	}
+	for _, l := range lines {
+		pad := width - len([]rune(l.left))
+		if pad < 0 {
+			pad = 0
+		}
+		text := fmt.Sprintf("%s  %s%s   %s\n", indent, l.left, strings.Repeat(" ", pad), l.right)
 		if style != nil {
-			if err := style.line(w, style.colors.Dim, "%s  %s [%s] · source: %s · pattern: %s\n", indent, row.Path, row.Kind, row.Source, row.Pattern); err != nil {
+			if err := style.line(w, style.colors.Dim, "%s", text); err != nil {
 				return err
 			}
 			continue
 		}
-		if _, err := fmt.Fprintf(w, "%s  %s [%s] · source: %s · pattern: %s\n", indent, row.Path, row.Kind, row.Source, row.Pattern); err != nil {
+		if _, err := io.WriteString(w, text); err != nil {
 			return err
 		}
 	}
-	if omitted := scope.Ignored.Total - len(scope.Ignored.Rows); omitted > 0 {
+	if omitted := scope.Ignored.Total - scope.Ignored.Listed(); omitted > 0 {
 		_, err := fmt.Fprintf(w, "%s  … %d more ignored boundary paths\n", indent, omitted)
 		return err
 	}
 	return nil
+}
+
+// metadataPatternIsName reports whether an ignore pattern only repeats the
+// path's own name ("docs/", "/bin/", ".DS_Store"), so a row can leave it out.
+func metadataPatternIsName(pattern, rel string) bool {
+	name := strings.Trim(pattern, "/")
+	return name != "" && (name == rel || name == path.Base(rel))
 }
 
 func metadataFileWord(count int) string {

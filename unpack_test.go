@@ -33,6 +33,11 @@ func setupUnpackProject(t *testing.T) string {
 		}
 	}
 	t.Chdir(root)
+	// Tests stub the question and picker; whether this machine has a
+	// terminal must not matter.
+	prevCanAsk := unpackCanAsk
+	unpackCanAsk = func() bool { return true }
+	t.Cleanup(func() { unpackCanAsk = prevCanAsk })
 	return root
 }
 
@@ -105,7 +110,7 @@ func TestUnpackWritesOnlyTheFilesKeptInThePicker(t *testing.T) {
 		t.Fatal("wrong files written")
 	}
 	out := stderr.String()
-	for _, want := range []string{"Wrote 1 file", "(0 replaced, 1 new)", "Left out 1 file", "img/x.png — binary description"} {
+	for _, want := range []string{"Wrote 1 file", "(0 replaced, 1 new)", "Left out 1 file", "    img/x.png   binary description"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}
@@ -149,7 +154,7 @@ func TestUnpackHeadlessWritesAllAndListsEachFile(t *testing.T) {
 		t.Fatal("--headless did not write the changes")
 	}
 	out := stdout.String()
-	for _, want := range []string{"Wrote 2 files", "(1 replaced, 1 new)", "  changed  src/a.go\n", "  new      src/b.go\n", "img/x.png — binary description"} {
+	for _, want := range []string{"Wrote 2 files", "(1 replaced, 1 new)", "  changed  src/a.go\n", "  new      src/b.go\n", "    img/x.png   binary description"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("missing %q in:\n%s", want, out)
 		}
@@ -182,7 +187,19 @@ func TestParseUnpackArgs(t *testing.T) {
 	if err != nil || !opts.Print || !opts.Yes || !opts.Quiet || !opts.Verbose {
 		t.Fatalf("short flags: %+v %v", opts, err)
 	}
-	for _, args := range [][]string{{"--unpack"}, {"--unpack", "--yes"}, {"src", "--unpack", "b.txt"}, {"--unpack", "a", "--unpack", "b"}, {"--unpack", "b.txt", "--paths"}} {
+	// Without a FILE the bundle comes from the clipboard; a next argument
+	// starting with "-" is a flag, not the file.
+	for _, args := range [][]string{{"--unpack"}, {"--unpack", "--yes"}, {"--unpack", "-p"}, {"-y", "--unpack", "-q"}} {
+		opts, err := cli.ParseUnpackArgs(args)
+		if err != nil || opts.Path != "" || !opts.FromClipboard() {
+			t.Errorf("%v: want the clipboard, got %+v %v", args, opts, err)
+		}
+	}
+	// --headless never reads the clipboard.
+	if _, err := cli.ParseUnpackArgs([]string{"--unpack", "--headless"}); err == nil || !strings.Contains(err.Error(), "catclip --unpack FILE --headless") {
+		t.Fatalf("--unpack --headless without a file: %v", err)
+	}
+	for _, args := range [][]string{{"src", "--unpack", "b.txt"}, {"--unpack", "a", "--unpack", "b"}, {"--unpack", "b.txt", "--paths"}, {"--unpack", "a.txt", "b.txt"}, {"--unpack", ""}} {
 		if _, err := cli.ParseUnpackArgs(args); err == nil {
 			t.Errorf("%v should be rejected", args)
 		}
@@ -206,7 +223,7 @@ func TestUnpackRootQuestionNamesTheFolder(t *testing.T) {
 	t.Cleanup(func() { unpackPromptYesNo = prev })
 	_ = runUnpack(cli.UnpackOptions{Path: "bundle.txt"}, &bytes.Buffer{}, &bytes.Buffer{})
 	plain := regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(question, "")
-	if want := "Is " + platform.DisplayPath(root) + " the project root? [Y/n]"; plain != want {
+	if want := "Is " + platform.DisplayPath(root) + " the project root? [Y/n]:"; plain != want {
 		t.Fatalf("question %q, want %q", plain, want)
 	}
 }
@@ -243,5 +260,27 @@ func TestUnpackPrintShowsDiffsAndWritesNothing(t *testing.T) {
 		if strings.Contains(out, "\x1b[") {
 			t.Fatalf("diffs must be plain when not a terminal (%+v)", opts)
 		}
+	}
+}
+
+// Without anyone to answer (CI, cron, ssh without -t), --unpack says what to
+// run instead, like bare catclip and catclip --, and writes nothing.
+func TestUnpackWithoutATerminalSaysWhatToRun(t *testing.T) {
+	root := setupUnpackProject(t)
+	prompts := stubUnpackUI(t, true, func(unpack.Plan) ([]int, error) {
+		t.Fatal("the picker must not open")
+		return nil, nil
+	})
+	unpackCanAsk = func() bool { return false }
+	err := runUnpack(cli.UnpackOptions{Path: "bundle.txt"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "Run catclip --unpack in an interactive terminal, or add --yes to write every change") || *prompts != 0 {
+		t.Fatalf("got %v, %d prompts", err, *prompts)
+	}
+	if readUnpackFile(t, root, "src/a.go") != "old a\n" {
+		t.Fatal("nothing may be written")
+	}
+	// --yes needs nobody.
+	if err := runUnpack(cli.UnpackOptions{Path: "bundle.txt", Yes: true}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
 	}
 }

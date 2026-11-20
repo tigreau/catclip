@@ -408,16 +408,7 @@ func emitLinesFile(w io.Writer, entry discovery.Entry, sourceTypes ...string) er
 	defer f.Close()
 
 	sliced := entry.LinesStart > 0
-	linesAttr := ""
-	if sliced {
-		if entry.LinesEnd > 0 {
-			linesAttr = fmt.Sprintf("%d-%d", entry.LinesStart, entry.LinesEnd)
-		} else {
-			linesAttr = fmt.Sprintf("%d-", entry.LinesStart)
-		}
-	}
-
-	openTag := buildNumberedOpenTag(entry.RelPath, sourceType, linesAttr)
+	openTag := rangedLinesOpenTag(entry, sourceType)
 	startLine := 1
 	if sliced {
 		startLine = entry.LinesStart
@@ -684,7 +675,7 @@ func emitSnippetRangesFile(w io.Writer, entry discovery.Entry, ranges []SnippetR
 			continue
 		}
 		if !inRange {
-			if _, err := w.Write(buildFileOpenTagWithLines(entry.RelPath, sourceType, fmt.Sprintf("%d-%d", current.Start, current.End))); err != nil {
+			if _, err := w.Write(excerptOpenTag(entry.RelPath, sourceType, current, fileLineTotal(entry.AbsPath))); err != nil {
 				return err
 			}
 			inRange = true

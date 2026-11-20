@@ -3,7 +3,9 @@ package discovery
 import (
 	"fmt"
 	"io"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -227,6 +229,11 @@ func recursiveGlobFilterPattern(pattern, suffix string) string {
 }
 
 func targetNotFoundWarning(target string, scopeIndex int, colors platform.Palette) string {
+	// A path that is not on disk at all (often guessed, e.g. by a chat agent
+	// asking for code) is not an ignore problem: say what exists instead.
+	if strings.Contains(target, "/") && !pathExists(target) {
+		return missingPathWarning(target, scopeIndex, colors)
+	}
 	if strings.Contains(target, "/") {
 		return fmt.Sprintf("%sWarning:%s Target %s not found%s.\n\n  %sIgnored paths must be named by their complete relative path, or discovered with --no-ignore.%s\n  %sTry the same target with ignore rules disabled:%s\n    %scatclip %s --no-ignore%s",
 			colors.Warn, colors.Reset, SingleQuoted(target), diagnosticScopeSuffix(scopeIndex),
@@ -330,6 +337,29 @@ func WriteNoFilesMatchedMessage(scopes []command.ExecutionScope, stderr io.Write
 		return writeEmptyResultIgnoreHints(stderr, colors)
 	}
 
+	// --snippet that found nothing: the files exist, the pattern matched no
+	// line. Name the pattern instead of suggesting empty or ignored folders.
+	var snippetPatterns []string
+	for _, s := range scopes {
+		if s.Snippet && s.SnippetPattern != "" {
+			snippetPatterns = append(snippetPatterns, "'"+s.SnippetPattern+"'")
+		}
+	}
+	if len(snippetPatterns) > 0 {
+		if _, err := fmt.Fprintf(stderr, "\n%sNo lines matched --snippet %s.%s\n", colors.Warn, strings.Join(snippetPatterns, ", "), colors.Reset); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintf(stderr, "\n  %sThe pattern is a regular expression (smart-case: uppercase makes it case-sensitive).%s\n"+
+			"  %sEscape ( ) [ ] { } . * + ? | \\ to match them literally, e.g. 'Main\\(' for \"Main(\".%s\n"+
+			"  %sTargets and other filters also limit which files are searched.%s\n",
+			colors.Dim, colors.Reset, colors.Dim, colors.Reset, colors.Dim, colors.Reset); err != nil {
+			return err
+		}
+		// No ignore-rule tips: the files were found, so ignore rules are not
+		// why nothing matched, and the tips sent readers the wrong way.
+		return nil
+	}
+
 	if _, err := fmt.Fprintf(stderr, "\n%sNo text files found matching your criteria.%s\n", colors.Warn, colors.Reset); err != nil {
 		return err
 	}
@@ -388,4 +418,51 @@ func diagnosticScopeSuffix(index int) string {
 // resolver. Paths and regexes may themselves contain literal "(scope N)" text.
 func scopedDiagnostic(scope int, format func(int) string) Diagnostic {
 	return Diagnostic{ScopeIndex: scope, Message: format(scope), GroupedMessage: format(-1)}
+}
+
+func pathExists(target string) bool {
+	_, err := os.Lstat(filepath.FromSlash(strings.TrimSuffix(target, "/")))
+	return err == nil
+}
+
+// missingPathFolderLimit keeps the listing of a folder's files short.
+const missingPathFolderLimit = 8
+
+// missingPathWarning explains a path that does not exist: it lists the
+// files of its folder when that folder exists, and otherwise suggests a bare
+// file name or a folder, which catclip finds anywhere in the project.
+func missingPathWarning(target string, scopeIndex int, colors platform.Palette) string {
+	clean := strings.TrimSuffix(target, "/")
+	dir, base := path.Split(clean)
+	dir = strings.TrimSuffix(dir, "/")
+	var b strings.Builder
+	fmt.Fprintf(&b, "%sWarning:%s Target %s not found%s.\n", colors.Warn, colors.Reset, SingleQuoted(target), diagnosticScopeSuffix(scopeIndex))
+	if dir != "" && pathExists(dir) {
+		if entries, err := os.ReadDir(filepath.FromSlash(dir)); err == nil {
+			var names []string
+			for _, e := range entries {
+				if strings.HasPrefix(e.Name(), ".") {
+					continue
+				}
+				name := e.Name()
+				if e.IsDir() {
+					name += "/"
+				}
+				names = append(names, name)
+			}
+			if len(names) > 0 {
+				shown := names
+				more := ""
+				if len(shown) > missingPathFolderLimit {
+					shown = shown[:missingPathFolderLimit]
+					more = fmt.Sprintf(", and %d more", len(names)-missingPathFolderLimit)
+				}
+				fmt.Fprintf(&b, "\n  %s%s/ has: %s%s%s\n", colors.Dim, dir, strings.Join(shown, ", "), more, colors.Reset)
+				fmt.Fprintf(&b, "  %sCopy the whole folder with:%s %scatclip %s%s", colors.Dim, colors.Reset, colors.OK, ShellQuoteArg(dir), colors.Reset)
+				return b.String()
+			}
+		}
+	}
+	fmt.Fprintf(&b, "\n  %sA file name alone or a folder is found anywhere in the project:%s %scatclip %s%s", colors.Dim, colors.Reset, colors.OK, ShellQuoteArg(base), colors.Reset)
+	return b.String()
 }

@@ -214,6 +214,28 @@ func runInternalFilePreview(cfg filePreviewConfig, stdout io.Writer) error {
 		return err
 	}
 
+	// No row to focus, and ripgrep refused this exact pattern as an invalid
+	// regular expression: nothing was searched, so do not say "Searching" or
+	// "No matches" (user, 2026-11-20: "Main(" kept showing searching).
+	// ripgrep decides validity; catclip only words the message.
+	if strings.TrimSpace(cfg.FilePath) == "" && strings.TrimSpace(cfg.FocusedLabel) == "" && contentPatternInvalid(cfg.CheckpointPath, s) {
+		err := renderTreeDocument(stdout, buildInternalInvalidPatternDocument(), FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+		finishBench("err", platform.InternalBenchError(err), "mode", "invalid_pattern")
+		return err
+	}
+
+	// No row to focus, and the reload for this exact pattern has finished with
+	// no results (its memo says so): the pattern matched nothing. Say so
+	// instead of "Searching file contents..." (user, 2026-11-20). fzf reruns
+	// this preview when the search finishes (load:refresh-preview).
+	if strings.TrimSpace(cfg.FilePath) == "" && strings.TrimSpace(cfg.FocusedLabel) == "" && contentSearchFinishedEmpty(cfg.CheckpointPath, s) {
+		finishNoMatchBench := platform.InternalBenchSpan("ui.internal.file_preview.no_matches")
+		err := renderTreeDocument(stdout, buildInternalNoMatchesDocument(s), FzfFilterTreeRenderOptions(), platform.ANSIPalette())
+		finishNoMatchBench("err", platform.InternalBenchError(err))
+		finishBench("err", platform.InternalBenchError(err), "mode", "no_matches")
+		return err
+	}
+
 	// Non-empty pattern + no focused row + the content picker explicitly
 	// requesting the "searching" document: this is the phase between a
 	// keystroke and the reload command producing rows. The focused label
@@ -415,6 +437,41 @@ func buildInternalSearchingHintDocument(goos string) treeDocument {
 	}
 	// HighlightPath "hint.txt" keeps the document plain (no lexer match).
 	return buildTreeFilePreviewDocument("", "hint.txt", text, "", false, nil)
+}
+
+// buildInternalNoMatchesDocument is shown when a finished search found
+// nothing, so "Searching file contents..." never stays up for a pattern that
+// simply has no matches. Authored-help styling, like the regex hints.
+func buildInternalNoMatchesDocument(s command.ExecutionScope) treeDocument {
+	text := "No matches\n\n" +
+		"  No line in the selected files matches this pattern.\n\n" +
+		"  Check the pattern:\n" +
+		"    It is a regular expression: escape ( ) [ ] . * + ? | to match them.\n" +
+		"    Uppercase letters make it case-sensitive.\n" +
+		"    Targets and earlier filters limit which files are searched.\n\n" +
+		"  Change the pattern to search again.\n"
+	if s.HasStage(command.StageNotContains) {
+		text = "Every file matches\n\n" +
+			"  All selected files contain a match for this pattern, so\n" +
+			"  excluding them would keep no files.\n\n" +
+			"  Check the pattern:\n" +
+			"    It is a regular expression: escape ( ) [ ] . * + ? | to match them.\n" +
+			"    Uppercase letters make it case-sensitive.\n\n" +
+			"  Change the pattern to search again.\n"
+	}
+	return buildTreeFilePreviewDocument("", renderpkg.SearchHelpHighlight, text, "", false, nil)
+}
+
+// buildInternalInvalidPatternDocument is shown when ripgrep refused the
+// pattern, so nothing was searched. Authored-help styling, like the hints.
+func buildInternalInvalidPatternDocument() treeDocument {
+	text := "Not a valid regular expression\n\n" +
+		"  ripgrep could not read this pattern, so nothing was searched.\n\n" +
+		"  Check the pattern:\n" +
+		"    ( ) [ ] { } . * + ? | and \\ have a special meaning.\n" +
+		"    To match them as text, escape them: Main\\( finds \"Main(\".\n" +
+		"    Every ( needs a closing ), and every [ a closing ].\n"
+	return buildTreeFilePreviewDocument("", renderpkg.SearchHelpHighlight, text, "", false, nil)
 }
 
 func buildInternalSnippetHintDocument() treeDocument {

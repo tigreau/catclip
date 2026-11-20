@@ -92,7 +92,7 @@ func TestFzfShellTransport(t *testing.T) {
 	}
 	t.Logf("native OS=%s; fzf=%s; SHELL=%s", runtime.GOOS, strings.TrimSpace(string(version)), shell)
 	// Exercise fzf's automatic shell-specific executor. A nonempty --with-shell
-	// follows a different branch in 0.74.1 and must not be silently substituted.
+	// follows a different branch in the pinned fzf (0.74.5) and must not be silently substituted.
 	t.Setenv("SHELL", shell)
 	t.Setenv("FZF_DEFAULT_OPTS", "")
 	t.Setenv("FZF_DEFAULT_OPTS_FILE", "")
