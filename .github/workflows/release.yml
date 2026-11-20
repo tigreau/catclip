@@ -99,7 +99,7 @@ jobs:
           set -euo pipefail
           mkdir -p stage stage/bin
           go build -trimpath \
-            -ldflags "-s -w -X github.com/tigreau/catclip.releaseVersion=$CATCLIP_VERSION" \
+            -ldflags "-s -w -X github.com/tigreau/catclip/internal/catclip.releaseVersion=$CATCLIP_VERSION" \
             -o "stage/catclip${{ matrix.bin_ext }}" ./cmd/catclip
 
       - name: Stage bundled tools (rg, fzf)

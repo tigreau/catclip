@@ -31,6 +31,12 @@ func ValidatePaths(root string, b Bundle) error {
 		if err := validatePath(root, e.Path, checked); err != nil {
 			return err
 		}
+		// A move's old path is removed, so it gets the same checks.
+		if e.From != "" {
+			if err := validatePath(root, e.From, checked); err != nil {
+				return err
+			}
+		}
 	}
 	for _, s := range b.Skipped {
 		if err := validateName(s.Path, runtime.GOOS == "windows"); err != nil {

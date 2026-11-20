@@ -7,7 +7,7 @@ import (
 	"runtime/pprof"
 	"runtime/trace"
 
-	"github.com/tigreau/catclip"
+	"github.com/tigreau/catclip/internal/catclip"
 )
 
 func main() {

@@ -76,7 +76,8 @@ export CATCLIP_RG="$TEST_ROOT/payload/bin/rg" CATCLIP_FZF="$TEST_ROOT/payload/bi
 
 cp "$INSTALL_SCRIPT" "$TEST_ROOT/checkout/install.sh"
 printf 'module fixture\n\ngo 1.26\n' > "$TEST_ROOT/checkout/go.mod"
-touch "$TEST_ROOT/checkout/main.go"
+mkdir -p "$TEST_ROOT/checkout/cmd/catclip"
+touch "$TEST_ROOT/checkout/cmd/catclip/main.go"
 cp "$TEST_ROOT/payload/VERSION" "$TEST_ROOT/checkout/VERSION"
 # A piped install must select the release even when cwd is a source checkout.
 cd "$TEST_ROOT/checkout"

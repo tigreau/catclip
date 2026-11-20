@@ -55,7 +55,7 @@ mkdir -p "$stage/bin" "$work"
 printf '[%s/%s] building catclip\n' "$goos" "$goarch"
 GOOS="$goos" GOARCH="$goarch" CGO_ENABLED=0 \
   go build -trimpath \
-    -ldflags "-s -w -X github.com/tigreau/catclip.releaseVersion=${CATCLIP_VERSION}" \
+    -ldflags "-s -w -X github.com/tigreau/catclip/internal/catclip.releaseVersion=${CATCLIP_VERSION}" \
     -o "${stage}/catclip${bin_ext}" ./cmd/catclip
 
 printf '[%s/%s] downloading rg %s\n' "$goos" "$goarch" "$RIPGREP_VERSION"

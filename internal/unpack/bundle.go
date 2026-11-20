@@ -13,6 +13,9 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 // Entry is one file from the bundle: either a complete file (Body) or line
@@ -21,6 +24,10 @@ type Entry struct {
 	Path  string
 	Body  []byte
 	Edits []LineEdit
+	// From is set for a move: <file path="new" from="old">. An empty Body
+	// moves the file as it is; a Body moves it and writes that content.
+	// Works on every OS, with or without Git (v0.7.16).
+	From string
 }
 
 // Skipped is a bundle entry that is never written. Entries skipped by design
@@ -52,6 +59,10 @@ const (
 	ProblemShortened Problem = "shortened" // code replaced by a placeholder
 	ProblemFolder    Problem = "folder"    // a folder where a file should go
 	ProblemBinary    Problem = "binary"    // the local copy is binary
+	// A move whose source is not here, or whose target already exists.
+	ProblemMoveSource     Problem = "move-source"
+	ProblemMoveTarget     Problem = "move-target"
+	ProblemMoveSourceType Problem = "move-source-type"
 )
 
 // Bundle is the parsed, validated content of a catclip bundle.
@@ -130,6 +141,17 @@ func Parse(data []byte) (Bundle, error) {
 		for _, a := range attrPattern.FindAllSubmatch(m[2], -1) {
 			attrs[string(a[1])] = string(a[2])
 		}
+		from := strings.ReplaceAll(attrs["from"], `\`, "/")
+		if _, isMove := attrs["from"]; isMove {
+			switch {
+			case from == "":
+				return Bundle{}, fmt.Errorf("line %d: %s has an empty from=", tagLine, path)
+			case from == path:
+				return Bundle{}, fmt.Errorf("line %d: %s is moved onto itself", tagLine, path)
+			case attrs["lines"] != "":
+				return Bundle{}, fmt.Errorf("line %d: %s is a move and a line edit; a move carries the whole file", tagLine, path)
+			}
+		}
 		bodyStart := next
 		pos, line = next, line+1
 		closed := false
@@ -168,12 +190,12 @@ func Parse(data []byte) (Bundle, error) {
 						if b.Entries[i].Edits != nil {
 							return Bundle{}, fmt.Errorf("%s appears both as a whole file and as line edits", path)
 						}
-						if !bytes.Equal(b.Entries[i].Body, body) {
+						if !bytes.Equal(b.Entries[i].Body, body) || b.Entries[i].From != from {
 							return Bundle{}, fmt.Errorf("%s appears twice with different contents", path)
 						}
 					} else {
 						full[path] = len(b.Entries)
-						b.Entries = append(b.Entries, Entry{Path: path, Body: body})
+						b.Entries = append(b.Entries, Entry{Path: path, Body: body, From: from})
 					}
 				}
 				pos, line = after, line+1
@@ -193,6 +215,9 @@ func Parse(data []byte) (Bundle, error) {
 		if err := checkEditsConsistent(e.Path, e.Edits); err != nil {
 			return Bundle{}, err
 		}
+	}
+	if err := checkMovesConsistent(b.Entries); err != nil {
+		return Bundle{}, err
 	}
 	return b, nil
 }
@@ -258,7 +283,7 @@ func partialReason(attrs map[string]string) string {
 	var unknown []string
 	for name := range attrs {
 		switch name {
-		case "type", "lines", "out-of", "numbered":
+		case "type", "lines", "out-of", "numbered", "from":
 		default:
 			unknown = append(unknown, name)
 		}
@@ -297,4 +322,62 @@ func (b Bundle) NoteText() string {
 		notes = notes[:len(notes)-1]
 	}
 	return strings.Join(notes, "\n")
+}
+
+// checkMovesConsistent checks paths in the reply before any project reads.
+// Filesystems can treat different capitalizations and Unicode spellings
+// as the same name. Apply the same comparison on every OS.
+func checkMovesConsistent(entries []Entry) error {
+	for _, entry := range entries {
+		if entry.From != "" {
+			return checkMovePathConflicts(entries)
+		}
+	}
+	return nil
+}
+
+func checkMovePathConflicts(entries []Entry) error {
+	destinations := make(map[string]Entry, len(entries))
+	for _, entry := range entries {
+		key := foldMovePath(entry.Path)
+		if other, exists := destinations[key]; exists && (entry.From != "" || other.From != "") {
+			return fmt.Errorf("destinations %q and %q may resolve to the same path", other.Path, entry.Path)
+		}
+		destinations[key] = entry
+	}
+	sources := map[string]Entry{}
+	for _, entry := range entries {
+		if entry.From != "" {
+			key := foldMovePath(entry.From)
+			if other, exists := sources[key]; exists {
+				return fmt.Errorf("move sources %q and %q conflict for destinations %q and %q", other.From, entry.From, other.Path, entry.Path)
+			}
+			if other, exists := destinations[key]; exists {
+				return fmt.Errorf("move source %q for %q conflicts with destination %q", entry.From, entry.Path, other.Path)
+			}
+			sources[key] = entry
+		}
+
+		// Each ancestor of a destination must remain a directory.
+		path := foldMovePath(entry.Path)
+		for i := strings.LastIndexByte(path, '/'); i >= 0; i = strings.LastIndexByte(path, '/') {
+			path = path[:i]
+			if other, exists := destinations[path]; exists && (entry.From != "" || other.From != "") {
+				return fmt.Errorf("destination %q needs a folder where the reply writes file %q", entry.Path, other.Path)
+			}
+		}
+	}
+	return nil
+}
+
+// foldMovePath decomposes accented letters before folding their case.
+// This comparison key leaves the original filesystem path untouched.
+func foldMovePath(path string) string {
+	return strings.Map(func(r rune) rune {
+		first := r
+		for next := unicode.SimpleFold(r); next != r; next = unicode.SimpleFold(next) {
+			first = min(first, next)
+		}
+		return first
+	}, norm.NFD.String(path))
 }

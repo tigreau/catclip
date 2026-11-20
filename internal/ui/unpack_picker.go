@@ -35,7 +35,7 @@ func ChooseUnpackChanges(p unpack.Plan) ([]int, error) {
 	}
 	lines := unpackPickerLines(p)
 	changed, added := p.Counts()
-	header := unpackPickerHeader(changed, added, p.Identical)
+	header := unpackPickerHeader(changed, added, p.Moved(), p.Identical)
 	platform.StopActiveSpinner()
 	result, err := picker.Run(bin, themedFzfRequest(picker.Request{
 		Prompt:  "unpack> ",
@@ -62,9 +62,13 @@ func ChooseUnpackChanges(p unpack.Plan) ([]int, error) {
 // unpackPickerHeader is four rows: the counts, then three key-hint rows in the
 // [Key] style of catclip's other multi-select pickers. The destination folder
 // was confirmed by the root question just before.
-func unpackPickerHeader(changed, added, identical int) string {
+func unpackPickerHeader(changed, added, moved, identical int) string {
+	counts := fmt.Sprintf("%d changed · %d new", changed, added)
+	if moved > 0 {
+		counts += fmt.Sprintf(" · %d moved", moved)
+	}
 	return discovery.PickerHeader(
-		fmt.Sprintf("%d changed · %d new · %d already identical", changed, added, identical),
+		counts+fmt.Sprintf(" · %d already identical", identical),
 		fmt.Sprintf("[Tab] unselect or select a file  [%s] unselect or select all", platform.MultiSelectToggleAllKey()),
 		"[Ctrl-T] switch the preview between diff and tree",
 		"[Enter] write the selected files  [Esc] cancel, nothing is written",
@@ -111,7 +115,7 @@ func writeUnpackPreviewState(dir string, p unpack.Plan) error {
 		if err := os.WriteFile(filepath.Join(dir, strconv.Itoa(i)+".body"), c.Body, 0o600); err != nil {
 			return err
 		}
-		fmt.Fprintf(&manifest, "%d\t%s\t%s\t%s\n", i, c.Kind, c.Path, c.Abs)
+		fmt.Fprintf(&manifest, "%d\t%s\t%s\t%s\t%s\t%s\n", i, c.Kind, c.Path, c.Abs, c.From, c.FromAbs)
 	}
 	if err := os.WriteFile(unpackModePath(dir), []byte("diff\n"), 0o600); err != nil {
 		return err
@@ -159,6 +163,7 @@ func RunInternalUnpackToggle(stateDir string) error {
 
 type unpackManifestRow struct {
 	kind, path, abs string
+	from, fromAbs    string // a move's old path (KindMoved)
 }
 
 func readUnpackManifest(stateDir string) (map[string]unpackManifestRow, error) {
@@ -171,9 +176,13 @@ func readUnpackManifest(stateDir string) (map[string]unpackManifestRow, error) {
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	for scanner.Scan() {
-		fields := strings.SplitN(scanner.Text(), "\t", 4)
-		if len(fields) == 4 {
-			rows[fields[0]] = unpackManifestRow{kind: fields[1], path: fields[2], abs: fields[3]}
+		fields := strings.SplitN(scanner.Text(), "\t", 6)
+		if len(fields) >= 4 {
+			row := unpackManifestRow{kind: fields[1], path: fields[2], abs: fields[3]}
+			if len(fields) == 6 {
+				row.from, row.fromAbs = fields[4], fields[5]
+			}
+			rows[fields[0]] = row
 		}
 	}
 	return rows, scanner.Err()
@@ -206,9 +215,14 @@ func RunInternalUnpackPreview(stateDir, index, selectionPath string, stdout io.W
 	if err != nil {
 		return err
 	}
-	c := unpack.Change{Kind: unpack.ChangeKind(row.kind), Path: row.path, Abs: row.abs, Body: body}
-	if c.Kind == unpack.KindChanged {
+	c := unpack.Change{Kind: unpack.ChangeKind(row.kind), Path: row.path, Abs: row.abs, Body: body, From: row.from, FromAbs: row.fromAbs}
+	switch c.Kind {
+	case unpack.KindChanged:
 		if c.Local, err = os.ReadFile(c.Abs); err != nil {
+			return err
+		}
+	case unpack.KindMoved:
+		if c.Local, err = os.ReadFile(c.FromAbs); err != nil {
 			return err
 		}
 	}
@@ -261,6 +275,9 @@ func writeUnpackSelectionTree(stateDir string, rows map[string]unpackManifestRow
 // unpackRowNote marks a file changed by excerpt edits rather than replaced
 // whole, so the user knows only those lines change.
 func unpackRowNote(c unpack.Change) string {
+	if c.Kind == unpack.KindMoved {
+		return "  (from " + c.From + ")"
+	}
 	if c.LineEdits {
 		return "  (line edits)"
 	}

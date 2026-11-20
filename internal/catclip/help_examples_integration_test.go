@@ -105,7 +105,8 @@ func containsArg(args []string, value string) bool {
 func copyHelpExampleFixture(t *testing.T) string {
 	t.Helper()
 
-	source := filepath.Join("testdata", "help-react-go-project")
+	// testdata/ stays at the repository root: internal/ui shares it.
+	source := filepath.Join("..", "..", "testdata", "help-react-go-project")
 	destination := filepath.Join(t.TempDir(), "help-react-go-project")
 	if err := filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {

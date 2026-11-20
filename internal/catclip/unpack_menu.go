@@ -66,7 +66,7 @@ func unpackMenuSessionEnded(err error, stderr io.Writer) (bool, error) {
 // writeUnpackMenuHowItWorks ends the [clipboard] and [file] previews.
 func writeUnpackMenuHowItWorks(w io.Writer, c platform.Palette) {
 	fmt.Fprintf(w, "\n%sHow unpacking works%s\n"+
-		"  • It %snever deletes%s files.\n"+
+		"  • It %snever deletes%s files; a move only renames one.\n"+
 		"  • You review the diffs and choose which files to write.\n"+
 		"  • Nothing is written until you press %sEnter%s in that list.\n"+
 		"  • There is %sno undo%s after writing: commit first.\n",
@@ -84,7 +84,7 @@ func runUnpackMenuPreview(args []string, stdout io.Writer) error {
 	var b bytes.Buffer
 	switch ui.UnpackMenuAction(args[0]) {
 	case ui.UnpackActionReplyFormat:
-		src, err := loadUnpackReplyFormat(false, false, false, io.Discard)
+		src, err := loadUnpackReplyFormat(cli.ReplyFormatOptions{Print: true}, false, io.Discard)
 		if err != nil {
 			return err
 		}
@@ -152,9 +152,13 @@ func writeUnpackMenuSummary(w io.Writer, c platform.Palette, opts cli.UnpackOpti
 		return
 	}
 	changed, added := plan.Counts()
-	fmt.Fprintf(w, "%sFound in %s%s\n  %s%d changed%s · %s%d new%s · %d already identical\n\n",
+	moved := ""
+	if n := plan.Moved(); n > 0 {
+		moved = fmt.Sprintf(" · %s%d moved%s", c.Prompt, n, c.Reset)
+	}
+	fmt.Fprintf(w, "%sFound in %s%s\n  %s%d changed%s · %s%d new%s%s · %d already identical\n\n",
 		c.Bold+c.Value, prep.src.name, c.Reset,
-		c.Prompt, changed, c.Reset, c.OK, added, c.Reset, plan.Identical)
+		c.Prompt, changed, c.Reset, c.OK, added, c.Reset, moved, plan.Identical)
 	const listLimit = 20
 	for i, ch := range plan.Changes {
 		if i == listLimit {
@@ -168,6 +172,9 @@ func writeUnpackMenuSummary(w io.Writer, c platform.Palette, opts cli.UnpackOpti
 		note := ""
 		if ch.LineEdits {
 			note = c.Dim + "  (line edits)" + c.Reset
+		}
+		if ch.Kind == unpack.KindMoved {
+			note = c.Dim + "  (from " + ch.From + ")" + c.Reset
 		}
 		fmt.Fprintf(w, "  %s%-7s%s  %s%s\n", kind, ch.Kind, c.Reset, ch.Path, note)
 	}

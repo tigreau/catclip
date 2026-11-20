@@ -6,7 +6,7 @@ Copy code context for AI assistants. One command, smart defaults, no setup.
 catclip src                # copy src/ to your clipboard
 ```
 
-**[↓ Jump to installation](#installation)**: one command, cross-platform.
+**[↓ Jump to installation](#installation)**: paste a line into your terminal.
 
 ---
 

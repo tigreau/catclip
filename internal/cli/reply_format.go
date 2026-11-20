@@ -39,7 +39,7 @@ const UnpackReplyFormatDefault = "" +
 	"   may reformat code you change if it still compiles and runs. Never include\n" +
 	"   line numbers.\n" +
 	"\n" +
-	"Three cases:\n" +
+	"Four cases:\n" +
 	"\n" +
 	"A) Change a whole file, or create a new one: a tag with only `path=`, and the\n" +
 	"   complete new file as the body. A new file never gets `lines=` or `out-of=`.\n" +
@@ -81,6 +81,17 @@ const UnpackReplyFormatDefault = "" +
 	"</file>\n" +
 	"```\n" +
 	"\n" +
+	"D) Move or rename a file: add `from=` with its old path. An empty body moves\n" +
+	"   it as it is; a body moves it and replaces its content with the COMPLETE new\n" +
+	"   file (never an excerpt). Then change the files that use the old path.\n" +
+	"   Avoid names that differ only by capitalization because some filesystems\n" +
+	"   treat them as the same path. Keep file destinations distinct from folders.\n" +
+	"\n" +
+	"```text\n" +
+	"<file path=\"internal/store/user_store.go\" from=\"internal/store/users.go\">\n" +
+	"</file>\n" +
+	"```\n" +
+	"\n" +
 	"How I use your tags: for an excerpt, `catclip --unpack` first checks that my\n" +
 	"file still has `out-of` lines. If not, the file changed since I copied it, and\n" +
 	"nothing is written. Then it removes lines A to B from my file and puts your\n" +
@@ -111,6 +122,7 @@ const UnpackReplyFormatDefault = "" +
 	"the file list first (`catclip . --paths`). Otherwise use what you do know: a\n" +
 	"folder (`catclip internal/store`, e.g. from an import path) or just a file\n" +
 	"name (`catclip store.go`); catclip finds both. Never write a placeholder path.\n" +
+	"After a move, ask for the file by its new path.\n" +
 	"\n" +
 	"Ignored files and folders (build output, generated code, docs) are left out\n" +
 	"of every list, but `catclip . --metadata` names them. To see one, ask for it by\n" +
@@ -123,7 +135,8 @@ const UnpackReplyFormatDefault = "" +
 	"| `<file path=\"src/lib/api.ts\">` | The complete file. |\n" +
 	"| `<file path=\"src/lib/api.ts\" lines=\"40-60\" out-of=\"210\">` | Lines 40-60, out of a file that had 210 lines when I copied it. |\n" +
 	"| `<file path=\"src/lib/api.ts\" numbered=\"true\">` | The complete file with line numbers added for reading (not part of the code). |\n" +
-	"| `type=\"binary\"`, `type=\"diff\"`, `partial=\"true\"` | A binary file's description, a Git patch, or a file cut short by a size limit. Never send these back. |\n" +
+	"| `<file path=\"src/lib/api.ts\" type=\"diff\">` | A Git patch: only what changed, with a few lines around it. Never edit from it: ask me for the whole file first (for a long file, lines that cover the whole patch and the code around it, e.g. `catclip PATH --lines A B`), then reply in the normal format. |\n" +
+	"| `type=\"binary\"`, `partial=\"true\"` | A binary file's description, or a file cut short by a size limit. Never send these back. |\n" +
 	"\n" +
 	"A plain list of paths, one per line, is my project's file list. A table with\n" +
 	"SIZE, TOKENS, GIT and MODIFIED columns is the same list with details.\n" +
@@ -160,12 +173,15 @@ const UnpackReplyFormatDefault = "" +
 	"  Never just change the numbers to make it fit.\n" +
 	"- Code was shortened (`...`, `// rest unchanged`): send that entry again,\n" +
 	"  complete.\n" +
+	"- A move's `from=` file is not there, or its new path is taken: ask me for\n" +
+	"  the file list (`catclip . --paths`) and use the paths it shows.\n" +
 	"\n" +
 	"## Never\n" +
 	"\n" +
 	"- change paths: always relative, forward slashes, no `..`, no absolute paths\n" +
 	"- change the numbers in `lines=` or `out-of=` to make a tag fit\n" +
-	"- delete files: list files to delete in plain text, outside the block\n" +
+	"- delete files: list files to delete in plain text, outside the block (to\n" +
+	"  move or rename one, use `from=`)\n" +
 	"- send Git patches or diffs instead of entries\n"
 
 // IsUnpackReplyFormatRequest reports whether args ask for
@@ -181,12 +197,11 @@ func IsUnpackReplyFormatRequest(args []string) bool {
 }
 
 // ReplyFormatOptions are the flags --unpack-reply-format accepts.
-//   - Print (-p): show the user's copy instead of copying it; never asks.
+//   - Print (-p): print the selected guide without writing the config or clipboard.
 //   - Headless: for agents. Prints the text with no question and no
 //     next-steps for the user; when the user's copy differs from catclip's
 //     it says so on stderr and points to --yes.
-//   - Yes (-y): take catclip's version without asking (replaces the copy).
-//     Not in --help: the headless hint is where agents learn it.
+//   - Yes (-y): take catclip's version without asking; save it unless printing.
 type ReplyFormatOptions struct {
 	Print, Headless, Yes bool
 }

@@ -26,6 +26,15 @@ func FindBundleHome(root string, b Bundle) (home string, found bool) {
 	if len(paths) == 0 || existingCount(root, paths) > 0 {
 		return "", false
 	}
+	// A retry can have only the destination left. An old source in a
+	// nearby checkout is weaker evidence than that local destination.
+	for _, entry := range b.Entries[:min(len(b.Entries), homeCheckEntries)] {
+		if entry.From != "" {
+			if info, err := os.Lstat(filepath.Join(root, filepath.FromSlash(entry.Path))); err == nil && info.Mode().IsRegular() {
+				return "", false
+			}
+		}
+	}
 	best, bestCount := "", 0
 	for _, dir := range nearbyFolders(root) {
 		if n := existingCount(dir, paths); n > bestCount {
@@ -40,6 +49,11 @@ func bundlePaths(b Bundle) []string {
 	for _, e := range b.Entries {
 		if len(paths) == homeCheckEntries {
 			break
+		}
+		// A move's new path does not exist yet; its old path does.
+		if e.From != "" {
+			paths = append(paths, e.From)
+			continue
 		}
 		paths = append(paths, e.Path)
 	}

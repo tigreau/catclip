@@ -17,6 +17,7 @@ const (
 	KindNew       ChangeKind = "new"
 	KindChanged   ChangeKind = "changed"
 	KindIdentical ChangeKind = "identical"
+	KindMoved     ChangeKind = "moved" // From is removed after Path is written
 )
 
 // Change is a bundle file that differs from (or is missing in) the project.
@@ -30,6 +31,10 @@ type Change struct {
 	Mode  fs.FileMode
 	// LineEdits marks a file changed by excerpt edits, not replaced whole.
 	LineEdits bool
+	// From and FromAbs are the old path of a moved file (KindMoved). Local
+	// then holds the old file's content.
+	From    string
+	FromAbs string
 }
 
 // Plan is what unpacking would do, computed before anything is written.
@@ -46,11 +51,12 @@ type Plan struct {
 const compareReaders = 8
 
 type comparison struct {
-	change  Change
-	kind    ChangeKind
-	problem Problem // set when the entry cannot be applied
-	detail  string  // what is specific to this file
-	err     error
+	change     Change
+	kind       ChangeKind
+	skipReason string
+	problem    Problem // set when the entry cannot be applied
+	detail     string  // what is specific to this file
+	err        error
 }
 
 // BuildPlan compares each complete bundle file with the same relative path
@@ -80,6 +86,8 @@ func BuildPlan(root string, b Bundle) (Plan, error) {
 			return Plan{}, r.err
 		case r.problem != "":
 			p.Skipped = append(p.Skipped, Skipped{Path: b.Entries[i].Path, Problem: r.problem, Detail: r.detail, Blocking: true})
+		case r.skipReason != "":
+			p.Skipped = append(p.Skipped, Skipped{Path: b.Entries[i].Path, Reason: r.skipReason})
 		case r.kind == KindIdentical:
 			p.Identical++
 		default:
@@ -94,6 +102,9 @@ func BuildPlan(root string, b Bundle) (Plan, error) {
 // so unpacking never converts a file or mixes endings in it); a new file is
 // written with LF.
 func compare(root string, e Entry) comparison {
+	if e.From != "" {
+		return compareMove(root, e)
+	}
 	abs := filepath.Join(root, filepath.FromSlash(e.Path))
 	edits := e.Edits != nil
 	info, err := os.Lstat(abs)
@@ -160,16 +171,79 @@ func compare(root string, e Entry) comparison {
 	return comparison{kind: KindChanged, change: Change{Kind: KindChanged, Path: e.Path, Abs: abs, Body: body, Local: local, Mode: info.Mode().Perm(), LineEdits: edits}}
 }
 
-// Counts returns how many changes are new and how many replace a file.
+// compareMove plans <file path="new" from="old">: the old file must be here
+// and the new path free. If the old file is gone and the new one already
+// holds the content, the move was already done (re-running a reply is
+// harmless). The detail names the other path for the grouped message.
+func compareMove(root string, e Entry) comparison {
+	abs := filepath.Join(root, filepath.FromSlash(e.Path))
+	fromAbs := filepath.Join(root, filepath.FromSlash(e.From))
+	fromInfo, fromErr := os.Lstat(fromAbs)
+	toInfo, toErr := os.Lstat(abs)
+	switch {
+	case errors.Is(fromErr, fs.ErrNotExist):
+		if toErr == nil && toInfo.Mode().IsRegular() {
+			if len(e.Body) == 0 {
+				return comparison{skipReason: "already at destination; nothing moved"}
+			}
+			if local, err := os.ReadFile(abs); err == nil && bytes.Equal(local, withLineEndings(e.Body, fileUsesCRLF(local))) {
+				return comparison{kind: KindIdentical}
+			}
+		}
+		return comparison{problem: ProblemMoveSource, detail: "from " + e.From}
+	case fromErr != nil:
+		return comparison{err: fromErr}
+	case fromInfo.IsDir():
+		return comparison{problem: ProblemFolder, detail: "from " + e.From}
+	case !fromInfo.Mode().IsRegular():
+		return comparison{problem: ProblemMoveSourceType, detail: "from " + e.From}
+	case toErr == nil:
+		return comparison{problem: ProblemMoveTarget, detail: "from " + e.From}
+	case !errors.Is(toErr, fs.ErrNotExist):
+		return comparison{err: toErr}
+	}
+	local, err := os.ReadFile(fromAbs)
+	if err != nil {
+		return comparison{err: err}
+	}
+	body := local
+	if len(e.Body) > 0 {
+		if bytes.IndexByte(local, 0) >= 0 {
+			return comparison{problem: ProblemBinary, detail: "from " + e.From}
+		}
+		if line := shortenedPlaceholder(e, local); line != "" {
+			return comparison{problem: ProblemShortened, detail: line}
+		}
+		body = withLineEndings(e.Body, fileUsesCRLF(local))
+	}
+	return comparison{kind: KindMoved, change: Change{Kind: KindMoved, Path: e.Path, Abs: abs, Body: body, Local: local,
+		Mode: fromInfo.Mode().Perm(), From: e.From, FromAbs: fromAbs}}
+}
+
+// Counts returns how many changes are new and how many replace a file;
+// moves are counted by Moved.
 func (p Plan) Counts() (changed, added int) {
 	for _, c := range p.Changes {
-		if c.Kind == KindNew {
+		switch c.Kind {
+		case KindNew:
 			added++
-		} else {
+		case KindMoved:
+		default:
 			changed++
 		}
 	}
 	return changed, added
+}
+
+// Moved returns how many changes move a file.
+func (p Plan) Moved() int {
+	n := 0
+	for _, c := range p.Changes {
+		if c.Kind == KindMoved {
+			n++
+		}
+	}
+	return n
 }
 
 // Blocked lists the entries that were meant to be written but cannot be.

@@ -176,8 +176,10 @@ func runUnpack(opts cli.UnpackOptions, stdout, stderr io.Writer) error {
 		if opts.Print && opts.Headless {
 			return nil
 		}
-		if err := writeUnpackLine(report, colors, fmt.Sprintf("Already up to date: %d %s identical.", plan.Identical, filesWord(plan.Identical))); err != nil {
-			return err
+		if plan.Identical > 0 {
+			if err := writeUnpackLine(report, colors, fmt.Sprintf("Already up to date: %d %s identical.", plan.Identical, filesWord(plan.Identical))); err != nil {
+				return err
+			}
 		}
 		return writeUnpackSkipped(report, plan.Skipped, colors)
 	}
@@ -194,9 +196,7 @@ func runUnpack(opts cli.UnpackOptions, stdout, stderr io.Writer) error {
 				"  Run catclip --unpack in an interactive terminal, or add --yes to write every change (--print only shows them).\n"+
 				"  Nothing was written.")
 		}
-		changed, added := plan.Counts()
-		if _, err := fmt.Fprintf(stderr, "Unpacking %s: %d changed, %d new, %d already identical.\n",
-			src.heading, changed, added, plan.Identical); err != nil {
+		if _, err := fmt.Fprintf(stderr, "Unpacking %s: %s.\n", src.heading, unpackCountsText(plan)); err != nil {
 			return err
 		}
 		question := fmt.Sprintf("%sIs %s%s%s%s the project root? [Y/n]:%s",
@@ -238,16 +238,23 @@ func runUnpack(opts cli.UnpackOptions, stdout, stderr io.Writer) error {
 	if err != nil {
 		return newExitError(1, "Error: "+err.Error())
 	}
-	replaced, added := 0, 0
+	replaced, added, moved := 0, 0, 0
 	for _, c := range chosen {
-		if c.Kind == unpack.KindNew {
+		switch c.Kind {
+		case unpack.KindNew:
 			added++
-		} else {
+		case unpack.KindMoved:
+			moved++
+		default:
 			replaced++
 		}
 	}
-	if err := writeUnpackLine(report, colors, fmt.Sprintf("Wrote %d %s into %s (%d replaced, %d new).",
-		len(written), filesWord(len(written)), platform.DisplayPath(root), replaced, added)); err != nil {
+	movedText := ""
+	if moved > 0 {
+		movedText = fmt.Sprintf(", %d moved", moved)
+	}
+	if err := writeUnpackLine(report, colors, fmt.Sprintf("Wrote %d %s into %s (%d replaced, %d new%s).",
+		len(written), filesWord(len(written)), platform.DisplayPath(root), replaced, added, movedText)); err != nil {
 		return err
 	}
 	// Name every written file and whether it replaced one or is new, so a
@@ -261,6 +268,9 @@ func runUnpack(opts cli.UnpackOptions, stdout, stderr io.Writer) error {
 			note := ""
 			if byPath[path].LineEdits {
 				note = "  (line edits)"
+			}
+			if byPath[path].Kind == unpack.KindMoved {
+				note = "  (from " + byPath[path].From + ")"
 			}
 			if _, err := fmt.Fprintf(report, "  %-7s  %s%s\n", byPath[path].Kind, path, note); err != nil {
 				return err
@@ -323,9 +333,8 @@ func printUnpackDiffs(plan unpack.Plan, opts cli.UnpackOptions, stdout, report i
 	if opts.Quiet || opts.Headless {
 		return nil
 	}
-	changed, added := plan.Counts()
-	if _, err := fmt.Fprintf(report, "%s%d changed, %d new, %d already identical. Nothing was written; run without --print to unpack.%s\n",
-		colors.Dim, changed, added, plan.Identical, colors.Reset); err != nil {
+	if _, err := fmt.Fprintf(report, "%s%s. Nothing was written; run without --print to unpack.%s\n",
+		colors.Dim, unpackCountsText(plan), colors.Reset); err != nil {
 		return err
 	}
 	if err := writeUnpackSkipped(report, plan.Skipped, colors); err != nil {
@@ -427,6 +436,15 @@ var problemTexts = []struct {
 	{unpack.ProblemShortened, "The code was shortened, which would delete what it stands for:",
 		func([]string) []problemFix {
 			return []problemFix{{text: "Paste this message into the chat; it names the code left out."}}
+		}},
+	{unpack.ProblemMoveSource, "These moves start from files that don't exist here:",
+		func([]string) []problemFix {
+			return []problemFix{{text: "Run catclip --unpack in the folder you copied them from. If you already moved them, paste this message into the chat so it uses the new paths."}}
+		}},
+	{unpack.ProblemMoveSourceType, "These moves require a regular file at the source path:", nil},
+	{unpack.ProblemMoveTarget, "These moves would replace a file that is already there:",
+		func([]string) []problemFix {
+			return []problemFix{{text: "catclip never replaces a file by moving another onto it. Paste this message into the chat so it picks another path, or move that file away first."}}
 		}},
 	{unpack.ProblemFolder, "There is a folder with this name here, not a file:", nil},
 	{unpack.ProblemBinary, "Your copy of these files is binary, so a text reply can't change them:", nil},
@@ -572,4 +590,15 @@ func writeUnpackDiffs(plan unpack.Plan, opts cli.UnpackOptions, stdout io.Writer
 		}
 	}
 	return nil
+}
+
+// unpackCountsText summarizes a plan: "2 changed, 1 new, 3 already
+// identical", with "N moved" when the reply moves files.
+func unpackCountsText(plan unpack.Plan) string {
+	changed, added := plan.Counts()
+	text := fmt.Sprintf("%d changed, %d new", changed, added)
+	if moved := plan.Moved(); moved > 0 {
+		text += fmt.Sprintf(", %d moved", moved)
+	}
+	return text + fmt.Sprintf(", %d already identical", plan.Identical)
 }

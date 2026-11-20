@@ -289,7 +289,7 @@ find_local_source_dir() {
   # A cloned checkout contains the full Go module. Prefer building that exact
   # source tree so install.sh reflects the checked-out code instead of silently
   # replacing it with whatever release is current.
-  if [[ -f "$script_dir/go.mod" && -f "$script_dir/main.go" && -f "$script_dir/VERSION" ]]; then
+  if [[ -f "$script_dir/go.mod" && -f "$script_dir/cmd/catclip/main.go" && -f "$script_dir/VERSION" ]]; then
     printf '%s\n' "$script_dir"
     return 0
   fi

@@ -1,18 +1,18 @@
 package catclip
 
 import (
-	_ "embed"
 	"path"
 	"strings"
 	"time"
+
+	root "github.com/tigreau/catclip"
 )
 
 // sourceVersion is the repository release metadata used by ordinary source
 // builds. Published release builds set releaseVersion with -ldflags -X so the
-// tag remains the final authority for shipped binaries.
-//
-//go:embed VERSION
-var sourceVersion string
+// tag remains the final authority for shipped binaries. VERSION stays at the
+// repository root, so the root package embeds it and it is read from there.
+var sourceVersion = root.SourceVersion
 
 var releaseVersion string
 

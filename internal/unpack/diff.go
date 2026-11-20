@@ -1,6 +1,7 @@
 package unpack
 
 import (
+	"bytes"
 	"fmt"
 	"strings"
 )
@@ -16,19 +17,29 @@ const (
 // local copy to the bundle copy. A new file diffs against /dev/null.
 func UnifiedDiff(c Change) string {
 	from, to := "a/"+c.Path, "b/"+c.Path
+	oldPath := c.Path
 	if c.Kind == KindNew {
 		from = "/dev/null"
 	}
-	old, new := splitLines(string(c.Local)), splitLines(string(c.Body))
+	if c.Kind == KindMoved {
+		oldPath, from = c.From, "a/"+c.From
+	}
 	var b strings.Builder
 	// Git-style header: viewers and `git apply` recognise each file's section,
 	// `patch -p1` ignores it, and neither side needs a Git repository. No
 	// index hashes: they only help `git apply --3way` inside a repository.
-	fmt.Fprintf(&b, "diff --git a/%s b/%s\n", c.Path, c.Path)
+	fmt.Fprintf(&b, "diff --git a/%s b/%s\n", oldPath, c.Path)
 	if c.Kind == KindNew {
 		b.WriteString("new file mode 100644\n")
 	}
+	if c.Kind == KindMoved {
+		fmt.Fprintf(&b, "rename from %s\nrename to %s\n", c.From, c.Path)
+		if bytes.Equal(c.Local, c.Body) {
+			return b.String() // moved as is: nothing else changes
+		}
+	}
 	fmt.Fprintf(&b, "--- %s\n+++ %s\n", from, to)
+	old, new := splitLines(string(c.Local)), splitLines(string(c.Body))
 	if len(old)+len(new) > maxDiffLines {
 		fmt.Fprintf(&b, "@@ too large to preview: %d lines → %d lines @@\n", len(old), len(new))
 		return b.String()

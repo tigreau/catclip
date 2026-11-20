@@ -23,12 +23,17 @@ type PartialWriteError struct {
 	Written    []string
 	NotWritten []string
 	Failed     string
+	MoveSource string
 	Err        error
 }
 
 func (e PartialWriteError) Error() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "writing %s failed: %v\n", e.Failed, e.Err)
+	if e.MoveSource != "" {
+		fmt.Fprintf(&b, "Move incomplete: wrote %s, but could not remove %s: %v\n", e.Failed, e.MoveSource, e.Err)
+	} else {
+		fmt.Fprintf(&b, "writing %s failed: %v\n", e.Failed, e.Err)
+	}
 	fmt.Fprintf(&b, "Written before the failure (%d):", len(e.Written))
 	for _, p := range e.Written {
 		fmt.Fprintf(&b, "\n  %s", p)
@@ -47,6 +52,19 @@ func Check(changes []Change) error {
 	var problems []string
 	probed := map[string]error{}
 	for _, c := range changes {
+		if c.Kind == KindMoved {
+			// Removing the old file needs a writable folder.
+			dir := filepath.Dir(c.FromAbs)
+			err, seen := probed[dir]
+			if !seen {
+				err = probeDir(dir)
+				probed[dir] = err
+			}
+			if err != nil {
+				problems = append(problems, c.From+": "+describe(err))
+				continue
+			}
+		}
 		if c.Kind == KindChanged {
 			f, err := os.OpenFile(c.Abs, os.O_WRONLY, 0)
 			if err != nil {
@@ -120,13 +138,24 @@ func describe(err error) string {
 // are written exactly as they appear in the bundle.
 func Write(changes []Change) ([]string, error) {
 	written := make([]string, 0, len(changes))
-	for i, c := range changes {
-		if err := writeOne(c); err != nil {
+	for _, c := range changes {
+		moveSource := ""
+		err := writeOne(c)
+		if err == nil && c.Kind == KindMoved {
+			// The new file is complete; only then is the old one removed,
+			// so a failure never loses the content.
+			err = os.Remove(c.FromAbs)
+			if err != nil {
+				written = append(written, c.Path)
+				moveSource = c.From
+			}
+		}
+		if err != nil {
 			var rest []string
-			for _, r := range changes[i:] {
+			for _, r := range changes[len(written):] {
 				rest = append(rest, r.Path)
 			}
-			return written, PartialWriteError{Written: written, NotWritten: rest, Failed: c.Path, Err: err}
+			return written, PartialWriteError{Written: written, NotWritten: rest, Failed: c.Path, MoveSource: moveSource, Err: err}
 		}
 		written = append(written, c.Path)
 	}

@@ -213,7 +213,7 @@ function Find-LocalSourceDir {
         return $null
     }
     if ((Test-Path -LiteralPath (Join-Path $dir 'go.mod')) -and
-        (Test-Path -LiteralPath (Join-Path $dir 'main.go')) -and
+        (Test-Path -LiteralPath (Join-Path $dir 'cmd/catclip/main.go')) -and
         (Test-Path -LiteralPath (Join-Path $dir 'VERSION'))) {
         return (Resolve-Path -LiteralPath $dir).Path
     }

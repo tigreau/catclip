@@ -37,20 +37,22 @@ type replyFormatSource struct {
 	custom bool   // the user's copy, which differs from the built-in text
 }
 
-// loadUnpackReplyFormat returns the user's copy of the reply format,
-// creating it from the built-in text the first time. When the copy differs
-// from the built-in text (edited by the user, or written by an older
-// catclip), it asks every time which one to use; Enter takes catclip's
-// version and replaces the copy (user, 2026-11-19).
-// It asks only when copying at a terminal; a question nobody answers
-// (input ended) keeps the copy. --print and scripts use the copy silently.
-// useBuiltIn (--yes) answers 1 without asking. hint (--headless, agents)
-// keeps the copy and points to --yes on stderr.
-func loadUnpackReplyFormat(ask, useBuiltIn, hint bool, stderr io.Writer) (replyFormatSource, error) {
+// --print is read-only, including first use and --yes. Outside print mode
+// --yes adopts the built-in guide and an interactive user can choose.
+func loadUnpackReplyFormat(opts cli.ReplyFormatOptions, ask bool, stderr io.Writer) (replyFormatSource, error) {
 	builtIn := cli.UnpackReplyFormatDefault
+	if opts.Print && opts.Yes {
+		return replyFormatSource{text: builtIn}, nil
+	}
 	path := unpackReplyFormatPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if opts.Print {
+			if !os.IsNotExist(err) {
+				return replyFormatSource{}, err
+			}
+			return replyFormatSource{text: builtIn}, nil
+		}
 		if os.MkdirAll(filepath.Dir(path), 0o755) != nil || os.WriteFile(path, []byte(builtIn), 0o644) != nil {
 			return replyFormatSource{text: builtIn}, nil
 		}
@@ -60,32 +62,34 @@ func loadUnpackReplyFormat(ask, useBuiltIn, hint bool, stderr io.Writer) (replyF
 	if text == builtIn {
 		return replyFormatSource{text: builtIn, path: path}, nil
 	}
-	if useBuiltIn {
+	if opts.Yes {
 		if err := os.WriteFile(path, []byte(builtIn), 0o644); err != nil {
 			return replyFormatSource{}, err
 		}
 		return replyFormatSource{text: builtIn, path: path}, nil
 	}
 	keep := func() (replyFormatSource, error) {
-		if hint {
+		if opts.Headless {
 			fmt.Fprintf(stderr, "Note: your reply format (%s) differs from catclip's; using yours.\n"+
 				"  catclip --unpack-reply-format --headless --yes uses catclip's version and replaces yours.\n",
 				platform.DisplayPath(path))
+		} else if opts.Print {
+			fmt.Fprintf(stderr, "Using the reply format from your config file: %s\n"+
+				"Preview Catclip’s built-in guide: catclip --unpack-reply-format --print --yes\n"+
+				"To replace your saved copy, run catclip --unpack-reply-format and choose 1.\n\n", platform.DisplayPath(path))
 		}
 		return replyFormatSource{text: text, path: path, custom: true}, nil
 	}
 	if !ask {
 		return keep()
 	}
-	// Wording chosen by the user (2026-11-19): why it differs, two plain
-	// choices, Enter takes catclip's version.
 	question := fmt.Sprintf("Your reply format is different from catclip's.\n"+
 		"You may have edited your copy, or catclip was updated with a newer version.\n"+
 		"  Your copy: %s\n\n"+
 		"  1. Use catclip's version (your copy is replaced)\n"+
 		"  2. Keep using your copy\n\n"+
-		"Choose 1 or 2 [1]:", platform.DisplayPath(path))
-	choice, err := unpackPromptChoice(question, 2, 1, stderr)
+		"Choose 1 or 2:", platform.DisplayPath(path))
+	choice, err := unpackPromptChoice(question, stderr)
 	if err != nil {
 		return replyFormatSource{}, err
 	}
@@ -108,7 +112,7 @@ func loadUnpackReplyFormat(ask, useBuiltIn, hint bool, stderr io.Writer) (replyF
 // differs. --yes takes catclip's version without asking.
 func runUnpackReplyFormat(opts cli.ReplyFormatOptions, stdout, stderr io.Writer) error {
 	toStdout := opts.Print || opts.Headless
-	src, err := loadUnpackReplyFormat(!toStdout && unpackReplyFormatCanAsk(), opts.Yes, opts.Headless, stderr)
+	src, err := loadUnpackReplyFormat(opts, !toStdout && unpackReplyFormatCanAsk(), stderr)
 	if err != nil {
 		return err
 	}

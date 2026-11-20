@@ -7,7 +7,8 @@ Reviewed against the v0.7.9 source on 2026-10-26, with the v0.7.10 repeated-work
 ## Layout
 
 - `cmd/catclip/main.go` is the thin binary entrypoint.
-- Package `catclip` at the module root coordinates startup, dispatch, package wiring, diagnostics, and final output.
+- Package `catclip` in `internal/catclip` coordinates startup, dispatch, package wiring, diagnostics, and final output. It moved there from the module root in v0.7.16 to keep the repository root short; the package name stayed, so only import paths changed.
+- The module root keeps one Go file, `version.go`, which embeds `VERSION` (`go:embed` cannot reach a parent folder). `internal/catclip` reads it as `root.SourceVersion`; release builds set `github.com/tigreau/catclip/internal/catclip.releaseVersion` with `-ldflags -X`.
 - Domain implementation lives in the `internal/*` packages. The broad single-package layout was replaced in v0.6.0; do not use its former rationale to bypass the existing boundaries.
 
 ### Package ownership
@@ -16,7 +17,7 @@ Listed roughly in pipeline order (rule 21). File names below are relative to the
 
 | Package | Responsibility and reference files |
 | --- | --- |
-| Root `catclip` | `main.go` startup and wiring; `cli.go` dispatch and parsed-command adapters; `run_output.go` report/emit orchestration; positional glob/dotfile normalization; diagnostic policy and styles; explicit update-check action |
+| `internal/catclip` (package `catclip`) | `main.go` startup and wiring; `cli.go` dispatch and parsed-command adapters; `run_output.go` report/emit orchestration; positional glob/dotfile normalization; diagnostic policy and styles; explicit update-check action |
 | `internal/command` | Typed command, scope, stage, invocation and output-mode models; canonical command rendering; stage flag spellings |
 | `internal/cli` | Strict and startup parsing, flag metadata, validation/order rules, help/version text and resolved-command formatting |
 | `internal/discovery` | Target resolution, visible/ignored membership, ignore attribution, ordered scope stages, Git selectors, focused-refinement evidence and checkpoint transport (`resolver.go`, `target_glob.go`, `scope_stages.go`, `run_discovery.go`) |
@@ -32,7 +33,9 @@ Listed roughly in pipeline order (rule 21). File names below are relative to the
 
 `internal/theme` owns saved presentation preferences and lazy palettes. It may depend on platform helpers and Chroma, never discovery, output, UI, search or Git.
 
-### Why the root package still exists
+### Why the coordinating package still exists
+
+"Root" below means the coordinating package `catclip` (in `internal/catclip` since v0.7.16), not the repository root.
 
 - Root coordinates packages that cannot import one another: it adapts parsed commands, installs callbacks, chooses actions and owns process exit policy.
 - Discovery, output planning, interactive UI and rendering already have separate owners. Evolving tree/preview behavior belongs in those packages, with root supplying the orchestration.
@@ -232,7 +235,7 @@ remain v0.8.0 work.
 
 28. **Interactive progress is a derived filter outline** — the rounded progress footer appears only in the `filter>` and `output>` pickers. Committed `[extras]` flags appear immediately after `catclip`; committed stages and `--then` follow in order. One `--` represents each current or remaining filter menu, and `▶` marks the current position (`catclip --quiet --only ▶ -- --` or `catclip --quiet --only --exclude ▶ output`). Targets, modifier values, unrelated sink flags, and sink choices stay out; the later `Resolved command:` remains the detailed executable authority. Derive progress from already-parsed extras and scopes so Esc automatically reflects restored state and operand text cannot masquerade as an extra. The footer must remain a one-line, picker-open-only presentation step: no argv reparse, discovery, filesystem access, subprocess, terminal-size query, resize callback, or per-keystroke work. Formatting may allocate only the returned short string. See `docs/versions/v0.6.10/reports/RESOLVED_PLAN_interactive_command_progress.md`.
 
-29. **`--unpack` writes only what was confirmed, all checks first** — it reads the bundle and the exact relative paths it names; no discovery, ignore walk, classification or Git. Refuse the whole bundle before any prompt if any path is unsafe (absolute, `..`, `.git`, through a symlink or junction, Windows-invalid). Only full files are written; excerpts, `numbered="true"`, patches, binary descriptions and `partial="true"` entries are skipped and listed. Collect every decision (root question, picker) before writing, then check every chosen file can be written, then write each through a same-folder temp file and rename. Never delete local files. `--headless` implies `--yes` (it cannot ask), and the report lists each written file as changed or new. `--print` only shows the diffs (stdout) and never writes, even with `--headless`. `internal/unpack` stays a stdlib-only leaf so no output, clipboard or discovery code can reach the writes. Clipboard delivery attaches selected binaries as original-file references beside one text bundle; `--no-bundle`, `--raw` and stdout keep text descriptions. See `docs/versions/v0.7.13/reports/ACTIVE_PLAN_unpack.md`.
+29. **`--unpack` writes only what was confirmed, all checks first** — it reads the bundle and the exact relative paths it names. Refuse unsafe paths before any prompt, including absolute paths, `..`, `.git`, symlinks, junctions, and Windows-invalid names. Check a reply with moves for path conflicts using case folding and Unicode normalization. Apply whole files and valid line-range edits. List patches, binary descriptions, and partial entries as skipped. Collect the root confirmation and picker choices before writing, then check every chosen file. Write through a temp file in the destination folder and rename it into place. For a move, remove the source after writing the destination. `--headless` implies `--yes`. The report identifies each written file and any partial failure. `--print` only shows diffs and performs no writes, including with `--headless`. `internal/unpack` depends only on the standard library and `golang.org/x/text/unicode/norm` so its write path remains independent of discovery, Git, clipboard, and output. Clipboard delivery attaches selected binaries as original-file references beside one text bundle. `--no-bundle`, `--raw`, and stdout use text descriptions.
 
 ## Execution flow
 

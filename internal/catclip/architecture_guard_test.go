@@ -69,9 +69,9 @@ func TestRunPipelineArchitectureGuards(t *testing.T) {
 	requireDiscoveryPackageAllowedImports(t, discoveryFiles)
 	requireOutputPackageAllowedImports(t, parseOutputGoFiles(t))
 	requireUIPackageAllowedImports(t, uiFiles)
-	// --unpack writes into the project, so its core stays a stdlib-only leaf:
-	// no discovery, Git, clipboard or output plumbing can reach the writes.
-	requireNoInternalImports(t, parsePackageGoFiles(t, "internal/unpack", "unpack"), "internal/unpack")
+	// Unpack stays independent of the pipeline. It uses Unicode
+	// normalization to detect equivalent move paths.
+	requireUnpackPackageAllowedImports(t, parsePackageGoFiles(t, "internal/unpack", "unpack"))
 	requirePlatformPackageAvoidDomainDeps(t, platformFiles)
 	requireThemePackageAvoidDomainDeps(t, parsePackageGoFiles(t, "internal/theme", "theme"))
 	requireSearchPackageAvoidDomainDeps(t, searchFiles)
@@ -838,9 +838,15 @@ func parseOutputGoFiles(t *testing.T) []parsedGoFile {
 	return parsePackageGoFiles(t, filepath.Join("internal", "output"), "internal/output")
 }
 
+// guardRepoRoot is the repository root seen from this package's folder
+// (internal/catclip since v0.7.16). Package dirs passed to parsePackageGoFiles
+// stay repository-relative ("internal/render"), and so do the recorded file
+// names, which the allowed-file checks compare against.
+var guardRepoRoot = filepath.Join("..", "..")
+
 func parsePackageGoFiles(t *testing.T, dir, label string) []parsedGoFile {
 	t.Helper()
-	paths, err := filepath.Glob(filepath.Join(dir, "*.go"))
+	paths, err := filepath.Glob(filepath.Join(guardRepoRoot, dir, "*.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -854,7 +860,7 @@ func parsePackageGoFiles(t *testing.T, dir, label string) []parsedGoFile {
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
-		files = append(files, parsedGoFile{name: path, file: file})
+		files = append(files, parsedGoFile{name: filepath.Join(dir, filepath.Base(path)), file: file})
 	}
 	if len(files) == 0 {
 		t.Fatalf("no %s production files parsed", label)
@@ -1190,8 +1196,7 @@ func containsString(values []string, target string) bool {
 	return false
 }
 
-// requireNoInternalImports keeps a package a stdlib-only leaf.
-func requireNoInternalImports(t *testing.T, files []parsedGoFile, label string) {
+func requireUnpackPackageAllowedImports(t *testing.T, files []parsedGoFile) {
 	t.Helper()
 	for _, parsed := range files {
 		for _, spec := range parsed.file.Imports {
@@ -1199,8 +1204,9 @@ func requireNoInternalImports(t *testing.T, files []parsedGoFile, label string) 
 			if err != nil {
 				t.Fatalf("%s has unparsable import %s: %v", parsed.name, spec.Path.Value, err)
 			}
-			if strings.HasPrefix(importPath, "github.com/tigreau/catclip") {
-				t.Errorf("%s imports %s; %s must import only the standard library", parsed.name, importPath, label)
+			first, _, _ := strings.Cut(importPath, "/")
+			if strings.Contains(first, ".") && importPath != "golang.org/x/text/unicode/norm" {
+				t.Errorf("%s imports %s; internal/unpack allows only the standard library and Unicode normalization", parsed.name, importPath)
 			}
 		}
 	}

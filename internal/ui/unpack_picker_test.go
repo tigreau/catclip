@@ -79,7 +79,7 @@ func TestUnpackPickerRowsRoundTripThroughFzf(t *testing.T) {
 }
 
 func TestUnpackPickerHeaderHasThreeHintRows(t *testing.T) {
-	lines := strings.Split(unpackPickerHeader(2, 1, 4), "\n")
+	lines := strings.Split(unpackPickerHeader(2, 1, 0, 4), "\n")
 	if len(lines) != 4 || lines[0] != "2 changed · 1 new · 4 already identical" {
 		t.Fatalf("%q", lines)
 	}
