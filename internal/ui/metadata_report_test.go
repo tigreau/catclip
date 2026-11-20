@@ -224,7 +224,10 @@ func TestMetadataIgnoredListsFoldersThenRulesThenFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	files := []string{"._a", "._b", "sub/._c", "sub/._d", "coverage.out", ".DS_Store"}
+	// .gitignore must exist: on macOS the temp folder is reached through a
+	// symlink (/var -> /private/var), and a source path that cannot be
+	// resolved is not shown relative to the resolved folder.
+	files := []string{"._a", "._b", "sub/._c", "sub/._d", "coverage.out", ".DS_Store", ".gitignore"}
 	for _, f := range files {
 		if err := os.WriteFile(filepath.Join(root, f), nil, 0o644); err != nil {
 			t.Fatal(err)

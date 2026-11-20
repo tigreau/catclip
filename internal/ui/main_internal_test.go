@@ -4157,24 +4157,35 @@ if [ "$prompt" = "filter> " ]; then
 		echo "unexpected first modifier row: $first" >&2
 		exit 91
 	}
-	[ "$last_key" = "finish" ] || {
+	# [unpack] is the top row on screen (last input row) while no filter is
+	# chosen (v0.7.15); the meta rows follow it.
+	[ "$last_key" = "unpack" ] || {
 		echo "unexpected last modifier row: $last" >&2
 		exit 91
 	}
-	printf '%s\n' "$last_label" | grep -F -- "[finish early]" >/dev/null || {
-		echo "missing finish label in last row: $last_label" >&2
+	printf '%s\n' "$last_label" | grep -F -- "[unpack]" >/dev/null || {
+		echo "missing unpack label in last row: $last_label" >&2
 		exit 91
 	}
-	[ "$second_last_key" = "extras" ] || {
+	[ "$second_last_key" = "finish" ] || {
 		echo "unexpected second-last modifier row: $second_last" >&2
 		exit 91
 	}
-	printf '%s\n' "$second_last_label" | grep -F -- "[extras]" >/dev/null || {
-		echo "missing extras label in second-last row: $second_last_label" >&2
+	printf '%s\n' "$second_last_label" | grep -F -- "[finish early]" >/dev/null || {
+		echo "missing finish label in second-last row: $second_last_label" >&2
 		exit 91
 	}
-	[ "$third_last_key" = "file-inclusion" ] || {
+	[ "$third_last_key" = "extras" ] || {
 		echo "unexpected third-last modifier row: $third_last" >&2
+		exit 91
+	}
+	printf '%s\n' "$third_last_label" | grep -F -- "[extras]" >/dev/null || {
+		echo "missing extras label in third-last row: $third_last_label" >&2
+		exit 91
+	}
+	fourth_last="$(printf '%s\n' "$input" | tail -n 4 | head -n 1)"
+	[ "$(printf '%s\n' "$fourth_last" | cut -f2)" = "file-inclusion" ] || {
+		echo "unexpected fourth-last modifier row: $fourth_last" >&2
 		exit 91
 	}
 	then_row="$(printf '%s\n' "$input" | awk -F '\t' '$2 == "then"')"
