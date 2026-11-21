@@ -31,6 +31,7 @@ func TestMain(m *testing.M) {
 		Main()
 		os.Exit(0)
 	}
+	resolveDevBinForCatclipTests()
 	if _, ok := search.RipgrepBinary(); !ok {
 		fmt.Fprintln(os.Stderr, "FATAL: rg not found. Run 'make dev' to set up dev tools.")
 		os.Exit(1)
@@ -47,6 +48,31 @@ func TestMain(m *testing.M) {
 	// Register it here too.
 	discovery.SetScopeViewResolver(ui.ScopeViewForDiscoveryArgs)
 	os.Exit(m.Run())
+}
+
+// Go runs this package's tests from internal/catclip. Use absolute paths to
+// the tools in the repository's bin directory so they survive fixture chdirs.
+func resolveDevBinForCatclipTests() {
+	binDir, err := filepath.Abs(filepath.Join("..", "..", "bin"))
+	if err != nil {
+		return
+	}
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	for _, tool := range []struct{ env, name string }{
+		{"CATCLIP_RG", "rg"},
+		{"CATCLIP_FZF", "fzf"},
+	} {
+		if platform.EnvOverrideSet(tool.env) {
+			continue
+		}
+		path := filepath.Join(binDir, tool.name+suffix)
+		if info, err := os.Stat(path); err == nil && info.Mode().IsRegular() {
+			os.Setenv(tool.env, path)
+		}
+	}
 }
 
 // Native preview children run inside fixture projects, outside the repository
